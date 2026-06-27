@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 环境与密钥
+.env
+.env.local
+
+# 运行时数据
+*.db
+*.db-journal
+data/
+logs/
+repos/
+.worktrees/
+
+# 系统
+.DS_Store
+Thumbs.db

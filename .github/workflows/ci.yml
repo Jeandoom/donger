@@ -1,0 +1,25 @@
+# CI 占位：推送到 GitHub 后自动跑 lint + test。本地无 remote 时不会触发。
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 安装依赖
+        run: npm install
+      - name: Lint
+        run: npm run lint
+      - name: 测试
+        run: npm test
+      - name: 构建
+        run: npm run build
