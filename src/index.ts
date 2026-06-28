@@ -1,14 +1,14 @@
 // donger 应用入口：装配 Orchestrator + 真实适配器，按配置选通道。
-// 有 DINGTALK_* → 钉钉 Stream；否则 → CLI（本地调试）。
+// DINGTALK_* → 钉钉 Stream；否则 → Web（HTTP+WS，浏览器对话）
 import "dotenv/config";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
-import { CliChannel } from "./adapters/cli-channel.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
+import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { Planner } from "./domain/planner.js";
 import type { User } from "./domain/user.js";
@@ -20,7 +20,7 @@ import { createLogger } from "./util/logger.js";
 async function main(): Promise<void> {
   const cfg = loadConfig(process.env);
   const log = createLogger(cfg.logLevel, "app");
-  const channelName = cfg.dingtalk ? "dingtalk" : "cli";
+  const channelName = cfg.dingtalk ? "dingtalk" : "web";
   log.info(
     { model: cfg.llm.model, channel: channelName, superpowers: !!cfg.superpowersPluginPath },
     "donger 启动",
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
   store.migrate();
-  const usersDir = join(cfg.dbPath.replace(/\/[^/]+$/, ""), "users");
+  const usersDir = join(cfg.dbPath.replace(/[/\\][^/\\]+$/, ""), "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {
     adminStaffIds: new Set(cfg.adminStaffIds),
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
 
   const gates = createDefaultGates();
   const runner = new ClaudeAgentRunner(gates);
-  const channel = cfg.dingtalk ? new DingTalkChannel(cfg.dingtalk) : new CliChannel();
+  const channel = cfg.dingtalk ? new DingTalkChannel(cfg.dingtalk) : new WebChannel(cfg.port);
 
   const orch = new Orchestrator({
     store,
@@ -49,13 +49,11 @@ async function main(): Promise<void> {
     runner,
     channel,
     runOptsFor: async (task, plan, user: User) => {
-      // worktree 在用户目录下
       const repoDir = join(user.homeDir, "repos");
       let cwd: string;
       try {
         cwd = createWorktree(repoDir, task.id);
       } catch {
-        // 用户 repos/ 还没有 git 仓库，退回用户 homeDir
         cwd = user.homeDir;
       }
       return {
@@ -72,7 +70,10 @@ async function main(): Promise<void> {
     void orch.handleMessage(m);
   });
 
-  log.info({ channel: channel.id }, "就绪");
+  log.info({ channel: channel.id, port: cfg.port }, "就绪");
+  if (!cfg.dingtalk) {
+    console.log(`\n🌐 donger Web 客户端：http://localhost:${cfg.port}\n`);
+  }
 }
 
 void main();

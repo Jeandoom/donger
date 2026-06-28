@@ -20,6 +20,7 @@
     "@biomejs/biome": "^2.5.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.0.1",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
@@ -30,6 +31,7 @@
     "dingtalk-stream": "^2.1.6-beta.1",
     "dotenv": "^17.4.2",
     "pino": "^10.3.1",
+    "ws": "^8.21.0",
     "zod": "^4.4.3"
   }
 }

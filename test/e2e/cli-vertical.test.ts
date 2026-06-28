@@ -38,12 +38,26 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
   const userHome = mkdtempSync(join(tmpdir(), "donger-e2e-user-"));
   const userStore: UserStore = {
     async getOrCreate(staffId, name) {
-      return { id: `u-${staffId}`, staffId, name, role: "user" as const, homeDir: userHome, createdAt: "t", updatedAt: "t" };
+      return {
+        id: `u-${staffId}`,
+        staffId,
+        name,
+        role: "user" as const,
+        homeDir: userHome,
+        createdAt: "t",
+        updatedAt: "t",
+      };
     },
-    async get() { return undefined; },
-    async getByStaffId() { return undefined; },
+    async get() {
+      return undefined;
+    },
+    async getByStaffId() {
+      return undefined;
+    },
     async updateRole() {},
-    async list() { return []; },
+    async list() {
+      return [];
+    },
   };
   const orch = new Orchestrator({
     store,
