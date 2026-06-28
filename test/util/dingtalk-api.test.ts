@@ -31,7 +31,10 @@ describe("buildSingleSendBody", () => {
 
 describe("getAccessToken", () => {
   it("首次拉取并缓存（第二次不再请求）", async () => {
-    const fn = vi.fn(async () => ({ ok: true, json: async () => ({ access_token: "tok", expires_in: 7200 }) }));
+    const fn = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ access_token: "tok", expires_in: 7200 }),
+    }));
     vi.stubGlobal("fetch", fn);
     expect(await getAccessToken("k", "s")).toBe("tok");
     expect(await getAccessToken("k", "s")).toBe("tok");

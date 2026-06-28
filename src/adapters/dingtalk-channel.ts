@@ -10,7 +10,7 @@ export interface DingTalkConfig {
   robotCode: string;
 }
 
-/** 钉钉机器人消息 → IncomingMessage 归一（MVP 仅 text；threadId=conversationId，requesterId=senderStaffId） */
+/** 钉钉机器人消息 → IncomingMessage 归一（MVP 仅 text） */
 export function normalizeDingTalkMessage(m: RobotTextMessage): IncomingMessage {
   return {
     channelId: "dingtalk",
@@ -20,18 +20,24 @@ export function normalizeDingTalkMessage(m: RobotTextMessage): IncomingMessage {
   };
 }
 
+/** 通过类关键词（大小写不敏感） */
+const APPROVE_RE = /^(通过|同意|确认|yes|y|ok|✅)/i;
+
 /**
  * 钉钉 Channel。
- * 接收：Stream 模式（DWClient + TOPIC_ROBOT）。
- * 发送：OpenAPI singleSend（主动、不过期，适合长任务/定时通知）。recipient id 用 senderStaffId（T3.5 实测确认）。
- * requestApproval 暂为 stub（T3.3 填）。
+ * 接收：Stream（DWClient + TOPIC_ROBOT）。发送：OpenAPI singleSend（主动、不过期）。
+ * 审批：文本式——发 markdown 提示，监听该 thread 下一条消息作为决议（MVP；交互卡片留后续）。
  */
 export class DingTalkChannel implements Channel {
   readonly id = "dingtalk";
-  private handler?: (msg: IncomingMessage) => void;
+  handler?: (msg: IncomingMessage) => void;
   private client?: DWClient;
-  /** threadId(conversationId) → recipient userId(senderStaffId)。供主动发送用。 */
+  /** threadId(conversationId) → recipient userId(senderStaffId) */
   readonly recipients = new Map<string, string>();
+  private readonly pendingApprovals = new Map<
+    string,
+    (d: { approved: boolean; reason?: string }) => void
+  >();
 
   constructor(private readonly cfg: DingTalkConfig) {}
 
@@ -46,7 +52,7 @@ export class DingTalkChannel implements Channel {
       try {
         const robot = JSON.parse(msg.data) as RobotTextMessage;
         this.recipients.set(robot.conversationId, robot.senderStaffId);
-        this.handler?.(normalizeDingTalkMessage(robot));
+        this.routeIncoming(normalizeDingTalkMessage(robot));
       } catch (e) {
         console.error("[dingtalk] 消息解析失败", e);
       }
@@ -54,6 +60,18 @@ export class DingTalkChannel implements Channel {
     });
     this.client = client;
     void client.connect();
+  }
+
+  /** 路由入站消息：有 pending 审批则消费为决议，否则转发给 handler（新任务）。 */
+  routeIncoming(incoming: IncomingMessage): void {
+    const pending = this.pendingApprovals.get(incoming.threadId);
+    if (pending) {
+      this.pendingApprovals.delete(incoming.threadId);
+      const approved = APPROVE_RE.test(incoming.text.trim());
+      pending({ approved, reason: approved ? undefined : `用户回复：${incoming.text}` });
+      return;
+    }
+    this.handler?.(incoming);
   }
 
   stop(): void {
@@ -73,10 +91,17 @@ export class DingTalkChannel implements Channel {
     await sendSingleMessage(token, body);
   }
 
-  async requestApproval(
-    _threadId: string,
-    _card: ApprovalCard,
+  requestApproval(
+    threadId: string,
+    card: ApprovalCard,
   ): Promise<{ approved: boolean; reason?: string }> {
-    throw new ChannelError("NOT_IMPLEMENTED", "DingTalkChannel.requestApproval 未实现（见 T3.3）");
+    // 先注册 pending（同步），再发提示；提示发送失败则 reject
+    return new Promise((resolve, reject) => {
+      this.pendingApprovals.set(threadId, resolve);
+      void this.send(threadId, {
+        text: `🔔 审批门：${card.title}\n${card.summary}\n\n请回复「通过」或「驳回」`,
+        markdown: true,
+      }).catch(reject);
+    });
   }
 }
