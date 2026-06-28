@@ -1,5 +1,6 @@
 // donger 应用入口：装配 Orchestrator + 真实适配器，按配置选通道。
 // 有 DINGTALK_* → 钉钉 Stream；否则 → CLI（本地调试）。
+import "dotenv/config";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { CliChannel } from "./adapters/cli-channel.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
@@ -33,7 +34,7 @@ async function main(): Promise<void> {
     channel,
     runOptsFor: async (task, plan) => ({
       cwd: createWorktree(cfg.repoRoot, task.id),
-      skills: plan.skills,
+      skills: cfg.superpowersPluginPath ? plan.skills : [],
       pluginPaths: cfg.superpowersPluginPath ? [cfg.superpowersPluginPath] : [],
       llm: cfg.llm,
       systemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",

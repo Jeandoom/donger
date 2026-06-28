@@ -42,7 +42,7 @@ export function buildSingleSendBody(
     return {
       robotCode,
       userIds: [userId],
-      msgKey: "SampleMarkdownMsg",
+      msgKey: "sampleMarkdownMsg",
       msgParam: JSON.stringify({
         title: msg.text.split("\n")[0]?.trim().slice(0, 50) || "donger",
         text: msg.text,
@@ -52,7 +52,7 @@ export function buildSingleSendBody(
   return {
     robotCode,
     userIds: [userId],
-    msgKey: "SampleTextMessage",
+    msgKey: "sampleText",
     msgParam: JSON.stringify({ content: msg.text }),
   };
 }

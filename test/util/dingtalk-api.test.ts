@@ -17,14 +17,14 @@ describe("buildSingleSendBody", () => {
     expect(b).toEqual({
       robotCode: "rc",
       userIds: ["u1"],
-      msgKey: "SampleTextMessage",
+      msgKey: "sampleText",
       msgParam: JSON.stringify({ content: "hi" }),
     });
   });
 
   it("markdown → SampleMarkdownMsg + title/text", () => {
     const b = buildSingleSendBody("rc", "u1", { text: "# 标题\n正文", markdown: true });
-    expect(b.msgKey).toBe("SampleMarkdownMsg");
+    expect(b.msgKey).toBe("sampleMarkdownMsg");
     expect(JSON.parse(b.msgParam)).toEqual({ title: "# 标题", text: "# 标题\n正文" });
   });
 });
