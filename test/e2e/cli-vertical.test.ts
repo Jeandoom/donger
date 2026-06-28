@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { CliChannel } from "../../src/adapters/cli-channel.js";
@@ -5,7 +8,9 @@ import { FakeAgentRunner } from "../../src/adapters/fake-agent-runner.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
+import type { User } from "../../src/domain/user.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import type { UserStore } from "../../src/ports/user-store.js";
 
 /** 轮询输出直到包含 needle（带超时），用于 CLI 异步时序同步 */
 async function waitFor(get: () => string, needle: string, ms = 1000): Promise<void> {
@@ -30,13 +35,24 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
   const gates = new GateRouter();
   gates.describe({ id: "design", description: "方案审批" });
   const runner = new FakeAgentRunner(script);
+  const userHome = mkdtempSync(join(tmpdir(), "donger-e2e-user-"));
+  const userStore: UserStore = {
+    async getOrCreate(staffId, name) {
+      return { id: `u-${staffId}`, staffId, name, role: "user" as const, homeDir: userHome, createdAt: "t", updatedAt: "t" };
+    },
+    async get() { return undefined; },
+    async getByStaffId() { return undefined; },
+    async updateRole() {},
+    async list() { return []; },
+  };
   const orch = new Orchestrator({
     store,
+    userStore,
     planner: new Planner(),
     gates,
     runner,
     channel,
-    runOptsFor: async (_t, plan) => ({
+    runOptsFor: async (_t, plan, _user: User) => ({
       cwd: ".",
       skills: plan.skills,
       llm: { model: "m", baseUrl: "u", authToken: "t" },
