@@ -42,6 +42,6 @@ export class Planner {
   plan(text: string): Plan {
     const lower = text.toLowerCase();
     const hit = this.intents.find((i) => i.triggers.some((t) => lower.includes(t.toLowerCase())));
-    return hit ? { intent: hit.name, skills: [...hit.skills] } : { intent: "unknown", skills: [] };
+    return hit ? { intent: hit.name, skills: [...hit.skills] } : { intent: "general", skills: [] };
   }
 }

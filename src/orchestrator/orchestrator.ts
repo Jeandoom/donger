@@ -18,50 +18,67 @@ export interface OrchestratorDeps {
   runOptsFor: (task: Task, plan: Plan) => Promise<RunOptions> | RunOptions;
 }
 
-/** 编排核心：串起状态机 + Planner + GateRouter + runner + channel，处理一条入口消息的完整生命周期。 */
+/**
+ * 编排核心：串起状态机 + Planner + GateRouter + runner + channel，处理一条入口消息的完整生命周期。
+ * - 同 thread 正在处理时拒绝新消息（提示「正在处理」）
+ * - 收到消息立即确认（「收到，处理中」），再启动 agent
+ * - 所有消息都走 agent（编码→superpowers；其他→普通对话）
+ */
 export class Orchestrator {
+  private readonly busyThreads = new Set<string>();
+
   constructor(private readonly deps: OrchestratorDeps) {}
 
   async handleMessage(msg: IncomingMessage): Promise<void> {
     const { store, planner, gates, runner, channel } = this.deps;
-    const plan = planner.plan(msg.text);
-    const now = new Date().toISOString();
-    const task: Task = {
-      id: crypto.randomUUID(),
-      channelId: msg.channelId,
-      threadId: msg.threadId,
-      requesterId: msg.requesterId,
-      prompt: msg.text,
-      status: "created",
-      skillChain: plan.skills,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await store.create(task);
 
-    if (plan.intent === "unknown" || plan.skills.length === 0) {
-      await channel.send(msg.threadId, { text: "暂未识别到可处理的任务类型。" });
-      await store.updateStatus(task.id, nextStatus("created", "cancel"));
+    // busy lock：同 thread 正在处理 → 提示，不重复启动
+    if (this.busyThreads.has(msg.threadId)) {
+      await channel.send(msg.threadId, { text: "⏳ 正在处理上一条消息，请稍候…" });
       return;
     }
+    this.busyThreads.add(msg.threadId);
 
-    await store.updateStatus(task.id, nextStatus("created", "plan"));
-    const opts = await this.deps.runOptsFor(task, plan);
-    await store.updateStatus(task.id, nextStatus("planning", "start"));
+    try {
+      // 立即确认收到（在 agent 启动前，提升用户体验）
+      await channel.send(msg.threadId, { text: "👋 收到，处理中…" });
 
-    const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
-    const last = await bridgeEvents(
-      channel,
-      msg.threadId,
-      runner.run({ ...task, status: "running" }, opts, resolver),
-    );
+      const plan = planner.plan(msg.text);
+      const now = new Date().toISOString();
+      const task: Task = {
+        id: crypto.randomUUID(),
+        channelId: msg.channelId,
+        threadId: msg.threadId,
+        requesterId: msg.requesterId,
+        prompt: msg.text,
+        status: "created",
+        skillChain: plan.skills,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await store.create(task);
 
-    const ok = last?.type === "result" && last.subtype === "success";
-    const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
-    await store.updateStatus(
-      task.id,
-      ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
-      { error },
-    );
+      // 所有任务都走 agent（编码→superpowers skill 包；其他→普通 GLM 对话）
+      await store.updateStatus(task.id, nextStatus("created", "plan"));
+      const opts = await this.deps.runOptsFor(task, plan);
+      await store.updateStatus(task.id, nextStatus("planning", "start"));
+
+      const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
+      const last = await bridgeEvents(
+        channel,
+        msg.threadId,
+        runner.run({ ...task, status: "running" }, opts, resolver),
+      );
+
+      const ok = last?.type === "result" && last.subtype === "success";
+      const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
+      await store.updateStatus(
+        task.id,
+        ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
+        { error },
+      );
+    } finally {
+      this.busyThreads.delete(msg.threadId);
+    }
   }
 }

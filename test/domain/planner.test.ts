@@ -16,9 +16,9 @@ describe("Planner", () => {
     expect(p.plan("帮我修个 bug").intent).toBe("code");
   });
 
-  it("未命中 → unknown + 空 skills", () => {
+  it("未命中 → general（通用对话，仍走 agent）", () => {
     const plan = p.plan("今天天气怎么样");
-    expect(plan.intent).toBe("unknown");
+    expect(plan.intent).toBe("general");
     expect(plan.skills).toEqual([]);
   });
 
@@ -33,6 +33,6 @@ describe("Planner", () => {
   it("可注入自定义 intents（替换默认）", () => {
     const p2 = new Planner([{ name: "ops", triggers: ["部署", "回滚"], skills: ["opser"] }]);
     expect(p2.plan("执行部署").intent).toBe("ops");
-    expect(p2.plan("实现代码").intent).toBe("unknown");
+    expect(p2.plan("实现代码").intent).toBe("general");
   });
 });

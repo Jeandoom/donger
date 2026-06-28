@@ -82,10 +82,11 @@ describe("纵切端到端（真实 CliChannel + Fake runner）", () => {
     expect((await store.listByStatus("failed")).length).toBe(1);
   });
 
-  it("未识别意图 → 回暂未识别", async () => {
-    const { input, readOut, store } = setup({ result: "ok" });
+  it("非编码消息也走 agent（通用对话）", async () => {
+    const { input, readOut, store } = setup({ intro: "你好！", result: "ok" });
     input.write("今天天气怎么样\n");
-    await waitFor(readOut, "暂未识别");
-    expect((await store.listByStatus("canceled")).length).toBe(1);
+    await waitFor(readOut, "收到");
+    await waitFor(readOut, "✅ 完成");
+    expect((await store.listByStatus("done")).length).toBe(1);
   });
 });
