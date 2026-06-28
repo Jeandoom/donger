@@ -26,6 +26,8 @@ async function main(): Promise<void> {
     "donger 启动",
   );
 
+  const dbDir = cfg.dbPath.replace(/[/\\][^/\\]+$/, "");
+  mkdirSync(dbDir, { recursive: true });
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
   store.migrate();
