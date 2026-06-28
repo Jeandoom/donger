@@ -1,13 +1,16 @@
 import type { RunnerEvent } from "../domain/types.js";
 import type { Channel } from "../ports/channel.js";
 
-/** 把 RunnerEvent 流翻译成 Channel 消息（进度/结果）。session_init/tool_use 不单独推，避免刷屏。 */
+/** 把 RunnerEvent 流翻译成 Channel 消息（进度/结果）。session_init/tool_use 不单独推，避免刷屏。
+ *  返回最后一条事件（通常为 result），供调用方判定终态。 */
 export async function bridgeEvents(
   channel: Channel,
   threadId: string,
   events: AsyncIterable<RunnerEvent>,
-): Promise<void> {
+): Promise<RunnerEvent | undefined> {
+  let last: RunnerEvent | undefined;
   for await (const e of events) {
+    last = e;
     if (e.type === "text") {
       await channel.send(threadId, { text: e.text });
     } else if (e.type === "result") {
@@ -18,4 +21,5 @@ export async function bridgeEvents(
       }
     }
   }
+  return last;
 }
