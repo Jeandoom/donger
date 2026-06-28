@@ -5,6 +5,7 @@ import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
 import type { ApprovalCard, OutgoingMessage } from "../../src/domain/types.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import type { AgentRunner } from "../../src/ports/agent-runner.js";
 import type { Channel } from "../../src/ports/channel.js";
 
 function fakeChannel(approve: boolean): Channel & {
@@ -134,5 +135,33 @@ describe("Orchestrator", () => {
     // 清理：resolve 审批 → 第一条完成
     deferred.resolve?.({ approved: true });
     await p1;
+  });
+
+  it("runner 出错时不崩溃，回错误消息，释放 busy", async () => {
+    const channel2 = fakeChannel(true);
+    const store2 = new InMemoryTaskStore();
+    const throwingRunner: AgentRunner = {
+      async *run() {
+        throw new Error("GLM 爆了");
+      },
+    };
+    const orch2 = new Orchestrator({
+      store: store2,
+      planner: new Planner(),
+      gates: new GateRouter(),
+      runner: throwingRunner,
+      channel: channel2,
+      runOptsFor: async () => ({
+        cwd: ".",
+        skills: [],
+        llm: { model: "m", baseUrl: "u", authToken: "t" },
+      }),
+    });
+    await orch2.handleMessage(msg);
+    expect(channel2.sent.some((m) => m.text.includes("处理出错"))).toBe(true);
+    expect((await store2.listByStatus("failed")).length).toBe(1);
+    // busy 已释放：后续消息不会被告知"正在处理"
+    await orch2.handleMessage(msg);
+    expect(channel2.sent.some((m) => m.text.includes("正在处理"))).toBe(false);
   });
 });
