@@ -4,8 +4,9 @@ import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
 import type { ApprovalCard, OutgoingMessage } from "../../src/domain/types.js";
+import { MemoryStore } from "../../src/memory/memory-store.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
-import type { AgentRunner } from "../../src/ports/agent-runner.js";
+import type { AgentRunner, RunOptions } from "../../src/ports/agent-runner.js";
 import type { Channel } from "../../src/ports/channel.js";
 
 function fakeChannel(approve: boolean): Channel & {
@@ -163,5 +164,66 @@ describe("Orchestrator", () => {
     // busy 已释放：后续消息不会被告知"正在处理"
     await orch2.handleMessage(msg);
     expect(channel2.sent.some((m) => m.text.includes("正在处理"))).toBe(false);
+  });
+
+  it("T5.2：任务后自动沉淀经验到 memory", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const memDir = mkdtempSync(join(tmpdir(), "donger-mem-test-"));
+    const memory = new MemoryStore(memDir);
+    const channel3 = fakeChannel(true);
+    const store3 = new InMemoryTaskStore();
+    const orch3 = new Orchestrator({
+      store: store3,
+      planner: new Planner(),
+      gates: new GateRouter(),
+      runner: new FakeAgentRunner({ intro: "done", result: "ok" }),
+      channel: channel3,
+      memory,
+      runOptsFor: async () => ({
+        cwd: ".",
+        skills: [],
+        llm: { model: "m", baseUrl: "u", authToken: "t" },
+      }),
+    });
+    await orch3.handleMessage({ ...msg, text: "修一个 CSV 导出 bug" });
+    const entries = memory.list();
+    expect(entries.length).toBe(1);
+    expect(entries[0]?.summary).toContain("CSV");
+  });
+
+  it("T5.3：任务前注入相关记忆到 systemPrompt", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const memDir = mkdtempSync(join(tmpdir(), "donger-mem-inj-"));
+    const memory = new MemoryStore(memDir);
+    memory.append({ summary: "CSV 导出用 stream API 更稳", detail: "避免一次性加载" });
+
+    let capturedPrompt: string | undefined;
+    const capturingRunner: AgentRunner = {
+      async *run(_task, opts) {
+        capturedPrompt = opts.systemPromptAppend;
+        yield { type: "result", taskId: _task.id, subtype: "success", result: "ok" };
+      },
+    };
+    const orch3 = new Orchestrator({
+      store: new InMemoryTaskStore(),
+      planner: new Planner(),
+      gates: new GateRouter(),
+      runner: capturingRunner,
+      channel: fakeChannel(true),
+      memory,
+      runOptsFor: async () => ({
+        cwd: ".",
+        skills: [],
+        llm: { model: "m", baseUrl: "u", authToken: "t" },
+        systemPromptAppend: "base prompt",
+      }),
+    });
+    await orch3.handleMessage({ ...msg, text: "CSV 导出" });
+    expect(capturedPrompt).toContain("相关记忆");
+    expect(capturedPrompt).toContain("CSV 导出用 stream");
   });
 });

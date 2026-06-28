@@ -8,6 +8,7 @@ import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { loadConfig } from "./config.js";
 import { Planner } from "./domain/planner.js";
+import { MemoryStore } from "./memory/memory-store.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { createWorktree } from "./util/git-worktree.js";
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
   store.migrate();
   const runner = new ClaudeAgentRunner(gates);
   const channel = cfg.dingtalk ? new DingTalkChannel(cfg.dingtalk) : new CliChannel();
+  const memory = new MemoryStore(cfg.memoryDir);
 
   const orch = new Orchestrator({
     store,
@@ -35,6 +37,7 @@ async function main(): Promise<void> {
     gates,
     runner,
     channel,
+    memory,
     runOptsFor: async (task, plan) => ({
       cwd: createWorktree(cfg.repoRoot, task.id),
       skills: cfg.superpowersPluginPath ? plan.skills : [],
