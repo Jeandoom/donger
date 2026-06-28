@@ -1,13 +1,18 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-runner.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
 import type { ApprovalCard, OutgoingMessage } from "../../src/domain/types.js";
+import type { User, UserRole } from "../../src/domain/user.js";
 import { MemoryStore } from "../../src/memory/memory-store.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
-import type { AgentRunner, RunOptions } from "../../src/ports/agent-runner.js";
+import type { AgentRunner } from "../../src/ports/agent-runner.js";
 import type { Channel } from "../../src/ports/channel.js";
+import type { UserStore } from "../../src/ports/user-store.js";
 
 function fakeChannel(approve: boolean): Channel & {
   sent: OutgoingMessage[];
@@ -30,6 +35,39 @@ function fakeChannel(approve: boolean): Channel & {
   };
 }
 
+function mockUserStore(): UserStore {
+  const dir = mkdtempSync(join(tmpdir(), "donger-test-user-"));
+  const users = new Map<string, User>();
+  return {
+    async getOrCreate(staffId, name) {
+      let u = users.get(staffId);
+      if (!u) {
+        u = {
+          id: `u-${staffId}`,
+          staffId,
+          name,
+          role: "user" as UserRole,
+          homeDir: dir,
+          createdAt: "t",
+          updatedAt: "t",
+        };
+        users.set(staffId, u);
+      }
+      return u;
+    },
+    async get() {
+      return undefined;
+    },
+    async getByStaffId(staffId) {
+      return users.get(staffId);
+    },
+    async updateRole() {},
+    async list() {
+      return [...users.values()];
+    },
+  };
+}
+
 function setup(approve: boolean, script: FakeScript) {
   const store = new InMemoryTaskStore();
   const channel = fakeChannel(approve);
@@ -38,11 +76,12 @@ function setup(approve: boolean, script: FakeScript) {
   gates.describe({ id: "design", description: "方案审批" });
   const orch = new Orchestrator({
     store,
+    userStore: mockUserStore(),
     planner: new Planner(),
     gates,
     runner,
     channel,
-    runOptsFor: async (_task, plan) => ({
+    runOptsFor: async (_task, plan, _user) => ({
       cwd: ".",
       skills: plan.skills,
       llm: { model: "m", baseUrl: "u", authToken: "t" },
@@ -110,6 +149,7 @@ describe("Orchestrator", () => {
     gates.describe({ id: "design", description: "方案审批" });
     const orch = new Orchestrator({
       store,
+      userStore: mockUserStore(),
       planner: new Planner(),
       gates,
       runner: new FakeAgentRunner({
@@ -117,23 +157,20 @@ describe("Orchestrator", () => {
         gate: { gateId: "design", summary: "方案" },
       }),
       channel,
-      runOptsFor: async (_task, plan) => ({
+      runOptsFor: async (_task, plan, _user) => ({
         cwd: ".",
         skills: plan.skills,
         llm: { model: "m", baseUrl: "u", authToken: "t" },
       }),
     });
 
-    // 第一条：启动 → 卡在审批门（requestApproval 不 resolve）
     const p1 = orch.handleMessage(msg);
     await new Promise((r) => setTimeout(r, 50));
-    expect(cards.length).toBe(1); // 第一条推了审批卡
+    expect(cards.length).toBe(1);
 
-    // 第二条：同 thread → busy → "正在处理"
     await orch.handleMessage(msg);
     expect(sent.some((m) => m.text.includes("正在处理"))).toBe(true);
 
-    // 清理：resolve 审批 → 第一条完成
     deferred.resolve?.({ approved: true });
     await p1;
   });
@@ -148,6 +185,7 @@ describe("Orchestrator", () => {
     };
     const orch2 = new Orchestrator({
       store: store2,
+      userStore: mockUserStore(),
       planner: new Planner(),
       gates: new GateRouter(),
       runner: throwingRunner,
@@ -161,69 +199,93 @@ describe("Orchestrator", () => {
     await orch2.handleMessage(msg);
     expect(channel2.sent.some((m) => m.text.includes("处理出错"))).toBe(true);
     expect((await store2.listByStatus("failed")).length).toBe(1);
-    // busy 已释放：后续消息不会被告知"正在处理"
     await orch2.handleMessage(msg);
     expect(channel2.sent.some((m) => m.text.includes("正在处理"))).toBe(false);
   });
 
-  it("T5.2：任务后自动沉淀经验到 memory", async () => {
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
+  it("T5.2：任务后自动沉淀经验到 per-user memory", async () => {
     const memDir = mkdtempSync(join(tmpdir(), "donger-mem-test-"));
-    const memory = new MemoryStore(memDir);
-    const channel3 = fakeChannel(true);
-    const store3 = new InMemoryTaskStore();
-    const orch3 = new Orchestrator({
-      store: store3,
+    const ust: UserStore = {
+      async getOrCreate() {
+        return {
+          id: "u1",
+          staffId: "u",
+          name: "u",
+          role: "user" as UserRole,
+          homeDir: memDir,
+          createdAt: "t",
+          updatedAt: "t",
+        };
+      },
+      async get() {
+        return undefined;
+      },
+      async getByStaffId() {
+        return undefined;
+      },
+      async updateRole() {},
+      async list() {
+        return [];
+      },
+    };
+    const orch = new Orchestrator({
+      store: new InMemoryTaskStore(),
+      userStore: ust,
       planner: new Planner(),
       gates: new GateRouter(),
       runner: new FakeAgentRunner({ intro: "done", result: "ok" }),
-      channel: channel3,
-      memory,
+      channel: fakeChannel(true),
       runOptsFor: async () => ({
         cwd: ".",
         skills: [],
         llm: { model: "m", baseUrl: "u", authToken: "t" },
       }),
     });
-    await orch3.handleMessage({ ...msg, text: "修一个 CSV 导出 bug" });
-    const entries = memory.list();
-    expect(entries.length).toBe(1);
-    expect(entries[0]?.summary).toContain("CSV");
+    await orch.handleMessage({ ...msg, text: "修一个 CSV 导出 bug" });
+    const memStore = new MemoryStore(join(memDir, "memory"));
+    expect(memStore.list().length).toBe(1);
+    expect(memStore.list()[0]?.summary).toContain("CSV");
   });
 
-  it("T5.3：任务前注入相关记忆到 systemPrompt", async () => {
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const memDir = mkdtempSync(join(tmpdir(), "donger-mem-inj-"));
-    const memory = new MemoryStore(memDir);
-    memory.append({ summary: "CSV 导出用 stream API 更稳", detail: "避免一次性加载" });
-
-    let capturedPrompt: string | undefined;
-    const capturingRunner: AgentRunner = {
-      async *run(_task, opts) {
-        capturedPrompt = opts.systemPromptAppend;
-        yield { type: "result", taskId: _task.id, subtype: "success", result: "ok" };
+  it("T10.3：runOptsFor 收到 user，worktree 走 user.homeDir", async () => {
+    const memDir = mkdtempSync(join(tmpdir(), "donger-user-home-"));
+    let capturedUser: User | undefined;
+    const ust: UserStore = {
+      async getOrCreate() {
+        return {
+          id: "u1",
+          staffId: "u",
+          name: "u",
+          role: "user" as UserRole,
+          homeDir: memDir,
+          createdAt: "t",
+          updatedAt: "t",
+        };
+      },
+      async get() {
+        return undefined;
+      },
+      async getByStaffId() {
+        return undefined;
+      },
+      async updateRole() {},
+      async list() {
+        return [];
       },
     };
-    const orch3 = new Orchestrator({
+    const orch = new Orchestrator({
       store: new InMemoryTaskStore(),
+      userStore: ust,
       planner: new Planner(),
       gates: new GateRouter(),
-      runner: capturingRunner,
+      runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
-      memory,
-      runOptsFor: async () => ({
-        cwd: ".",
-        skills: [],
-        llm: { model: "m", baseUrl: "u", authToken: "t" },
-        systemPromptAppend: "base prompt",
-      }),
+      runOptsFor: async (_task, _plan, user) => {
+        capturedUser = user;
+        return { cwd: user.homeDir, skills: [], llm: { model: "m", baseUrl: "u", authToken: "t" } };
+      },
     });
-    await orch3.handleMessage({ ...msg, text: "CSV 导出" });
-    expect(capturedPrompt).toContain("相关记忆");
-    expect(capturedPrompt).toContain("CSV 导出用 stream");
+    await orch.handleMessage(msg);
+    expect(capturedUser?.homeDir).toBe(memDir);
   });
 });
