@@ -55,6 +55,11 @@ describe("normalizeDingTalkMessage", () => {
   it("content 为空串时 text 为空", () => {
     expect(normalizeDingTalkMessage({ ...baseRobot, text: { content: "" } }).text).toBe("");
   });
+  it("@机器人 前缀被剥离（群聊防御；单聊 no-op）", () => {
+    expect(
+      normalizeDingTalkMessage({ ...baseRobot, text: { content: "@机器人 加个接口" } }).text,
+    ).toBe("加个接口");
+  });
 });
 
 describe("DingTalkChannel.send", () => {
