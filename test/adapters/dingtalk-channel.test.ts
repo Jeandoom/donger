@@ -4,14 +4,12 @@ import type { IncomingMessage } from "../../src/domain/types.js";
 
 vi.mock("../../src/util/dingtalk-api.js", () => ({
   getAccessToken: vi.fn(async () => "tok"),
-  buildSingleSendBody: vi.fn(
-    (robotCode: string, userId: string, msg: { markdown?: boolean }) => ({
-      robotCode,
-      userIds: [userId],
-      msgKey: msg?.markdown ? "SampleMarkdownMsg" : "SampleTextMessage",
-      msgParam: "{}",
-    }),
-  ),
+  buildSingleSendBody: vi.fn((robotCode: string, userId: string, msg: { markdown?: boolean }) => ({
+    robotCode,
+    userIds: [userId],
+    msgKey: msg?.markdown ? "SampleMarkdownMsg" : "SampleTextMessage",
+    msgParam: "{}",
+  })),
   sendSingleMessage: vi.fn(async () => undefined),
 }));
 

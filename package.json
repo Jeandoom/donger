@@ -12,8 +12,9 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "biome check src test",
-    "smoke": "tsx scripts/smoke.ts"
+    "lint": "biome check src test scripts",
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:e2e": "tsx scripts/smoke-e2e.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

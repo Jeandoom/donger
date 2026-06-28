@@ -16,7 +16,10 @@ export function normalizeDingTalkMessage(m: RobotTextMessage): IncomingMessage {
     channelId: "dingtalk",
     threadId: m.conversationId,
     requesterId: m.senderStaffId,
-    text: (m.text?.content ?? "").trim().replace(/^@\S+\s*/, "").trim(),
+    text: (m.text?.content ?? "")
+      .trim()
+      .replace(/^@\S+\s*/, "")
+      .trim(),
   };
 }
 
