@@ -5,6 +5,8 @@ import type { ApprovalDecision, ApprovalRequest, RunnerEvent, Task } from "../do
 export interface RunOptions {
   cwd: string;
   skills: string[];
+  /** 要加载的插件路径（runner 转成 SDK 的 [{type:"local",path}]） */
+  pluginPaths?: string[];
   llm: LLMConfig;
   systemPromptAppend?: string;
   abortSignal?: AbortSignal;

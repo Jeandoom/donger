@@ -19,6 +19,7 @@ describe("loadConfig", () => {
     expect(c.dbPath).toBe("./data/donger.db");
     expect(c.port).toBe(3000);
     expect(c.logLevel).toBe("info");
+    expect(c.superpowersPluginPath).toBeUndefined();
     expect(c.dingtalk).toBeUndefined();
   });
 
@@ -54,5 +55,13 @@ describe("loadConfig", () => {
 
   it("dingtalk 缺一不填", () => {
     expect(loadConfig({ ...base, DINGTALK_APP_KEY: "k" }).dingtalk).toBeUndefined();
+  });
+
+  it("SUPERPOWERS_PLUGIN_PATH 可选：设了才填", () => {
+    expect(loadConfig(base).superpowersPluginPath).toBeUndefined();
+    expect(
+      loadConfig({ ...base, SUPERPOWERS_PLUGIN_PATH: "/path/to/superpowers" })
+        .superpowersPluginPath,
+    ).toBe("/path/to/superpowers");
   });
 });

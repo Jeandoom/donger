@@ -13,6 +13,7 @@ const EnvSchema = z.object({
   DB_PATH: z.string().default("./data/donger.db"),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: LogLevelSchema.default("info"),
+  SUPERPOWERS_PLUGIN_PATH: z.string().optional(),
   DINGTALK_APP_KEY: z.string().optional(),
   DINGTALK_APP_SECRET: z.string().optional(),
   DINGTALK_ROBOT_CODE: z.string().optional(),
@@ -32,6 +33,8 @@ export interface AppConfig {
   dbPath: string;
   port: number;
   logLevel: LogLevel;
+  /** superpowers 插件根目录（含 .claude-plugin/plugin.json）；缺省则不加载 */
+  superpowersPluginPath?: string;
   dingtalk?: DingTalkConfig;
 }
 
@@ -52,6 +55,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     dbPath: e.DB_PATH,
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
+    superpowersPluginPath: e.SUPERPOWERS_PLUGIN_PATH,
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {
