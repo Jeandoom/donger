@@ -3,7 +3,7 @@ import type { OutgoingMessage } from "../domain/types.js";
 const GETTOKEN_URL = "https://oapi.dingtalk.com/gettoken";
 const SINGLE_SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
 const CARD_CREATE_DELIVER_URL = "https://api.dingtalk.com/v1.0/card/instances/createAndDeliver";
-const CARD_STREAMING_URL = "https://api.dingtalk.com/v1.0/card/streaming";
+const CARD_UPDATE_URL = "https://api.dingtalk.com/v1.0/card/instances";
 
 interface TokenCache {
   value: string;
@@ -138,7 +138,7 @@ export async function createAndDeliverCard(
 }
 
 /**
- * 流式更新 AI 卡片内容（streaming push）。
+ * 更新 AI 卡片内容（PUT /card/instances）。
  * agent 每输出一段文本 → 调一次此方法 → 卡片内容实时刷新。
  */
 export async function streamCardUpdate(
@@ -151,6 +151,7 @@ export async function streamCardUpdate(
 ): Promise<void> {
   const cardParamMap: Record<string, string> = {
     content: params.content,
+    config: JSON.stringify({ autoLayout: true }),
   };
 
   const body = {
@@ -158,8 +159,8 @@ export async function streamCardUpdate(
     cardData: { cardParamMap },
   };
 
-  const res = await fetch(CARD_STREAMING_URL, {
-    method: "POST",
+  const res = await fetch(CARD_UPDATE_URL, {
+    method: "PUT",
     headers: {
       "x-acs-dingtalk-access-token": token,
       "Content-Type": "application/json",
