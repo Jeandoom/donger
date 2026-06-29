@@ -33,6 +33,7 @@ export interface WebChannelDeps {
 
 export class WebChannel implements Channel {
   readonly id = "web";
+  readonly streaming = true;
   private handler?: (msg: IncomingMessage) => void;
   private server?: Server;
   private wss?: WebSocketServer;

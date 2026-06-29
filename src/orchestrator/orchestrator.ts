@@ -42,7 +42,10 @@ export class Orchestrator {
 
     let task: Task | undefined;
     try {
-      await channel.send(msg.threadId, { text: "👋 收到，处理中…" });
+      // 非 streaming 渠道才发"收到确认"（streaming 渠道直接流式回复）
+      if (!channel.streaming) {
+        await channel.send(msg.threadId, { text: "👋 收到，处理中…" });
+      }
 
       // 解析用户（首次自动创建 + homeDir 初始化）
       const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);

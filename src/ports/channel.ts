@@ -11,6 +11,8 @@ export interface ApprovalResult {
 /** IM / 控制台入口端口 */
 export interface Channel {
   readonly id: string;
+  /** 流式模式：跳过 ack 确认 + 跳过结果汇总（agent 文本直接展示） */
+  readonly streaming?: boolean;
   onMessage(handler: (msg: IncomingMessage) => void): void;
   send(threadId: string, msg: OutgoingMessage): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
