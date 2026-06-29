@@ -71,6 +71,7 @@ export const IncomingMessageSchema = z.object({
   threadId: z.string(),
   requesterId: z.string(),
   text: z.string(),
+  conversationId: z.string().optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

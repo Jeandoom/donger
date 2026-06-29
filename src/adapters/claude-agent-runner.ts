@@ -54,6 +54,7 @@ export class ClaudeAgentRunner implements AgentRunner {
               };
         },
         abortController: ac,
+        resume: opts.resume,
         env: {
           ...process.env,
           ANTHROPIC_BASE_URL: opts.llm.baseUrl,

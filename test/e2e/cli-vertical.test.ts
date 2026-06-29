@@ -59,9 +59,34 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
       return [];
     },
   };
+  const conversationStore: import("../../src/ports/conversation-store.js").ConversationStore = {
+    async create() {
+      return {
+        id: "conv-1",
+        userId: "u",
+        sdkSessionId: "",
+        title: "测试",
+        channelId: "cli",
+        createdAt: "t",
+        updatedAt: "t",
+        archived: false,
+      };
+    },
+    async get() {
+      return undefined;
+    },
+    async getLatest() {
+      return undefined;
+    },
+    async listByUser() {
+      return [];
+    },
+    async update() {},
+  };
   const orch = new Orchestrator({
     store,
     userStore,
+    conversationStore,
     planner: new Planner(),
     gates,
     runner,

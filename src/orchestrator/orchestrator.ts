@@ -1,38 +1,45 @@
+import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Plan, Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { IncomingMessage, Task } from "../domain/types.js";
+import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
 import type { Channel } from "../ports/channel.js";
+import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 
+export interface OrchestratorRunOpts {
+  resume?: string;
+}
+
 export interface OrchestratorDeps {
   store: TaskStore;
   userStore: UserStore;
+  conversationStore: ConversationStore;
   planner: Planner;
   gates: GateRouter;
   runner: AgentRunner;
   channel: Channel;
-  runOptsFor: (task: Task, plan: Plan, user: User) => Promise<RunOptions> | RunOptions;
+  runOptsFor: (
+    task: Task,
+    plan: Plan,
+    user: User,
+    opts: OrchestratorRunOpts,
+  ) => Promise<RunOptions> | RunOptions;
 }
 
-/**
- * 编排核心（per-user 隔离版）。
- * - 解析用户 → per-user memory + workspace
- * - busy lock、收到确认、通用对话、错误捕获、记忆飞轮
- */
 export class Orchestrator {
   private readonly busyThreads = new Set<string>();
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
   async handleMessage(msg: IncomingMessage): Promise<void> {
-    const { store, userStore, planner, gates, runner, channel } = this.deps;
+    const { store, userStore, conversationStore, planner, gates, runner, channel } = this.deps;
 
     if (this.busyThreads.has(msg.threadId)) {
       await channel.send(msg.threadId, { text: "⏳ 正在处理上一条消息，请稍候…" });
@@ -43,15 +50,42 @@ export class Orchestrator {
     let task: Task | undefined;
     let ackCtx: unknown;
     try {
-      // 确认收到：优先用 ack()（钉钉发 emoji），否则发文本确认，streaming 跳过
       if (channel.ack) {
         ackCtx = await channel.ack(msg.threadId);
       } else if (!channel.streaming) {
         await channel.send(msg.threadId, { text: "👋 收到，处理中…" });
       }
 
-      // 解析用户（首次自动创建 + homeDir 初始化）
       const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);
+
+      // "/new" 命令：创建新会话
+      if (msg.text.trim().toLowerCase() === "/new") {
+        await conversationStore.create(user.id, msg.channelId, "新对话");
+        await channel.send(msg.threadId, { text: "✨ 已开启新对话" });
+        if (channel.ackEnd && ackCtx !== undefined) {
+          await channel.ackEnd(ackCtx).catch(() => {});
+        }
+        return;
+      }
+
+      // 会话解析
+      let conversation: Conversation;
+      if (msg.conversationId) {
+        const found = await conversationStore.get(msg.conversationId);
+        if (found) {
+          conversation = found;
+        } else {
+          conversation = await conversationStore.create(
+            user.id,
+            msg.channelId,
+            msg.text.slice(0, 30),
+          );
+        }
+      } else {
+        const latest = await conversationStore.getLatest(user.id, msg.channelId);
+        conversation =
+          latest ?? (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30)));
+      }
 
       // per-user 记忆
       let memory: MemoryStore | undefined;
@@ -77,7 +111,9 @@ export class Orchestrator {
       await store.create(task);
 
       await store.updateStatus(task.id, nextStatus("created", "plan"));
-      const baseOpts = await this.deps.runOptsFor(task, plan, user);
+      const baseOpts = await this.deps.runOptsFor(task, plan, user, {
+        resume: conversation.sdkSessionId || undefined,
+      });
 
       // 记忆注入
       let systemPromptAppend = baseOpts.systemPromptAppend;
@@ -92,11 +128,18 @@ export class Orchestrator {
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));
       const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
-      const last = await bridgeEvents(
-        channel,
-        msg.threadId,
-        runner.run({ ...task, status: "running" }, opts, resolver),
-      );
+
+      // 包装 runner 事件：捕获 session_init 的 sessionId
+      let capturedSessionId: string | undefined;
+      const rawEvents = runner.run({ ...task, status: "running" }, opts, resolver);
+      const wrappedEvents = (async function* () {
+        for await (const e of rawEvents) {
+          if (e.type === "session_init") capturedSessionId = e.sessionId;
+          yield e;
+        }
+      })();
+
+      const last = await bridgeEvents(channel, msg.threadId, wrappedEvents);
 
       const ok = last?.type === "result" && last.subtype === "success";
       const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
@@ -106,7 +149,15 @@ export class Orchestrator {
         { error },
       );
 
-      // 记忆沉淀（per-user）
+      // 回写 sdkSessionId
+      if (capturedSessionId && capturedSessionId !== conversation.sdkSessionId) {
+        await conversationStore.update(conversation.id, {
+          sdkSessionId: capturedSessionId,
+          title: !conversation.sdkSessionId ? task.prompt.slice(0, 30) : conversation.title,
+        });
+      }
+
+      // 记忆沉淀
       if (memory) {
         const resultText =
           last?.type === "result" ? (last.result ?? last.error ?? "(无结果)") : "(无结果)";
@@ -116,7 +167,6 @@ export class Orchestrator {
         });
       }
 
-      // 撤销确认 emoji（任务完成后）
       if (channel.ackEnd && ackCtx !== undefined) {
         await channel.ackEnd(ackCtx).catch(() => {});
       }
@@ -127,13 +177,13 @@ export class Orchestrator {
         try {
           await this.deps.store.updateStatus(task.id, "failed", { error: errMsg });
         } catch {
-          // 标记 failed 也失败则忽略
+          // ignore
         }
       }
       try {
         await this.deps.channel.send(msg.threadId, { text: `❌ 处理出错：${errMsg}` });
       } catch {
-        // channel 也挂了则无能为力
+        // ignore
       }
     } finally {
       this.busyThreads.delete(msg.threadId);

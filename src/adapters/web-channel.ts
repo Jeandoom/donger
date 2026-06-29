@@ -11,13 +11,14 @@ import { type WebSocket, WebSocketServer } from "ws";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { Channel } from "../ports/channel.js";
+import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UserStore } from "../ports/user-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 type WsIn =
-  | { type: "message"; text: string; userId?: string }
+  | { type: "message"; text: string; userId?: string; conversationId?: string }
   | { type: "approval"; approved: boolean; reason?: string };
 
 type WsOut =
@@ -29,6 +30,7 @@ export interface WebChannelDeps {
   port: number;
   taskStore?: TaskStore;
   userStore?: UserStore;
+  conversationStore?: ConversationStore;
 }
 
 export class WebChannel implements Channel {
@@ -65,6 +67,7 @@ export class WebChannel implements Channel {
               threadId,
               requesterId: msg.userId ?? "web-user",
               text: msg.text,
+              conversationId: msg.conversationId,
             });
           } else if (msg.type === "approval") {
             const resolve = this.pendingApprovals.get(threadId);
@@ -170,6 +173,50 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // GET /api/conversations?userId=xxx — 会话列表
+    if (
+      url.startsWith("/api/conversations") &&
+      !url.includes("/") === false &&
+      req.method === "GET"
+    ) {
+      const userId = this.extractQuery(url, "userId");
+      if (userId) {
+        const list = (await this.deps.conversationStore?.listByUser(userId)) ?? [];
+        res.writeHead(200);
+        res.end(JSON.stringify(list));
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "userId required" }));
+      }
+      return;
+    }
+    if (url === "/api/conversations" && req.method === "GET") {
+      const userId = this.extractQuery(url, "userId");
+      const list = (await this.deps.conversationStore?.listByUser(userId ?? "")) ?? [];
+      res.writeHead(200);
+      res.end(JSON.stringify(list));
+      return;
+    }
+
+    // POST /api/conversations — 创建新会话
+    if (url === "/api/conversations" && req.method === "POST") {
+      const body = await this.readBody(req);
+      const { userId, channelId } = JSON.parse(body) as { userId: string; channelId?: string };
+      const conv = await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
+      res.writeHead(201);
+      res.end(JSON.stringify(conv));
+      return;
+    }
+
+    // DELETE /api/conversations/:id
+    const delConvMatch = url.match(/^\/api\/conversations\/([\w-]+)$/);
+    if (delConvMatch && req.method === "DELETE") {
+      await this.deps.conversationStore?.update(delConvMatch[1] ?? "", { archived: true });
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     // GET /api/health
     if (url === "/api/health") {
       res.writeHead(200);
@@ -184,6 +231,16 @@ export class WebChannel implements Channel {
   private extractQuery(url: string, key: string): string | undefined {
     const u = new URL(url, "http://localhost");
     return u.searchParams.get(key) ?? undefined;
+  }
+
+  private readBody(req: HttpRequest): Promise<string> {
+    return new Promise((resolve) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => {
+        body += chunk;
+      });
+      req.on("end", () => resolve(body));
+    });
   }
 
   async send(threadId: string, msg: OutgoingMessage): Promise<void> {

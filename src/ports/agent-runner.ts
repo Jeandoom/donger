@@ -10,6 +10,8 @@ export interface RunOptions {
   llm: LLMConfig;
   systemPromptAppend?: string;
   abortSignal?: AbortSignal;
+  /** Claude Agent SDK session ID，续接历史对话 */
+  resume?: string;
 }
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */
