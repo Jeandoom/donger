@@ -41,9 +41,12 @@ export class Orchestrator {
     this.busyThreads.add(msg.threadId);
 
     let task: Task | undefined;
+    let ackCtx: unknown;
     try {
-      // 非 streaming 渠道才发"收到确认"（streaming 渠道直接流式回复）
-      if (!channel.streaming) {
+      // 确认收到：优先用 ack()（钉钉发 emoji），否则发文本确认，streaming 跳过
+      if (channel.ack) {
+        ackCtx = await channel.ack(msg.threadId);
+      } else if (!channel.streaming) {
         await channel.send(msg.threadId, { text: "👋 收到，处理中…" });
       }
 
@@ -111,6 +114,11 @@ export class Orchestrator {
           summary: task.prompt.slice(0, 40),
           detail: `prompt: ${task.prompt}\n结果: ${ok ? "成功" : "失败"}\n${resultText}`,
         });
+      }
+
+      // 撤销确认 emoji（任务完成后）
+      if (channel.ackEnd && ackCtx !== undefined) {
+        await channel.ackEnd(ackCtx).catch(() => {});
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

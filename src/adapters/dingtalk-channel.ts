@@ -35,8 +35,11 @@ export class DingTalkChannel implements Channel {
   readonly id = "dingtalk";
   handler?: (msg: IncomingMessage) => void;
   private client?: DWClient;
-  /** threadId(conversationId) → recipient userId(senderStaffId) */
   readonly recipients = new Map<string, string>();
+  /** threadId → sessionWebhook（临时回复 webhook，免 token、即时） */
+  private readonly sessionWebhooks = new Map<string, string>();
+  /** threadId → ack 消息的 processQueryKey（用于撤销） */
+  private readonly ackKeys = new Map<string, string>();
   private readonly pendingApprovals = new Map<
     string,
     (d: { approved: boolean; reason?: string }) => void
@@ -55,6 +58,7 @@ export class DingTalkChannel implements Channel {
       try {
         const robot = JSON.parse(msg.data) as RobotTextMessage;
         this.recipients.set(robot.conversationId, robot.senderStaffId);
+        this.sessionWebhooks.set(robot.conversationId, robot.sessionWebhook);
         this.routeIncoming(normalizeDingTalkMessage(robot));
       } catch (e) {
         console.error("[dingtalk] 消息解析失败", e);
@@ -92,6 +96,72 @@ export class DingTalkChannel implements Channel {
     const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
     const body = buildSingleSendBody(this.cfg.robotCode, userId, msg);
     await sendSingleMessage(token, body);
+  }
+
+  /** 收到确认：用 sessionWebhook 即时发 emoji（🐍），同时用 singleSend 发一条可撤销的消息 */
+  async ack(threadId: string): Promise<unknown> {
+    // sessionWebhook：即时 emoji（免 token）
+    const webhook = this.sessionWebhooks.get(threadId);
+    if (webhook) {
+      try {
+        await fetch(webhook, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ msgtype: "text", text: { content: "🐍 处理中…" } }),
+        });
+      } catch {
+        // sessionWebhook 失败不影响主流程
+      }
+    }
+    // singleSend：发一条可撤销的消息（拿 processQueryKey）
+    try {
+      const userId = this.recipients.get(threadId);
+      if (userId) {
+        const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
+        const body = buildSingleSendBody(this.cfg.robotCode, userId, {
+          text: "🐍 处理中…",
+        });
+        const res = await fetch("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend", {
+          method: "POST",
+          headers: {
+            "x-acs-dingtalk-access-token": token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+        const data = (await res.json()) as { processQueryKey?: string };
+        if (data.processQueryKey) {
+          this.ackKeys.set(threadId, data.processQueryKey);
+        }
+      }
+    } catch {
+      // 撤销用消息发送失败也忽略
+    }
+    return threadId;
+  }
+
+  /** 撤销确认：recall ack 消息 */
+  async ackEnd(ackCtx: unknown): Promise<void> {
+    const threadId = ackCtx as string;
+    const processQueryKey = this.ackKeys.get(threadId);
+    if (!processQueryKey) return;
+    this.ackKeys.delete(threadId);
+    try {
+      const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
+      await fetch("https://api.dingtalk.com/v1.0/robot/oToMessages/batchRecall", {
+        method: "POST",
+        headers: {
+          "x-acs-dingtalk-access-token": token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          robotCode: this.cfg.robotCode,
+          processQueryKeys: [processQueryKey],
+        }),
+      });
+    } catch {
+      // 撤销失败忽略
+    }
   }
 
   requestApproval(

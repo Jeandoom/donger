@@ -16,4 +16,8 @@ export interface Channel {
   onMessage(handler: (msg: IncomingMessage) => void): void;
   send(threadId: string, msg: OutgoingMessage): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
+  /** 收到确认（可选）；返回 ack 上下文供 ackEnd 用 */
+  ack?(threadId: string): Promise<unknown>;
+  /** 撤销确认（可选，任务完成后调用） */
+  ackEnd?(ackCtx: unknown): Promise<void>;
 }
