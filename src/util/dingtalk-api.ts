@@ -2,6 +2,7 @@ import type { OutgoingMessage } from "../domain/types.js";
 
 const GETTOKEN_URL = "https://oapi.dingtalk.com/gettoken";
 const SINGLE_SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
+const CARD_INSTANCE_URL = "https://api.dingtalk.com/v1.0/card/instances";
 
 interface TokenCache {
   value: string;
@@ -73,5 +74,78 @@ export async function sendSingleMessage(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`钉钉 singleSend 失败 (${res.status}): ${text}`);
+  }
+}
+
+/** 创建 AI 卡片实例（首次发送）。返回 outTrackId（用于后续更新）。 */
+export async function createCardInstance(
+  token: string,
+  params: {
+    robotCode: string;
+    conversationId: string;
+    cardTemplateId: string;
+    content: string;
+    title?: string;
+  },
+): Promise<string> {
+  const outTrackId = `donger-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const res = await fetch(CARD_INSTANCE_URL, {
+    method: "POST",
+    headers: {
+      "x-acs-dingtalk-access-token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      outTrackId,
+      robotCode: params.robotCode,
+      conversationId: params.conversationId,
+      cardTemplateId: params.cardTemplateId,
+      callbackType: "STREAM",
+      cardData: {
+        cardParamMap: {
+          title: params.title ?? "donger",
+          content: params.content,
+          streaming: "true",
+        },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`钉钉 createCardInstance 失败 (${res.status}): ${text}`);
+  }
+  return outTrackId;
+}
+
+/** 更新 AI 卡片内容（流式更新）。 */
+export async function updateCardInstance(
+  token: string,
+  params: {
+    outTrackId: string;
+    content: string;
+    title?: string;
+    done?: boolean;
+  },
+): Promise<void> {
+  const res = await fetch(CARD_INSTANCE_URL, {
+    method: "PUT",
+    headers: {
+      "x-acs-dingtalk-access-token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      outTrackId: params.outTrackId,
+      cardData: {
+        cardParamMap: {
+          title: params.title ?? "donger",
+          content: params.content,
+          streaming: params.done ? "false" : "true",
+        },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`钉钉 updateCardInstance 失败 (${res.status}): ${text}`);
   }
 }

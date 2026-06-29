@@ -156,6 +156,13 @@ export class Orchestrator {
           detail: `prompt: ${task.prompt}\n结果: ${ok ? "成功" : "失败"}\n${resultText}`,
         });
       }
+
+      // 钉钉卡片：标记完成（streaming=false）
+      if ("finalizeCard" in channel && typeof channel.finalizeCard === "function") {
+        await (channel as { finalizeCard: (id: string) => Promise<void> })
+          .finalizeCard(msg.threadId)
+          .catch(() => {});
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error("[orchestrator] 处理失败:", errMsg);

@@ -1,13 +1,21 @@
 import { DWClient, type RobotTextMessage, TOPIC_ROBOT } from "dingtalk-stream";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import type { Channel } from "../ports/channel.js";
-import { buildSingleSendBody, getAccessToken, sendSingleMessage } from "../util/dingtalk-api.js";
+import {
+  buildSingleSendBody,
+  createCardInstance,
+  getAccessToken,
+  sendSingleMessage,
+  updateCardInstance,
+} from "../util/dingtalk-api.js";
 import { ChannelError } from "../util/errors.js";
 
 export interface DingTalkConfig {
   appKey: string;
   appSecret: string;
   robotCode: string;
+  /** AI 卡片模板 ID（钉钉开发者后台创建；有则用卡片，无则用文本 singleSend） */
+  cardTemplateId?: string;
 }
 
 /** 钉钉机器人消息 → IncomingMessage 归一（MVP 仅 text） */
@@ -36,6 +44,8 @@ export class DingTalkChannel implements Channel {
   handler?: (msg: IncomingMessage) => void;
   private client?: DWClient;
   readonly recipients = new Map<string, string>();
+  /** threadId → 累积文本 + 卡片 outTrackId（AI 卡片模式） */
+  private readonly cardState = new Map<string, { outTrackId?: string; text: string }>();
   private readonly pendingApprovals = new Map<
     string,
     (d: { approved: boolean; reason?: string }) => void
@@ -81,16 +91,81 @@ export class DingTalkChannel implements Channel {
   }
 
   async send(threadId: string, msg: OutgoingMessage): Promise<void> {
+    // AI 卡片模式：同 thread 累积文本，创建/更新同一张卡片
+    if (this.cfg.cardTemplateId) {
+      await this.sendViaCard(threadId, msg);
+      return;
+    }
+    // 降级：文本 singleSend（无 cardTemplateId 时）
     const userId = this.recipients.get(threadId);
     if (!userId) {
-      throw new ChannelError(
-        "NO_RECIPIENT",
-        `钉钉无 ${threadId} 的 recipient（需先收到该用户消息以绑定 userId）`,
-      );
+      throw new ChannelError("NO_RECIPIENT", `钉钉无 ${threadId} 的 recipient`);
     }
     const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
     const body = buildSingleSendBody(this.cfg.robotCode, userId, msg);
     await sendSingleMessage(token, body);
+  }
+
+  /** AI 卡片发送：首次创建卡片，后续更新同一张 */
+  private async sendViaCard(threadId: string, msg: OutgoingMessage): Promise<void> {
+    const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
+    let state = this.cardState.get(threadId);
+    if (!state) {
+      state = { text: "" };
+      this.cardState.set(threadId, state);
+    }
+    // 累积文本
+    state.text = state.text ? `${state.text}\n\n${msg.text}` : msg.text;
+
+    if (!state.outTrackId) {
+      // 首次：创建卡片
+      try {
+        state.outTrackId = await createCardInstance(token, {
+          robotCode: this.cfg.robotCode,
+          conversationId: threadId,
+          cardTemplateId: this.cfg.cardTemplateId!,
+          content: state.text,
+          title: msg.text.slice(0, 30),
+        });
+      } catch (e) {
+        // 卡片创建失败 → 降级到文本
+        console.error("[dingtalk] createCardInstance 失败，降级到 singleSend", e);
+        this.cardState.delete(threadId);
+        const userId = this.recipients.get(threadId);
+        if (userId) {
+          const body = buildSingleSendBody(this.cfg.robotCode, userId, msg);
+          await sendSingleMessage(token, body);
+        }
+      }
+    } else {
+      // 后续：更新卡片
+      try {
+        await updateCardInstance(token, {
+          outTrackId: state.outTrackId,
+          content: state.text,
+          title: state.text.slice(0, 30),
+        });
+      } catch (e) {
+        console.error("[dingtalk] updateCardInstance 失败", e);
+      }
+    }
+  }
+
+  /** 标记 thread 的卡片为完成（streaming=false）；供 Orchestrator 任务结束时调用 */
+  async finalizeCard(threadId: string): Promise<void> {
+    const state = this.cardState.get(threadId);
+    if (!state?.outTrackId) return;
+    this.cardState.delete(threadId);
+    try {
+      const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
+      await updateCardInstance(token, {
+        outTrackId: state.outTrackId,
+        content: state.text,
+        done: true,
+      });
+    } catch {
+      // 忽略
+    }
   }
 
   requestApproval(
