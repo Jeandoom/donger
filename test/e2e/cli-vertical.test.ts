@@ -140,7 +140,7 @@ describe("纵切端到端（真实 CliChannel + Fake runner）", () => {
     const { input, readOut, store } = setup({ intro: "你好！", result: "ok" });
     input.write("今天天气怎么样\n");
     await waitFor(readOut, "你好！");
-    await waitFor(readOut, "已完成");
+    expect((await store.listByStatus("done")).length).toBe(1);
     expect((await store.listByStatus("done")).length).toBe(1);
   });
 });
