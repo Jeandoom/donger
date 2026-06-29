@@ -140,7 +140,7 @@ export class WebChannel implements Channel {
     // GET /api/tasks/:id — 任务详情
     const taskMatch = url.match(/^\/api\/tasks\/([\w-]+)$/);
     if (taskMatch && req.method === "GET") {
-      const task = await this.deps.taskStore?.get(taskMatch[1]);
+      const task = await this.deps.taskStore?.get(taskMatch[1] ?? "");
       res.writeHead(task ? 200 : 404);
       res.end(JSON.stringify(task ?? { error: "not found" }));
       return;
