@@ -157,7 +157,7 @@ export class WebChannel implements Channel {
     // GET /api/users/:id/memory — 用户记忆
     const memMatch = url.match(/^\/api\/users\/([\w-]+)\/memory$/);
     if (memMatch && req.method === "GET") {
-      const user = await this.deps.userStore?.get(memMatch[1]);
+      const user = await this.deps.userStore?.get(memMatch[1] ?? "");
       if (!user) {
         res.writeHead(404);
         res.end(JSON.stringify({ error: "user not found" }));
