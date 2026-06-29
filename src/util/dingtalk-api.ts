@@ -2,7 +2,8 @@ import type { OutgoingMessage } from "../domain/types.js";
 
 const GETTOKEN_URL = "https://oapi.dingtalk.com/gettoken";
 const SINGLE_SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
-const CARD_INSTANCE_URL = "https://api.dingtalk.com/v1.0/card/instances";
+const CARD_CREATE_DELIVER_URL = "https://api.dingtalk.com/v1.0/card/instances/createAndDeliver";
+const CARD_STREAMING_URL = "https://api.dingtalk.com/v1.0/card/streaming";
 
 interface TokenCache {
   value: string;
@@ -33,7 +34,7 @@ export function resetDingTalkTokenCache(): void {
   tokenCache = null;
 }
 
-/** singleSend 请求体（纯函数）。text→SampleTextMessage；markdown→SampleMarkdownMsg。 */
+/** singleSend 请求体（纯函数）。 */
 export function buildSingleSendBody(
   robotCode: string,
   userId: string,
@@ -58,7 +59,7 @@ export function buildSingleSendBody(
   };
 }
 
-/** 调用 singleSend 发送单聊消息。 */
+/** 调用 singleSend 发送单聊消息（降级用）。 */
 export async function sendSingleMessage(
   token: string,
   body: { robotCode: string; userIds: string[]; msgKey: string; msgParam: string },
@@ -77,75 +78,96 @@ export async function sendSingleMessage(
   }
 }
 
-/** 创建 AI 卡片实例（首次发送）。返回 outTrackId（用于后续更新）。 */
-export async function createCardInstance(
+/**
+ * 创建并投递 AI 卡片（createAndDeliver）。
+ * 参考：钉钉官方 @alicloud/dingtalk/card_1_0 createAndDeliverWithOptions
+ * 返回 outTrackId（用于后续流式更新）。
+ */
+export async function createAndDeliverCard(
   token: string,
   params: {
+    userId: string;
     robotCode: string;
-    conversationId: string;
     cardTemplateId: string;
     content: string;
     title?: string;
   },
 ): Promise<string> {
   const outTrackId = `donger-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const res = await fetch(CARD_INSTANCE_URL, {
+  const summary = params.title ?? params.content.slice(0, 30);
+
+  // cardParamMap 所有值必须是 string
+  const cardParamMap: Record<string, string> = {
+    content: params.content,
+    title: summary,
+    lastMessage: summary,
+    config: JSON.stringify({ autoLayout: true }),
+  };
+
+  const body = {
+    outTrackId,
+    userId: params.userId,
+    userIdType: 1, // staffId
+    cardTemplateId: params.cardTemplateId,
+    callbackType: "STREAM",
+    cardData: { cardParamMap },
+    openSpaceId: `dtv1.card//im_robot.${params.userId}`,
+    imRobotOpenDeliverModel: {
+      spaceType: "IM_ROBOT",
+      robotCode: params.robotCode,
+    },
+    imRobotOpenSpaceModel: {
+      supportForward: true,
+      lastMessageI18n: { ZH_CN: summary },
+    },
+  };
+
+  const res = await fetch(CARD_CREATE_DELIVER_URL, {
     method: "POST",
     headers: {
       "x-acs-dingtalk-access-token": token,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      outTrackId,
-      robotCode: params.robotCode,
-      conversationId: params.conversationId,
-      cardTemplateId: params.cardTemplateId,
-      callbackType: "STREAM",
-      cardData: {
-        cardParamMap: {
-          title: params.title ?? "donger",
-          content: params.content,
-          streaming: "true",
-        },
-      },
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`钉钉 createCardInstance 失败 (${res.status}): ${text}`);
+    throw new Error(`钉钉 createAndDeliverCard 失败 (${res.status}): ${text}`);
   }
   return outTrackId;
 }
 
-/** 更新 AI 卡片内容（流式更新）。 */
-export async function updateCardInstance(
+/**
+ * 流式更新 AI 卡片内容（streaming push）。
+ * agent 每输出一段文本 → 调一次此方法 → 卡片内容实时刷新。
+ */
+export async function streamCardUpdate(
   token: string,
   params: {
     outTrackId: string;
     content: string;
-    title?: string;
-    done?: boolean;
+    isFinal?: boolean;
   },
 ): Promise<void> {
-  const res = await fetch(CARD_INSTANCE_URL, {
-    method: "PUT",
+  const cardParamMap: Record<string, string> = {
+    content: params.content,
+  };
+
+  const body = {
+    outTrackId: params.outTrackId,
+    cardData: { cardParamMap },
+  };
+
+  const res = await fetch(CARD_STREAMING_URL, {
+    method: "POST",
     headers: {
       "x-acs-dingtalk-access-token": token,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      outTrackId: params.outTrackId,
-      cardData: {
-        cardParamMap: {
-          title: params.title ?? "donger",
-          content: params.content,
-          streaming: params.done ? "false" : "true",
-        },
-      },
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`钉钉 updateCardInstance 失败 (${res.status}): ${text}`);
+    throw new Error(`钉钉 streamCardUpdate 失败 (${res.status}): ${text}`);
   }
 }
