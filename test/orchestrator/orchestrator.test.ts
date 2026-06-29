@@ -128,7 +128,7 @@ function setup(approve: boolean, script: FakeScript) {
 const msg = { channelId: "test", threadId: "th", requesterId: "u", text: "加个导出 CSV 接口" };
 
 describe("Orchestrator", () => {
-  it("收到即确认 → 全链 → done", async () => {
+  it("代码任务全链 → done", async () => {
     const { orch, store, channel } = setup(true, {
       intro: "正在设计",
       gate: { gateId: "design", summary: "方案A" },
@@ -136,7 +136,7 @@ describe("Orchestrator", () => {
       result: "ok",
     });
     await orch.handleMessage(msg);
-    expect(channel.sent.some((m) => m.text.includes("收到"))).toBe(true);
+    expect(channel.sent.some((m) => m.text.includes("正在设计"))).toBe(true);
     expect((await store.listByStatus("done")).length).toBe(1);
   });
 

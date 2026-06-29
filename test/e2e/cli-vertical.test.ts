@@ -117,8 +117,7 @@ describe("纵切端到端（真实 CliChannel + Fake runner）", () => {
     expect(readOut()).toContain("正在设计");
 
     input.write("y\n");
-    await waitFor(readOut, "✅ 完成");
-    expect(readOut()).toContain("已完成");
+    await waitFor(readOut, "已完成");
 
     expect((await store.listByStatus("done")).length).toBe(1);
   });
@@ -140,8 +139,8 @@ describe("纵切端到端（真实 CliChannel + Fake runner）", () => {
   it("非编码消息也走 agent（通用对话）", async () => {
     const { input, readOut, store } = setup({ intro: "你好！", result: "ok" });
     input.write("今天天气怎么样\n");
-    await waitFor(readOut, "收到");
-    await waitFor(readOut, "✅ 完成");
+    await waitFor(readOut, "你好！");
+    await waitFor(readOut, "已完成");
     expect((await store.listByStatus("done")).length).toBe(1);
   });
 });

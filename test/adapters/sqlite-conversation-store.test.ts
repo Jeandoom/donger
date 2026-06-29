@@ -22,6 +22,7 @@ describe("SqliteConversationStore", () => {
 
   it("listByUser（排除归档，最新在前）", async () => {
     await store.create("u1", "web", "第一条");
+    await new Promise((r) => setTimeout(r, 10));
     const c2 = await store.create("u1", "web", "第二条");
     const list = await store.listByUser("u1");
     expect(list.length).toBe(2);

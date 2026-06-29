@@ -27,14 +27,14 @@ describe("bridgeEvents", () => {
     expect(ch.sent.map((m) => m.text)).toEqual(["hi"]);
   });
 
-  it("result success → ✅ 完成", async () => {
+  it("result success → 不发消息（agent 文本已是回复）", async () => {
     const ch = fakeChannel();
     await bridgeEvents(
       ch,
       "th",
       of([{ type: "result", taskId: "t", subtype: "success", result: "ok" }]),
     );
-    expect(ch.sent[0]?.text).toBe("✅ 完成：ok");
+    expect(ch.sent).toEqual([]);
   });
 
   it("result error → ❌ 失败", async () => {
@@ -71,6 +71,6 @@ describe("bridgeEvents", () => {
         { type: "result", taskId: "t", subtype: "success", result: "done" },
       ]),
     );
-    expect(ch.sent.map((m) => m.text)).toEqual(["a", "b", "✅ 完成：done"]);
+    expect(ch.sent.map((m) => m.text)).toEqual(["a", "b"]);
   });
 });
