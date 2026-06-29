@@ -41,7 +41,9 @@ async function main(): Promise<void> {
 
   const gates = createDefaultGates();
   const runner = new ClaudeAgentRunner(gates);
-  const channel = cfg.dingtalk ? new DingTalkChannel(cfg.dingtalk) : new WebChannel(cfg.port);
+  const channel = cfg.dingtalk
+    ? new DingTalkChannel(cfg.dingtalk)
+    : new WebChannel({ port: cfg.port, taskStore: store, userStore });
 
   const orch = new Orchestrator({
     store,

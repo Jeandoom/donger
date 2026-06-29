@@ -1,14 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
+import { MemoryStore } from "../memory/memory-store.js";
 import type { Channel } from "../ports/channel.js";
+import type { TaskStore } from "../ports/task-store.js";
+import type { UserStore } from "../ports/user-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** WebSocket 消息（浏览器 ↔ 服务端） */
 type WsIn =
   | { type: "message"; text: string; userId?: string }
   | { type: "approval"; approved: boolean; reason?: string };
@@ -18,43 +20,30 @@ type WsOut =
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | { type: "result"; subtype: "success" | "error"; text: string };
 
-/**
- * Web Channel：浏览器对话客户端。
- * HTTP 静态文件 + WebSocket 双向通信。
- * 每个 WebSocket 连接 = 一个 thread；消息→handler，回复→ws.send。
- * 审批：推 approval_card → 等浏览器回 approval。
- */
+export interface WebChannelDeps {
+  port: number;
+  taskStore?: TaskStore;
+  userStore?: UserStore;
+}
+
 export class WebChannel implements Channel {
   readonly id = "web";
   private handler?: (msg: IncomingMessage) => void;
   private server?: Server;
   private wss?: WebSocketServer;
-  /** threadId(=连接id) → WebSocket */
   private readonly sockets = new Map<string, WebSocket>();
-  /** threadId → pending 审批 resolve */
   private readonly pendingApprovals = new Map<
     string,
     (d: { approved: boolean; reason?: string }) => void
   >();
   private nextId = 0;
 
-  constructor(private readonly port: number = 3000) {}
+  constructor(private readonly deps: WebChannelDeps) {}
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.handler = handler;
 
-    const server = createServer((req, res) => {
-      if (req.url === "/" || req.url === "/index.html") {
-        const htmlPath = join(__dirname, "..", "..", "web", "index.html");
-        if (existsSync(htmlPath)) {
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(readFileSync(htmlPath, "utf8"));
-          return;
-        }
-      }
-      res.writeHead(404);
-      res.end("Not found");
-    });
+    const server = createServer((req, res) => this.handleHttp(req, res));
 
     const wss = new WebSocketServer({ server, path: "/ws" });
     wss.on("connection", (ws) => {
@@ -91,7 +80,104 @@ export class WebChannel implements Channel {
 
     this.server = server;
     this.wss = wss;
-    server.listen(this.port);
+    server.listen(this.deps.port);
+  }
+
+  /** HTTP 路由：静态文件 + REST API */
+  private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = req.url ?? "/";
+
+    // 静态文件
+    if (url === "/" || url === "/index.html") {
+      const htmlPath = join(__dirname, "..", "..", "web", "index.html");
+      if (existsSync(htmlPath)) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(readFileSync(htmlPath, "utf8"));
+        return;
+      }
+    }
+
+    // REST API
+    if (url.startsWith("/api/")) {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      try {
+        await this.handleApi(url, req, res);
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+      }
+      return;
+    }
+
+    res.writeHead(404);
+    res.end("Not found");
+  }
+
+  private async handleApi(url: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // GET /api/tasks — 任务列表
+    if (url === "/api/tasks" && req.method === "GET") {
+      const status = this.extractQuery(url, "status");
+      const tasks = status
+        ? ((await this.deps.taskStore?.listByStatus(status as never)) ?? [])
+        : ((await this.deps.taskStore
+            ?.listByStatus("done" as never)
+            .then(async (d) => [
+              ...d,
+              ...((await this.deps.taskStore?.listByStatus("failed" as never)) ?? []),
+              ...((await this.deps.taskStore?.listByStatus("running" as never)) ?? []),
+              ...((await this.deps.taskStore?.listByStatus("created" as never)) ?? []),
+            ])) ?? []);
+      res.writeHead(200);
+      res.end(JSON.stringify(tasks));
+      return;
+    }
+
+    // GET /api/tasks/:id — 任务详情
+    const taskMatch = url.match(/^\/api\/tasks\/([\w-]+)$/);
+    if (taskMatch && req.method === "GET") {
+      const task = await this.deps.taskStore?.get(taskMatch[1]);
+      res.writeHead(task ? 200 : 404);
+      res.end(JSON.stringify(task ?? { error: "not found" }));
+      return;
+    }
+
+    // GET /api/users — 用户列表
+    if (url === "/api/users" && req.method === "GET") {
+      const users = (await this.deps.userStore?.list()) ?? [];
+      res.writeHead(200);
+      res.end(JSON.stringify(users));
+      return;
+    }
+
+    // GET /api/users/:id/memory — 用户记忆
+    const memMatch = url.match(/^\/api\/users\/([\w-]+)\/memory$/);
+    if (memMatch && req.method === "GET") {
+      const user = await this.deps.userStore?.get(memMatch[1]);
+      if (!user) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "user not found" }));
+        return;
+      }
+      const mem = new MemoryStore(join(user.homeDir, "memory"));
+      res.writeHead(200);
+      res.end(JSON.stringify(mem.list()));
+      return;
+    }
+
+    // GET /api/health
+    if (url === "/api/health") {
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true, channel: "web" }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: "unknown endpoint" }));
+  }
+
+  private extractQuery(url: string, key: string): string | undefined {
+    const u = new URL(url, "http://localhost");
+    return u.searchParams.get(key) ?? undefined;
   }
 
   async send(threadId: string, msg: OutgoingMessage): Promise<void> {
@@ -108,13 +194,14 @@ export class WebChannel implements Channel {
     const ws = this.sockets.get(threadId);
     if (!ws) throw new Error("WebSocket 连接已断开");
 
-    const out: WsOut = {
-      type: "approval_card",
-      gateId: card.gateId,
-      title: card.title,
-      summary: card.summary,
-    };
-    ws.send(JSON.stringify(out));
+    ws.send(
+      JSON.stringify({
+        type: "approval_card",
+        gateId: card.gateId,
+        title: card.title,
+        summary: card.summary,
+      }),
+    );
 
     return new Promise((resolve) => {
       this.pendingApprovals.set(threadId, resolve);
