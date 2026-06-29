@@ -48,23 +48,13 @@ export class Orchestrator {
     this.busyThreads.add(msg.threadId);
 
     let task: Task | undefined;
-    let ackCtx: unknown;
     try {
-      if (channel.ack) {
-        ackCtx = await channel.ack(msg.threadId);
-      } else if (!channel.streaming) {
-        await channel.send(msg.threadId, { text: "👋 收到，处理中…" });
-      }
-
       const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);
 
       // "/new" 命令：创建新会话
       if (msg.text.trim().toLowerCase() === "/new") {
         await conversationStore.create(user.id, msg.channelId, "新对话");
         await channel.send(msg.threadId, { text: "✨ 已开启新对话" });
-        if (channel.ackEnd && ackCtx !== undefined) {
-          await channel.ackEnd(ackCtx).catch(() => {});
-        }
         return;
       }
 
@@ -165,10 +155,6 @@ export class Orchestrator {
           summary: task.prompt.slice(0, 40),
           detail: `prompt: ${task.prompt}\n结果: ${ok ? "成功" : "失败"}\n${resultText}`,
         });
-      }
-
-      if (channel.ackEnd && ackCtx !== undefined) {
-        await channel.ackEnd(ackCtx).catch(() => {});
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
