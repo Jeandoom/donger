@@ -1,5 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage as HttpRequest,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -84,7 +89,7 @@ export class WebChannel implements Channel {
   }
 
   /** HTTP 路由：静态文件 + REST API */
-  private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleHttp(req: HttpRequest, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
     // 静态文件
@@ -113,7 +118,7 @@ export class WebChannel implements Channel {
     res.end("Not found");
   }
 
-  private async handleApi(url: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // GET /api/tasks — 任务列表
     if (url === "/api/tasks" && req.method === "GET") {
       const status = this.extractQuery(url, "status");
