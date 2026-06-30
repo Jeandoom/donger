@@ -21,8 +21,10 @@ export class InMemoryUsageStore implements UsageStore {
     let rows = [...this.byId.values()];
     if (q.userId) rows = rows.filter((r) => r.userId === q.userId);
     if (q.taskId) rows = rows.filter((r) => r.taskId === q.taskId);
-    if (q.since) rows = rows.filter((r) => r.recordedAt >= q.since);
-    if (q.until) rows = rows.filter((r) => r.recordedAt <= q.until);
+    const since = q.since;
+    if (since) rows = rows.filter((r) => r.recordedAt >= since);
+    const until = q.until;
+    if (until) rows = rows.filter((r) => r.recordedAt <= until);
     rows.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
     const limit = Math.min(q.limit ?? 100, 1000);
     return rows.slice(0, limit);
