@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { GateRouter } from "../domain/gate-router.js";
-import type { RunnerEvent, Task } from "../domain/types.js";
+import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 
 /**
@@ -81,14 +81,33 @@ export class ClaudeAgentRunner implements AgentRunner {
           }
         }
       } else if (m.type === "result") {
+        const raw = (
+          m as {
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_creation_input_tokens?: number;
+              cache_read_input_tokens?: number;
+            };
+          }
+        ).usage;
+        const usage: TokenUsage | undefined = raw
+          ? {
+              inputTokens: raw.input_tokens ?? 0,
+              outputTokens: raw.output_tokens ?? 0,
+              cacheCreationInputTokens: raw.cache_creation_input_tokens ?? 0,
+              cacheReadInputTokens: raw.cache_read_input_tokens ?? 0,
+            }
+          : undefined;
         yield m.subtype === "success"
           ? {
               type: "result",
               taskId: task.id,
               subtype: "success",
               result: typeof m.result === "string" ? m.result : undefined,
+              usage,
             }
-          : { type: "result", taskId: task.id, subtype: "error", error: "agent 执行出错" };
+          : { type: "result", taskId: task.id, subtype: "error", error: "agent 执行出错", usage };
       }
     }
   }

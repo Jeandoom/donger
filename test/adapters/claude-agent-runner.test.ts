@@ -105,4 +105,40 @@ describe("ClaudeAgentRunner", () => {
     expect(r?.behavior).toBe("deny");
     expect(seen).toEqual(["deploy"]);
   });
+
+  it("result 携带 usage（snake_case → camelCase）", async () => {
+    mockStream([
+      {
+        type: "result",
+        subtype: "success",
+        result: "done",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 8,
+          cache_read_input_tokens: 3,
+        },
+      },
+    ]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const last = events[events.length - 1];
+    expect(last?.type).toBe("result");
+    if (last?.type === "result") {
+      expect(last.usage).toEqual({
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationInputTokens: 8,
+        cacheReadInputTokens: 3,
+      });
+    }
+  });
+
+  it("result 无 usage → usage undefined（不爆）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "done" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const last = events[events.length - 1];
+    if (last?.type === "result") expect(last.usage).toBeUndefined();
+  });
 });
