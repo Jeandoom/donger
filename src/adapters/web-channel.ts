@@ -13,6 +13,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -60,6 +61,7 @@ export interface WebChannelDeps {
   taskStore?: TaskStore;
   userStore?: UserStore;
   conversationStore?: ConversationStore;
+  usageStore?: UsageStore;
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -70,6 +72,7 @@ export class WebChannel implements Channel {
   private handler?: (msg: IncomingMessage) => void;
   private server?: Server;
   private wss?: WebSocketServer;
+  private readyPromise?: Promise<void>;
   private readonly sockets = new Map<string, WebSocket>();
   private readonly pendingApprovals = new Map<
     string,
@@ -123,7 +126,9 @@ export class WebChannel implements Channel {
 
     this.server = server;
     this.wss = wss;
-    server.listen(this.deps.port);
+    this.readyPromise = new Promise<void>((resolve) => {
+      server.listen(this.deps.port, () => resolve());
+    });
   }
 
   /** HTTP 路由：静态文件 + REST API */
@@ -249,6 +254,30 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // GET /api/usage — 用量记录列表（可按 userId/taskId/since/until/limit 过滤）
+    if ((url === "/api/usage" || url.startsWith("/api/usage?")) && req.method === "GET") {
+      const userId = this.extractQuery(url, "userId");
+      const taskId = this.extractQuery(url, "taskId");
+      const since = this.extractQuery(url, "since");
+      const until = this.extractQuery(url, "until");
+      const limitStr = this.extractQuery(url, "limit");
+      let limit: number | undefined;
+      if (limitStr !== undefined) {
+        const n = Number(limitStr);
+        if (!Number.isInteger(n) || n <= 0) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "limit must be a positive integer" }));
+          return;
+        }
+        limit = n;
+      }
+      const records =
+        (await this.deps.usageStore?.list({ userId, taskId, since, until, limit })) ?? [];
+      res.writeHead(200);
+      res.end(JSON.stringify({ records }));
+      return;
+    }
+
     // GET /api/health
     if (url === "/api/health") {
       res.writeHead(200);
@@ -301,6 +330,16 @@ export class WebChannel implements Channel {
     return new Promise((resolve) => {
       this.pendingApprovals.set(threadId, resolve);
     });
+  }
+
+  /** 等 HTTP 服务监听就绪（测试用：port=0 时 await 后再读 boundPort）。 */
+  async ready(): Promise<void> {
+    await this.readyPromise;
+  }
+
+  get boundPort(): number | undefined {
+    const addr = this.server?.address();
+    return typeof addr === "object" && addr ? addr.port : undefined;
   }
 
   stop(): void {

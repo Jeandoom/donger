@@ -86,6 +86,7 @@ async function main(): Promise<void> {
     taskStore: store,
     userStore,
     conversationStore,
+    usageStore,
   });
   const webOrch = createOrch(webChannel);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
