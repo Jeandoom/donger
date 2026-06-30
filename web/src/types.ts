@@ -1,0 +1,33 @@
+// 本地复制 WS 消息类型（与 src/adapters/web-channel.ts 的 WsIn/WsOut 保持一致）。
+// 不 import 后端源码，避免拖入 node 依赖。
+
+export type WsIn =
+  | { type: "message"; text: string; userId?: string; conversationId?: string }
+  | { type: "approval"; approved: boolean; reason?: string };
+
+export type WsOut =
+  | { type: "text"; text: string }
+  | { type: "approval_card"; gateId: string; title: string; summary: string }
+  | { type: "result"; subtype: "success" | "error"; text: string };
+
+export type ChatRole = "user" | "bot";
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  text: string;
+}
+
+export interface PendingApproval {
+  gateId: string;
+  title: string;
+  summary: string;
+}
+
+export type ConnectionState = "connecting" | "open" | "closed";
+
+export interface ChatState {
+  messages: ChatMessage[];
+  pendingApproval: PendingApproval | null;
+  connection: ConnectionState;
+}

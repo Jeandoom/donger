@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "lint": "biome check src test scripts",
     "smoke": "tsx scripts/smoke.ts",
-    "smoke:e2e": "tsx scripts/smoke-e2e.ts"
+    "smoke:e2e": "tsx scripts/smoke-e2e.ts",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

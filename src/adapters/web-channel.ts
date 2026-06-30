@@ -17,6 +17,35 @@ import type { UserStore } from "../ports/user-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+export type StaticTarget = { kind: "file"; absPath: string } | null;
+
+/**
+ * 决定静态文件如何托管（纯函数，便于单测）。
+ * 仅当 web/dist 存在时托管：/ 与未知路径 → dist/index.html（SPA fallback）；
+ * /assets/ 下真实文件直返，缺失 → null；无 dist → null。
+ */
+export function resolveStaticFile(webRoot: string, urlPath: string): StaticTarget {
+  const distRoot = join(webRoot, "dist");
+  if (!existsSync(distRoot)) return null;
+
+  if (urlPath === "/" || urlPath === "/index.html") {
+    return { kind: "file", absPath: join(distRoot, "index.html") };
+  }
+  if (urlPath.startsWith("/assets/")) {
+    const candidate = join(distRoot, urlPath);
+    return existsSync(candidate) ? { kind: "file", absPath: candidate } : null;
+  }
+  return { kind: "file", absPath: join(distRoot, "index.html") };
+}
+
+function contentType(absPath: string): string {
+  if (absPath.endsWith(".html")) return "text/html; charset=utf-8";
+  if (absPath.endsWith(".js")) return "application/javascript; charset=utf-8";
+  if (absPath.endsWith(".css")) return "text/css; charset=utf-8";
+  if (absPath.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
+}
+
 type WsIn =
   | { type: "message"; text: string; userId?: string; conversationId?: string }
   | { type: "approval"; approved: boolean; reason?: string };
@@ -31,6 +60,8 @@ export interface WebChannelDeps {
   taskStore?: TaskStore;
   userStore?: UserStore;
   conversationStore?: ConversationStore;
+  /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
+  webRoot?: string;
 }
 
 export class WebChannel implements Channel {
@@ -45,8 +76,11 @@ export class WebChannel implements Channel {
     (d: { approved: boolean; reason?: string }) => void
   >();
   private nextId = 0;
+  private readonly webRoot: string;
 
-  constructor(private readonly deps: WebChannelDeps) {}
+  constructor(private readonly deps: WebChannelDeps) {
+    this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
+  }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.handler = handler;
@@ -96,17 +130,7 @@ export class WebChannel implements Channel {
   private async handleHttp(req: HttpRequest, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
-    // 静态文件
-    if (url === "/" || url === "/index.html") {
-      const htmlPath = join(__dirname, "..", "..", "web", "index.html");
-      if (existsSync(htmlPath)) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(readFileSync(htmlPath, "utf8"));
-        return;
-      }
-    }
-
-    // REST API
+    // REST API 优先（避免被 SPA fallback 吞掉）
     if (url.startsWith("/api/")) {
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       try {
@@ -115,6 +139,14 @@ export class WebChannel implements Channel {
         res.writeHead(500);
         res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+      return;
+    }
+
+    // 静态托管：优先 web/dist（SPA fallback）
+    const target = resolveStaticFile(this.webRoot, url);
+    if (target?.kind === "file" && existsSync(target.absPath)) {
+      res.writeHead(200, { "Content-Type": contentType(target.absPath) });
+      res.end(readFileSync(target.absPath));
       return;
     }
 

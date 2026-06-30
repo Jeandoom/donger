@@ -1,105 +1,12 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>donger</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, "Segoe UI", sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; }
-    #header { background: #1a1a2e; color: #fff; padding: 12px 20px; font-size: 18px; font-weight: 600; }
-    #chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-    .msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-    .msg.user { align-self: flex-end; background: #4a6cf7; color: #fff; }
-    .msg.bot { align-self: flex-start; background: #fff; color: #333; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
-    .msg.system { align-self: center; background: transparent; color: #999; font-size: 12px; }
-    .approval { align-self: flex-start; background: #fff3cd; border: 1px solid #ffc107; border-radius: 12px; padding: 14px; max-width: 80%; }
-    .approval h4 { margin-bottom: 8px; color: #856404; }
-    .approval p { margin-bottom: 10px; color: #666; font-size: 13px; }
-    .approval-btns { display: flex; gap: 8px; }
-    .approval-btns button { padding: 6px 18px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
-    .btn-approve { background: #28a745; color: #fff; }
-    .btn-deny { background: #dc3545; color: #fff; }
-    .btn-approve:hover { opacity: .9; } .btn-deny:hover { opacity: .9; }
-    #input-bar { padding: 12px 20px; background: #fff; border-top: 1px solid #e0e0e0; display: flex; gap: 8px; }
-    #msg-input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
-    #msg-input:focus { border-color: #4a6cf7; }
-    #send-btn { padding: 10px 24px; background: #4a6cf7; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
-    #send-btn:hover { opacity: .9; }
-    #send-btn:disabled { opacity: .5; cursor: not-allowed; }
-    #status { font-size: 12px; color: #999; padding: 4px 20px; background: #fff; }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-    .dot.on { background: #28a745; } .dot.off { background: #dc3545; }
-  </style>
-</head>
-<body>
-  <div id="header">🤖 donger</div>
-  <div id="status"><span class="dot off" id="conn-dot"></span><span id="conn-text">未连接</span></div>
-  <div id="chat"></div>
-  <div id="input-bar">
-    <input id="msg-input" type="text" placeholder="输入消息…" autocomplete="off" />
-    <button id="send-btn">发送</button>
-  </div>
-
-  <script>
-    const chat = document.getElementById("chat");
-    const input = document.getElementById("msg-input");
-    const sendBtn = document.getElementById("send-btn");
-    const connDot = document.getElementById("conn-dot");
-    const connText = document.getElementById("conn-text");
-
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    let pendingApprovalEl = null;
-
-    ws.onopen = () => { connDot.className = "dot on"; connText.textContent = "已连接"; };
-    ws.onclose = () => { connDot.className = "dot off"; connText.textContent = "已断开"; sendBtn.disabled = true; };
-    ws.onerror = () => { connText.textContent = "连接错误"; };
-
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.type === "text") {
-        addMsg("bot", msg.text);
-      } else if (msg.type === "approval_card") {
-        showApproval(msg);
-      } else if (msg.type === "result") {
-        addMsg(msg.subtype === "success" ? "bot" : "bot", msg.text);
-      }
-    };
-
-    function addMsg(role, text) {
-      const el = document.createElement("div");
-      el.className = `msg ${role}`;
-      el.textContent = text;
-      chat.appendChild(el);
-      chat.scrollTop = chat.scrollHeight;
-    }
-
-    function showApproval(card) {
-      const el = document.createElement("div");
-      el.className = "approval";
-      el.innerHTML = `<h4>🔔 ${card.title}</h4><p>${card.summary}</p>`;
-      const btns = document.createElement("div");
-      btns.className = "approval-btns";
-      const ok = document.createElement("button"); ok.className = "btn-approve"; ok.textContent = "通过";
-      const no = document.createElement("button"); no.className = "btn-deny"; no.textContent = "驳回";
-      ok.onclick = () => { ws.send(JSON.stringify({ type: "approval", approved: true })); el.remove(); };
-      no.onclick = () => { ws.send(JSON.stringify({ type: "approval", approved: false, reason: "Web 驳回" })); el.remove(); };
-      btns.appendChild(ok); btns.appendChild(no);
-      el.appendChild(btns);
-      chat.appendChild(el);
-      chat.scrollTop = chat.scrollHeight;
-    }
-
-    function send() {
-      const text = input.value.trim();
-      if (!text) return;
-      addMsg("user", text);
-      ws.send(JSON.stringify({ type: "message", text }));
-      input.value = "";
-    }
-
-    sendBtn.onclick = send;
-    input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
-  </script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>donger</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
