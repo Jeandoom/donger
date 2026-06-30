@@ -73,4 +73,30 @@ describe("RunnerEvent 判别联合", () => {
       expect(err.error).toBe("boom");
     }
   });
+
+  it("result 可携带 usage（模型无关，四项）", () => {
+    const e: RunnerEvent = {
+      type: "result",
+      taskId: "t",
+      subtype: "success",
+      result: "done",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 2,
+        cacheReadInputTokens: 1,
+      },
+    };
+    if (e.type === "result" && e.usage) {
+      expect(e.usage.inputTokens).toBe(10);
+      expect(e.usage.cacheReadInputTokens).toBe(1);
+    }
+  });
+
+  it("result 的 usage 可缺省", () => {
+    const e: RunnerEvent = { type: "result", taskId: "t", subtype: "success", result: "done" };
+    if (e.type === "result") {
+      expect(e.usage).toBeUndefined();
+    }
+  });
 });

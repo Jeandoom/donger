@@ -46,6 +46,14 @@ export interface Gate {
   description: string;
 }
 
+// === Token 用量（模型无关；四项之和 = total，由 store 计算后存入 UsageRecord）===
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
 // === Runner 事件（AgentRunner 产出的判别联合）===
 export type RunnerEvent =
   | { type: "session_init"; taskId: string; sessionId: string }
@@ -63,6 +71,7 @@ export type RunnerEvent =
       subtype: "success" | "error";
       result?: string;
       error?: string;
+      usage?: TokenUsage;
     };
 
 // === 消息（Channel 入/出）===
