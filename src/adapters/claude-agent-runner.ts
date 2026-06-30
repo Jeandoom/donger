@@ -28,7 +28,6 @@ export class ClaudeAgentRunner implements AgentRunner {
           append: opts.systemPromptAppend ?? "",
         },
         permissionMode: "default",
-        includePartialMessages: true,
         canUseTool: async (toolName, input, ctx) => {
           const gated = this.gates.match(toolName, input);
           if (!gated) {
@@ -65,27 +64,8 @@ export class ClaudeAgentRunner implements AgentRunner {
     });
 
     for await (const m of stream) {
-      // DEBUG: 打印每条消息的类型和内容概要
-      const preview = JSON.stringify(m).slice(0, 150);
-      console.log("[runner] msg type:", m.type, "| preview:", preview);
-
       if (m.type === "system" && "subtype" in m && m.subtype === "init") {
         yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
-      } else if (m.type === "stream_event") {
-        // 部分流式消息：提取增量文本
-        const delta = (
-          m as {
-            type: "stream_event";
-            message?: { content?: Array<{ type: string; text?: string }> };
-          }
-        ).message;
-        if (delta?.content) {
-          for (const block of delta.content) {
-            if (block.type === "text" && block.text) {
-              yield { type: "text", taskId: task.id, text: block.text };
-            }
-          }
-        }
       } else if (m.type === "assistant") {
         for (const block of m.message.content) {
           if (block.type === "text") {

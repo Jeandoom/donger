@@ -160,7 +160,12 @@ export async function streamCardUpdate(
     cardData: { cardParamMap },
   };
 
-  console.log("[dingtalk-card] PUT /card/instances, outTrackId:", params.outTrackId, "contentLen:", params.content.length);
+  console.log(
+    "[dingtalk-card] PUT /card/instances, outTrackId:",
+    params.outTrackId,
+    "contentLen:",
+    params.content.length,
+  );
   const res = await fetch(CARD_UPDATE_URL, {
     method: "PUT",
     headers: {
