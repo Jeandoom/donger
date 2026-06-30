@@ -17,7 +17,7 @@ describe("loadConfig", () => {
     expect(c.repoRoot).toBe("./repos");
     expect(c.memoryDir).toBe("./data/memory");
     expect(c.dbPath).toBe("./data/donger.db");
-    expect(c.port).toBe(3000);
+    expect(c.port).toBe(3300);
     expect(c.logLevel).toBe("info");
     expect(c.superpowersPluginPath).toBeUndefined();
     expect(c.dingtalk).toBeUndefined();
