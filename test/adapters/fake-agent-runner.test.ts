@@ -75,4 +75,35 @@ describe("FakeAgentRunner", () => {
     await collect(runner.run(task, opts, resolver));
     expect(received).toEqual({ gateId: "deploy", summary: "部署到 prod" });
   });
+
+  it("script.usage 附在 success result 上", async () => {
+    const runner = new FakeAgentRunner({
+      result: "ok",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheCreationInputTokens: 3,
+        cacheReadInputTokens: 4,
+      },
+    });
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const last = events[events.length - 1];
+    if (last?.type === "result") {
+      expect(last.usage?.inputTokens).toBe(1);
+      expect(last.usage?.outputTokens).toBe(2);
+    }
+  });
+
+  it("denied 的 error result 也带 usage", async () => {
+    const runner = new FakeAgentRunner({
+      gate: { gateId: "g", summary: "x" },
+      usage: { inputTokens: 9, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+    });
+    const events = await collect(runner.run(task, opts, async () => ({ approved: false })));
+    const last = events[events.length - 1];
+    if (last?.type === "result") {
+      expect(last.subtype).toBe("error");
+      expect(last.usage?.inputTokens).toBe(9);
+    }
+  });
 });

@@ -1,4 +1,4 @@
-import type { RunnerEvent, Task } from "../domain/types.js";
+import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 
 export interface FakeGate {
@@ -17,6 +17,8 @@ export interface FakeScript {
   outro?: string;
   /** 成功结果文案 */
   result?: string;
+  /** 附在 result 事件上的 token 用量（success / denied-error 都带） */
+  usage?: TokenUsage;
 }
 
 /**
@@ -51,6 +53,7 @@ export class FakeAgentRunner implements AgentRunner {
           taskId: task.id,
           subtype: "error",
           error: decision.reason ?? "审批未通过",
+          usage: this.script.usage,
         };
         return;
       }
@@ -64,6 +67,7 @@ export class FakeAgentRunner implements AgentRunner {
       taskId: task.id,
       subtype: "success",
       result: this.script.result ?? "done",
+      usage: this.script.usage,
     };
   }
 }
