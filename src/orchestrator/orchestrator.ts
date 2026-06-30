@@ -9,6 +9,7 @@ import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
@@ -21,6 +22,7 @@ export interface OrchestratorDeps {
   store: TaskStore;
   userStore: UserStore;
   conversationStore: ConversationStore;
+  usageStore: UsageStore;
   planner: Planner;
   gates: GateRouter;
   runner: AgentRunner;
@@ -143,6 +145,25 @@ export class Orchestrator {
         ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
         { error },
       );
+
+      // 用量统计：result 带 usage 就落一条（错误运行也落，subtype 无关）；失败仅日志
+      if (last?.type === "result" && last.usage) {
+        const u = last.usage;
+        try {
+          await this.deps.usageStore.record({
+            taskId: task.id,
+            userId: user.id,
+            channelId: msg.channelId,
+            model: opts.llm.model,
+            inputTokens: u.inputTokens,
+            outputTokens: u.outputTokens,
+            cacheCreationInputTokens: u.cacheCreationInputTokens,
+            cacheReadInputTokens: u.cacheReadInputTokens,
+          });
+        } catch (e) {
+          console.error("[orchestrator] 用量记录失败", e);
+        }
+      }
 
       // 回写 sdkSessionId
       if (capturedSessionId && capturedSessionId !== conversation.sdkSessionId) {

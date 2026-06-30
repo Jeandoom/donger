@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-runner.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
+import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
@@ -99,6 +100,7 @@ function mockConversationStore(): ConversationStore {
 
 function setup(approve: boolean, script: FakeScript) {
   const store = new InMemoryTaskStore();
+  const usageStore = new InMemoryUsageStore();
   const channel = fakeChannel(approve);
   const runner = new FakeAgentRunner(script);
   const gates = new GateRouter();
@@ -107,6 +109,7 @@ function setup(approve: boolean, script: FakeScript) {
     store,
     userStore: mockUserStore(),
     conversationStore: mockConversationStore(),
+    usageStore,
     planner: new Planner(),
     gates,
     runner,
@@ -122,7 +125,7 @@ function setup(approve: boolean, script: FakeScript) {
       llm: { model: "m", baseUrl: "u", authToken: "t" },
     }),
   });
-  return { orch, store, channel };
+  return { orch, store, channel, usageStore };
 }
 
 const msg = { channelId: "test", threadId: "th", requesterId: "u", text: "加个导出 CSV 接口" };
@@ -169,6 +172,7 @@ describe("Orchestrator", () => {
       conversationStore: mockConversationStore(),
       planner: new Planner(),
       gates: new GateRouter(),
+      usageStore: new InMemoryUsageStore(),
       runner: throwingRunner,
       channel: channel2,
       runOptsFor: async () => ({
@@ -214,6 +218,7 @@ describe("Orchestrator", () => {
       conversationStore: cst,
       planner: new Planner(),
       gates: new GateRouter(),
+      usageStore: new InMemoryUsageStore(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
       runOptsFor: async () => ({
@@ -269,6 +274,7 @@ describe("Orchestrator", () => {
       gates: new GateRouter(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
+      usageStore: new InMemoryUsageStore(),
       runOptsFor: async (_t, _p, _u, opts) => {
         capturedResume = opts.resume;
         return { cwd: ".", skills: [], llm: { model: "m", baseUrl: "u", authToken: "t" } };
@@ -276,5 +282,42 @@ describe("Orchestrator", () => {
     });
     await orch.handleMessage(msg);
     expect(capturedResume).toBe("sdk-existing");
+  });
+
+  it("result 带 usage → 落用量记录（字段正确，含 model）", async () => {
+    const { orch, usageStore } = setup(true, {
+      result: "ok",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 2,
+        cacheReadInputTokens: 1,
+      },
+    });
+    await orch.handleMessage(msg);
+    const records = await usageStore.list();
+    expect(records.length).toBe(1);
+    expect(records[0]?.totalTokens).toBe(18);
+    expect(records[0]?.model).toBe("m");
+  });
+
+  it("result 不带 usage → 不落记录", async () => {
+    const { orch, usageStore } = setup(true, { result: "ok" });
+    await orch.handleMessage(msg);
+    expect((await usageStore.list()).length).toBe(0);
+  });
+
+  it("error result 带 usage 也落记录（subtype 无关）", async () => {
+    const { orch, usageStore } = setup(false, {
+      gate: { gateId: "design", summary: "方案" },
+      usage: {
+        inputTokens: 7,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+    });
+    await orch.handleMessage(msg);
+    expect((await usageStore.list()).length).toBe(1);
   });
 });

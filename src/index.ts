@@ -7,6 +7,7 @@ import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
+import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
@@ -41,12 +42,15 @@ async function main(): Promise<void> {
   userStore.migrate();
   const conversationStore = new SqliteConversationStore(db);
   conversationStore.migrate();
+  const usageStore = new SqliteUsageStore(db);
+  usageStore.migrate();
 
   function createOrch(channel: Channel): Orchestrator {
     return new Orchestrator({
       store,
       userStore,
       conversationStore,
+      usageStore,
       planner: new Planner(),
       gates: createDefaultGates(),
       runner: new ClaudeAgentRunner(createDefaultGates()),
