@@ -65,6 +65,10 @@ export class ClaudeAgentRunner implements AgentRunner {
     });
 
     for await (const m of stream) {
+      // DEBUG: 打印每条消息的类型和内容概要
+      const preview = JSON.stringify(m).slice(0, 150);
+      console.log("[runner] msg type:", m.type, "| preview:", preview);
+
       if (m.type === "system" && "subtype" in m && m.subtype === "init") {
         yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
       } else if (m.type === "stream_event") {
