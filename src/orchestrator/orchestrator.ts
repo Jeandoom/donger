@@ -2,7 +2,7 @@ import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Plan, Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
+import type { IncomingMessage, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
