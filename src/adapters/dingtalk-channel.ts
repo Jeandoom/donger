@@ -117,6 +117,7 @@ export class DingTalkChannel implements Channel {
 
     if (!state.outTrackId) {
       // 首次：createAndDeliver（创建+投递）
+      console.log("[dingtalk-card] 首次创建卡片，content:", state.text.slice(0, 50));
       try {
         state.outTrackId = await createAndDeliverCard(token, {
           userId,
@@ -125,20 +126,22 @@ export class DingTalkChannel implements Channel {
           content: state.text,
           title: msg.text.slice(0, 30),
         });
+        console.log("[dingtalk-card] 创建成功，outTrackId:", state.outTrackId);
       } catch (e) {
-        console.error("[dingtalk] createAndDeliverCard 失败，降级到 singleSend", e);
+        console.error("[dingtalk-card] createAndDeliverCard 失败:", e);
         this.cardState.delete(threadId);
         await sendSingleMessage(token, buildSingleSendBody(this.cfg.robotCode, userId, msg));
       }
     } else {
       // 后续：流式更新
+      console.log("[dingtalk-card] 更新卡片，text len:", state.text.length);
       try {
         await streamCardUpdate(token, {
           outTrackId: state.outTrackId,
           content: state.text,
         });
       } catch (e) {
-        console.error("[dingtalk] streamCardUpdate 失败", e);
+        console.error("[dingtalk-card] streamCardUpdate 失败:", e);
       }
     }
   }

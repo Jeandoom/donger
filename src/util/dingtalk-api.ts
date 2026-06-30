@@ -130,16 +130,17 @@ export async function createAndDeliverCard(
     },
     body: JSON.stringify(body),
   });
+  const resText = await res.text();
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`钉钉 createAndDeliverCard 失败 (${res.status}): ${text}`);
+    throw new Error(`钉钉 createAndDeliverCard 失败 (${res.status}): ${resText}`);
   }
+  console.log("[dingtalk-card] createAndDeliver 响应:", resText.slice(0, 200));
   return outTrackId;
 }
 
 /**
- * 更新 AI 卡片内容（PUT /card/instances）。
- * agent 每输出一段文本 → 调一次此方法 → 卡片内容实时刷新。
+ * 更新 AI 卡片内容。
+ * 尝试 PUT /card/instances；同时打印详细日志便于排查。
  */
 export async function streamCardUpdate(
   token: string,
@@ -159,6 +160,7 @@ export async function streamCardUpdate(
     cardData: { cardParamMap },
   };
 
+  console.log("[dingtalk-card] PUT /card/instances, outTrackId:", params.outTrackId, "contentLen:", params.content.length);
   const res = await fetch(CARD_UPDATE_URL, {
     method: "PUT",
     headers: {
@@ -167,8 +169,9 @@ export async function streamCardUpdate(
     },
     body: JSON.stringify(body),
   });
+  const resText = await res.text();
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`钉钉 streamCardUpdate 失败 (${res.status}): ${text}`);
+    throw new Error(`钉钉 streamCardUpdate 失败 (${res.status}): ${resText}`);
   }
+  console.log("[dingtalk-card] 更新成功:", resText.slice(0, 100));
 }
