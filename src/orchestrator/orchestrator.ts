@@ -49,6 +49,11 @@ export class Orchestrator {
 
     let task: Task | undefined;
     try {
+      // 非流式渠道：收到即回复处理中标记
+      if (!channel.streaming) {
+        await channel.send(msg.threadId, { text: "[蛇来运转]" });
+      }
+
       const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);
 
       // "/new" 命令：创建新会话
@@ -145,6 +150,11 @@ export class Orchestrator {
           sdkSessionId: capturedSessionId,
           title: !conversation.sdkSessionId ? task.prompt.slice(0, 30) : conversation.title,
         });
+      }
+
+      // 非流式渠道：成功后回复完成标记
+      if (!channel.streaming && ok) {
+        await channel.send(msg.threadId, { text: "✅" });
       }
 
       // 记忆沉淀
