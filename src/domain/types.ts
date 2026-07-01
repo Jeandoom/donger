@@ -66,6 +66,13 @@ export type RunnerEvent =
       toolUseId: string;
     }
   | {
+      type: "tool_result";
+      taskId: string;
+      toolUseId: string;
+      content: string;
+      isError: boolean;
+    }
+  | {
       type: "result";
       taskId: string;
       subtype: "success" | "error";
@@ -73,6 +80,29 @@ export type RunnerEvent =
       error?: string;
       usage?: TokenUsage;
     };
+
+// === 审计事件（持久化后的 RunnerEvent + 上下文；按 conversationId+taskId+seq 关联）===
+export interface AuditEvent {
+  id: string;
+  conversationId: string;
+  taskId: string;
+  userId: string;
+  seq: number;
+  type: "user_message" | "session_init" | "text" | "tool_use" | "tool_result" | "result";
+  text?: string;
+  toolName?: string;
+  toolInput?: string;
+  toolUseId?: string;
+  toolOutput?: string;
+  isError?: boolean;
+  resultSubtype?: "success" | "error";
+  usage?: TokenUsage;
+  /** 仅 result 带；为后续按 LLM 结算备料 */
+  model?: string;
+  /** tool_result=该工具耗时；result=该轮总耗时 */
+  durationMs?: number;
+  recordedAt: string;
+}
 
 // === 消息（Channel 入/出）===
 export const IncomingMessageSchema = z.object({

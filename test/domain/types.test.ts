@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunnerEvent } from "../../src/domain/types.js";
+import type { AuditEvent, RunnerEvent } from "../../src/domain/types.js";
 import { IncomingMessageSchema, TaskSchema } from "../../src/domain/types.js";
 
 const validTask = {
@@ -98,5 +98,60 @@ describe("RunnerEvent 判别联合", () => {
     if (e.type === "result") {
       expect(e.usage).toBeUndefined();
     }
+  });
+
+  it("tool_result 变体：toolUseId + content + isError", () => {
+    const e: RunnerEvent = {
+      type: "tool_result",
+      taskId: "t",
+      toolUseId: "tu1",
+      content: "done",
+      isError: false,
+    };
+    if (e.type === "tool_result") {
+      expect(e.toolUseId).toBe("tu1");
+      expect(e.isError).toBe(false);
+    }
+  });
+});
+
+describe("AuditEvent", () => {
+  it("result 事件携带 model + usage + durationMs", () => {
+    const e: AuditEvent = {
+      id: "a1",
+      conversationId: "c1",
+      taskId: "t1",
+      userId: "u1",
+      seq: 3,
+      type: "result",
+      resultSubtype: "success",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheCreationInputTokens: 3,
+        cacheReadInputTokens: 4,
+      },
+      model: "glm-5.1",
+      durationMs: 1200,
+      recordedAt: "2026-07-01T00:00:00.000Z",
+    };
+    expect(e.model).toBe("glm-5.1");
+    expect(e.durationMs).toBe(1200);
+  });
+
+  it("tool_use 事件带 toolInput/toolUseId", () => {
+    const e: AuditEvent = {
+      id: "a2",
+      conversationId: "c1",
+      taskId: "t1",
+      userId: "u1",
+      seq: 1,
+      type: "tool_use",
+      toolName: "Bash",
+      toolInput: '{"command":"ls"}',
+      toolUseId: "tu1",
+      recordedAt: "t",
+    };
+    expect(e.toolName).toBe("Bash");
   });
 });
