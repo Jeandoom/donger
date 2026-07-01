@@ -3,6 +3,8 @@ import "dotenv/config";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import type { AppConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
@@ -10,15 +12,38 @@ import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
-import { loadConfig } from "./config.js";
 import { Planner } from "./domain/planner.js";
 import type { User } from "./domain/user.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator, type OrchestratorRunOpts } from "./orchestrator/orchestrator.js";
 import type { RunOptions } from "./ports/agent-runner.js";
 import type { Channel } from "./ports/channel.js";
-import { createWorktree } from "./util/git-worktree.js";
+import { ensureRuntimeDir } from "./util/workspace.js";
 import { createLogger } from "./util/logger.js";
+
+export interface BuildRunOptionsArgs {
+  cfg: AppConfig;
+  user: User;
+  task: { id: string };
+  convId: string;
+}
+
+/** 构造 RunOptions：cwd 绑会话运行时目录（懒创建），写入边界 = 用户工作区，pluginPaths 含用户 .skills。 */
+export function buildRunOptions(args: BuildRunOptionsArgs): RunOptions {
+  const { cfg, user, convId } = args;
+  // 会话运行时（当前无 entity，走 sessions/<convId>；M13 起按最外层实体分流）
+  const cwd = ensureRuntimeDir(user.homeDir, "sessions", "plain", convId);
+  const pluginPaths: string[] = [join(user.homeDir, ".skills")];
+  if (cfg.superpowersPluginPath) pluginPaths.push(cfg.superpowersPluginPath);
+  return {
+    cwd,
+    skills: cfg.superpowersPluginPath ? [] : [],
+    pluginPaths,
+    llm: cfg.llm,
+    systemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+    workspaceRoot: user.homeDir,
+  };
+}
 
 async function main(): Promise<void> {
   const cfg = loadConfig(process.env);
@@ -33,7 +58,7 @@ async function main(): Promise<void> {
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
   store.migrate();
-  const usersDir = join(dbDir, "users");
+  const usersDir = join(cfg.workspaceDir, "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {
     adminStaffIds: new Set(cfg.adminStaffIds),
@@ -56,25 +81,22 @@ async function main(): Promise<void> {
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,
       runOptsFor: async (
-        task,
+        _task,
         plan,
         user: User,
         opts: OrchestratorRunOpts,
       ): Promise<RunOptions> => {
-        const repoDir = join(user.homeDir, "repos");
-        let cwd: string;
-        try {
-          cwd = createWorktree(repoDir, task.id);
-        } catch {
-          cwd = user.homeDir;
-        }
+        const cwd = ensureRuntimeDir(user.homeDir, "sessions", "plain", opts.conversationId);
+        const pluginPaths: string[] = [join(user.homeDir, ".skills")];
+        if (cfg.superpowersPluginPath) pluginPaths.push(cfg.superpowersPluginPath);
         return {
           cwd,
           skills: cfg.superpowersPluginPath ? plan.skills : [],
-          pluginPaths: cfg.superpowersPluginPath ? [cfg.superpowersPluginPath] : [],
+          pluginPaths,
           llm: cfg.llm,
           systemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
           resume: opts.resume,
+          workspaceRoot: user.homeDir,
         };
       },
     });

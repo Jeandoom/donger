@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Plan, Planner } from "../domain/planner.js";
@@ -16,6 +17,8 @@ import { bridgeEvents } from "./event-bridge.js";
 
 export interface OrchestratorRunOpts {
   resume?: string;
+  /** 当前会话 ID，用于运行时目录路径 */
+  conversationId: string;
 }
 
 export interface OrchestratorDeps {
@@ -87,7 +90,7 @@ export class Orchestrator {
       // per-user 记忆
       let memory: MemoryStore | undefined;
       try {
-        memory = new MemoryStore(`${user.homeDir}/memory`);
+        memory = new MemoryStore(join(user.homeDir, "knowledge_base", "user"));
       } catch {
         memory = undefined;
       }
@@ -110,6 +113,7 @@ export class Orchestrator {
       await store.updateStatus(task.id, nextStatus("created", "plan"));
       const baseOpts = await this.deps.runOptsFor(task, plan, user, {
         resume: conversation.sdkSessionId || undefined,
+        conversationId: conversation.id,
       });
 
       // 记忆注入
