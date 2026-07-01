@@ -1,3 +1,4 @@
+import { isAbsolute, resolve, sep } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
@@ -29,6 +30,25 @@ export class ClaudeAgentRunner implements AgentRunner {
         },
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
+          // 写入边界：Edit/Write/NotebookEdit 的路径必须落在 workspaceRoot 内
+          if (opts.workspaceRoot && (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit")) {
+            const rawPath = typeof input.file_path === "string"
+              ? input.file_path
+              : typeof input.notebook_path === "string"
+                ? input.notebook_path
+                : null;
+            if (rawPath) {
+              const abs = isAbsolute(rawPath) ? rawPath : resolve(opts.cwd, rawPath);
+              const root = resolve(opts.workspaceRoot);
+              if (!abs.startsWith(root + sep) && abs !== root) {
+                return {
+                  behavior: "deny" as const,
+                  message: `写入越界：${rawPath} 不在工作区 ${root} 内`,
+                  toolUseID: ctx.toolUseID,
+                };
+              }
+            }
+          }
           const gated = this.gates.match(toolName, input);
           if (!gated) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };

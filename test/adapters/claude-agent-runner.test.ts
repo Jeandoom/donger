@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
@@ -140,5 +143,31 @@ describe("ClaudeAgentRunner", () => {
     const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
     const last = events[events.length - 1];
     if (last?.type === "result") expect(last.usage).toBeUndefined();
+  });
+
+  it("canUseTool：写入越界 workspaceRoot → deny", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "wsroot-"));
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(runner.run(task, { ...opts, workspaceRoot: ws }, async () => ({ approved: true })));
+    const r = await captured?.canUseTool?.(
+      "Write",
+      { file_path: "/etc/passwd", content: "x" },
+      { toolUseID: "tu" },
+    );
+    expect(r?.behavior).toBe("deny");
+  });
+
+  it("canUseTool：写入在 workspaceRoot 内 → allow", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "wsroot-"));
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(runner.run(task, { ...opts, workspaceRoot: ws }, async () => ({ approved: true })));
+    const r = await captured?.canUseTool?.(
+      "Write",
+      { file_path: join(ws, "sessions", "c1", "a.txt"), content: "x" },
+      { toolUseID: "tu" },
+    );
+    expect(r?.behavior).toBe("allow");
   });
 });

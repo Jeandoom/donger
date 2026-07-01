@@ -12,6 +12,8 @@ export interface RunOptions {
   abortSignal?: AbortSignal;
   /** Claude Agent SDK session ID，续接历史对话 */
   resume?: string;
+  /** 写入边界：写入路径必须落在此目录内（该用户工作区） */
+  workspaceRoot?: string;
 }
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */
