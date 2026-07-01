@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
@@ -62,6 +63,7 @@ export interface WebChannelDeps {
   userStore?: UserStore;
   conversationStore?: ConversationStore;
   usageStore?: UsageStore;
+  auditStore?: AuditStore;
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -251,6 +253,64 @@ export class WebChannel implements Channel {
       await this.deps.conversationStore?.update(delConvMatch[1] ?? "", { archived: true });
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // GET /api/audit/conversations — 审计会话列表（summary + 会话元信息）
+    if (url === "/api/audit/conversations" && req.method === "GET") {
+      const summaries = (await this.deps.auditStore?.listConversationSummaries()) ?? [];
+      const out = await Promise.all(
+        summaries.map(async (s) => {
+          const conv = await this.deps.conversationStore?.get(s.conversationId);
+          return {
+            ...s,
+            title: conv?.title ?? "",
+            userId: conv?.userId ?? "",
+            channelId: conv?.channelId ?? "",
+            createdAt: conv?.createdAt ?? "",
+          };
+        }),
+      );
+      res.writeHead(200);
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // GET /api/audit/conversations/:id — 会话详情（按轮分组）
+    const auditDetailMatch = url.match(/^\/api\/audit\/conversations\/([\w-]+)$/);
+    if (auditDetailMatch && req.method === "GET") {
+      const conversationId = auditDetailMatch[1] ?? "";
+      const events = (await this.deps.auditStore?.listByConversation(conversationId)) ?? [];
+      if (events.length === 0) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "no audit data" }));
+        return;
+      }
+      const conversation = await this.deps.conversationStore?.get(conversationId);
+      // 按 taskId 分组（组内已按 recordedAt,seq 升序）
+      const byTask = new Map<string, typeof events>();
+      for (const e of events) {
+        const arr = byTask.get(e.taskId) ?? [];
+        arr.push(e);
+        byTask.set(e.taskId, arr);
+      }
+      const turns = await Promise.all(
+        [...byTask.entries()].map(async ([taskId, evs]) => {
+          const task = await this.deps.taskStore?.get(taskId);
+          const result = evs.find((e) => e.type === "result");
+          return {
+            taskId,
+            prompt: task?.prompt ?? "",
+            status: task?.status ?? "",
+            createdAt: task?.createdAt ?? "",
+            durationMs: result?.durationMs,
+            usage: result?.usage,
+            events: evs,
+          };
+        }),
+      );
+      res.writeHead(200);
+      res.end(JSON.stringify({ conversation, turns }));
       return;
     }
 
