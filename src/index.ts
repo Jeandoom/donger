@@ -1,7 +1,7 @@
 // donger 应用入口：钉钉 + Web 双通道，共享存储。
 import "dotenv/config";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import type { AppConfig } from "./config.js";
 import { loadConfig } from "./config.js";
@@ -19,6 +19,7 @@ import { Orchestrator, type OrchestratorRunOpts } from "./orchestrator/orchestra
 import type { RunOptions } from "./ports/agent-runner.js";
 import type { Channel } from "./ports/channel.js";
 import { ensureRuntimeDir } from "./util/workspace.js";
+import { migrateWorkspace } from "./util/workspace-migrate.js";
 import { createLogger } from "./util/logger.js";
 
 export interface BuildRunOptionsArgs {
@@ -53,7 +54,16 @@ async function main(): Promise<void> {
     "donger 启动",
   );
 
-  const dbDir = cfg.dbPath.replace(/[/\\][^/\\]+$/, "");
+  // 自动迁移旧 data/ → ~/.donger/（幂等）
+  const oldDataDir = join(process.cwd(), "data");
+  const sentinelPath = join(dirname(cfg.dbPath), ".migrated");
+  try {
+    migrateWorkspace({ oldDataDir, newDbPath: cfg.dbPath, newWorkspaceDir: cfg.workspaceDir, sentinelPath });
+  } catch (e) {
+    log.warn({ err: e }, "旧 data/ 迁移跳过（非致命）");
+  }
+
+  const dbDir = dirname(cfg.dbPath);
   mkdirSync(dbDir, { recursive: true });
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
