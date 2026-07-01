@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import type { LLMConfig } from "./domain/llm-config.js";
 
@@ -10,7 +12,8 @@ const EnvSchema = z.object({
   LLM_MODEL: z.string().default("glm-4.6"),
   REPO_ROOT: z.string().default("./repos"),
   MEMORY_DIR: z.string().default("./data/memory"),
-  DB_PATH: z.string().default("./data/donger.db"),
+  WORKSPACE_DIR: z.string().default(""),
+  DB_PATH: z.string().default(""),
   PORT: z.coerce.number().int().positive().default(3300),
   LOG_LEVEL: LogLevelSchema.default("info"),
   SUPERPOWERS_PLUGIN_PATH: z.string().optional(),
@@ -34,6 +37,7 @@ export interface AppConfig {
   llm: LLMConfig;
   repoRoot: string;
   memoryDir: string;
+  workspaceDir: string;
   dbPath: string;
   port: number;
   logLevel: LogLevel;
@@ -58,7 +62,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     },
     repoRoot: e.REPO_ROOT,
     memoryDir: e.MEMORY_DIR,
-    dbPath: e.DB_PATH,
+    workspaceDir: e.WORKSPACE_DIR || join(homedir(), ".donger", "workspace"),
+    dbPath: e.DB_PATH || join(homedir(), ".donger", "donger.db"),
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     superpowersPluginPath: e.SUPERPOWERS_PLUGIN_PATH,

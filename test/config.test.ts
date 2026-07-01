@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 
@@ -16,7 +18,7 @@ describe("loadConfig", () => {
     });
     expect(c.repoRoot).toBe("./repos");
     expect(c.memoryDir).toBe("./data/memory");
-    expect(c.dbPath).toBe("./data/donger.db");
+    expect(c.dbPath).toBe(join(homedir(), ".donger", "donger.db"));
     expect(c.port).toBe(3300);
     expect(c.logLevel).toBe("info");
     expect(c.superpowersPluginPath).toBeUndefined();
@@ -63,5 +65,17 @@ describe("loadConfig", () => {
       loadConfig({ ...base, SUPERPOWERS_PLUGIN_PATH: "/path/to/superpowers" })
         .superpowersPluginPath,
     ).toBe("/path/to/superpowers");
+  });
+
+  it("WORKSPACE_DIR / DB_PATH 默认到 ~/.donger/", () => {
+    const c = loadConfig(base);
+    expect(c.workspaceDir).toBe(join(homedir(), ".donger", "workspace"));
+    expect(c.dbPath).toBe(join(homedir(), ".donger", "donger.db"));
+  });
+
+  it("WORKSPACE_DIR / DB_PATH 可被 env 覆盖", () => {
+    const c = loadConfig({ ...base, WORKSPACE_DIR: "/tmp/ws", DB_PATH: "/tmp/x.db" });
+    expect(c.workspaceDir).toBe("/tmp/ws");
+    expect(c.dbPath).toBe("/tmp/x.db");
   });
 });
