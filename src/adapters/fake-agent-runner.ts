@@ -19,6 +19,14 @@ export interface FakeScript {
   result?: string;
   /** 附在 result 事件上的 token 用量（success / denied-error 都带） */
   usage?: TokenUsage;
+  /** 脚本化的工具调用序列（result 之前按序产出 tool_use + 配对 tool_result） */
+  toolCalls?: Array<{
+    tool: string;
+    input: Record<string, unknown>;
+    toolUseId: string;
+    result?: string;
+    isError?: boolean;
+  }>;
 }
 
 /**
@@ -61,6 +69,24 @@ export class FakeAgentRunner implements AgentRunner {
 
     if (this.script.outro) {
       yield { type: "text", taskId: task.id, text: this.script.outro };
+    }
+    for (const c of this.script.toolCalls ?? []) {
+      yield {
+        type: "tool_use",
+        taskId: task.id,
+        tool: c.tool,
+        input: c.input,
+        toolUseId: c.toolUseId,
+      };
+      if (c.result !== undefined || c.isError) {
+        yield {
+          type: "tool_result",
+          taskId: task.id,
+          toolUseId: c.toolUseId,
+          content: c.result ?? "",
+          isError: c.isError === true,
+        };
+      }
     }
     yield {
       type: "result",
