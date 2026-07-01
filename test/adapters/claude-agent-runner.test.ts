@@ -141,4 +141,59 @@ describe("ClaudeAgentRunner", () => {
     const last = events[events.length - 1];
     if (last?.type === "result") expect(last.usage).toBeUndefined();
   });
+
+  it("user 消息的 tool_result → tool_result 事件", async () => {
+    mockStream([
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Bash", input: { command: "ls" }, id: "tu1" }],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "tu1", content: "file.txt", is_error: false },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", result: "done" },
+    ]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const tr = events.find((e) => e.type === "tool_result");
+    expect(tr).toBeDefined();
+    if (tr?.type === "tool_result") {
+      expect(tr.toolUseId).toBe("tu1");
+      expect(tr.content).toBe("file.txt");
+      expect(tr.isError).toBe(false);
+    }
+  });
+
+  it("tool_result.content 为数组时 JSON 文本化", async () => {
+    mockStream([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tu9",
+              content: [{ type: "text", text: "x" }],
+              is_error: true,
+            },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", result: "done" },
+    ]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const tr = events.find((e) => e.type === "tool_result");
+    if (tr?.type === "tool_result") {
+      expect(tr.isError).toBe(true);
+      expect(tr.content).toContain('"text"');
+    }
+  });
 });

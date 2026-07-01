@@ -80,6 +80,33 @@ export class ClaudeAgentRunner implements AgentRunner {
             };
           }
         }
+      } else if (m.type === "user") {
+        const content =
+          (
+            m as {
+              message?: {
+                content?: Array<{
+                  type: string;
+                  tool_use_id?: string;
+                  content?: unknown;
+                  is_error?: boolean;
+                }>;
+              };
+            }
+          ).message?.content ?? [];
+        for (const block of content) {
+          if (block.type === "tool_result") {
+            const raw = block.content;
+            const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+            yield {
+              type: "tool_result",
+              taskId: task.id,
+              toolUseId: block.tool_use_id ?? "",
+              content: text,
+              isError: block.is_error === true,
+            };
+          }
+        }
       } else if (m.type === "result") {
         const raw = (
           m as {
