@@ -27,14 +27,15 @@ function newStore(adminStaffIds: string[] = []): SqliteUserStore {
 }
 
 describe("SqliteUserStore", () => {
-  it("getOrCreate：首次创建 + homeDir 初始化 repos/+memory/", async () => {
+  it("getOrCreate：首次创建 + homeDir 初始化工作区目录树", async () => {
     const s = newStore();
     const user = await s.getOrCreate("staff1", "张三");
     expect(user.staffId).toBe("staff1");
     expect(user.name).toBe("张三");
     expect(user.role).toBe("user");
-    expect(existsSync(join(user.homeDir, "repos"))).toBe(true);
-    expect(existsSync(join(user.homeDir, "memory"))).toBe(true);
+    expect(existsSync(join(user.homeDir, "sessions"))).toBe(true);
+    expect(existsSync(join(user.homeDir, "knowledge_base", "user"))).toBe(true);
+    expect(existsSync(join(user.homeDir, ".skills", ".claude-plugin", "plugin.json"))).toBe(true);
   });
 
   it("getOrCreate：admin staffId → role=admin", async () => {

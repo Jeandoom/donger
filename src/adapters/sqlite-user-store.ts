@@ -1,8 +1,8 @@
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { User, UserRole } from "../domain/user.js";
 import type { UserStore } from "../ports/user-store.js";
+import { initUserWorkspace } from "../util/workspace.js";
 
 export interface SqliteUserStoreOptions {
   /** 管理员的 staffId 集合（来自 ADMIN_STAFF_IDS 配置） */
@@ -41,9 +41,8 @@ export class SqliteUserStore implements UserStore {
     const now = new Date().toISOString();
     const user: User = { id, staffId, name, role, homeDir, createdAt: now, updatedAt: now };
 
-    // 初始化 homeDir
-    mkdirSync(join(homeDir, "repos"), { recursive: true });
-    mkdirSync(join(homeDir, "memory"), { recursive: true });
+    // 初始化 homeDir（工作区目录树：定义/运行时/知识 三类）
+    initUserWorkspace(homeDir);
 
     this.db
       .prepare("INSERT INTO users (id, staffId, data, role, updatedAt) VALUES (?, ?, ?, ?, ?)")
