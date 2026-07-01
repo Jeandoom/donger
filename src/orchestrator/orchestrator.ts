@@ -1,3 +1,4 @@
+import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Plan, Planner } from "../domain/planner.js";
@@ -6,6 +7,7 @@ import type { IncomingMessage, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
+import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
@@ -23,6 +25,7 @@ export interface OrchestratorDeps {
   userStore: UserStore;
   conversationStore: ConversationStore;
   usageStore: UsageStore;
+  auditStore: AuditStore;
   planner: Planner;
   gates: GateRouter;
   runner: AgentRunner;
@@ -126,15 +129,64 @@ export class Orchestrator {
       await store.updateStatus(task.id, nextStatus("planning", "start"));
       const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
 
-      // 包装 runner 事件：捕获 session_init 的 sessionId
+      // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
       let capturedSessionId: string | undefined;
       const rawEvents = runner.run({ ...task, status: "running" }, opts, resolver);
-      const wrappedEvents = (async function* () {
+      const turnStartMs = Date.now();
+      const taskId = task.id;
+      const taskPrompt = task.prompt;
+      let seq = 0;
+      const toolStartMs = new Map<string, number>();
+      const wrappedEvents = async function* (this: Orchestrator) {
+        // 流首：user_message（仅审计，不入流）
+        try {
+          await this.deps.auditStore.record(
+            userMessageAudit(taskPrompt, {
+              conversationId: conversation.id,
+              userId: user.id,
+              taskId,
+              seq,
+              recordedAt: new Date().toISOString(),
+            }),
+          );
+        } catch (e) {
+          console.error("[orchestrator] 审计记录失败", e);
+        }
+        seq++;
+
         for await (const e of rawEvents) {
           if (e.type === "session_init") capturedSessionId = e.sessionId;
-          yield e;
+          yield e; // 先推流（保证审计失败不阻塞推送）
+          const extra: { durationMs?: number; model?: string } = {};
+          if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
+          if (e.type === "tool_result") {
+            const start = toolStartMs.get(e.toolUseId);
+            if (start !== undefined) extra.durationMs = Date.now() - start;
+          }
+          if (e.type === "result") {
+            extra.durationMs = Date.now() - turnStartMs;
+            extra.model = opts.llm.model;
+          }
+          try {
+            await this.deps.auditStore.record(
+              toAuditEvent(
+                e,
+                {
+                  conversationId: conversation.id,
+                  userId: user.id,
+                  taskId: taskId,
+                  seq,
+                  recordedAt: new Date().toISOString(),
+                },
+                extra,
+              ),
+            );
+          } catch (err) {
+            console.error("[orchestrator] 审计记录失败", err);
+          }
+          seq++;
         }
-      })();
+      }.call(this);
 
       const last = await bridgeEvents(channel, msg.threadId, wrappedEvents);
 

@@ -5,7 +5,9 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { CliChannel } from "../../src/adapters/cli-channel.js";
 import { FakeAgentRunner } from "../../src/adapters/fake-agent-runner.js";
+import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
+import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
 import type { User } from "../../src/domain/user.js";
@@ -87,6 +89,8 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
     store,
     userStore,
     conversationStore,
+    usageStore: new InMemoryUsageStore(),
+    auditStore: new InMemoryAuditStore(),
     planner: new Planner(),
     gates,
     runner,
