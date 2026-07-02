@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildRunOptions } from "../../src/index.js";
+import { buildRunOptions } from "../../src/build-run-options.js";
 
 describe("buildRunOptions", () => {
   it("cwd = sessions/<convId>/（懒创建）+ workspaceRoot = homeDir + pluginPaths 含 .skills", () => {
