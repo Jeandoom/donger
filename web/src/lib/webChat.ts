@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { WsIn, WsOut } from "../types";
 import { chatReducer, initialChatState } from "./chatReducer";
+import type { FileInfo } from "./chatReducer";
 
 export function useWebChat(url: string) {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
@@ -22,11 +23,11 @@ export function useWebChat(url: string) {
     return () => ws.close();
   }, [url]);
 
-  const send = useCallback((text: string) => {
+  const send = useCallback((text: string, files?: FileInfo[]) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    dispatch({ type: "user_message", text });
-    const out: WsIn = { type: "message", text };
+    dispatch({ type: "user_message", text, files });
+    const out: WsIn = { type: "message", text, files };
     ws.send(JSON.stringify(out));
   }, []);
 
