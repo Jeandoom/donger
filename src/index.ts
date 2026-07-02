@@ -99,6 +99,7 @@ async function main(): Promise<void> {
   // Web Channel（始终启动）
   const webChannel = new WebChannel({
     port: cfg.port,
+    workspaceDir: cfg.workspaceDir,
     taskStore: store,
     userStore,
     conversationStore,

@@ -2,7 +2,17 @@
 // 不 import 后端源码，避免拖入 node 依赖。
 
 export type WsIn =
-  | { type: "message"; text: string; userId?: string; conversationId?: string }
+  | {
+      type: "message";
+      text: string;
+      userId?: string;
+      conversationId?: string;
+      files?: Array<{
+        path: string;
+        name: string;
+        type: "image" | "markdown";
+      }>;
+    }
   | { type: "approval"; approved: boolean; reason?: string };
 
 export type WsOut =
@@ -16,6 +26,11 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
+  files?: Array<{
+    path: string;
+    name: string;
+    type: "image" | "markdown";
+  }>;
 }
 
 export interface PendingApproval {

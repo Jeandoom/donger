@@ -13,7 +13,7 @@ const EnvSchema = z.object({
   REPO_ROOT: z.string().default("./repos"),
   MEMORY_DIR: z.string().default("./data/memory"),
   WORKSPACE_DIR: z.string().default(""),
-  DB_PATH: z.string().default(""),
+  DB_PATH: z.string().default("./data/donger.db"),
   PORT: z.coerce.number().int().positive().default(3300),
   LOG_LEVEL: LogLevelSchema.default("info"),
   SUPERPOWERS_PLUGIN_PATH: z.string().optional(),

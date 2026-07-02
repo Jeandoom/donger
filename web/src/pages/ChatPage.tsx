@@ -1,16 +1,78 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "../components/ui/button";
+import type { FileInfo } from "../lib/chatReducer";
 import { useWebChat } from "../lib/webChat";
 
 export function ChatPage() {
   const { messages, pendingApproval, connection, send, resolveApproval } = useWebChat("/ws");
   const [text, setText] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<FileInfo[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const MAX_FILES = 5;
+  const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (pendingFiles.length >= MAX_FILES) {
+      alert(`最多上传 ${MAX_FILES} 个文件`);
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      alert("文件大小超过 2MB 限制");
+      return;
+    }
+
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    const isImage =
+      file.type.startsWith("image/") && ["jpg", "jpeg", "png", "gif", "webp"].includes(ext ?? "");
+    const isMarkdown = ext === "md" || file.type === "text/markdown";
+    if (!isImage && !isMarkdown) {
+      alert("不支持的文件类型，仅支持图片(.jpg/.png/.gif/.webp)和Markdown(.md)");
+      return;
+    }
+
+    setUploading(true);
+
+    try {
+      const threadId = `web-${Date.now()}`;
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`/api/upload?threadId=${encodeURIComponent(threadId)}`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = (await res.json()) as { error: string };
+        alert(err.error);
+        return;
+      }
+
+      const result = (await res.json()) as FileInfo & { url: string };
+      setPendingFiles((prev) => [
+        ...prev,
+        { path: result.path, name: result.name, type: result.type },
+      ]);
+    } catch {
+      alert("上传失败，请重试");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
 
   function submit() {
     const t = text.trim();
-    if (!t) return;
-    send(t);
+    if (!t && pendingFiles.length === 0) return;
+    send(t, pendingFiles.length > 0 ? pendingFiles : undefined);
     setText("");
+    setPendingFiles([]);
   }
 
   return (
@@ -40,6 +102,24 @@ export function ChatPage() {
             }
           >
             <span className="whitespace-pre-wrap break-words text-sm">{m.text}</span>
+            {m.files && m.files.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {m.files.map((f) =>
+                  f.type === "image" ? (
+                    <img
+                      key={f.path}
+                      src={`/uploads/${f.path.split("/sessions/")[1] ?? ""}`}
+                      alt={f.name}
+                      className="max-h-32 rounded"
+                    />
+                  ) : (
+                    <span key={f.path} className="text-xs text-muted-foreground">
+                      📄 {f.name}
+                    </span>
+                  ),
+                )}
+              </div>
+            )}
           </div>
         ))}
 
@@ -63,7 +143,52 @@ export function ChatPage() {
         )}
       </div>
 
+      {/* 文件预览区 */}
+      {pendingFiles.length > 0 && (
+        <div className="flex gap-2 border-t border-border px-3 py-2">
+          {pendingFiles.map((f) => (
+            <div
+              key={f.path}
+              className="relative flex items-center gap-1 rounded bg-muted p-1 pr-6"
+            >
+              {f.type === "image" ? (
+                <img
+                  src={`/uploads/${f.path.split("/sessions/")[1] ?? ""}`}
+                  alt={f.name}
+                  className="max-h-10 rounded"
+                />
+              ) : (
+                <span className="text-sm">📄 {f.name}</span>
+              )}
+              <button
+                type="button"
+                className="absolute right-1 top-0 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setPendingFiles((prev) => prev.filter((p) => p.path !== f.path))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex gap-2 border-t border-border p-3">
+        <input
+          type="file"
+          ref={fileInputRef}
+          accept="image/*,.md"
+          className="hidden"
+          onChange={handleFileSelect}
+        />
+        <Button
+          variant="outline"
+          size="icon"
+          disabled={pendingFiles.length >= MAX_FILES || uploading}
+          onClick={() => fileInputRef.current?.click()}
+          title="上传文件"
+        >
+          📎
+        </Button>
         <input
           className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
           value={text}
@@ -76,7 +201,9 @@ export function ChatPage() {
             }
           }}
         />
-        <Button onClick={submit}>发送</Button>
+        <Button onClick={submit} disabled={uploading}>
+          {uploading ? "上传中…" : "发送"}
+        </Button>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage as HttpRequest,
@@ -7,6 +7,7 @@ import {
 } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import Busboy from "busboy";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
@@ -49,7 +50,17 @@ function contentType(absPath: string): string {
 }
 
 type WsIn =
-  | { type: "message"; text: string; userId?: string; conversationId?: string }
+  | {
+      type: "message";
+      text: string;
+      userId?: string;
+      conversationId?: string;
+      files?: Array<{
+        path: string;
+        name: string;
+        type: "image" | "markdown";
+      }>;
+    }
   | { type: "approval"; approved: boolean; reason?: string };
 
 type WsOut =
@@ -59,6 +70,8 @@ type WsOut =
 
 export interface WebChannelDeps {
   port: number;
+  /** 上传文件保存根目录 */
+  workspaceDir: string;
   taskStore?: TaskStore;
   userStore?: UserStore;
   conversationStore?: ConversationStore;
@@ -82,9 +95,11 @@ export class WebChannel implements Channel {
   >();
   private nextId = 0;
   private readonly webRoot: string;
+  private readonly workspaceDir: string;
 
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
+    this.workspaceDir = deps.workspaceDir;
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -101,11 +116,28 @@ export class WebChannel implements Channel {
         try {
           const msg = JSON.parse(raw.toString()) as WsIn;
           if (msg.type === "message") {
+            let finalText = msg.text;
+
+            if (msg.files && msg.files.length > 0) {
+              for (const file of msg.files) {
+                if (file.type === "markdown") {
+                  try {
+                    const content = readFileSync(file.path, "utf-8");
+                    finalText += `\n\n--- 用户上传的文件：${file.name} ---\n${content}`;
+                  } catch {
+                    finalText += `\n\n[无法读取文件：${file.name}]`;
+                  }
+                } else if (file.type === "image") {
+                  finalText += `\n\n![${file.name}](file://${file.path})`;
+                }
+              }
+            }
+
             this.handler?.({
               channelId: "web",
               threadId,
               requesterId: msg.userId ?? "web-user",
-              text: msg.text,
+              text: finalText,
               conversationId: msg.conversationId,
             });
           } else if (msg.type === "approval") {
@@ -146,6 +178,29 @@ export class WebChannel implements Channel {
         res.writeHead(500);
         res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+      return;
+    }
+
+    // /uploads/ 静态文件（上传文件预览）
+    if (url.startsWith("/uploads/")) {
+      const relPath = url.replace("/uploads/", "");
+      const absPath = join(this.workspaceDir, "sessions", relPath);
+      if (existsSync(absPath)) {
+        const ext = absPath.split(".").pop()?.toLowerCase();
+        const mimeMap: Record<string, string> = {
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          png: "image/png",
+          gif: "image/gif",
+          webp: "image/webp",
+          md: "text/markdown; charset=utf-8",
+        };
+        res.writeHead(200, { "Content-Type": mimeMap[ext ?? ""] ?? "application/octet-stream" });
+        res.end(readFileSync(absPath));
+        return;
+      }
+      res.writeHead(404);
+      res.end("Not found");
       return;
     }
 
@@ -234,6 +289,12 @@ export class WebChannel implements Channel {
       const list = (await this.deps.conversationStore?.listByUser(userId ?? "")) ?? [];
       res.writeHead(200);
       res.end(JSON.stringify(list));
+      return;
+    }
+
+    // POST /api/upload — 文件上传
+    if (url.startsWith("/api/upload") && req.method === "POST") {
+      await this.handleUpload(req, res);
       return;
     }
 
@@ -347,6 +408,117 @@ export class WebChannel implements Channel {
 
     res.writeHead(404);
     res.end(JSON.stringify({ error: "unknown endpoint" }));
+  }
+
+  private async handleUpload(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const threadId = url.searchParams.get("threadId");
+    if (!threadId) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "缺少 threadId 参数" }));
+      return;
+    }
+
+    const contentType = req.headers["content-type"] ?? "";
+    if (!contentType.startsWith("multipart/form-data")) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "请求格式错误" }));
+      return;
+    }
+
+    return new Promise<void>((resolve) => {
+      let fileSaved = false;
+
+      const bb = Busboy({
+        headers: req.headers as Record<string, string>,
+        limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+      });
+
+      bb.on(
+        "file",
+        (
+          _fieldname: string,
+          file: NodeJS.ReadableStream,
+          info: { filename: string; encoding: string; mimeType: string },
+        ) => {
+          const { filename, mimeType } = info;
+          const ext = filename.split(".").pop()?.toLowerCase();
+          const isImage =
+            mimeType?.startsWith("image/") &&
+            ["jpg", "jpeg", "png", "gif", "webp"].includes(ext ?? "");
+          const isMarkdown = ext === "md" || mimeType === "text/markdown";
+
+          if (!isImage && !isMarkdown) {
+            file.resume();
+            res.writeHead(400);
+            res.end(
+              JSON.stringify({
+                error: "不支持的文件类型，仅支持图片(.jpg/.png/.gif/.webp)和Markdown(.md)",
+              }),
+            );
+            resolve();
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          let totalSize = 0;
+
+          file.on("data", (chunk: Buffer) => {
+            totalSize += chunk.length;
+            if (totalSize > 2 * 1024 * 1024) {
+              file.resume();
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: "文件大小超过 2MB 限制" }));
+              resolve();
+              return;
+            }
+            chunks.push(chunk);
+          });
+
+          file.on("limit", () => {
+            file.resume();
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: "文件大小超过 2MB 限制" }));
+            resolve();
+          });
+
+          file.on("end", () => {
+            if (fileSaved) return;
+            fileSaved = true;
+
+            const ts = Date.now();
+            const saveName = `${ts}-${filename}`;
+            const sessionDir = join(this.workspaceDir, "sessions", threadId);
+            mkdirSync(sessionDir, { recursive: true });
+            const absPath = join(sessionDir, saveName);
+            writeFileSync(absPath, Buffer.concat(chunks));
+
+            const type = isImage ? "image" : "markdown";
+
+            res.writeHead(200);
+            res.end(
+              JSON.stringify({
+                path: absPath,
+                name: filename,
+                type,
+                url: `/uploads/${threadId}/${saveName}`,
+              }),
+            );
+            resolve();
+          });
+        },
+      );
+
+      bb.on("error", () => {
+        if (!fileSaved) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: "文件保存失败" }));
+        }
+        resolve();
+      });
+
+      req.pipe(bb);
+    });
   }
 
   private extractQuery(url: string, key: string): string | undefined {

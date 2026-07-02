@@ -1,9 +1,15 @@
 import type { ChatMessage, ChatState, WsOut } from "../types";
 
+export type FileInfo = {
+  path: string;
+  name: string;
+  type: "image" | "markdown";
+};
+
 export type ChatAction =
   | { type: "connection"; state: "connecting" | "open" | "closed" }
   | { type: "ws"; msg: WsOut }
-  | { type: "user_message"; text: string }
+  | { type: "user_message"; text: string; files?: FileInfo[] }
   | { type: "clear_approval" };
 
 export function initialChatState(): ChatState {
@@ -25,7 +31,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "connection":
       return { ...state, connection: action.state };
     case "user_message": {
-      const msg: ChatMessage = { id: makeId(), role: "user", text: action.text };
+      const msg: ChatMessage = {
+        id: makeId(),
+        role: "user",
+        text: action.text,
+        files: action.files,
+      };
       return { ...state, messages: [...state.messages, msg] };
     }
     case "clear_approval":
