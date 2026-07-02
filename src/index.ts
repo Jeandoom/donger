@@ -14,6 +14,7 @@ import { loadConfig } from "./config.js";
 import { Planner } from "./domain/planner.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator, type OrchestratorRunOpts } from "./orchestrator/orchestrator.js";
+import type { User } from "./domain/user.js";
 import type { RunOptions } from "./ports/agent-runner.js";
 import type { Channel } from "./ports/channel.js";
 import { createLogger } from "./util/logger.js";
