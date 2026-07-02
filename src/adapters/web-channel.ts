@@ -444,17 +444,16 @@ export class WebChannel implements Channel {
           const { filename, mimeType } = info;
           const ext = filename.split(".").pop()?.toLowerCase();
           const isImage =
-            mimeType && mimeType.startsWith("image/") &&
+            mimeType?.startsWith("image/") &&
             ["jpg", "jpeg", "png", "gif", "webp"].includes(ext ?? "");
-          const isMarkdown = ext === "md" || (mimeType === "text/markdown");
+          const isMarkdown = ext === "md" || mimeType === "text/markdown";
 
           if (!isImage && !isMarkdown) {
             file.resume();
             res.writeHead(400);
             res.end(
               JSON.stringify({
-                error:
-                  "不支持的文件类型，仅支持图片(.jpg/.png/.gif/.webp)和Markdown(.md)",
+                error: "不支持的文件类型，仅支持图片(.jpg/.png/.gif/.webp)和Markdown(.md)",
               }),
             );
             resolve();
