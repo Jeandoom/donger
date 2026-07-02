@@ -7,6 +7,7 @@ const items = [
   { to: "/workflows", label: "工作流" },
   { to: "/skills", label: "技能" },
   { to: "/config", label: "配置" },
+  { to: "/audit", label: "执行审计" },
 ];
 
 export function Sidebar() {

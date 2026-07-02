@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-runner.js";
+import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
@@ -101,6 +102,7 @@ function mockConversationStore(): ConversationStore {
 function setup(approve: boolean, script: FakeScript) {
   const store = new InMemoryTaskStore();
   const usageStore = new InMemoryUsageStore();
+  const auditStore = new InMemoryAuditStore();
   const channel = fakeChannel(approve);
   const runner = new FakeAgentRunner(script);
   const gates = new GateRouter();
@@ -110,6 +112,7 @@ function setup(approve: boolean, script: FakeScript) {
     userStore: mockUserStore(),
     conversationStore: mockConversationStore(),
     usageStore,
+    auditStore,
     planner: new Planner(),
     gates,
     runner,
@@ -125,7 +128,7 @@ function setup(approve: boolean, script: FakeScript) {
       llm: { model: "m", baseUrl: "u", authToken: "t" },
     }),
   });
-  return { orch, store, channel, usageStore };
+  return { orch, store, channel, usageStore, auditStore };
 }
 
 const msg = { channelId: "test", threadId: "th", requesterId: "u", text: "加个导出 CSV 接口" };
@@ -162,8 +165,12 @@ describe("Orchestrator", () => {
     const channel2 = fakeChannel(true);
     const store2 = new InMemoryTaskStore();
     const throwingRunner: AgentRunner = {
-      async *run() {
-        throw new Error("GLM 爆了");
+      run() {
+        return {
+          [Symbol.asyncIterator]() {
+            return { next: () => Promise.reject(new Error("GLM 爆了")) };
+          },
+        };
       },
     };
     const orch2 = new Orchestrator({
@@ -173,6 +180,7 @@ describe("Orchestrator", () => {
       planner: new Planner(),
       gates: new GateRouter(),
       usageStore: new InMemoryUsageStore(),
+      auditStore: new InMemoryAuditStore(),
       runner: throwingRunner,
       channel: channel2,
       runOptsFor: async () => ({
@@ -219,6 +227,7 @@ describe("Orchestrator", () => {
       planner: new Planner(),
       gates: new GateRouter(),
       usageStore: new InMemoryUsageStore(),
+      auditStore: new InMemoryAuditStore(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
       runOptsFor: async () => ({
@@ -275,6 +284,7 @@ describe("Orchestrator", () => {
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
       usageStore: new InMemoryUsageStore(),
+      auditStore: new InMemoryAuditStore(),
       runOptsFor: async (_t, _p, _u, opts) => {
         capturedResume = opts.resume;
         return { cwd: ".", skills: [], llm: { model: "m", baseUrl: "u", authToken: "t" } };
@@ -319,5 +329,81 @@ describe("Orchestrator", () => {
     });
     await orch.handleMessage(msg);
     expect((await usageStore.list()).length).toBe(1);
+  });
+
+  it("审计：捕获 user_message + 各事件，含 conversationId 与单调 seq", async () => {
+    const { orch, auditStore } = setup(true, {
+      toolCalls: [{ tool: "Read", input: { path: "a" }, toolUseId: "tu1", result: "x" }],
+      result: "ok",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+    });
+    await orch.handleMessage(msg);
+    const evs = await auditStore.listByConversation("conv-1");
+    const types = evs.map((e) => e.type);
+    expect(types[0]).toBe("user_message");
+    expect(types).toContain("tool_use");
+    expect(types).toContain("tool_result");
+    expect(types[types.length - 1]).toBe("result");
+    expect(evs.every((e) => e.conversationId === "conv-1")).toBe(true);
+    expect(evs.every((e) => e.userId === "u-u")).toBe(true);
+    expect(evs.map((e) => e.seq)).toEqual([...evs.keys()].map((n) => n));
+  });
+
+  it("审计：result 带轮总耗时与 model", async () => {
+    const { orch, auditStore } = setup(true, { result: "ok" });
+    await orch.handleMessage(msg);
+    const evs = await auditStore.listByConversation("conv-1");
+    const result = evs.find((e) => e.type === "result");
+    expect(result?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(result?.model).toBe("m");
+  });
+
+  it("审计：tool_use↔tool_result 配对算工具耗时", async () => {
+    const { orch, auditStore } = setup(true, {
+      toolCalls: [{ tool: "Read", input: {}, toolUseId: "tu1", result: "x" }],
+      result: "ok",
+    });
+    await orch.handleMessage(msg);
+    const evs = await auditStore.listByConversation("conv-1");
+    const tr = evs.find((e) => e.type === "tool_result");
+    expect(tr?.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("审计：落库失败不影响主流程", async () => {
+    const throwing: import("../../src/ports/audit-store.js").AuditStore = {
+      async record() {
+        throw new Error("db 爆了");
+      },
+      async listByConversation() {
+        return [];
+      },
+      async listConversationSummaries() {
+        return [];
+      },
+    };
+    const store = new InMemoryTaskStore();
+    const orch = new Orchestrator({
+      store,
+      userStore: mockUserStore(),
+      conversationStore: mockConversationStore(),
+      usageStore: new InMemoryUsageStore(),
+      auditStore: throwing,
+      planner: new Planner(),
+      gates: new GateRouter(),
+      runner: new FakeAgentRunner({ result: "ok" }),
+      channel: fakeChannel(true),
+      runOptsFor: async () => ({
+        cwd: ".",
+        skills: [],
+        llm: { model: "m", baseUrl: "u", authToken: "t" },
+      }),
+    });
+    await orch.handleMessage(msg);
+    expect((await store.listByStatus("done")).length).toBe(1);
   });
 });

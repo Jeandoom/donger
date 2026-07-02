@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { Shell } from "./components/layout/Shell";
 import { AgentsPage } from "./pages/AgentsPage";
+import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { SkillsPage } from "./pages/SkillsPage";
@@ -15,6 +16,7 @@ export function App() {
         <Route path="/workflows" element={<WorkflowsPage />} />
         <Route path="/skills" element={<SkillsPage />} />
         <Route path="/config" element={<ConfigPage />} />
+        <Route path="/audit" element={<AuditPage />} />
       </Route>
     </Routes>
   );

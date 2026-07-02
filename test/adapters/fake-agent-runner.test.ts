@@ -97,7 +97,12 @@ describe("FakeAgentRunner", () => {
   it("denied 的 error result 也带 usage", async () => {
     const runner = new FakeAgentRunner({
       gate: { gateId: "g", summary: "x" },
-      usage: { inputTokens: 9, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+      usage: {
+        inputTokens: 9,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
     });
     const events = await collect(runner.run(task, opts, async () => ({ approved: false })));
     const last = events[events.length - 1];
@@ -105,5 +110,26 @@ describe("FakeAgentRunner", () => {
       expect(last.subtype).toBe("error");
       expect(last.usage?.inputTokens).toBe(9);
     }
+  });
+
+  it("toolCalls 按序产出 tool_use + 配对 tool_result", async () => {
+    const runner = new FakeAgentRunner({
+      toolCalls: [
+        { tool: "Read", input: { path: "a.ts" }, toolUseId: "tu1", result: "content" },
+        { tool: "Bash", input: { command: "ls" }, toolUseId: "tu2", result: "boom", isError: true },
+      ],
+      result: "ok",
+    });
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    expect(events.map((e) => e.type)).toEqual([
+      "tool_use",
+      "tool_result",
+      "tool_use",
+      "tool_result",
+      "result",
+    ]);
+    const results = events.filter((e) => e.type === "tool_result");
+    expect(results[0]?.toolUseId).toBe("tu1");
+    expect(results[1]?.isError).toBe(true);
   });
 });
