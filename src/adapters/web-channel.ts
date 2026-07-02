@@ -439,14 +439,14 @@ export class WebChannel implements Channel {
         (
           _fieldname: string,
           file: NodeJS.ReadableStream,
-          info: { filename: string; mime: string },
+          info: { filename: string; encoding: string; mimeType: string },
         ) => {
-          const { filename, mime } = info;
+          const { filename, mimeType } = info;
           const ext = filename.split(".").pop()?.toLowerCase();
           const isImage =
-            mime.startsWith("image/") &&
+            mimeType && mimeType.startsWith("image/") &&
             ["jpg", "jpeg", "png", "gif", "webp"].includes(ext ?? "");
-          const isMarkdown = ext === "md" || mime === "text/markdown";
+          const isMarkdown = ext === "md" || (mimeType === "text/markdown");
 
           if (!isImage && !isMarkdown) {
             file.resume();

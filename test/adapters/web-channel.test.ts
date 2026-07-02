@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
@@ -205,5 +205,85 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
     if (!port) throw new Error("no port");
     const res = await fetch(`http://localhost:${port}/api/audit/conversations/nope`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("WebChannel POST /api/upload", () => {
+  let webTmp: string;
+  let port: number;
+
+  beforeEach(async () => {
+    webTmp = mkdtempSync(join(tmpdir(), "web-upload-"));
+    web = new WebChannel({ port: 0, workspaceDir: webTmp });
+    web.onMessage(() => {});
+    await web.ready();
+    const p = web.boundPort;
+    if (!p) throw new Error("no port");
+    port = p;
+  });
+
+  afterEach(() => {
+    web?.stop();
+    rmSync(webTmp, { recursive: true, force: true });
+  });
+
+  it("上传图片成功", async () => {
+    const body = new FormData();
+    const blob = new Blob(["fake-png"], { type: "image/png" });
+    body.append("file", blob, "test.png");
+    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+      method: "POST",
+      body,
+    });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { path: string; name: string; type: string };
+    expect(j.name).toBe("test.png");
+    expect(j.type).toBe("image");
+    expect(j.path).toContain("sessions");
+    expect(j.path).toContain("web-1");
+  });
+
+  it("上传 .md 文件成功", async () => {
+    const body = new FormData();
+    body.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
+    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+      method: "POST",
+      body,
+    });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { path: string; name: string; type: string };
+    expect(j.name).toBe("readme.md");
+    expect(j.type).toBe("markdown");
+  });
+
+  it("不支持的类型返回 400", async () => {
+    const body = new FormData();
+    body.append("file", new Blob(["<xml/>"], { type: "text/xml" }), "test.xml");
+    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+      method: "POST",
+      body,
+    });
+    expect(res.status).toBe(400);
+    const j = (await res.json()) as { error: string };
+    expect(j.error).toContain("不支持的文件类型");
+  });
+
+  it("无 threadId 返回 400", async () => {
+    const body = new FormData();
+    body.append("file", new Blob(["fake"], { type: "image/png" }), "test.png");
+    const res = await fetch(`http://localhost:${port}/api/upload`, {
+      method: "POST",
+      body,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("非 multipart 返回 400", async () => {
+    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
   });
 });
