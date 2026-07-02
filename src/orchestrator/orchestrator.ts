@@ -1,3 +1,4 @@
+import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import { join } from "node:path";
 import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
