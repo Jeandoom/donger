@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { WsIn, WsOut } from "../types";
-import { chatReducer, initialChatState } from "./chatReducer";
 import type { FileInfo } from "./chatReducer";
+import { chatReducer, initialChatState } from "./chatReducer";
 
 export function useWebChat(url: string) {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
