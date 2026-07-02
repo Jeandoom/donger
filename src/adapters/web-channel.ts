@@ -59,6 +59,8 @@ type WsOut =
 
 export interface WebChannelDeps {
   port: number;
+  /** 上传文件保存根目录 */
+  workspaceDir: string;
   taskStore?: TaskStore;
   userStore?: UserStore;
   conversationStore?: ConversationStore;
@@ -82,9 +84,11 @@ export class WebChannel implements Channel {
   >();
   private nextId = 0;
   private readonly webRoot: string;
+  private readonly workspaceDir: string;
 
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
+    this.workspaceDir = deps.workspaceDir;
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {

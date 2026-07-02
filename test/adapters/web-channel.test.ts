@@ -74,7 +74,8 @@ let web: WebChannel;
 afterEach(() => web?.stop());
 
 async function startWith(usageStore: InMemoryUsageStore): Promise<number> {
-  web = new WebChannel({ port: 0, usageStore });
+  const tmp = mkdtempSync(join(tmpdir(), "web-ws-"));
+  web = new WebChannel({ port: 0, workspaceDir: tmp, usageStore });
   web.onMessage(() => {});
   await web.ready();
   const port = web.boundPort;
@@ -145,7 +146,7 @@ describe("WebChannel GET /api/audit/conversations", () => {
         text: "hi",
       }) as never,
     );
-    web = new WebChannel({ port: 0, conversationStore, auditStore });
+    web = new WebChannel({ port: 0, workspaceDir: mkdtempSync(join(tmpdir(), "web-")), conversationStore, auditStore });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
@@ -181,7 +182,7 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
         text: "hi",
       }) as never,
     );
-    web = new WebChannel({ port: 0, conversationStore, taskStore, auditStore });
+    web = new WebChannel({ port: 0, workspaceDir: mkdtempSync(join(tmpdir(), "web-")), conversationStore, taskStore, auditStore });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
@@ -197,7 +198,7 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
   });
 
   it("无数据 → 404", async () => {
-    web = new WebChannel({ port: 0, auditStore: new InMemoryAuditStore() });
+    web = new WebChannel({ port: 0, workspaceDir: mkdtempSync(join(tmpdir(), "web-")), auditStore: new InMemoryAuditStore() });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
