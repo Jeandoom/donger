@@ -9,14 +9,18 @@ export function LoginPage() {
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 处理登录成功回调（token 在 URL 参数中）
+  // @新增：监听弹窗 postMessage
   useEffect(() => {
-    const token = searchParams.get("token");
-    if (token) {
-      setToken(token);
-      navigate("/", { replace: true });
-    }
-  }, [searchParams, navigate]);
+    const handler = (ev: MessageEvent) => {
+      if (ev.origin !== window.location.origin) return;
+      if (ev.data?.type === "login-success" && typeof ev.data.token === "string") {
+        setToken(ev.data.token);
+        navigate("/", { replace: true });
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [navigate]);
 
   // 处理错误
   useEffect(() => {

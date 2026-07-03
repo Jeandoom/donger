@@ -46,8 +46,13 @@ export function MergePage() {
         return;
       }
       const data = (await res.json()) as { token: string; user: { id: string; name?: string } };
-      setToken(data.token);
-      navigate("/", { replace: true });
+      if (window.opener) {
+        window.opener.postMessage({ type: "login-success", token: data.token }, window.location.origin);
+        setTimeout(() => window.close(), 500);
+      } else {
+        setToken(data.token);
+        navigate("/", { replace: true });
+      }
     } catch {
       setError("合并请求失败，请重试");
     } finally {
@@ -56,8 +61,14 @@ export function MergePage() {
   }, [mergeState, navigate]);
 
   const handleNewUser = useCallback(() => {
-    navigate("/", { replace: true });
-  }, [navigate]);
+    if (!mergeState) return;
+    if (window.opener) {
+      window.opener.postMessage({ type: "login-success", token: mergeState.token }, window.location.origin);
+      setTimeout(() => window.close(), 500);
+    } else {
+      navigate("/", { replace: true });
+    }
+  }, [mergeState, navigate]);
 
   if (error) {
     return (
