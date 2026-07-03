@@ -5,7 +5,6 @@ export type WsIn =
   | {
       type: "message";
       text: string;
-      userId?: string;
       conversationId?: string;
       files?: Array<{
         path: string;

@@ -2,29 +2,35 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { ConversationSummary, WsIn, WsOut } from "../types";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
+import { clearToken, getToken } from "./auth";
 
 export function useWebChat(url: string) {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
   const wsRef = useRef<WebSocket | null>(null);
-  const userIdRef = useRef<string>("web-user");
 
-  // 获取当前用户 ID — 仅挂载时一次
-  useEffect(() => {
-    fetch("/api/users/me")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.userId) userIdRef.current = data.userId;
-      })
-      .catch(() => {});
+  // 从 JWT 中解析 userId
+  const getUserId = useCallback((): string => {
+    const token = getToken();
+    if (!token) return "web-user";
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1] ?? ""));
+      return payload.sub ?? "web-user";
+    } catch {
+      return "web-user";
+    }
   }, []);
 
   /** 创建新会话 */
   const createNewConversation = useCallback(async () => {
     try {
+      const token = getToken();
       const res = await fetch("/api/conversations", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: userIdRef.current, channelId: "web" }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ userId: getUserId(), channelId: "web" }),
       });
       const conv: ConversationSummary = await res.json();
       dispatch({ type: "new_conversation", conversation: conv });
@@ -32,30 +38,43 @@ export function useWebChat(url: string) {
     } catch {
       return null;
     }
-  }, []);
+  }, [getUserId]);
 
   /** 加载会话列表 */
   const loadConversations = useCallback(async () => {
     try {
-      const res = await fetch(`/api/conversations?userId=${encodeURIComponent(userIdRef.current)}`);
+      const token = getToken();
+      const res = await fetch(`/api/conversations?userId=${encodeURIComponent(getUserId())}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const list: ConversationSummary[] = await res.json();
       dispatch({ type: "set_conversations", conversations: list });
     } catch {
       /* 忽略 */
     }
-  }, []);
+  }, [getUserId]);
 
   useEffect(() => {
     dispatch({ type: "connection", state: "connecting" });
-    const ws = new WebSocket(url);
+    // WebSocket 连接带 token
+    const token = getToken();
+    const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+
     ws.onopen = () => {
       dispatch({ type: "connection", state: "open" });
-      // 连接后创建新会话 + 加载历史
       createNewConversation().catch(() => {});
       loadConversations().catch(() => {});
     };
-    ws.onclose = () => dispatch({ type: "connection", state: "closed" });
+    ws.onclose = (ev) => {
+      dispatch({ type: "connection", state: "closed" });
+      // 如果是 4001 (token 无效)，清除 token 并跳转登录
+      if (ev.code === 4001) {
+        clearToken();
+        window.location.href = "/login";
+      }
+    };
     ws.onmessage = (ev) => {
       try {
         dispatch({ type: "ws", msg: JSON.parse(ev.data) as WsOut });
@@ -85,7 +104,6 @@ export function useWebChat(url: string) {
         type: "message",
         text,
         files,
-        userId: userIdRef.current,
         conversationId: state.activeConversationId ?? undefined,
       };
       ws.send(JSON.stringify(out));
