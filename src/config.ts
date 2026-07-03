@@ -22,6 +22,8 @@ const EnvSchema = z.object({
   DINGTALK_APP_SECRET: z.string().optional(),
   DINGTALK_ROBOT_CODE: z.string().optional(),
   DINGTALK_CARD_TEMPLATE_ID: z.string().optional(),
+  JWT_SECRET: z.string().optional(),
+  JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */
@@ -46,6 +48,10 @@ export interface AppConfig {
   /** 管理员 staffId 列表（ADMIN_STAFF_IDS，逗号分隔） */
   adminStaffIds: string[];
   dingtalk?: DingTalkConfig;
+  /** JWT 签名密钥（空字符串表示未配置，由 index.ts 处理） */
+  jwtSecret: string;
+  /** JWT 过期天数 */
+  jwtTtlDays: number;
 }
 
 /**
@@ -71,6 +77,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    jwtSecret: e.JWT_SECRET ?? "",
+    jwtTtlDays: e.JWT_TTL_DAYS,
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {
