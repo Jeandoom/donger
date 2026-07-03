@@ -34,6 +34,53 @@ export function resetDingTalkTokenCache(): void {
   tokenCache = null;
 }
 
+/** 获取用户可访问 token（OAuth code 换 token） */
+export async function getUserAccessToken(
+  appKey: string,
+  appSecret: string,
+  code: string,
+): Promise<{ accessToken: string; refreshToken: string; expireIn: number }> {
+  const res = await fetch(
+    `https://oapi.dingtalk.com/v1.0/oauth/user_accessible_token?client_id=${encodeURIComponent(appKey)}&client_secret=${encodeURIComponent(appSecret)}&code=${encodeURIComponent(code)}&grant_type=authorization_code`,
+    { method: "POST" },
+  );
+  const data = (await res.json()) as {
+    accessToken?: string;
+    refreshToken?: string;
+    expireIn?: number;
+    errCode?: number;
+    errMsg?: string;
+  };
+  if (!data.accessToken) {
+    throw new Error(`钉钉 OAuth 失败: ${data.errMsg ?? data.errCode}`);
+  }
+  return {
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken ?? "",
+    expireIn: data.expireIn ?? 7200,
+  };
+}
+
+/** 获取用户信息（通过 OAuth access_token） */
+export async function getUserInfoByOAuth(
+  accessToken: string,
+): Promise<{ userId: string; name: string; avatar?: string }> {
+  const res = await fetch("https://oapi.dingtalk.com/v1.0/oauth/userinfo?field=avatar,userId", {
+    headers: { "x-acs-dingtalk-access-token": accessToken },
+  });
+  const data = (await res.json()) as {
+    userId?: string;
+    name?: string;
+    avatar?: string;
+    errCode?: number;
+    errMsg?: string;
+  };
+  if (!data.userId) {
+    throw new Error(`钉钉用户信息获取失败: ${data.errMsg ?? data.errCode}`);
+  }
+  return { userId: data.userId, name: data.name ?? "", avatar: data.avatar };
+}
+
 /** singleSend 请求体（纯函数）。 */
 export function buildSingleSendBody(
   robotCode: string,

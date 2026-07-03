@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildSingleSendBody,
   getAccessToken,
+  getUserAccessToken,
+  getUserInfoByOAuth,
   resetDingTalkTokenCache,
   sendSingleMessage,
 } from "../../src/util/dingtalk-api.js";
@@ -82,5 +84,51 @@ describe("sendSingleMessage", () => {
         msgParam: "{}",
       }),
     ).rejects.toThrow(/singleSend 失败/);
+  });
+});
+
+describe("getUserAccessToken", () => {
+  it("成功返回 token", async () => {
+    const fn = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ accessToken: "oauth-tok", refreshToken: "refresh", expireIn: 7200 }),
+    }));
+    vi.stubGlobal("fetch", fn);
+    const result = await getUserAccessToken("k", "s", "code123");
+    expect(result.accessToken).toBe("oauth-tok");
+    expect(result.refreshToken).toBe("refresh");
+    expect(fn).toHaveBeenCalledWith(
+      expect.stringContaining("user_accessible_token"),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("失败抛错", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ errCode: 40001, errMsg: "bad code" }),
+    })));
+    await expect(getUserAccessToken("k", "s", "bad")).rejects.toThrow("钉钉 OAuth 失败");
+  });
+});
+
+describe("getUserInfoByOAuth", () => {
+  it("成功返回用户信息", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ userId: "staff123", name: "张三", avatar: "https://avatar.com/1" }),
+    })));
+    const info = await getUserInfoByOAuth("tok");
+    expect(info.userId).toBe("staff123");
+    expect(info.name).toBe("张三");
+    expect(info.avatar).toBe("https://avatar.com/1");
+  });
+
+  it("失败抛错", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ errCode: 40001, errMsg: "invalid token" }),
+    })));
+    await expect(getUserInfoByOAuth("bad")).rejects.toThrow("钉钉用户信息获取失败");
   });
 });
