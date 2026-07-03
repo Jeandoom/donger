@@ -93,3 +93,66 @@ describe("SqliteUserStore", () => {
     }
   });
 });
+
+describe("SqliteUserStore identity", () => {
+  it("findByIdentity：不存在返回 undefined", async () => {
+    const s = newStore();
+    const found = await s.findByIdentity("dingtalk", "staff-none");
+    expect(found).toBeUndefined();
+  });
+
+  it("addIdentity + findByIdentity", async () => {
+    const s = newStore();
+    const user = await s.getOrCreate("staff1", "张三");
+    await s.addIdentity(user.id, {
+      id: "id-1",
+      userId: user.id,
+      provider: "dingtalk",
+      externalId: "staff1",
+      name: "张三",
+      avatar: "https://avatar.example.com/1",
+      createdAt: new Date().toISOString(),
+    });
+    const found = await s.findByIdentity("dingtalk", "staff1");
+    expect(found?.id).toBe(user.id);
+  });
+
+  it("getIdentities 返回用户所有 identity", async () => {
+    const s = newStore();
+    const user = await s.getOrCreate("staff1", "张三");
+    await s.addIdentity(user.id, {
+      id: "id-1", userId: user.id, provider: "dingtalk",
+      externalId: "staff1", createdAt: new Date().toISOString(),
+    });
+    await s.addIdentity(user.id, {
+      id: "id-2", userId: user.id, provider: "feishu",
+      externalId: "open-1", createdAt: new Date().toISOString(),
+    });
+    const identities = await s.getIdentities(user.id);
+    expect(identities.length).toBe(2);
+    expect(identities.map((i) => i.provider).sort()).toEqual(["dingtalk", "feishu"]);
+  });
+});
+
+describe("SqliteUserStore mergeUsers", () => {
+  it("合并后 identity 指向 target", async () => {
+    const s = newStore();
+    const source = await s.getOrCreate("source-staff", "来源");
+    const target = await s.getOrCreate("target-staff", "目标");
+    await s.addIdentity(source.id, {
+      id: "id-s", userId: source.id, provider: "dingtalk",
+      externalId: "source-staff", createdAt: new Date().toISOString(),
+    });
+
+    // 执行合并
+    await s.mergeUsers(source.id, target.id);
+
+    // identity 已指向 target
+    const identities = await s.getIdentities(target.id);
+    expect(identities.length).toBe(1);
+    expect(identities[0]?.externalId).toBe("source-staff");
+    // source 的 mergedFrom 在 target 上
+    const targetUser = await s.get(target.id);
+    expect(targetUser?.mergedFrom).toContain(source.id);
+  });
+});
