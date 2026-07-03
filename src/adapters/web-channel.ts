@@ -268,12 +268,13 @@ export class WebChannel implements Channel {
     }
 
     // GET /api/conversations?userId=xxx — 会话列表
-    if (
-      url.startsWith("/api/conversations") &&
-      !url.includes("/") === false &&
-      req.method === "GET"
-    ) {
-      const userId = this.extractQuery(url, "userId");
+    if (url.startsWith("/api/conversations") && req.method === "GET") {
+      let userId = this.extractQuery(url, "userId");
+      // 解析 staffId → 内部 user.id
+      if (userId && this.deps.userStore) {
+        const user = await this.deps.userStore.getByStaffId(userId);
+        if (user) userId = user.id;
+      }
       if (userId) {
         const list = (await this.deps.conversationStore?.listByUser(userId)) ?? [];
         res.writeHead(200);
@@ -285,10 +286,8 @@ export class WebChannel implements Channel {
       return;
     }
     if (url === "/api/conversations" && req.method === "GET") {
-      const userId = this.extractQuery(url, "userId");
-      const list = (await this.deps.conversationStore?.listByUser(userId ?? "")) ?? [];
       res.writeHead(200);
-      res.end(JSON.stringify(list));
+      res.end(JSON.stringify([]));
       return;
     }
 
@@ -302,7 +301,17 @@ export class WebChannel implements Channel {
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
       const { userId, channelId } = JSON.parse(body) as { userId: string; channelId?: string };
-      const conv = await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
+      // 解析 staffId → 内部 user.id（conversation 统一用内部 user.id 关联）
+      let resolvedUserId = userId;
+      if (userId && this.deps.userStore) {
+        const user = await this.deps.userStore.getByStaffId(userId);
+        if (user) resolvedUserId = user.id;
+      }
+      const conv = await this.deps.conversationStore?.create(
+        resolvedUserId,
+        channelId ?? "web",
+        "新对话",
+      );
       res.writeHead(201);
       res.end(JSON.stringify(conv));
       return;
@@ -403,6 +412,13 @@ export class WebChannel implements Channel {
     if (url === "/api/health") {
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true, channel: "web" }));
+      return;
+    }
+
+    // GET /api/users/me — 当前用户
+    if (url === "/api/users/me") {
+      res.writeHead(200);
+      res.end(JSON.stringify({ userId: "web-user" }));
       return;
     }
 

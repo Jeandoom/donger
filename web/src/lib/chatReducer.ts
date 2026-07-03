@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatState, WsOut } from "../types";
+import type { ChatMessage, ChatState, ConversationSummary, WsOut } from "../types";
 
 export type FileInfo = {
   path: string;
@@ -10,10 +10,20 @@ export type ChatAction =
   | { type: "connection"; state: "connecting" | "open" | "closed" }
   | { type: "ws"; msg: WsOut }
   | { type: "user_message"; text: string; files?: FileInfo[] }
-  | { type: "clear_approval" };
+  | { type: "clear_approval" }
+  | { type: "set_conversations"; conversations: ConversationSummary[] }
+  | { type: "switch_conversation"; conversationId: string | null }
+  | { type: "new_conversation"; conversation: ConversationSummary };
 
 export function initialChatState(): ChatState {
-  return { messages: [], pendingApproval: null, connection: "connecting" };
+  return {
+    messages: [],
+    pendingApproval: null,
+    connection: "connecting",
+    conversations: [],
+    activeConversationId: null,
+    loadingConversations: true,
+  };
 }
 
 // ponytail: crypto.randomUUID 作 React key，浏览器与 Node20+ 均可用；非持久化路径。
@@ -43,6 +53,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, pendingApproval: null };
     case "ws":
       return applyWsOut(state, action.msg);
+    case "set_conversations":
+      return {
+        ...state,
+        conversations: action.conversations,
+        loadingConversations: false,
+      };
+    case "switch_conversation":
+      return {
+        ...state,
+        activeConversationId: action.conversationId,
+        messages: [],
+      };
+    case "new_conversation":
+      return {
+        ...state,
+        conversations: [action.conversation, ...state.conversations],
+        activeConversationId: action.conversation.id,
+        messages: [],
+        loadingConversations: false,
+      };
     default:
       return state;
   }

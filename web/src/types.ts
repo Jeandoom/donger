@@ -41,8 +41,26 @@ export interface PendingApproval {
 
 export type ConnectionState = "connecting" | "open" | "closed";
 
+/** 会话摘要（从 GET /api/conversations 返回） */
+export interface ConversationSummary {
+  id: string;
+  userId: string;
+  sdkSessionId: string;
+  title: string;
+  channelId: string;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+}
+
 export interface ChatState {
   messages: ChatMessage[];
   pendingApproval: PendingApproval | null;
   connection: ConnectionState;
+  /** 用户会话列表 */
+  conversations: ConversationSummary[];
+  /** 当前活跃会话 ID */
+  activeConversationId: string | null;
+  /** 会话列表加载中 */
+  loadingConversations: boolean;
 }

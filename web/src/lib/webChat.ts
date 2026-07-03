@@ -1,17 +1,60 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { WsIn, WsOut } from "../types";
+import type { ConversationSummary, WsIn, WsOut } from "../types";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
 
 export function useWebChat(url: string) {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
   const wsRef = useRef<WebSocket | null>(null);
+  const userIdRef = useRef<string>("web-user");
+
+  // 获取当前用户 ID — 仅挂载时一次
+  useEffect(() => {
+    fetch("/api/users/me")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.userId) userIdRef.current = data.userId;
+      })
+      .catch(() => {});
+  }, []);
+
+  /** 创建新会话 */
+  const createNewConversation = useCallback(async () => {
+    try {
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: userIdRef.current, channelId: "web" }),
+      });
+      const conv: ConversationSummary = await res.json();
+      dispatch({ type: "new_conversation", conversation: conv });
+      return conv;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /** 加载会话列表 */
+  const loadConversations = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/conversations?userId=${encodeURIComponent(userIdRef.current)}`);
+      const list: ConversationSummary[] = await res.json();
+      dispatch({ type: "set_conversations", conversations: list });
+    } catch {
+      /* 忽略 */
+    }
+  }, []);
 
   useEffect(() => {
     dispatch({ type: "connection", state: "connecting" });
     const ws = new WebSocket(url);
     wsRef.current = ws;
-    ws.onopen = () => dispatch({ type: "connection", state: "open" });
+    ws.onopen = () => {
+      dispatch({ type: "connection", state: "open" });
+      // 连接后创建新会话 + 加载历史
+      createNewConversation().catch(() => {});
+      loadConversations().catch(() => {});
+    };
     ws.onclose = () => dispatch({ type: "connection", state: "closed" });
     ws.onmessage = (ev) => {
       try {
@@ -21,15 +64,34 @@ export function useWebChat(url: string) {
       }
     };
     return () => ws.close();
-  }, [url]);
+  }, [url, createNewConversation, loadConversations]);
 
-  const send = useCallback((text: string, files?: FileInfo[]) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    dispatch({ type: "user_message", text, files });
-    const out: WsIn = { type: "message", text, files };
-    ws.send(JSON.stringify(out));
+  /** 切换会话 */
+  const switchConversation = useCallback((conversationId: string | null) => {
+    dispatch({ type: "switch_conversation", conversationId });
   }, []);
+
+  /** 新建会话 */
+  const newConversation = useCallback(async () => {
+    await createNewConversation();
+  }, [createNewConversation]);
+
+  const send = useCallback(
+    (text: string, files?: FileInfo[]) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      dispatch({ type: "user_message", text, files });
+      const out: WsIn = {
+        type: "message",
+        text,
+        files,
+        userId: userIdRef.current,
+        conversationId: state.activeConversationId ?? undefined,
+      };
+      ws.send(JSON.stringify(out));
+    },
+    [state.activeConversationId],
+  );
 
   const resolveApproval = useCallback((approved: boolean, reason?: string) => {
     const ws = wsRef.current;
@@ -39,5 +101,12 @@ export function useWebChat(url: string) {
     dispatch({ type: "clear_approval" });
   }, []);
 
-  return { ...state, send, resolveApproval };
+  return {
+    ...state,
+    send,
+    resolveApproval,
+    switchConversation,
+    newConversation,
+    loadConversations,
+  };
 }

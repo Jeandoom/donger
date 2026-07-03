@@ -10,9 +10,9 @@ const items = [
   { to: "/audit", label: "执行审计" },
 ];
 
-export function Sidebar() {
+export function NavigationSidebar() {
   return (
-    <nav className="flex h-full w-52 flex-col border-r border-border bg-muted/40 p-2">
+    <nav className="flex h-full w-48 flex-col border-r border-border bg-muted/40 p-2">
       <div className="px-2 py-3 text-sm font-semibold">🤖 donger</div>
       {items.map((it) => (
         <NavLink

@@ -1,10 +1,10 @@
-import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import { join } from "node:path";
+import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Plan, Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { IncomingMessage, Task } from "../domain/types.js";
+import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
@@ -135,7 +135,38 @@ export class Orchestrator {
 
       // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
       let capturedSessionId: string | undefined;
-      const rawEvents = runner.run({ ...task, status: "running" }, opts, resolver);
+      let rawEvents: AsyncIterable<RunnerEvent>;
+
+      // 尝试运行，如果 SDK session 过期则清空重试一次
+      const SESSION_EXPIRED_RE = /No conversation found with session ID/i;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const attemptOpts = attempt === 0 ? opts : { ...opts, resume: undefined };
+        rawEvents = runner.run({ ...task, status: "running" }, attemptOpts, resolver);
+        // 预读第一个事件判断是否 session 过期
+        const first = await rawEvents[Symbol.asyncIterator]().next();
+        if (first.done) break; // 流为空，直接走后续
+        if (
+          attempt === 0 &&
+          first.value &&
+          first.value.type === "result" &&
+          first.value.subtype === "error" &&
+          first.value.error &&
+          SESSION_EXPIRED_RE.test(first.value.error)
+        ) {
+          // session 过期，清空 sdkSessionId 重试
+          await conversationStore.update(conversation.id, { sdkSessionId: "" });
+          continue;
+        }
+        // 构造包含已读第一项的流
+        const restStream = rawEvents;
+        rawEvents = (async function* () {
+          yield first.value as RunnerEvent;
+          for await (const e of restStream) {
+            yield e;
+          }
+        })();
+        break;
+      }
       const turnStartMs = Date.now();
       const taskId = task.id;
       const taskPrompt = task.prompt;
