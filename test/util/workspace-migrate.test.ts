@@ -30,16 +30,14 @@ describe("workspace migration", () => {
     expect(migrationNeeded({ oldDataDir: oldData, newDbPath: newDb, newWorkspaceDir: newWs, sentinelPath: sentinel })).toBe(true);
   });
 
-  it("migrateWorkspace：DB+memory 迁，worktree 不迁，data.bak 留底，sentinel 写", () => {
+  it("migrateWorkspace：只写 sentinel，旧数据不再迁移", () => {
     seedOld();
-    mkdirSync(join(oldData, "users", "u1", "repos", ".worktrees", "t1"), { recursive: true });
     const done = migrateWorkspace({ oldDataDir: oldData, newDbPath: newDb, newWorkspaceDir: newWs, sentinelPath: sentinel });
     expect(done).toBe(true);
-    expect(existsSync(newDb)).toBe(true);
-    expect(existsSync(join(newWs, "users", "u1", "knowledge_base", "user", "a.md"))).toBe(true);
-    expect(existsSync(join(newWs, "users", "u1", ".skills", ".claude-plugin", "plugin.json"))).toBe(true);
-    expect(existsSync(join(newWs, "users", "u1", "repos"))).toBe(false);
-    expect(existsSync(join(root, "data.bak"))).toBe(true);
+    // 旧数据不再迁移
+    expect(existsSync(newDb)).toBe(false);
+    expect(existsSync(join(newWs))).toBe(false);
+    // 只写 sentinel
     expect(existsSync(sentinel)).toBe(true);
   });
 

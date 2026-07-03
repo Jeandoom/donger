@@ -1,6 +1,7 @@
 // donger 应用入口：钉钉 + Web 双通道，共享存储。
 import "dotenv/config";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
@@ -135,7 +136,6 @@ function loadOrGenerateJwtSecret(db: Database.Database): string {
     | { value: string }
     | undefined;
   if (row) return row.value;
-  const { randomBytes } = require("node:crypto");
   const secret = randomBytes(32).toString("hex");
   db.prepare("INSERT INTO app_config (key, value) VALUES ('jwt_secret', ?)").run(secret);
   return secret;

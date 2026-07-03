@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, copyFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { User, UserIdentity, UserRole } from "../domain/user.js";
@@ -185,7 +185,6 @@ export class SqliteUserStore implements UserStore {
   private mergeDirRecursive(src: string, dest: string): void {
     if (!existsSync(src)) return;
     mkdirSync(dest, { recursive: true });
-    const { readdirSync, copyFileSync, statSync } = require("node:fs");
     const entries = readdirSync(src);
     for (const entry of entries) {
       const srcPath = join(src, entry);
@@ -193,7 +192,6 @@ export class SqliteUserStore implements UserStore {
       if (statSync(srcPath).isDirectory()) {
         this.mergeDirRecursive(srcPath, destPath);
       } else if (!existsSync(destPath)) {
-        // 同名文件优先保留 target 版本
         copyFileSync(srcPath, destPath);
       }
     }

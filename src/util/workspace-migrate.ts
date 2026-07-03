@@ -1,13 +1,9 @@
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
-  readdirSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { initUserWorkspace } from "./workspace.js";
 
 export interface MigrateOptions {
   oldDataDir: string;
@@ -25,43 +21,13 @@ export function migrationNeeded(opts: MigrateOptions): boolean {
 }
 
 /**
- * 执行迁移（幂等）：DB+用户 memory 迁到新布局，旧 repos/.worktrees 丢弃，
- * 旧 data/ 重命名为 data.bak 留底，写 sentinel 防重。
+ * 执行迁移（幂等）：直接写 sentinel 跳过旧数据，旧 data/ 不再迁入。
  * 返回 true 表示本次执行了迁移。
  */
 export function migrateWorkspace(opts: MigrateOptions): boolean {
   if (!migrationNeeded(opts)) return false;
 
-  // 1. DB
-  const oldDb = join(opts.oldDataDir, "donger.db");
-  if (existsSync(oldDb)) {
-    mkdirSync(dirname(opts.newDbPath), { recursive: true });
-    copyFileSync(oldDb, opts.newDbPath);
-  }
-
-  // 2. 用户 memory → knowledge_base/user/
-  const oldUsers = join(opts.oldDataDir, "users");
-  if (existsSync(oldUsers)) {
-    for (const userId of readdirSync(oldUsers)) {
-      const oldUser = join(oldUsers, userId);
-      if (!existsSync(join(oldUser, "memory"))) continue;
-      const newUserWs = join(opts.newWorkspaceDir, "users", userId);
-      initUserWorkspace(newUserWs);
-      const oldMemory = join(oldUser, "memory");
-      if (existsSync(oldMemory)) {
-        const dest = join(newUserWs, "knowledge_base", "user");
-        for (const f of readdirSync(oldMemory)) {
-          copyFileSync(join(oldMemory, f), join(dest, f));
-        }
-      }
-      // repos/.worktrees 不迁
-    }
-  }
-
-  // 3. 旧 data → data.bak（留底）
-  renameSync(opts.oldDataDir, `${opts.oldDataDir}.bak`);
-
-  // 4. sentinel
+  // 只写 sentinel，标记已处理。旧 data/ 数据废弃，不再迁移
   mkdirSync(dirname(opts.sentinelPath), { recursive: true });
   writeFileSync(opts.sentinelPath, new Date().toISOString(), "utf8");
   return true;
