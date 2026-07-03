@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import { Shell } from "./components/layout/Shell";
 import { AuthGuard } from "./components/auth/AuthGuard";
 import { LoginPage } from "./pages/LoginPage";
+import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { MergePage } from "./pages/MergePage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
@@ -15,7 +16,7 @@ export function App() {
     <Routes>
       {/* 登录相关路由（免认证） */}
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/login/success" element={<LoginPage />} />
+      <Route path="/login/success" element={<LoginSuccessPage />} />
       <Route path="/login/merge" element={<MergePage />} />
 
       {/* 需要登录的路由 */}
