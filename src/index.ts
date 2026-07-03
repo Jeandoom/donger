@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
+import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
@@ -63,6 +64,11 @@ async function main(): Promise<void> {
   const auditStore = new SqliteAuditStore(db);
   auditStore.migrate();
 
+  // JWT Session Store
+  const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
+  const sessionStore = new JwtSessionStore(db, jwtSecret, cfg.jwtTtlDays * 24 * 60 * 60 * 1000);
+  sessionStore.migrate();
+
   function createOrch(channel: Channel): Orchestrator {
     return new Orchestrator({
       store,
@@ -105,6 +111,8 @@ async function main(): Promise<void> {
     conversationStore,
     usageStore,
     auditStore,
+    sessionStore,
+    dingtalkConfig: cfg.dingtalk ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret } : undefined,
   });
   const webOrch = createOrch(webChannel);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
@@ -118,6 +126,19 @@ async function main(): Promise<void> {
     dtChannel.onMessage((m) => void dtOrch.handleMessage(m));
     log.info({ channel: "dingtalk" }, "就绪");
   }
+}
+
+/** 从 DB 读取或自动生成 JWT 密钥并持久化 */
+function loadOrGenerateJwtSecret(db: Database.Database): string {
+  db.exec(`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  const row = db.prepare("SELECT value FROM app_config WHERE key = 'jwt_secret'").get() as
+    | { value: string }
+    | undefined;
+  if (row) return row.value;
+  const { randomBytes } = require("node:crypto");
+  const secret = randomBytes(32).toString("hex");
+  db.prepare("INSERT INTO app_config (key, value) VALUES ('jwt_secret', ?)").run(secret);
+  return secret;
 }
 
 void main();
