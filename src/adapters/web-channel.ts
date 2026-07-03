@@ -14,6 +14,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { SessionStore } from "../ports/session-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
@@ -53,7 +54,6 @@ type WsIn =
   | {
       type: "message";
       text: string;
-      userId?: string;
       conversationId?: string;
       files?: Array<{
         path: string;
@@ -77,6 +77,8 @@ export interface WebChannelDeps {
   conversationStore?: ConversationStore;
   usageStore?: UsageStore;
   auditStore?: AuditStore;
+  sessionStore?: SessionStore;
+  dingtalkConfig?: { appKey: string; appSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -96,10 +98,15 @@ export class WebChannel implements Channel {
   private nextId = 0;
   private readonly webRoot: string;
   private readonly workspaceDir: string;
+  private readonly sessionStore?: SessionStore;
+  private readonly dingtalkConfig?: { appKey: string; appSecret: string };
+  private readonly oauthStateMap = new Map<string, number>();
 
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
     this.workspaceDir = deps.workspaceDir;
+    this.sessionStore = deps.sessionStore;
+    this.dingtalkConfig = deps.dingtalkConfig;
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -108,9 +115,27 @@ export class WebChannel implements Channel {
     const server = createServer((req, res) => this.handleHttp(req, res));
 
     const wss = new WebSocketServer({ server, path: "/ws" });
-    wss.on("connection", (ws) => {
+    wss.on("connection", async (ws, req) => {
+      // 校验 WebSocket token
+      let userId = "web-user";
+      if (this.sessionStore) {
+        const url = new URL(req.url ?? "", "http://localhost");
+        const token = url.searchParams.get("token");
+        if (!token) {
+          ws.close(4001, "missing_token");
+          return;
+        }
+        const verified = await this.sessionStore.verify(token);
+        if (!verified) {
+          ws.close(4001, "invalid_token");
+          return;
+        }
+        userId = verified;
+      }
+
       const threadId = `web-${++this.nextId}`;
       this.sockets.set(threadId, ws);
+      (ws as WebSocket & { userId: string }).userId = userId;
 
       ws.on("message", (raw) => {
         try {
@@ -136,7 +161,7 @@ export class WebChannel implements Channel {
             this.handler?.({
               channelId: "web",
               threadId,
-              requesterId: msg.userId ?? "web-user",
+              requesterId: (ws as WebSocket & { userId: string }).userId,
               text: finalText,
               conversationId: msg.conversationId,
             });
@@ -217,6 +242,184 @@ export class WebChannel implements Channel {
   }
 
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
+    // 免认证路由
+    const publicRoutes = ["/api/auth/qrcode-url", "/api/auth/dingtalk/callback", "/api/health"];
+    const isPublic = publicRoutes.some((r) => url.startsWith(r));
+
+    if (!isPublic && this.sessionStore) {
+      const authUserId = await this.authMiddleware(req);
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized", message: "请先登录" }));
+        return;
+      }
+      (req as HttpRequest & { userId?: string }).userId = authUserId;
+    }
+
+    // === Auth 路由 ===
+
+    // GET /api/auth/qrcode-url — 获取钉钉扫码 URL
+    if (url === "/api/auth/qrcode-url" && req.method === "GET") {
+      if (!this.dingtalkConfig) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "钉钉登录未配置" }));
+        return;
+      }
+      const state = crypto.randomUUID();
+      this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000); // 5 分钟过期
+      // 清理过期 state
+      for (const [s, exp] of this.oauthStateMap) {
+        if (Date.now() > exp) this.oauthStateMap.delete(s);
+      }
+      const redirectUri = `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host ?? "localhost"}/api/auth/dingtalk/callback`;
+      const qrUrl = `https://oapi.dingtalk.com/connect/qrconnect?app_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+      res.writeHead(200);
+      res.end(JSON.stringify({ url: qrUrl }));
+      return;
+    }
+
+    // GET /api/auth/dingtalk/callback — 钉钉 OAuth 回调
+    if (url.startsWith("/api/auth/dingtalk/callback") && req.method === "GET") {
+      const code = this.extractQuery(url, "code");
+      const state = this.extractQuery(url, "state");
+      if (!code) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "缺少 code 参数" }));
+        return;
+      }
+      // 校验 state（防 CSRF）
+      if (state) {
+        const exp = this.oauthStateMap.get(state);
+        if (!exp || Date.now() > exp) {
+          console.warn("[auth] OAuth state 校验失败或过期:", state);
+        }
+        this.oauthStateMap.delete(state ?? "");
+      }
+
+      if (!this.dingtalkConfig || !this.deps.userStore || !this.sessionStore) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "认证服务未就绪" }));
+        return;
+      }
+
+      try {
+        const { getUserAccessToken, getUserInfoByOAuth } = await import("../util/dingtalk-api.js");
+        const oauthToken = await getUserAccessToken(
+          this.dingtalkConfig.appKey, this.dingtalkConfig.appSecret, code,
+        );
+        const userInfo = await getUserInfoByOAuth(oauthToken.accessToken);
+
+        // 查 identity
+        const existing = await this.deps.userStore.findByIdentity("dingtalk", userInfo.userId);
+
+        if (existing) {
+          // 已有用户：签发 JWT → redirect 到合并确认页
+          const { token } = await this.sessionStore.create(existing.id);
+          res.writeHead(302, {
+            Location: `/login/merge?token=${token}&userId=${existing.id}&name=${encodeURIComponent(existing.name)}&avatar=${encodeURIComponent(userInfo.avatar ?? "")}`,
+          });
+          res.end();
+        } else {
+          // 新用户：创建 User + identity → 签发 JWT → redirect 到成功页
+          const user = await this.deps.userStore.getOrCreate(userInfo.userId, userInfo.name);
+          await this.deps.userStore.addIdentity(user.id, {
+            id: crypto.randomUUID(),
+            userId: user.id,
+            provider: "dingtalk",
+            externalId: userInfo.userId,
+            name: userInfo.name,
+            avatar: userInfo.avatar,
+            createdAt: new Date().toISOString(),
+          });
+          if (userInfo.avatar) {
+            await this.deps.userStore.updateProfile(user.id, { avatar: userInfo.avatar });
+          }
+          const { token } = await this.sessionStore.create(user.id);
+          res.writeHead(302, {
+            Location: `/login/success?token=${token}`,
+          });
+          res.end();
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("[auth] 钉钉回调处理失败:", errMsg);
+        res.writeHead(302, { Location: `/login?error=${encodeURIComponent(errMsg)}` });
+        res.end();
+      }
+      return;
+    }
+
+    // GET /api/auth/me — 当前用户信息
+    if (url === "/api/auth/me" && req.method === "GET") {
+      const uid = (req as HttpRequest & { userId?: string }).userId;
+      if (!uid || !this.deps.userStore) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      const user = await this.deps.userStore.get(uid);
+      if (!user) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "user not found" }));
+        return;
+      }
+      const identities = await this.deps.userStore.getIdentities(uid);
+      res.writeHead(200);
+      res.end(JSON.stringify({ user: { id: user.id, name: user.name, avatar: user.avatar, role: user.role, createdAt: user.createdAt }, identities }));
+      return;
+    }
+
+    // POST /api/auth/merge-confirm — 确认合并
+    if (url === "/api/auth/merge-confirm" && req.method === "POST") {
+      const uid = (req as HttpRequest & { userId?: string }).userId;
+      if (!uid || !this.deps.userStore || !this.sessionStore) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      const body = JSON.parse(await this.readBody(req)) as { sourceUserId?: string };
+      if (!body.sourceUserId) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "缺少 sourceUserId" }));
+        return;
+      }
+      try {
+        await this.deps.userStore.mergeUsers(body.sourceUserId, uid);
+        const user = await this.deps.userStore.get(uid);
+        const { token } = await this.sessionStore.create(uid);
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          token,
+          user: { id: user?.id, name: user?.name, avatar: user?.avatar, role: user?.role },
+        }));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+      }
+      return;
+    }
+
+    // POST /api/auth/logout — 主动登出
+    if (url === "/api/auth/logout" && req.method === "POST") {
+      const uid = (req as HttpRequest & { userId?: string }).userId;
+      if (!uid || !this.sessionStore) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      const auth = req.headers["authorization"];
+      if (auth?.startsWith("Bearer ")) {
+        const token = auth.slice(7);
+        const payload = this.decodeJwtPayload(token);
+        if (payload?.jti) {
+          await this.sessionStore.revoke(payload.jti as string);
+        }
+      }
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
     // GET /api/tasks — 任务列表
     if (url === "/api/tasks" && req.method === "GET") {
       const status = this.extractQuery(url, "status");
@@ -415,15 +618,27 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/users/me — 当前用户
-    if (url === "/api/users/me") {
-      res.writeHead(200);
-      res.end(JSON.stringify({ userId: "web-user" }));
-      return;
-    }
-
     res.writeHead(404);
     res.end(JSON.stringify({ error: "unknown endpoint" }));
+  }
+
+  /** Auth 中间件：校验 JWT Bearer Token，返回 userId 或 null */
+  private async authMiddleware(req: HttpRequest): Promise<string | null> {
+    if (!this.sessionStore) return null;
+    const auth = req.headers["authorization"];
+    if (!auth || !auth.startsWith("Bearer ")) return null;
+    const token = auth.slice(7);
+    return this.sessionStore.verify(token);
+  }
+
+  private decodeJwtPayload(token: string): Record<string, unknown> | null {
+    try {
+      const parts = token.split(".");
+      if (parts.length !== 3) return null;
+      return JSON.parse(Buffer.from(parts[1]!, "base64url").toString());
+    } catch {
+      return null;
+    }
   }
 
   private async handleUpload(req: HttpRequest, res: ServerResponse): Promise<void> {

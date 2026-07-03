@@ -7,7 +7,7 @@ import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js"
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
-import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel";
+import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
 
 function makeWebRoot(): string {
   return mkdtempSync(join(tmpdir(), "webroot-"));
@@ -123,6 +123,66 @@ describe("WebChannel GET /api/usage", () => {
     const port = await startWith(new InMemoryUsageStore());
     const res = await fetch(`http://localhost:${port}/api/usage?limit=abc`);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("WebChannel auth", () => {
+  let web: WebChannel;
+  let db: Database.Database;
+
+  afterEach(() => {
+    web?.stop();
+    db?.close();
+  });
+
+  async function createAuthChannel(): Promise<number> {
+    db = new Database(":memory:");
+    const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+
+    const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
+    const userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-")) });
+    userStore.migrate();
+
+    const tmp = mkdtempSync(join(tmpdir(), "web-auth-"));
+    web = new WebChannel({ port: 0, workspaceDir: tmp, sessionStore, userStore });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("no port");
+    return port;
+  }
+
+  it("GET /api/auth/me 无 token → 401", async () => {
+    const port = await createAuthChannel();
+    const res = await fetch(`http://localhost:${port}/api/auth/me`);
+    expect(res.status).toBe(401);
+  });
+
+  it("GET /api/auth/me 有效 token → 返回用户信息", async () => {
+    const port = await createAuthChannel();
+    const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
+    const userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir: mkdtempSync(join(tmpdir(), "web-auth-users2-")) });
+    userStore.migrate();
+    // 先创建用户
+    const user = await userStore.getOrCreate("test-staff", "测试用户");
+    const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const { token } = await sessionStore.create(user.id);
+    const res = await fetch(`http://localhost:${port}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { user: { id: string } };
+    expect(body.user.id).toBe(user.id);
+  });
+
+  it("GET /api/health 免认证", async () => {
+    const port = await createAuthChannel();
+    const res = await fetch(`http://localhost:${port}/api/health`);
+    expect(res.status).toBe(200);
   });
 });
 
