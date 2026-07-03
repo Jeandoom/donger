@@ -68,6 +68,11 @@ function mockUserStore(): UserStore {
     async list() {
       return [...users.values()];
     },
+    async findByIdentity() { return undefined; },
+    async addIdentity() {},
+    async getIdentities() { return []; },
+    async mergeUsers() {},
+    async updateProfile() {},
   };
 }
 

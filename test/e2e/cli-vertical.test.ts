@@ -60,6 +60,11 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
     async list() {
       return [];
     },
+    async findByIdentity() { return undefined; },
+    async addIdentity() {},
+    async getIdentities() { return []; },
+    async mergeUsers() {},
+    async updateProfile() {},
   };
   const conversationStore: import("../../src/ports/conversation-store.js").ConversationStore = {
     async create() {
