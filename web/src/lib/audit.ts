@@ -1,6 +1,8 @@
 // 审计页数据获取 + 纯显示函数（fetch 逻辑 + 格式化；UI 在 AuditPage）。
 // 后端契约见 docs/superpowers/specs/2026-07-01-conversation-audit-design.md §6。
 
+import { apiFetch } from "./auth";
+
 export interface AuditEventDTO {
   id: string;
   type: "user_message" | "session_init" | "text" | "tool_use" | "tool_result" | "result";
@@ -52,12 +54,13 @@ export interface AuditDetail {
 }
 
 export async function fetchAuditConversations(): Promise<AuditConversationListItem[]> {
-  const res = await fetch("/api/audit/conversations");
+  const res = await apiFetch("/api/audit/conversations");
+  if (!res.ok) throw new Error(`audit conversations ${res.status}`);
   return (await res.json()) as AuditConversationListItem[];
 }
 
 export async function fetchAuditDetail(id: string): Promise<AuditDetail> {
-  const res = await fetch(`/api/audit/conversations/${id}`);
+  const res = await apiFetch(`/api/audit/conversations/${id}`);
   if (!res.ok) throw new Error(`audit detail ${res.status}`);
   return (await res.json()) as AuditDetail;
 }
