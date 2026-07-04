@@ -229,6 +229,17 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // SPA fallback：/login/* 路由由前端 React Router 处理
+    if (url.startsWith("/login/")) {
+      const distRoot = join(this.webRoot, "dist");
+      const indexPath = join(distRoot, "index.html");
+      if (existsSync(indexPath)) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(readFileSync(indexPath));
+        return;
+      }
+    }
+
     // 静态托管：优先 web/dist（SPA fallback）
     const target = resolveStaticFile(this.webRoot, url);
     if (target?.kind === "file" && existsSync(target.absPath)) {
@@ -272,7 +283,7 @@ export class WebChannel implements Channel {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
       const redirectUri = `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host ?? "localhost"}/api/auth/dingtalk/callback`;
-      const qrUrl = `https://oapi.dingtalk.com/connect/qrconnect?app_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+      const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
       res.writeHead(200);
       res.end(JSON.stringify({ url: qrUrl }));
       return;
@@ -304,10 +315,12 @@ export class WebChannel implements Channel {
 
       try {
         const { getUserAccessToken, getUserInfoByOAuth } = await import("../util/dingtalk-api.js");
-        const oauthToken = await getUserAccessToken(
+        // 第一步：用授权码换取用户 access_token
+        const tokenResult = await getUserAccessToken(
           this.dingtalkConfig.appKey, this.dingtalkConfig.appSecret, code,
         );
-        const userInfo = await getUserInfoByOAuth(oauthToken.accessToken);
+        // 第二步：用 access_token 获取用户信息
+        const userInfo = await getUserInfoByOAuth(tokenResult.accessToken);
 
         // 查 identity
         const existing = await this.deps.userStore.findByIdentity("dingtalk", userInfo.userId);
@@ -342,7 +355,9 @@ export class WebChannel implements Channel {
         }
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
+        const errStack = e instanceof Error ? e.stack : undefined;
         console.error("[auth] 钉钉回调处理失败:", errMsg);
+        if (errStack) console.error("[auth] 错误堆栈:", errStack);
         res.writeHead(302, { Location: `/login?error=${encodeURIComponent(errMsg)}` });
         res.end();
       }

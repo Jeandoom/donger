@@ -20,7 +20,7 @@ export function LoginSuccessPage() {
     if (window.opener) {
       window.opener.postMessage(
         { type: "login-success", token },
-        window.location.origin,
+        "*",
       );
       setStatus("done");
       // 短暂延迟后关闭弹窗，给主页面处理时间

@@ -47,7 +47,7 @@ export function MergePage() {
       }
       const data = (await res.json()) as { token: string; user: { id: string; name?: string } };
       if (window.opener) {
-        window.opener.postMessage({ type: "login-success", token: data.token }, window.location.origin);
+        window.opener.postMessage({ type: "login-success", token: data.token }, "*");
         setTimeout(() => window.close(), 500);
       } else {
         setToken(data.token);
@@ -63,7 +63,7 @@ export function MergePage() {
   const handleNewUser = useCallback(() => {
     if (!mergeState) return;
     if (window.opener) {
-      window.opener.postMessage({ type: "login-success", token: mergeState.token }, window.location.origin);
+      window.opener.postMessage({ type: "login-success", token: mergeState.token }, "*");
       setTimeout(() => window.close(), 500);
     } else {
       navigate("/", { replace: true });

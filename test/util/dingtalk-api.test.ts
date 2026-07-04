@@ -3,6 +3,7 @@ import {
   buildSingleSendBody,
   getAccessToken,
   getUserAccessToken,
+  getUserInfoByCode,
   getUserInfoByOAuth,
   resetDingTalkTokenCache,
   sendSingleMessage,
@@ -87,48 +88,96 @@ describe("sendSingleMessage", () => {
   });
 });
 
-describe("getUserAccessToken", () => {
-  it("成功返回 token", async () => {
-    const fn = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ accessToken: "oauth-tok", refreshToken: "refresh", expireIn: 7200 }),
-    }));
-    vi.stubGlobal("fetch", fn);
-    const result = await getUserAccessToken("k", "s", "code123");
-    expect(result.accessToken).toBe("oauth-tok");
-    expect(result.refreshToken).toBe("refresh");
-    expect(fn).toHaveBeenCalledWith(
-      expect.stringContaining("user_accessible_token"),
-      expect.objectContaining({ method: "POST" }),
-    );
-  });
-
-  it("失败抛错", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ errCode: 40001, errMsg: "bad code" }),
-    })));
-    await expect(getUserAccessToken("k", "s", "bad")).rejects.toThrow("钉钉 OAuth 失败");
-  });
-});
-
-describe("getUserInfoByOAuth", () => {
+describe("getUserInfoByCode", () => {
   it("成功返回用户信息", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ userId: "staff123", name: "张三", avatar: "https://avatar.com/1" }),
-    })));
-    const info = await getUserInfoByOAuth("tok");
+    // getAccessToken 先请求一次
+    const fn = vi.fn(async (url: string) => {
+      if (url.includes("gettoken")) {
+        const body = JSON.stringify({ access_token: "corp-tok", expires_in: 7200 });
+        return { ok: true, json: async () => JSON.parse(body), text: async () => body };
+      }
+      const body = JSON.stringify({ errcode: 0, user_info: { userid: "staff123", name: "张三", avatar: "https://avatar.com/1" } });
+      return { ok: true, json: async () => JSON.parse(body), text: async () => body };
+    });
+    vi.stubGlobal("fetch", fn);
+    const info = await getUserInfoByCode("k", "s", "code123");
     expect(info.userId).toBe("staff123");
     expect(info.name).toBe("张三");
     expect(info.avatar).toBe("https://avatar.com/1");
   });
 
   it("失败抛错", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ errCode: 40001, errMsg: "invalid token" }),
-    })));
+    const fn = vi.fn(async (url: string) => {
+      if (url.includes("gettoken")) {
+        const body = JSON.stringify({ access_token: "corp-tok", expires_in: 7200 });
+        return { ok: true, json: async () => JSON.parse(body), text: async () => body };
+      }
+      const body = JSON.stringify({ errcode: 40001, errmsg: "bad code" });
+      return { ok: true, json: async () => JSON.parse(body), text: async () => body };
+    });
+    vi.stubGlobal("fetch", fn);
+    await expect(getUserInfoByCode("k", "s", "bad")).rejects.toThrow("钉钉用户信息获取失败");
+  });
+});
+
+describe("getUserAccessToken", () => {
+  it("成功返回 token", async () => {
+    const body = JSON.stringify({ accessToken: "oauth-tok", refreshToken: "ref", expireIn: 7200 });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+      })),
+    );
+    const r = await getUserAccessToken("k", "s", "code123");
+    expect(r.accessToken).toBe("oauth-tok");
+    expect(r.refreshToken).toBe("ref");
+    expect(r.expireIn).toBe(7200);
+  });
+
+  it("失败抛错", async () => {
+    const body = JSON.stringify({ errCode: 40014, errMsg: "invalid code" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+      })),
+    );
+    await expect(getUserAccessToken("k", "s", "bad")).rejects.toThrow("钉钉 OAuth token 获取失败");
+  });
+});
+
+describe("getUserInfoByOAuth", () => {
+  it("成功返回用户信息（新版 contact/users/me 格式）", async () => {
+    const body = JSON.stringify({ unionId: "staff456", nick: "李四", avatarUrl: "https://avatar.com/2" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+      })),
+    );
+    const info = await getUserInfoByOAuth("oauth-tok");
+    expect(info.userId).toBe("staff456");
+    expect(info.name).toBe("李四");
+    expect(info.avatar).toBe("https://avatar.com/2");
+  });
+
+  it("失败抛错", async () => {
+    const body = JSON.stringify({ errCode: "Forbidden.AccessDenied.AccessTokenPermissionDenied", errMsg: "没有权限" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+      })),
+    );
     await expect(getUserInfoByOAuth("bad")).rejects.toThrow("钉钉用户信息获取失败");
   });
 });

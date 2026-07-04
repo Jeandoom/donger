@@ -12,7 +12,6 @@ export function LoginPage() {
   // @新增：监听弹窗 postMessage
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
-      if (ev.origin !== window.location.origin) return;
       if (ev.data?.type === "login-success" && typeof ev.data.token === "string") {
         setToken(ev.data.token);
         navigate("/", { replace: true });
