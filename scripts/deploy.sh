@@ -43,7 +43,12 @@ fi
 # 2. 清空并创建部署目录
 echo ""
 echo ">>> 清理部署目录..."
-rm -rf "$DEPLOY_DIR"
+# 尝试直接删除目录，若因句柄占用失败则清空内容
+rm -rf "$DEPLOY_DIR" 2>/dev/null || {
+  echo "⚠️  无法删除目录（可能有句柄占用），清空内容..."
+  rm -rf "$DEPLOY_DIR"/*
+  rm -rf "$DEPLOY_DIR"/.* 2>/dev/null || true
+}
 mkdir -p "$DEPLOY_DIR"
 
 # 3. 复制项目文件（排除 node_modules、.git、data 等）

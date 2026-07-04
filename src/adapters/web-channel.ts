@@ -283,14 +283,24 @@ export class WebChannel implements Channel {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
       const redirectUri = `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host ?? "localhost"}/api/auth/dingtalk/callback`;
-      const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
+      const qrUrl = `https://oapi.dingtalk.com/connect/qrconnect?appid=${encodeURIComponent(this.dingtalkConfig.appKey)}&response_type=code&scope=snsapi_login&state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`;
       res.writeHead(200);
       res.end(JSON.stringify({ url: qrUrl }));
       return;
     }
 
-    // GET /api/auth/dingtalk/callback — 钉钉 OAuth 回调
+    // GET /api/auth/dingtalk/callback — 钉钉扫码登录回调（QR Connect）
     if (url.startsWith("/api/auth/dingtalk/callback") && req.method === "GET") {
+      // 检查是否有错误（用户取消扫码等）
+      const errorCode = this.extractQuery(url, "error_code");
+      const errorMsg = this.extractQuery(url, "error_message");
+      if (errorCode) {
+        console.warn("[auth] 钉钉扫码登录返回错误:", errorCode, errorMsg);
+        res.writeHead(302, { Location: `/login?error=${encodeURIComponent(errorMsg ?? errorCode)}` });
+        res.end();
+        return;
+      }
+
       const code = this.extractQuery(url, "code");
       const state = this.extractQuery(url, "state");
       if (!code) {
@@ -314,16 +324,16 @@ export class WebChannel implements Channel {
       }
 
       try {
-        const { getUserAccessToken, getUserInfoByOAuth } = await import("../util/dingtalk-api.js");
-        // 第一步：用授权码换取用户 access_token
-        const tokenResult = await getUserAccessToken(
-          this.dingtalkConfig.appKey, this.dingtalkConfig.appSecret, code,
+        const { getSnsToken, getSnsUserInfo } = await import("../util/dingtalk-api.js");
+        // 第一步：换取 sns access_token
+        const snsToken = await getSnsToken(
+          this.dingtalkConfig.appKey, this.dingtalkConfig.appSecret,
         );
-        // 第二步：用 access_token 获取用户信息
-        const userInfo = await getUserInfoByOAuth(tokenResult.accessToken);
+        // 第二步：获取用户信息（unionid 全局唯一）
+        const userInfo = await getSnsUserInfo(snsToken.accessToken);
 
-        // 查 identity
-        const existing = await this.deps.userStore.findByIdentity("dingtalk", userInfo.userId);
+        // 查 identity（用 unionid 作为外部 ID）
+        const existing = await this.deps.userStore.findByIdentity("dingtalk", userInfo.unionid);
 
         if (existing) {
           // 已有用户：签发 JWT → redirect 到合并确认页
@@ -334,13 +344,13 @@ export class WebChannel implements Channel {
           res.end();
         } else {
           // 新用户：创建 User + identity → 签发 JWT → redirect 到成功页
-          const user = await this.deps.userStore.getOrCreate(userInfo.userId, userInfo.name);
+          const user = await this.deps.userStore.getOrCreate(userInfo.unionid, userInfo.nick);
           await this.deps.userStore.addIdentity(user.id, {
             id: crypto.randomUUID(),
             userId: user.id,
             provider: "dingtalk",
-            externalId: userInfo.userId,
-            name: userInfo.name,
+            externalId: userInfo.unionid,
+            name: userInfo.nick,
             avatar: userInfo.avatar,
             createdAt: new Date().toISOString(),
           });
