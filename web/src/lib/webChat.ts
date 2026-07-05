@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { ConversationSummary, WsIn, WsOut } from "../types";
+import type { ChatMessage, ConversationSummary, WsIn, WsOut } from "../types";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
 import { clearToken, getToken } from "./auth";
@@ -85,10 +85,29 @@ export function useWebChat(url: string) {
     return () => ws.close();
   }, [url, createNewConversation, loadConversations]);
 
-  /** 切换会话 */
-  const switchConversation = useCallback((conversationId: string | null) => {
-    dispatch({ type: "switch_conversation", conversationId });
-  }, []);
+  /** 切换会话（先清空本地消息，再异步加载历史消息） */
+  const switchConversation = useCallback(
+    (conversationId: string | null) => {
+      dispatch({ type: "switch_conversation", conversationId });
+      if (!conversationId) return;
+
+      const token = getToken();
+      fetch(`/api/conversations/${conversationId}/messages`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json() as Promise<ChatMessage[]>;
+        })
+        .then((messages) => {
+          dispatch({ type: "set_messages", messages });
+        })
+        .catch(() => {
+          dispatch({ type: "set_messages", messages: [] });
+        });
+    },
+    [],
+  );
 
   /** 新建会话 */
   const newConversation = useCallback(async () => {

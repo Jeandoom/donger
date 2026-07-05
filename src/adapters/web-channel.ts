@@ -14,6 +14,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { MessageStore } from "../ports/message-store.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
@@ -75,6 +76,7 @@ export interface WebChannelDeps {
   taskStore?: TaskStore;
   userStore?: UserStore;
   conversationStore?: ConversationStore;
+  messageStore?: MessageStore;
   usageStore?: UsageStore;
   auditStore?: AuditStore;
   sessionStore?: SessionStore;
@@ -95,9 +97,12 @@ export class WebChannel implements Channel {
     string,
     (d: { approved: boolean; reason?: string }) => void
   >();
+  /** threadId → conversationId 映射，用于在 send() 中关联 bot 回复到正确会话 */
+  private readonly convMap = new Map<string, string>();
   private nextId = 0;
   private readonly webRoot: string;
   private readonly workspaceDir: string;
+  private readonly messageStore?: MessageStore;
   private readonly sessionStore?: SessionStore;
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
@@ -105,6 +110,7 @@ export class WebChannel implements Channel {
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
     this.workspaceDir = deps.workspaceDir;
+    this.messageStore = deps.messageStore;
     this.sessionStore = deps.sessionStore;
     this.dingtalkConfig = deps.dingtalkConfig;
   }
@@ -165,6 +171,17 @@ export class WebChannel implements Channel {
               text: finalText,
               conversationId: msg.conversationId,
             });
+
+            // 持久化用户消息
+            if (msg.conversationId && this.messageStore) {
+              this.convMap.set(threadId, msg.conversationId);
+              this.messageStore.add(
+                msg.conversationId,
+                "user",
+                msg.text,
+                JSON.stringify(msg.files ?? []),
+              ).catch((e) => console.error("[web] 保存用户消息失败", e));
+            }
           } else if (msg.type === "approval") {
             const resolve = this.pendingApprovals.get(threadId);
             if (resolve) {
@@ -482,6 +499,32 @@ export class WebChannel implements Channel {
       const mem = new MemoryStore(join(user.homeDir, "memory"));
       res.writeHead(200);
       res.end(JSON.stringify(mem.list()));
+      return;
+    }
+
+    // GET /api/conversations/:id/messages — 会话消息列表
+    // 必须在 /api/conversations 通配之前，否则会被截获
+    const msgMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
+    if (msgMatch && req.method === "GET") {
+      const conversationId = msgMatch[1] ?? "";
+      if (!this.messageStore) {
+        res.writeHead(200);
+        res.end(JSON.stringify([]));
+        return;
+      }
+      const stored = await this.messageStore.listByConversation(conversationId);
+      const messages = stored.map((m) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        files: JSON.parse(m.files) as Array<{
+          path: string;
+          name: string;
+          type: "image" | "markdown";
+        }>,
+      }));
+      res.writeHead(200);
+      res.end(JSON.stringify(messages));
       return;
     }
 

@@ -62,4 +62,6 @@ export interface ChatState {
   activeConversationId: string | null;
   /** 会话列表加载中 */
   loadingConversations: boolean;
+  /** 历史消息加载中 */
+  loadingMessages: boolean;
 }

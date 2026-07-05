@@ -9,6 +9,7 @@ import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
+import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
@@ -64,6 +65,8 @@ async function main(): Promise<void> {
   usageStore.migrate();
   const auditStore = new SqliteAuditStore(db);
   auditStore.migrate();
+  const messageStore = new SqliteMessageStore(db);
+  messageStore.migrate();
 
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
@@ -75,6 +78,7 @@ async function main(): Promise<void> {
       store,
       userStore,
       conversationStore,
+      messageStore,
       usageStore,
       auditStore,
       planner: new Planner(),
@@ -110,6 +114,7 @@ async function main(): Promise<void> {
     taskStore: store,
     userStore,
     conversationStore,
+    messageStore,
     usageStore,
     auditStore,
     sessionStore,

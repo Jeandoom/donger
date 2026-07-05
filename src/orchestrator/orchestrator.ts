@@ -11,6 +11,7 @@ import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { MessageStore } from "../ports/message-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
@@ -27,6 +28,7 @@ export interface OrchestratorDeps {
   store: TaskStore;
   userStore: UserStore;
   conversationStore: ConversationStore;
+  messageStore?: MessageStore;
   usageStore: UsageStore;
   auditStore: AuditStore;
   planner: Planner;
@@ -42,55 +44,103 @@ export interface OrchestratorDeps {
 }
 
 export class Orchestrator {
-  private readonly busyThreads = new Set<string>();
+  // conversationId → taskId（该会话当前活跃任务，用于独立并发控制）
+  private readonly busyConversations = new Map<string, string>();
+  // userId → 活跃任务数（并发限制）
+  private readonly userActiveCounts = new Map<string, number>();
+  /** 同用户最大并行任务数 */
+  private static readonly MAX_CONCURRENT_PER_USER = 10;
 
   constructor(private readonly deps: OrchestratorDeps) {}
+
+  /** 检查用户并发数是否超限 */
+  private checkUserLimit(userId: string): boolean {
+    const count = this.userActiveCounts.get(userId) ?? 0;
+    return count < Orchestrator.MAX_CONCURRENT_PER_USER;
+  }
+
+  /** 注册用户活跃任务 */
+  private registerActive(userId: string): void {
+    const count = this.userActiveCounts.get(userId) ?? 0;
+    this.userActiveCounts.set(userId, count + 1);
+  }
+
+  /** 注销用户活跃任务 */
+  private unregisterActive(userId: string): void {
+    const count = this.userActiveCounts.get(userId) ?? 0;
+    this.userActiveCounts.set(userId, Math.max(0, count - 1));
+  }
+
+  /** 检查会话是否繁忙 */
+  private isConversationBusy(conversationId: string): boolean {
+    return this.busyConversations.has(conversationId);
+  }
+
+  /** 标记会话繁忙 */
+  private markBusy(conversationId: string, taskId: string): void {
+    this.busyConversations.set(conversationId, taskId);
+  }
+
+  /** 解除会话繁忙 */
+  private unmarkBusy(conversationId: string): void {
+    this.busyConversations.delete(conversationId);
+  }
+
+  /** 获取用户最新的活跃会话ID（无IO，用于快速路由） */
+  private getLatestConversationId(userId: string, channelId: string): string | null {
+    // 从本地缓存取，避免每次消息都查库
+    // 这个值在 conversation 创建后更新，所以只需要一个成员变量缓存
+    return this.latestConvCache?.get(`${userId}:${channelId}`) ?? null;
+  }
+
+  /** 更新最新会话缓存 */
+  private updateLatestConvCache(userId: string, channelId: string, conversationId: string): void {
+    if (!this.latestConvCache) {
+      this.latestConvCache = new Map();
+    }
+    this.latestConvCache.set(`${userId}:${channelId}`, conversationId);
+  }
+
+  private latestConvCache?: Map<string, string>;
 
   async handleMessage(msg: IncomingMessage): Promise<void> {
     const { store, userStore, conversationStore, planner, gates, runner, channel } = this.deps;
 
-    if (this.busyThreads.has(msg.threadId)) {
-      await channel.send(msg.threadId, { text: "⏳ 正在处理上一条消息，请稍候…" });
+    const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);
+
+    // "/new" 命令：创建新会话
+    if (msg.text.trim().toLowerCase() === "/new") {
+      await conversationStore.create(user.id, msg.channelId, "新对话");
+      await channel.send(msg.threadId, { text: "✨ 已开启新对话" });
       return;
     }
-    this.busyThreads.add(msg.threadId);
+
+    // 解析会话：conversationId 不存在时从本地取 latest（不再网络请求）
+    const conversationId = msg.conversationId ?? this.getLatestConversationId(user.id, msg.channelId);
+    const conversation = conversationId
+      ? (await conversationStore.get(conversationId)) ??
+        (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30)))
+      : await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30));
+
+    // 并发控制：
+    //  同一会话：串行排队（后到的排队等前序完成）
+    //  同一用户：最多 MAX_CONCURRENT_PER_USER 并行（超限提示）
+    if (this.isConversationBusy(conversation.id)) {
+      await channel.send(msg.threadId, { text: "⏳ 该会话正在处理上一条消息，请稍候…" });
+      return;
+    }
+    if (!this.checkUserLimit(user.id)) {
+      await channel.send(msg.threadId, { text: "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。" });
+      return;
+    }
+
+    // 标记会话繁忙 + 用户活跃计数
+    this.markBusy(conversation.id, "");
+    this.registerActive(user.id);
 
     let task: Task | undefined;
+    const capturedConversationId = conversation.id;
     try {
-      // 非流式渠道：收到即回复处理中标记
-      if (!channel.streaming) {
-        await channel.send(msg.threadId, { text: "[蛇来运转]" });
-      }
-
-      const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);
-
-      // "/new" 命令：创建新会话
-      if (msg.text.trim().toLowerCase() === "/new") {
-        await conversationStore.create(user.id, msg.channelId, "新对话");
-        await channel.send(msg.threadId, { text: "✨ 已开启新对话" });
-        return;
-      }
-
-      // 会话解析
-      let conversation: Conversation;
-      if (msg.conversationId) {
-        const found = await conversationStore.get(msg.conversationId);
-        if (found) {
-          conversation = found;
-        } else {
-          conversation = await conversationStore.create(
-            user.id,
-            msg.channelId,
-            msg.text.slice(0, 30),
-          );
-        }
-      } else {
-        const latest = await conversationStore.getLatest(user.id, msg.channelId);
-        conversation =
-          latest ?? (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30)));
-      }
-
-      // per-user 记忆
       let memory: MemoryStore | undefined;
       try {
         memory = new MemoryStore(join(user.homeDir, "knowledge_base", "user"));
@@ -223,7 +273,13 @@ export class Orchestrator {
         }
       }.call(this);
 
-      const last = await bridgeEvents(channel, msg.threadId, wrappedEvents);
+      const last = await bridgeEvents(
+        channel,
+        msg.threadId,
+        wrappedEvents,
+        this.deps.messageStore,
+        conversation.id,
+      );
 
       const ok = last?.type === "result" && last.subtype === "success";
       const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
@@ -297,7 +353,9 @@ export class Orchestrator {
         // ignore
       }
     } finally {
-      this.busyThreads.delete(msg.threadId);
+      // 无论成功失败，都解除会话繁忙 + 用户活跃计数
+      this.unmarkBusy(conversation.id);
+      this.unregisterActive(user.id);
     }
   }
 }

@@ -13,7 +13,9 @@ export type ChatAction =
   | { type: "clear_approval" }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
-  | { type: "new_conversation"; conversation: ConversationSummary };
+  | { type: "new_conversation"; conversation: ConversationSummary }
+  | { type: "set_messages"; messages: ChatMessage[] }
+  | { type: "loading_messages"; loading: boolean };
 
 export function initialChatState(): ChatState {
   return {
@@ -23,6 +25,7 @@ export function initialChatState(): ChatState {
     conversations: [],
     activeConversationId: null,
     loadingConversations: true,
+    loadingMessages: false,
   };
 }
 
@@ -64,6 +67,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         activeConversationId: action.conversationId,
         messages: [],
+        loadingMessages: true,
       };
     case "new_conversation":
       return {
@@ -72,7 +76,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeConversationId: action.conversation.id,
         messages: [],
         loadingConversations: false,
+        loadingMessages: false,
       };
+    case "set_messages":
+      return { ...state, messages: action.messages, loadingMessages: false };
+    case "loading_messages":
+      return { ...state, loadingMessages: action.loading };
     default:
       return state;
   }
