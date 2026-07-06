@@ -184,6 +184,44 @@ describe("WebChannel auth", () => {
     const res = await fetch(`http://localhost:${port}/api/health`);
     expect(res.status).toBe(200);
   });
+
+  // SSE 流鉴权：EventSource 无法设置 Authorization 头，必须支持 ?token= 查询参数
+  async function createSessionToken(): Promise<string> {
+    const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
+    const userStore = new SqliteUserStore(db, {
+      adminStaffIds: new Set(),
+      usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-stream-")),
+    });
+    userStore.migrate();
+    const user = await userStore.getOrCreate("stream-staff", "流测试用户");
+    const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const { token } = await sessionStore.create(user.id);
+    return token;
+  }
+
+  it("GET /api/conversations/:id/stream 无 token → 401", async () => {
+    const port = await createAuthChannel();
+    const res = await fetch(`http://localhost:${port}/api/conversations/abc-123/stream`);
+    expect(res.status).toBe(401);
+  });
+
+  it("GET /api/conversations/:id/stream?token=<有效> → 200 text/event-stream", async () => {
+    const port = await createAuthChannel();
+    const token = await createSessionToken();
+    const res = await fetch(
+      `http://localhost:${port}/api/conversations/abc-123/stream?token=${token}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    // 中断流式连接，避免挂住
+    try {
+      await res.body?.cancel();
+    } catch {
+      /* ignore */
+    }
+  });
 });
 
 function auditEvent(over: Record<string, unknown>) {

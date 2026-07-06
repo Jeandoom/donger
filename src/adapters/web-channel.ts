@@ -245,8 +245,10 @@ export class WebChannel implements Channel {
 
     // REST API 优先
     if (url.startsWith("/api/")) {
+      // 路由匹配基于 pathname（剥离查询串），以便 SSE 的 ?token= 不影响分发
+      const pathname = url.split("?")[0] ?? url;
       // SSE 流式接口需要特殊 Content-Type
-      if (url.startsWith("/api/conversations/") && url.endsWith("/stream")) {
+      if (pathname.startsWith("/api/conversations/") && pathname.endsWith("/stream")) {
         await this.handleSSEStream(req, res);
         return;
       }
@@ -331,8 +333,9 @@ export class WebChannel implements Channel {
    * SSE 流：客户端订阅以接收该会话的实时消息
    */
   private async handleSSEStream(req: HttpRequest, res: ServerResponse): Promise<void> {
-    // 提取 conversationId
-    const match = req.url?.match(/^\/api\/conversations\/([\w-]+)\/stream$/);
+    // 提取 conversationId（基于 pathname，忽略 ?token= 等查询串）
+    const pathname = (req.url ?? "").split("?")[0] ?? "";
+    const match = pathname.match(/^\/api\/conversations\/([\w-]+)\/stream$/);
     if (!match) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: "invalid stream url" }));
@@ -903,12 +906,14 @@ export class WebChannel implements Channel {
     res.end(JSON.stringify({ error: "unknown endpoint" }));
   }
 
-  /** Auth 中间件 */
+  /** Auth 中间件：优先 Authorization 头；SSE 的 EventSource 无法设置自定义头，回退读 ?token= */
   private async authMiddleware(req: HttpRequest): Promise<string | null> {
     if (!this.sessionStore) return null;
     const auth = req.headers["authorization"];
-    if (!auth || !auth.startsWith("Bearer ")) return null;
-    const token = auth.slice(7);
+    const token = auth?.startsWith("Bearer ")
+      ? auth.slice(7)
+      : this.extractQuery(req.url ?? "", "token");
+    if (!token) return null;
     return this.sessionStore.verify(token);
   }
 

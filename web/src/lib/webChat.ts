@@ -61,8 +61,11 @@ export function useWebChat() {
 
   /** 连接 SSE 流 */
   const connectSSE = useCallback((conversationId: string) => {
+    // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
+    const token = getToken();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
     const eventSource = new EventSource(
-      `/api/conversations/${conversationId}/stream`,
+      `/api/conversations/${conversationId}/stream${qs}`,
     );
 
     sseRef.current = {
