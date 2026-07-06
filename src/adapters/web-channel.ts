@@ -13,11 +13,13 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { FileBrowser } from "../ports/file-browser.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
+import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -74,6 +76,7 @@ export interface WebChannelDeps {
   usageStore?: UsageStore;
   auditStore?: AuditStore;
   sessionStore?: SessionStore;
+  fileBrowser?: FileBrowser;
   dingtalkConfig?: { appKey: string; appSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
@@ -107,6 +110,7 @@ export class WebChannel implements Channel {
   private readonly workspaceDir: string;
   private readonly messageStore?: MessageStore;
   private readonly sessionStore?: SessionStore;
+  private readonly fileBrowser?: FileBrowser;
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
 
@@ -115,6 +119,7 @@ export class WebChannel implements Channel {
     this.workspaceDir = deps.workspaceDir;
     this.messageStore = deps.messageStore;
     this.sessionStore = deps.sessionStore;
+    this.fileBrowser = deps.fileBrowser;
     this.dingtalkConfig = deps.dingtalkConfig;
   }
 
@@ -902,8 +907,102 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // GET /api/files/tree
+    if (url.startsWith("/api/files/tree") && req.method === "GET") {
+      await this.handleFileTree(req, res);
+      return;
+    }
+    // GET /api/files/content
+    if (url.startsWith("/api/files/content") && req.method === "GET") {
+      await this.handleFileContent(req, res);
+      return;
+    }
+
     res.writeHead(404);
     res.end(JSON.stringify({ error: "unknown endpoint" }));
+  }
+
+  /** GET /api/files/tree?scope=user|runtime[&conversationId=] */
+  private async handleFileTree(req: HttpRequest, res: ServerResponse): Promise<void> {
+    if (!this.fileBrowser) {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: "文件浏览未启用" }));
+      return;
+    }
+    const userId = (req as HttpRequest & { userId?: string }).userId ?? "";
+    const scope = this.extractQuery(req.url ?? "", "scope");
+    const conversationId = this.extractQuery(req.url ?? "", "conversationId");
+    if (scope !== "user" && scope !== "runtime") {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "scope 必须是 user 或 runtime" }));
+      return;
+    }
+    if (scope === "runtime" && !conversationId) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "runtime 需要 conversationId" }));
+      return;
+    }
+    try {
+      const nodes = await this.fileBrowser.listTree(userId, scope, conversationId);
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ nodes }));
+    } catch (e) {
+      this.writeFileInfoError(res, e);
+    }
+  }
+
+  /** GET /api/files/content?scope=&path=&[conversationId=][&download=1] */
+  private async handleFileContent(req: HttpRequest, res: ServerResponse): Promise<void> {
+    if (!this.fileBrowser) {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: "文件浏览未启用" }));
+      return;
+    }
+    const userId = (req as HttpRequest & { userId?: string }).userId ?? "";
+    const scope = this.extractQuery(req.url ?? "", "scope");
+    const rawPath = this.extractQuery(req.url ?? "", "path");
+    const conversationId = this.extractQuery(req.url ?? "", "conversationId");
+    const download = this.extractQuery(req.url ?? "", "download") === "1";
+    if (scope !== "user" && scope !== "runtime") {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "scope 必须是 user 或 runtime" }));
+      return;
+    }
+    if (!rawPath) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "缺少 path" }));
+      return;
+    }
+    try {
+      const content = await this.fileBrowser.readFile(userId, scope, rawPath, conversationId, {
+        maxBytes: download ? 50 * 1024 * 1024 : 5 * 1024 * 1024,
+      });
+      const headers: Record<string, string> = {
+        "Content-Type": content.mime,
+        "X-Content-Type-Options": "nosniff",
+      };
+      if (download) {
+        const name = rawPath.split("/").pop() ?? "file";
+        headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
+      }
+      res.writeHead(200, headers);
+      res.end(content.buffer);
+    } catch (e) {
+      this.writeFileInfoError(res, e);
+    }
+  }
+
+  private writeFileInfoError(res: ServerResponse, e: unknown): void {
+    if (e instanceof ForbiddenError) {
+      res.writeHead(403);
+    } else if (e instanceof NotFoundError) {
+      res.writeHead(404);
+    } else if (e instanceof PayloadTooLargeError) {
+      res.writeHead(413);
+    } else {
+      res.writeHead(500);
+    }
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
   }
 
   /** Auth 中间件：优先 Authorization 头；SSE 的 EventSource 无法设置自定义头，回退读 ?token= */

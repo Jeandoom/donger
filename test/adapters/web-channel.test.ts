@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
+import { LocalFileBrowser } from "../../src/adapters/local-file-browser.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
+import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
+import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 
 function makeWebRoot(): string {
   return mkdtempSync(join(tmpdir(), "webroot-"));
@@ -383,5 +386,80 @@ describe("WebChannel POST /api/upload", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("/api/files/*", () => {
+  let port: number;
+  let token: string;
+  let tmpWs: string;
+
+  beforeEach(async () => {
+    tmpWs = mkdtempSync(join(tmpdir(), "fb-ws-"));
+    const db = new Database(":memory:");
+    const usersDir = join(tmpWs, "users");
+    const userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir });
+    userStore.migrate();
+    const convStore = new SqliteConversationStore(db);
+    convStore.migrate();
+    const sessionStore = new JwtSessionStore(db, "test-secret", 3600_000);
+    sessionStore.migrate();
+    const fileBrowser = new LocalFileBrowser({
+      userStore,
+      conversationStore: convStore,
+      workspaceDir: tmpWs,
+    });
+    web = new WebChannel({ port: 0, workspaceDir: tmpWs, sessionStore, fileBrowser });
+    web.onMessage(() => {});
+    await web.ready();
+    port = web.boundPort ?? 0;
+    const user = await userStore.getOrCreate("u1", "alice");
+    write(join(tmpWs, "users", user.id), ".skills/SKILL.md", "# hi");
+    token = (await sessionStore.create(user.id)).token;
+  });
+
+  it("未带 token → 401", async () => {
+    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=user`);
+    expect(r.status).toBe(401);
+  });
+
+  it("scope 非法 → 400", async () => {
+    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=admin&token=${token}`);
+    expect(r.status).toBe(400);
+  });
+
+  it("runtime 缺 conversationId → 400", async () => {
+    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=runtime&token=${token}`);
+    expect(r.status).toBe(400);
+  });
+
+  it("tree 正常返回 nodes", async () => {
+    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=user&token=${token}`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { nodes: { name: string }[] };
+    expect(body.nodes.map((n) => n.name)).toContain(".skills");
+  });
+
+  it("content 返回 markdown", async () => {
+    const r = await fetch(
+      `http://localhost:${port}/api/files/content?scope=user&path=.skills/SKILL.md&token=${token}`,
+    );
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toContain("text/markdown");
+    expect(await r.text()).toBe("# hi");
+  });
+
+  it("content 路径越界 → 403", async () => {
+    const r = await fetch(
+      `http://localhost:${port}/api/files/content?scope=user&path=../../x&token=${token}`,
+    );
+    expect(r.status).toBe(403);
+  });
+
+  it("content download=1 带 attachment 头", async () => {
+    const r = await fetch(
+      `http://localhost:${port}/api/files/content?scope=user&path=.skills/SKILL.md&download=1&token=${token}`,
+    );
+    expect(r.headers.get("content-disposition")).toContain("attachment");
   });
 });
