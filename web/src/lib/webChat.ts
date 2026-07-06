@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { ConversationSummary, WsIn, WsOut } from "../types";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
 import { clearToken, getToken } from "./auth";
 
-export function useWebChat(url: string) {
+type SSEClient = {
+  close(): void;
+};
+
+export function useWebChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
-  const wsRef = useRef<WebSocket | null>(null);
+  const sseRef = useRef<SSEClient | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // 从 JWT 中解析 userId
   const getUserId = useCallback((): string => {
@@ -18,11 +23,6 @@ export function useWebChat(url: string) {
     } catch {
       return "web-user";
     }
-  }, []);
-
-  /** 切换会话 */
-  const switchConversation = useCallback((conversationId: string | null) => {
-    dispatch({ type: "switch_conversation", conversationId });
   }, []);
 
   /** 创建新会话 */
@@ -59,48 +59,114 @@ export function useWebChat(url: string) {
     }
   }, [getUserId]);
 
-  // 会话列表加载后：有历史会话则自动进入最新，无历史则创建新会话
-  const [autoInitDone, setAutoInitDone] = useState(false);
-  useEffect(() => {
-    if (state.loadingConversations || autoInitDone) return;
-    const first = state.conversations[0];
-    if (first) {
-      switchConversation(first.id);
-    } else {
-      createNewConversation().catch(() => {});
-    }
-    setAutoInitDone(true);
-  }, [state.loadingConversations, state.conversations, autoInitDone, switchConversation, createNewConversation]);
+  /** 连接 SSE 流 */
+  const connectSSE = useCallback((conversationId: string) => {
+    // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
+    const token = getToken();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+    const eventSource = new EventSource(
+      `/api/conversations/${conversationId}/stream${qs}`,
+    );
 
+    sseRef.current = {
+      close: () => eventSource.close(),
+    };
+
+    eventSource.addEventListener("text", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "text") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("approval_card", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "approval_card") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("result", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "result") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("error", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "error") {
+          console.error("[SSE]", data.error);
+        }
+      } catch {
+        // ignore
+      }
+      // EventSource 会自动重连，无需手动处理
+    });
+
+    eventSource.onopen = () => {
+      dispatch({ type: "connection", state: "open" });
+    };
+
+    return eventSource;
+  }, [state.activeConversationId]);
+
+  // 初始连接
   useEffect(() => {
     dispatch({ type: "connection", state: "connecting" });
-    // WebSocket 连接带 token
-    const token = getToken();
-    const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    loadConversations().catch(() => {});
+  }, [loadConversations]);
 
-    ws.onopen = () => {
-      dispatch({ type: "connection", state: "open" });
-      loadConversations().catch(() => {});
-    };
-    ws.onclose = (ev) => {
-      dispatch({ type: "connection", state: "closed" });
-      // 如果是 4001 (token 无效)，清除 token 并跳转登录
-      if (ev.code === 4001) {
-        clearToken();
-        window.location.href = "/login";
+  // 连接/重连 SSE
+  useEffect(() => {
+    if (!state.activeConversationId) return;
+
+    const eventSource = connectSSE(state.activeConversationId);
+
+    return () => {
+      eventSource.close();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
       }
     };
-    ws.onmessage = (ev) => {
-      try {
-        dispatch({ type: "ws", msg: JSON.parse(ev.data) as WsOut });
-      } catch {
-        /* 忽略非法帧 */
-      }
-    };
-    return () => ws.close();
-  }, [url, loadConversations]);
+  }, [state.activeConversationId, connectSSE]);
+
+  /** 切换会话（先清空本地消息，再异步加载历史消息） */
+  const switchConversation = useCallback(
+    (conversationId: string | null) => {
+      dispatch({ type: "switch_conversation", conversationId });
+      if (!conversationId) return;
+
+      const token = getToken();
+      fetch(`/api/conversations/${conversationId}/messages`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json() as Promise<ChatMessage[]>;
+        })
+        .then((messages) => {
+          dispatch({ type: "set_messages", messages });
+        })
+        .catch(() => {
+          dispatch({ type: "set_messages", messages: [] });
+        });
+    },
+    [],
+  );
 
   /** 新建会话 */
   const newConversation = useCallback(async () => {
@@ -108,28 +174,48 @@ export function useWebChat(url: string) {
   }, [createNewConversation]);
 
   const send = useCallback(
-    (text: string, files?: FileInfo[]) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      dispatch({ type: "user_message", text, files });
-      const out: WsIn = {
-        type: "message",
-        text,
-        files,
-        conversationId: state.activeConversationId ?? undefined,
-      };
-      ws.send(JSON.stringify(out));
+    async (text: string, files?: FileInfo[]) => {
+      const conversationId = state.activeConversationId;
+      if (!conversationId) return;
+
+      const token = getToken();
+      try {
+        dispatch({ type: "user_message", text, files });
+        await fetch(`/api/conversations/${conversationId}/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ text, files }),
+        });
+      } catch {
+        // ignore
+      }
     },
     [state.activeConversationId],
   );
 
-  const resolveApproval = useCallback((approved: boolean, reason?: string) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const out: WsIn = { type: "approval", approved, reason };
-    ws.send(JSON.stringify(out));
-    dispatch({ type: "clear_approval" });
-  }, []);
+  const resolveApproval = useCallback(async (approved: boolean, reason?: string) => {
+    // 审批响应通过 HTTP POST 发送
+    const pending = state.pendingApproval;
+    if (!pending) return;
+
+    const token = getToken();
+    try {
+      await fetch(`/api/approvals/${pending.gateId}/respond`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ approved, reason }),
+      });
+      dispatch({ type: "clear_approval" });
+    } catch {
+      // ignore
+    }
+  }, [state.pendingApproval]);
 
   /** 删除会话（软删除，归档） */
   const deleteConversation = useCallback(async (id: string) => {
@@ -145,7 +231,7 @@ export function useWebChat(url: string) {
         /* 忽略 */
       }
     }
-  }, [getUserId]);
+  }, []);
 
   return {
     ...state,

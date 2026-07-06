@@ -119,6 +119,17 @@ export interface OutgoingMessage {
   markdown?: boolean;
 }
 
+// === 持久化聊天消息 ===
+export interface StoredMessage {
+  id: string;
+  conversationId: string;
+  role: "user" | "bot";
+  text: string;
+  /** files 字段 JSON stringified，空数组存 "[]" */
+  files: string;
+  createdAt: string;
+}
+
 // === 审批 ===
 export interface ApprovalCard {
   gateId: string;

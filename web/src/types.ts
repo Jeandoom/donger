@@ -1,23 +1,12 @@
-// 本地复制 WS 消息类型（与 src/adapters/web-channel.ts 的 WsIn/WsOut 保持一致）。
-// 不 import 后端源码，避免拖入 node 依赖。
+// 前端类型定义（SSE+HTTP 版本）
+// 与 src/adapters/web-channel.ts 的 SSEEvent 保持一致
 
-export type WsIn =
-  | {
-      type: "message";
-      text: string;
-      conversationId?: string;
-      files?: Array<{
-        path: string;
-        name: string;
-        type: "image" | "markdown";
-      }>;
-    }
-  | { type: "approval"; approved: boolean; reason?: string };
-
-export type WsOut =
+/** SSE 事件类型 */
+export type SSEEvent =
   | { type: "text"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
-  | { type: "result"; subtype: "success" | "error"; text: string };
+  | { type: "result"; subtype: "success" | "error"; text: string }
+  | { type: "error"; error: string };
 
 export type ChatRole = "user" | "bot";
 
@@ -62,4 +51,6 @@ export interface ChatState {
   activeConversationId: string | null;
   /** 会话列表加载中 */
   loadingConversations: boolean;
+  /** 历史消息加载中 */
+  loadingMessages: boolean;
 }

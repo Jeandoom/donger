@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatState, ConversationSummary, WsOut } from "../types";
+import type { ChatMessage, ChatState, ConversationSummary, SSEEvent } from "../types";
 
 export type FileInfo = {
   path: string;
@@ -8,12 +8,14 @@ export type FileInfo = {
 
 export type ChatAction =
   | { type: "connection"; state: "connecting" | "open" | "closed" }
-  | { type: "ws"; msg: WsOut }
+  | { type: "ws"; msg: SSEEvent }
   | { type: "user_message"; text: string; files?: FileInfo[] }
   | { type: "clear_approval" }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
   | { type: "new_conversation"; conversation: ConversationSummary }
+  | { type: "set_messages"; messages: ChatMessage[] }
+  | { type: "loading_messages"; loading: boolean }
   | { type: "remove_conversation"; conversationId: string };
 
 export function initialChatState(): ChatState {
@@ -24,6 +26,7 @@ export function initialChatState(): ChatState {
     conversations: [],
     activeConversationId: null,
     loadingConversations: true,
+    loadingMessages: false,
   };
 }
 
@@ -65,6 +68,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         activeConversationId: action.conversationId,
         messages: [],
+        loadingMessages: true,
       };
     case "new_conversation":
       return {
@@ -73,17 +77,21 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeConversationId: action.conversation.id,
         messages: [],
         loadingConversations: false,
+        loadingMessages: false,
       };
+    case "set_messages":
+      return { ...state, messages: action.messages, loadingMessages: false };
+    case "loading_messages":
+      return { ...state, loadingMessages: action.loading };
     case "remove_conversation": {
       const remaining = state.conversations.filter((c) => c.id !== action.conversationId);
       const isActive = state.activeConversationId === action.conversationId;
       return {
         ...state,
         conversations: remaining,
-        activeConversationId: isActive
-          ? (remaining[0]?.id ?? null)
-          : state.activeConversationId,
+        activeConversationId: isActive ? (remaining[0]?.id ?? null) : state.activeConversationId,
         messages: isActive ? [] : state.messages,
+        loadingMessages: isActive ? false : state.loadingMessages,
       };
     }
     default:
@@ -91,7 +99,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 }
 
-function applyWsOut(state: ChatState, msg: WsOut): ChatState {
+function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
   switch (msg.type) {
     case "text":
       return appendBot(state, msg.text);
@@ -101,7 +109,10 @@ function applyWsOut(state: ChatState, msg: WsOut): ChatState {
         pendingApproval: { gateId: msg.gateId, title: msg.title, summary: msg.summary },
       };
     case "result":
-      return appendBot(state, msg.text);
+      if (msg.subtype === "success") {
+        return appendBot(state, msg.text);
+      }
+      return state;
     default:
       return state;
   }

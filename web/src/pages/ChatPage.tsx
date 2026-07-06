@@ -28,7 +28,7 @@ export function ChatPage() {
     switchConversation,
     newConversation,
     deleteConversation,
-  } = useWebChat("/ws");
+  } = useWebChat();
   const [text, setText] = useState("");
   const [pendingFiles, setPendingFiles] = useState<FileInfo[]>([]);
   const [uploading, setUploading] = useState(false);
