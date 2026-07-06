@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { ChatMessage, ConversationSummary, WsIn, WsOut } from "../types";
+import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
 import { clearToken, getToken } from "./auth";
 
-export function useWebChat(url: string) {
+type SSEClient = {
+  close(): void;
+};
+
+export function useWebChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
-  const wsRef = useRef<WebSocket | null>(null);
+  const sseRef = useRef<SSEClient | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // 从 JWT 中解析 userId
   const getUserId = useCallback((): string => {
@@ -54,36 +59,87 @@ export function useWebChat(url: string) {
     }
   }, [getUserId]);
 
+  /** 连接 SSE 流 */
+  const connectSSE = useCallback((conversationId: string) => {
+    const eventSource = new EventSource(
+      `/api/conversations/${conversationId}/stream`,
+    );
+
+    sseRef.current = {
+      close: () => eventSource.close(),
+    };
+
+    eventSource.addEventListener("text", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "text") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("approval_card", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "approval_card") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("result", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "result") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("error", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "error") {
+          console.error("[SSE]", data.error);
+        }
+      } catch {
+        // ignore
+      }
+      // EventSource 会自动重连，无需手动处理
+    });
+
+    eventSource.onopen = () => {
+      dispatch({ type: "connection", state: "open" });
+    };
+
+    return eventSource;
+  }, [state.activeConversationId]);
+
+  // 初始连接
   useEffect(() => {
     dispatch({ type: "connection", state: "connecting" });
-    // WebSocket 连接带 token
-    const token = getToken();
-    const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    loadConversations().catch(() => {});
+  }, [loadConversations]);
 
-    ws.onopen = () => {
-      dispatch({ type: "connection", state: "open" });
-      createNewConversation().catch(() => {});
-      loadConversations().catch(() => {});
-    };
-    ws.onclose = (ev) => {
-      dispatch({ type: "connection", state: "closed" });
-      // 如果是 4001 (token 无效)，清除 token 并跳转登录
-      if (ev.code === 4001) {
-        clearToken();
-        window.location.href = "/login";
+  // 连接/重连 SSE
+  useEffect(() => {
+    if (!state.activeConversationId) return;
+
+    const eventSource = connectSSE(state.activeConversationId);
+
+    return () => {
+      eventSource.close();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
       }
     };
-    ws.onmessage = (ev) => {
-      try {
-        dispatch({ type: "ws", msg: JSON.parse(ev.data) as WsOut });
-      } catch {
-        /* 忽略非法帧 */
-      }
-    };
-    return () => ws.close();
-  }, [url, createNewConversation, loadConversations]);
+  }, [state.activeConversationId, connectSSE]);
 
   /** 切换会话（先清空本地消息，再异步加载历史消息） */
   const switchConversation = useCallback(
@@ -115,28 +171,48 @@ export function useWebChat(url: string) {
   }, [createNewConversation]);
 
   const send = useCallback(
-    (text: string, files?: FileInfo[]) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      dispatch({ type: "user_message", text, files });
-      const out: WsIn = {
-        type: "message",
-        text,
-        files,
-        conversationId: state.activeConversationId ?? undefined,
-      };
-      ws.send(JSON.stringify(out));
+    async (text: string, files?: FileInfo[]) => {
+      const conversationId = state.activeConversationId;
+      if (!conversationId) return;
+
+      const token = getToken();
+      try {
+        dispatch({ type: "user_message", text, files });
+        await fetch(`/api/conversations/${conversationId}/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ text, files }),
+        });
+      } catch {
+        // ignore
+      }
     },
     [state.activeConversationId],
   );
 
-  const resolveApproval = useCallback((approved: boolean, reason?: string) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const out: WsIn = { type: "approval", approved, reason };
-    ws.send(JSON.stringify(out));
-    dispatch({ type: "clear_approval" });
-  }, []);
+  const resolveApproval = useCallback(async (approved: boolean, reason?: string) => {
+    // 审批响应通过 HTTP POST 发送
+    const pending = state.pendingApproval;
+    if (!pending) return;
+
+    const token = getToken();
+    try {
+      await fetch(`/api/approvals/${pending.gateId}/respond`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ approved, reason }),
+      });
+      dispatch({ type: "clear_approval" });
+    } catch {
+      // ignore
+    }
+  }, [state.pendingApproval]);
 
   return {
     ...state,

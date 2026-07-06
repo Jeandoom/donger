@@ -15,6 +15,12 @@ export interface Channel {
   readonly streaming?: boolean;
   onMessage(handler: (msg: IncomingMessage) => void): void;
   send(threadId: string, msg: OutgoingMessage): Promise<void>;
+  /** 推送文本消息（SSE 版本，WebChannel 实现） */
+  pushText?(conversationId: string, text: string): void;
+  /** 推送完成通知（SSE 版本） */
+  pushResult?(conversationId: string, subtype: "success" | "error", text: string): void;
+  /** 推送审批卡片（SSE 版本） */
+  pushApprovalCard?(conversationId: string, gateId: string, title: string, summary: string): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
   /** 收到确认（可选）；返回 ack 上下文供 ackEnd 用 */
   ack?(threadId: string): Promise<unknown>;

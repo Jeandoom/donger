@@ -275,10 +275,9 @@ export class Orchestrator {
 
       const last = await bridgeEvents(
         channel,
-        msg.threadId,
+        conversation.id,
         wrappedEvents,
         this.deps.messageStore,
-        conversation.id,
       );
 
       const ok = last?.type === "result" && last.subtype === "success";

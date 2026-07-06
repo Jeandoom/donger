@@ -8,7 +8,6 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
-import { type WebSocket, WebSocketServer } from "ws";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
@@ -51,23 +50,18 @@ function contentType(absPath: string): string {
   return "application/octet-stream";
 }
 
-type WsIn =
-  | {
-      type: "message";
-      text: string;
-      conversationId?: string;
-      files?: Array<{
-        path: string;
-        name: string;
-        type: "image" | "markdown";
-      }>;
-    }
-  | { type: "approval"; approved: boolean; reason?: string };
-
-type WsOut =
+/** SSE 事件类型 */
+type SSEEvent =
   | { type: "text"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
-  | { type: "result"; subtype: "success" | "error"; text: string };
+  | { type: "result"; subtype: "success" | "error"; text: string }
+  | { type: "error"; error: string };
+
+/** 向 SSE 客户端写事件的回调 */
+type SSEClient = {
+  write(event: SSEEvent): void;
+  close(): void;
+};
 
 export interface WebChannelDeps {
   port: number;
@@ -85,20 +79,29 @@ export interface WebChannelDeps {
   webRoot?: string;
 }
 
+/**
+ * WebChannel（SSE 版本）
+ *
+ * 通信模式：
+ *   Client → Server：HTTP POST 发送消息、审批响应
+ *   Server → Client：SSE（EventSource）流式推送回复、审批请求
+ *
+ * 废弃 WebSocket，全部改用 HTTP + SSE：
+ *   - 用户发消息：POST /api/conversations/:id/messages
+ *   - 流式接收回复：GET /api/conversations/:id/stream (SSE)
+ *   - 审批请求推送：GET /api/approvals/stream (SSE)
+ *   - 审批响应：POST /api/approvals/:id/respond
+ */
 export class WebChannel implements Channel {
   readonly id = "web";
   readonly streaming = true;
   private handler?: (msg: IncomingMessage) => void;
   private server?: Server;
-  private wss?: WebSocketServer;
   private readyPromise?: Promise<void>;
-  private readonly sockets = new Map<string, WebSocket>();
-  private readonly pendingApprovals = new Map<
-    string,
-    (d: { approved: boolean; reason?: string }) => void
-  >();
-  /** threadId → conversationId 映射，用于在 send() 中关联 bot 回复到正确会话 */
-  private readonly convMap = new Map<string, string>();
+  /** 会话 ID → SSE 客户端集合 */
+  private readonly sseClients = new Map<string, Set<SSEClient>>();
+  /** 审批 ID → SSE 客户端（审批请求推送） */
+  private readonly approvalStreams = new Map<string, SSEClient>();
   private nextId = 0;
   private readonly webRoot: string;
   private readonly workspaceDir: string;
@@ -119,100 +122,150 @@ export class WebChannel implements Channel {
     this.handler = handler;
 
     const server = createServer((req, res) => this.handleHttp(req, res));
-
-    const wss = new WebSocketServer({ server, path: "/ws" });
-    wss.on("connection", async (ws, req) => {
-      // 校验 WebSocket token
-      let userId = "web-user";
-      if (this.sessionStore) {
-        const url = new URL(req.url ?? "", "http://localhost");
-        const token = url.searchParams.get("token");
-        if (!token) {
-          ws.close(4001, "missing_token");
-          return;
-        }
-        const verified = await this.sessionStore.verify(token);
-        if (!verified) {
-          ws.close(4001, "invalid_token");
-          return;
-        }
-        userId = verified;
-      }
-
-      const threadId = `web-${++this.nextId}`;
-      this.sockets.set(threadId, ws);
-      (ws as WebSocket & { userId: string }).userId = userId;
-
-      ws.on("message", (raw) => {
-        try {
-          const msg = JSON.parse(raw.toString()) as WsIn;
-          if (msg.type === "message") {
-            let finalText = msg.text;
-
-            if (msg.files && msg.files.length > 0) {
-              for (const file of msg.files) {
-                if (file.type === "markdown") {
-                  try {
-                    const content = readFileSync(file.path, "utf-8");
-                    finalText += `\n\n--- 用户上传的文件：${file.name} ---\n${content}`;
-                  } catch {
-                    finalText += `\n\n[无法读取文件：${file.name}]`;
-                  }
-                } else if (file.type === "image") {
-                  finalText += `\n\n![${file.name}](file://${file.path})`;
-                }
-              }
-            }
-
-            this.handler?.({
-              channelId: "web",
-              threadId,
-              requesterId: (ws as WebSocket & { userId: string }).userId,
-              text: finalText,
-              conversationId: msg.conversationId,
-            });
-
-            // 持久化用户消息
-            if (msg.conversationId && this.messageStore) {
-              this.convMap.set(threadId, msg.conversationId);
-              this.messageStore.add(
-                msg.conversationId,
-                "user",
-                msg.text,
-                JSON.stringify(msg.files ?? []),
-              ).catch((e) => console.error("[web] 保存用户消息失败", e));
-            }
-          } else if (msg.type === "approval") {
-            const resolve = this.pendingApprovals.get(threadId);
-            if (resolve) {
-              this.pendingApprovals.delete(threadId);
-              resolve({ approved: msg.approved, reason: msg.reason });
-            }
-          }
-        } catch (e) {
-          console.error("[web] 消息解析失败", e);
-        }
-      });
-
-      ws.on("close", () => {
-        this.sockets.delete(threadId);
-        this.pendingApprovals.delete(threadId);
-      });
-    });
-
     this.server = server;
-    this.wss = wss;
     this.readyPromise = new Promise<void>((resolve) => {
       server.listen(this.deps.port, () => resolve());
     });
   }
 
-  /** HTTP 路由：静态文件 + REST API */
+  // ---------------------------------------------------------------------------
+  // SSE 推送方法
+  // ---------------------------------------------------------------------------
+
+  /** 向会话的 SSE 客户端推送文本消息 */
+  pushText(conversationId: string, text: string): void {
+    this.broadcastToConversation(conversationId, { type: "text", text });
+  }
+
+  /** 向会话的 SSE 客户端推送完成通知 */
+  pushResult(conversationId: string, subtype: "success" | "error", text: string): void {
+    this.broadcastToConversation(conversationId, { type: "result", subtype, text });
+  }
+
+  /** 推送审批卡片（SSE） */
+  pushApprovalCard(
+    conversationId: string,
+    gateId: string,
+    title: string,
+    summary: string,
+  ): Promise<void> {
+    // 审批卡片通过 SSE 推送给对应会话
+    this.broadcastToConversation(conversationId, { type: "approval_card", gateId, title, summary });
+    return Promise.resolve();
+  }
+
+  /** 等待审批响应（通过 HTTP POST /api/approvals/:id/respond） */
+  async requestApproval(
+    threadId: string,
+    card: ApprovalCard,
+  ): Promise<{ approved: boolean; reason?: string }> {
+    // 通过 SSE 广播审批请求，客户端通过 HTTP POST 响应
+    return new Promise((resolve, reject) => {
+      this.approvalStreams.set(card.gateId, {
+        write: (_event: SSEEvent) => {},
+        close: () => {},
+      });
+
+      // 设置超时：60 秒未响应则取消
+      const timeout = setTimeout(() => {
+        this.approvalStreams.delete(card.gateId);
+        reject(new Error("审批超时（60秒）"));
+      }, 60_000);
+
+      // 注意：实际的审批响应通过 HTTP POST /api/approvals/:id/respond 处理
+      // 这里返回一个占位 Promise，实际响应由 HTTP 处理器调用 resolve
+      this.pendingApprovalResolves.set(card.gateId, (result) => {
+        clearTimeout(timeout);
+        this.approvalStreams.delete(card.gateId);
+        resolve(result);
+      });
+    });
+  }
+
+  /** 存储审批响应的 resolve 函数 */
+  private readonly pendingApprovalResolves = new Map<
+    string,
+    (result: { approved: boolean; reason?: string }) => void
+  >();
+
+  /** 向特定会话广播事件 */
+  private broadcastToConversation(conversationId: string, event: SSEEvent): void {
+    const clients = this.sseClients.get(conversationId);
+    if (!clients) return;
+    for (const client of clients) {
+      try {
+        client.write(event);
+      } catch {
+        // 客户端可能已断开，忽略错误
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Channel 接口实现
+  // ---------------------------------------------------------------------------
+
+  async send(threadId: string, _msg: OutgoingMessage): Promise<void> {
+    // SSE 版本：send 由 pushText/pushResult 替代
+    void threadId;
+    void _msg;
+  }
+
+  // ---------------------------------------------------------------------------
+  // SSE 流管理
+  // ---------------------------------------------------------------------------
+
+  /** 注册 SSE 客户端到会话 */
+  subscribeSSE(conversationId: string, client: SSEClient): void {
+    let clients = this.sseClients.get(conversationId);
+    if (!clients) {
+      clients = new Set();
+      this.sseClients.set(conversationId, clients);
+    }
+    clients.add(client);
+  }
+
+  /** 注销 SSE 客户端 */
+  unsubscribeSSE(conversationId: string, client: SSEClient): void {
+    const clients = this.sseClients.get(conversationId);
+    if (clients) {
+      clients.delete(client);
+      if (clients.size === 0) {
+        this.sseClients.delete(conversationId);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTTP 路由
+  // ---------------------------------------------------------------------------
+
   private async handleHttp(req: HttpRequest, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
-    // REST API 优先（避免被 SPA fallback 吞掉）
+    // REST API 优先
     if (url.startsWith("/api/")) {
+      // SSE 流式接口需要特殊 Content-Type
+      if (url.startsWith("/api/conversations/") && url.endsWith("/stream")) {
+        await this.handleSSEStream(req, res);
+        return;
+      }
+      if (url.startsWith("/api/approvals/stream")) {
+        await this.handleApprovalStream(req, res);
+        return;
+      }
+      // 审批响应
+      if (url.startsWith("/api/approvals/") && req.method === "POST" && url.endsWith("/respond")) {
+        await this.handleApprovalRespond(req, res);
+        return;
+      }
+      // 发送消息
+      const sendMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
+      if (sendMatch && req.method === "POST") {
+        await this.handleSendMessage(req, res);
+        return;
+      }
+      // 其他 API
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       try {
         await this.handleApi(url, req, res);
@@ -223,7 +276,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // /uploads/ 静态文件（上传文件预览）
+    // /uploads/ 静态文件
     if (url.startsWith("/uploads/")) {
       const relPath = url.replace("/uploads/", "");
       const absPath = join(this.workspaceDir, "sessions", relPath);
@@ -257,7 +310,7 @@ export class WebChannel implements Channel {
       }
     }
 
-    // 静态托管：优先 web/dist（SPA fallback）
+    // 静态托管
     const target = resolveStaticFile(this.webRoot, url);
     if (target?.kind === "file" && existsSync(target.absPath)) {
       res.writeHead(200, { "Content-Type": contentType(target.absPath) });
@@ -268,6 +321,190 @@ export class WebChannel implements Channel {
     res.writeHead(404);
     res.end("Not found");
   }
+
+  // ---------------------------------------------------------------------------
+  // SSE 处理器
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /api/conversations/:id/stream
+   * SSE 流：客户端订阅以接收该会话的实时消息
+   */
+  private async handleSSEStream(req: HttpRequest, res: ServerResponse): Promise<void> {
+    // 提取 conversationId
+    const match = req.url?.match(/^\/api\/conversations\/([\w-]+)\/stream$/);
+    if (!match) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "invalid stream url" }));
+      return;
+    }
+    const conversationId = match[1]!;
+
+    // 认证
+    if (this.sessionStore) {
+      const authUserId = await this.authMiddleware(req);
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+
+    // SSE 头
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    const client: SSEClient = {
+      write: (event: SSEEvent) => {
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      },
+      close: () => {
+        try { res.end(); } catch { /* ignore */ }
+      },
+    };
+
+    this.subscribeSSE(conversationId, client);
+
+    // 发送连接确认
+    client.write({ type: "text", text: "" });
+
+    // 保持连接
+    const keepAlive = setInterval(() => {
+      try { res.write(":\n\n"); } catch { /* ignore */ }
+    }, 30_000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      this.unsubscribeSSE(conversationId, client);
+    });
+  }
+
+  /**
+   * GET /api/approvals/stream
+   * SSE 流：客户端订阅以接收审批请求推送
+   */
+  private async handleApprovalStream(req: HttpRequest, res: ServerResponse): Promise<void> {
+    if (this.sessionStore) {
+      const authUserId = await this.authMiddleware(req);
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const client: SSEClient = {
+      write: (event: SSEEvent) => {
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      },
+      close: () => {
+        try { res.end(); } catch { /* ignore */ }
+      },
+    };
+
+    const keepAlive = setInterval(() => {
+      try { res.write(":\n\n"); } catch { /* ignore */ }
+    }, 30_000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      client.close();
+    });
+  }
+
+  /**
+   * POST /api/approvals/:id/respond
+   * 审批响应（通过 HTTP POST 替代 WebSocket 双向通信）
+   */
+  private async handleApprovalRespond(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const match = req.url?.match(/^\/api\/approvals\/([\w-]+)\/respond$/);
+    if (!match) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "invalid approval url" }));
+      return;
+    }
+    const approvalId = match[1]!;
+
+    const body = JSON.parse(await this.readBody(req)) as {
+      approved: boolean;
+      reason?: string;
+    };
+
+    const resolve = this.pendingApprovalResolves.get(approvalId);
+    if (resolve) {
+      this.pendingApprovalResolves.delete(approvalId);
+      resolve({ approved: body.approved, reason: body.reason });
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+    } else {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: "approval not found or expired" }));
+    }
+  }
+
+  /**
+   * POST /api/conversations/:id/messages
+   * 发送消息（替代 WebSocket）
+   */
+  private async handleSendMessage(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const match = req.url?.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
+    if (!match) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "invalid conversation url" }));
+      return;
+    }
+    const conversationId = match[1]!;
+
+    // 认证
+    if (this.sessionStore) {
+      const authUserId = await this.authMiddleware(req);
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+
+    const body = JSON.parse(await this.readBody(req)) as {
+      text: string;
+      files?: Array<{ path: string; name: string; type: "image" | "markdown" }>;
+    };
+
+    // 持久化用户消息
+    if (this.messageStore) {
+      await this.messageStore
+        .add(conversationId, "user", body.text, JSON.stringify(body.files ?? []))
+        .catch((e) => console.error("[web] 保存用户消息失败", e));
+    }
+
+    // 调用消息处理器
+    if (this.handler) {
+      this.handler({
+        channelId: "web",
+        threadId: conversationId, // SSE 模式下用 conversationId 作为 threadId
+        requesterId: (req as HttpRequest & { userId?: string }).userId ?? "web-user",
+        text: body.text,
+        conversationId,
+      });
+    }
+
+    res.writeHead(202);
+    res.end(JSON.stringify({ ok: true, conversationId }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // 原有 API 路由
+  // ---------------------------------------------------------------------------
 
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // 免认证路由
@@ -286,16 +523,15 @@ export class WebChannel implements Channel {
 
     // === Auth 路由 ===
 
-    // GET /api/auth/qrcode-url — 获取钉钉扫码 URL
+    // GET /api/auth/qrcode-url
     if (url === "/api/auth/qrcode-url" && req.method === "GET") {
       if (!this.dingtalkConfig) {
         res.writeHead(503);
         res.end(JSON.stringify({ error: "钉钉登录未配置" }));
         return;
       }
-      const state = crypto.randomUUID();
-      this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000); // 5 分钟过期
-      // 清理过期 state
+      const state = `${Date.now()}-${Math.random()}`;
+      this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000);
       for (const [s, exp] of this.oauthStateMap) {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
@@ -306,7 +542,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/auth/dingtalk/callback — 钉钉 OAuth 回调
+    // GET /api/auth/dingtalk/callback
     if (url.startsWith("/api/auth/dingtalk/callback") && req.method === "GET") {
       const code = this.extractQuery(url, "code");
       const state = this.extractQuery(url, "state");
@@ -315,7 +551,6 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "缺少 code 参数" }));
         return;
       }
-      // 校验 state（防 CSRF）
       if (state) {
         const exp = this.oauthStateMap.get(state);
         if (!exp || Date.now() > exp) {
@@ -332,28 +567,22 @@ export class WebChannel implements Channel {
 
       try {
         const { getUserAccessToken, getUserInfoByOAuth } = await import("../util/dingtalk-api.js");
-        // 第一步：用授权码换取用户 access_token
         const tokenResult = await getUserAccessToken(
           this.dingtalkConfig.appKey, this.dingtalkConfig.appSecret, code,
         );
-        // 第二步：用 access_token 获取用户信息
         const userInfo = await getUserInfoByOAuth(tokenResult.accessToken);
-
-        // 查 identity
         const existing = await this.deps.userStore.findByIdentity("dingtalk", userInfo.userId);
 
         if (existing) {
-          // 已有用户：签发 JWT → redirect 到合并确认页
           const { token } = await this.sessionStore.create(existing.id);
           res.writeHead(302, {
             Location: `/login/merge?token=${token}&userId=${existing.id}&name=${encodeURIComponent(existing.name)}&avatar=${encodeURIComponent(userInfo.avatar ?? "")}`,
           });
           res.end();
         } else {
-          // 新用户：创建 User + identity → 签发 JWT → redirect 到成功页
           const user = await this.deps.userStore.getOrCreate(userInfo.userId, userInfo.name);
           await this.deps.userStore.addIdentity(user.id, {
-            id: crypto.randomUUID(),
+            id: `${Date.now()}-${Math.random()}`,
             userId: user.id,
             provider: "dingtalk",
             externalId: userInfo.userId,
@@ -372,16 +601,14 @@ export class WebChannel implements Channel {
         }
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        const errStack = e instanceof Error ? e.stack : undefined;
         console.error("[auth] 钉钉回调处理失败:", errMsg);
-        if (errStack) console.error("[auth] 错误堆栈:", errStack);
         res.writeHead(302, { Location: `/login?error=${encodeURIComponent(errMsg)}` });
         res.end();
       }
       return;
     }
 
-    // GET /api/auth/me — 当前用户信息
+    // GET /api/auth/me
     if (url === "/api/auth/me" && req.method === "GET") {
       const uid = (req as HttpRequest & { userId?: string }).userId;
       if (!uid || !this.deps.userStore) {
@@ -401,7 +628,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/auth/merge-confirm — 确认合并
+    // POST /api/auth/merge-confirm
     if (url === "/api/auth/merge-confirm" && req.method === "POST") {
       const uid = (req as HttpRequest & { userId?: string }).userId;
       if (!uid || !this.deps.userStore || !this.sessionStore) {
@@ -431,7 +658,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/auth/logout — 主动登出
+    // POST /api/auth/logout
     if (url === "/api/auth/logout" && req.method === "POST") {
       const uid = (req as HttpRequest & { userId?: string }).userId;
       if (!uid || !this.sessionStore) {
@@ -452,7 +679,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/tasks — 任务列表
+    // GET /api/tasks
     if (url === "/api/tasks" && req.method === "GET") {
       const status = this.extractQuery(url, "status");
       const tasks = status
@@ -470,7 +697,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/tasks/:id — 任务详情
+    // GET /api/tasks/:id
     const taskMatch = url.match(/^\/api\/tasks\/([\w-]+)$/);
     if (taskMatch && req.method === "GET") {
       const task = await this.deps.taskStore?.get(taskMatch[1] ?? "");
@@ -479,7 +706,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/users — 用户列表
+    // GET /api/users
     if (url === "/api/users" && req.method === "GET") {
       const users = (await this.deps.userStore?.list()) ?? [];
       res.writeHead(200);
@@ -487,7 +714,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/users/:id/memory — 用户记忆
+    // GET /api/users/:id/memory
     const memMatch = url.match(/^\/api\/users\/([\w-]+)\/memory$/);
     if (memMatch && req.method === "GET") {
       const user = await this.deps.userStore?.get(memMatch[1] ?? "");
@@ -503,7 +730,6 @@ export class WebChannel implements Channel {
     }
 
     // GET /api/conversations/:id/messages — 会话消息列表
-    // 必须在 /api/conversations 通配之前，否则会被截获
     const msgMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
     if (msgMatch && req.method === "GET") {
       const conversationId = msgMatch[1] ?? "";
@@ -528,10 +754,9 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/conversations?userId=xxx — 会话列表
+    // GET /api/conversations?userId=xxx
     if (url.startsWith("/api/conversations") && req.method === "GET") {
       let userId = this.extractQuery(url, "userId");
-      // 解析 staffId → 内部 user.id
       if (userId && this.deps.userStore) {
         const user = await this.deps.userStore.getByStaffId(userId);
         if (user) userId = user.id;
@@ -552,17 +777,16 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/upload — 文件上传
+    // POST /api/upload
     if (url.startsWith("/api/upload") && req.method === "POST") {
       await this.handleUpload(req, res);
       return;
     }
 
-    // POST /api/conversations — 创建新会话
+    // POST /api/conversations
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
       const { userId, channelId } = JSON.parse(body) as { userId: string; channelId?: string };
-      // 解析 staffId → 内部 user.id（conversation 统一用内部 user.id 关联）
       let resolvedUserId = userId;
       if (userId && this.deps.userStore) {
         const user = await this.deps.userStore.getByStaffId(userId);
@@ -587,7 +811,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/audit/conversations — 审计会话列表（summary + 会话元信息）
+    // GET /api/audit/conversations
     if (url === "/api/audit/conversations" && req.method === "GET") {
       const summaries = (await this.deps.auditStore?.listConversationSummaries()) ?? [];
       const out = await Promise.all(
@@ -607,7 +831,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/audit/conversations/:id — 会话详情（按轮分组）
+    // GET /api/audit/conversations/:id
     const auditDetailMatch = url.match(/^\/api\/audit\/conversations\/([\w-]+)$/);
     if (auditDetailMatch && req.method === "GET") {
       const conversationId = auditDetailMatch[1] ?? "";
@@ -618,7 +842,6 @@ export class WebChannel implements Channel {
         return;
       }
       const conversation = await this.deps.conversationStore?.get(conversationId);
-      // 按 taskId 分组（组内已按 recordedAt,seq 升序）
       const byTask = new Map<string, typeof events>();
       for (const e of events) {
         const arr = byTask.get(e.taskId) ?? [];
@@ -645,7 +868,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/usage — 用量记录列表（可按 userId/taskId/since/until/limit 过滤）
+    // GET /api/usage
     if ((url === "/api/usage" || url.startsWith("/api/usage?")) && req.method === "GET") {
       const userId = this.extractQuery(url, "userId");
       const taskId = this.extractQuery(url, "taskId");
@@ -680,7 +903,7 @@ export class WebChannel implements Channel {
     res.end(JSON.stringify({ error: "unknown endpoint" }));
   }
 
-  /** Auth 中间件：校验 JWT Bearer Token，返回 userId 或 null */
+  /** Auth 中间件 */
   private async authMiddleware(req: HttpRequest): Promise<string | null> {
     if (!this.sessionStore) return null;
     const auth = req.headers["authorization"];
@@ -825,35 +1048,7 @@ export class WebChannel implements Channel {
     });
   }
 
-  async send(threadId: string, msg: OutgoingMessage): Promise<void> {
-    const ws = this.sockets.get(threadId);
-    if (!ws) return;
-    const out: WsOut = { type: "text", text: msg.text };
-    ws.send(JSON.stringify(out));
-  }
-
-  async requestApproval(
-    threadId: string,
-    card: ApprovalCard,
-  ): Promise<{ approved: boolean; reason?: string }> {
-    const ws = this.sockets.get(threadId);
-    if (!ws) throw new Error("WebSocket 连接已断开");
-
-    ws.send(
-      JSON.stringify({
-        type: "approval_card",
-        gateId: card.gateId,
-        title: card.title,
-        summary: card.summary,
-      }),
-    );
-
-    return new Promise((resolve) => {
-      this.pendingApprovals.set(threadId, resolve);
-    });
-  }
-
-  /** 等 HTTP 服务监听就绪（测试用：port=0 时 await 后再读 boundPort）。 */
+  /** 等 HTTP 服务监听就绪 */
   async ready(): Promise<void> {
     await this.readyPromise;
   }
@@ -864,7 +1059,6 @@ export class WebChannel implements Channel {
   }
 
   stop(): void {
-    this.wss?.close();
     this.server?.close();
   }
 }

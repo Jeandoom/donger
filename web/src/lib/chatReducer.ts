@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatState, ConversationSummary, WsOut } from "../types";
+import type { ChatMessage, ChatState, ConversationSummary, SSEEvent } from "../types";
 
 export type FileInfo = {
   path: string;
@@ -8,7 +8,7 @@ export type FileInfo = {
 
 export type ChatAction =
   | { type: "connection"; state: "connecting" | "open" | "closed" }
-  | { type: "ws"; msg: WsOut }
+  | { type: "ws"; msg: SSEEvent }
   | { type: "user_message"; text: string; files?: FileInfo[] }
   | { type: "clear_approval" }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
@@ -87,7 +87,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 }
 
-function applyWsOut(state: ChatState, msg: WsOut): ChatState {
+function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
   switch (msg.type) {
     case "text":
       return appendBot(state, msg.text);
@@ -97,7 +97,10 @@ function applyWsOut(state: ChatState, msg: WsOut): ChatState {
         pendingApproval: { gateId: msg.gateId, title: msg.title, summary: msg.summary },
       };
     case "result":
-      return appendBot(state, msg.text);
+      if (msg.subtype === "success") {
+        return appendBot(state, msg.text);
+      }
+      return state;
     default:
       return state;
   }
