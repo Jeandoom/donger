@@ -27,6 +27,7 @@ export function ChatPage() {
     resolveApproval,
     switchConversation,
     newConversation,
+    deleteConversation,
   } = useWebChat("/ws");
   const [text, setText] = useState("");
   const [pendingFiles, setPendingFiles] = useState<FileInfo[]>([]);
@@ -106,6 +107,7 @@ export function ChatPage() {
         onItemClick={(id) => switchConversation(id)}
         onNew={newConversation}
         newLabel="新会话"
+        onItemDelete={deleteConversation}
       />
 
       {/* 右侧栏：聊天区域 */}
