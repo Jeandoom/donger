@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import { RefreshCw, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { getToken } from "../../lib/auth";
-import { contentUrl, fetchTree, type FileNode, type FileScope } from "../../lib/files";
+import { contentUrl, type FileNode, type FileScope, fetchTree } from "../../lib/files";
 import { cn } from "../../lib/utils";
 import { FilePreview } from "./FilePreview";
 import { FileTree } from "./FileTree";
@@ -20,7 +20,7 @@ export function FileBrowserDrawer(props: {
 
   const token = getToken() ?? "";
   // runtime 必须有会话；缺则不加载
-  const convId = scope === "runtime" ? activeConversationId ?? "" : undefined;
+  const convId = scope === "runtime" ? (activeConversationId ?? "") : undefined;
 
   async function reload(): Promise<void> {
     if (scope === "runtime" && !convId) {
@@ -40,9 +40,9 @@ export function FileBrowserDrawer(props: {
     }
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reload 依赖多个状态，仅在 open/scope/会话变化时触发
   useEffect(() => {
     if (open) void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, scope, activeConversationId]);
 
   function switchScope(s: FileScope): void {
@@ -57,9 +57,11 @@ export function FileBrowserDrawer(props: {
   return (
     <>
       {/* 遮罩 */}
-      <div
+      <button
+        type="button"
+        aria-label="关闭抽屉"
         className={cn(
-          "fixed inset-0 z-40 bg-black/30 transition-opacity",
+          "fixed inset-0 z-40 block bg-black/30 transition-opacity",
           open ? "opacity-100" : "pointer-events-none opacity-0",
         )}
         onClick={onClose}
@@ -112,9 +114,7 @@ export function FileBrowserDrawer(props: {
           </button>
         </div>
 
-        {error && (
-          <div className="bg-red-50 px-3 py-1 text-xs text-red-700">{error}</div>
-        )}
+        {error && <div className="bg-red-50 px-3 py-1 text-xs text-red-700">{error}</div>}
 
         {/* 树区 */}
         <div className="flex-1 overflow-y-auto">

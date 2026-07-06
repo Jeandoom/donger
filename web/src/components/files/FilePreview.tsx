@@ -1,7 +1,7 @@
+import { Download } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Download } from "lucide-react";
 import { getToken } from "../../lib/auth";
 import { contentUrl, type FileScope } from "../../lib/files";
 
@@ -11,11 +11,7 @@ function extOf(path: string): string {
   return path.split(".").pop()?.toLowerCase() ?? "";
 }
 
-export function FilePreview(props: {
-  scope: FileScope;
-  path: string;
-  conversationId?: string;
-}) {
+export function FilePreview(props: { scope: FileScope; path: string; conversationId?: string }) {
   const { scope, path, conversationId } = props;
   const token = getToken() ?? "";
   const ext = extOf(path);

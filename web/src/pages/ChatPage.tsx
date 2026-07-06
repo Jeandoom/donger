@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
 import { FolderTree } from "lucide-react";
+import { useRef, useState } from "react";
 import { FileBrowserDrawer } from "../components/files/FileBrowserDrawer";
 import { SecondarySidebar } from "../components/layout/SecondarySidebar";
 import { Button } from "../components/ui/button";

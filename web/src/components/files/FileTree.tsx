@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -8,8 +7,9 @@ import {
   FolderOpen,
   ImageIcon,
 } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { useState } from "react";
 import type { FileNode } from "../../lib/files";
+import { cn } from "../../lib/utils";
 
 const IMG_EXT = ["jpg", "jpeg", "png", "gif", "webp"];
 
@@ -100,13 +100,19 @@ function Row(props: {
   }
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: 行内含下载链接 <a>，不可用 <button> 嵌套交互元素
     <div
+      role="button"
+      tabIndex={0}
       className={cn(
         "group flex cursor-pointer items-center gap-1 py-0.5 pr-2",
         selectedPath === node.path ? "bg-accent" : "hover:bg-accent",
       )}
       style={pad}
       onClick={() => onSelect(node.path)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onSelect(node.path);
+      }}
     >
       <span className="w-3.5 shrink-0" />
       {isImage(node.name) ? <ImageIcon size={14} /> : <FileText size={14} />}
