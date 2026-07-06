@@ -34,3 +34,60 @@ body {
   color: hsl(var(--foreground));
   font-family: -apple-system, "Segoe UI", sans-serif;
 }
+
+/* Markdown 预览最小样式（FilePreview） */
+.markdown h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.markdown h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.markdown h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.markdown p {
+  margin: 0.4em 0;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.markdown li {
+  margin: 0.15em 0;
+}
+.markdown code {
+  background: hsl(var(--muted));
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.markdown pre {
+  background: hsl(var(--muted));
+  padding: 0.6em;
+  border-radius: 6px;
+  overflow: auto;
+}
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+}
+.markdown table {
+  border-collapse: collapse;
+  margin: 0.4em 0;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.2em 0.5em;
+}
