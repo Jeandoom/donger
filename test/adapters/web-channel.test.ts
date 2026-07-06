@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
+import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "../../src/adapters/local-file-browser.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
-import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 
 function makeWebRoot(): string {
   return mkdtempSync(join(tmpdir(), "webroot-"));
@@ -145,7 +145,10 @@ describe("WebChannel auth", () => {
     sessionStore.migrate();
 
     const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
-    const userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-")) });
+    const userStore = new SqliteUserStore(db, {
+      adminStaffIds: new Set(),
+      usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-")),
+    });
     userStore.migrate();
 
     const tmp = mkdtempSync(join(tmpdir(), "web-auth-"));
@@ -166,7 +169,10 @@ describe("WebChannel auth", () => {
   it("GET /api/auth/me 有效 token → 返回用户信息", async () => {
     const port = await createAuthChannel();
     const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
-    const userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir: mkdtempSync(join(tmpdir(), "web-auth-users2-")) });
+    const userStore = new SqliteUserStore(db, {
+      adminStaffIds: new Set(),
+      usersDir: mkdtempSync(join(tmpdir(), "web-auth-users2-")),
+    });
     userStore.migrate();
     // 先创建用户
     const user = await userStore.getOrCreate("test-staff", "测试用户");
@@ -247,7 +253,12 @@ describe("WebChannel GET /api/audit/conversations", () => {
         text: "hi",
       }) as never,
     );
-    web = new WebChannel({ port: 0, workspaceDir: mkdtempSync(join(tmpdir(), "web-")), conversationStore, auditStore });
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: mkdtempSync(join(tmpdir(), "web-")),
+      conversationStore,
+      auditStore,
+    });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
@@ -283,7 +294,13 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
         text: "hi",
       }) as never,
     );
-    web = new WebChannel({ port: 0, workspaceDir: mkdtempSync(join(tmpdir(), "web-")), conversationStore, taskStore, auditStore });
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: mkdtempSync(join(tmpdir(), "web-")),
+      conversationStore,
+      taskStore,
+      auditStore,
+    });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
@@ -299,7 +316,11 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
   });
 
   it("无数据 → 404", async () => {
-    web = new WebChannel({ port: 0, workspaceDir: mkdtempSync(join(tmpdir(), "web-")), auditStore: new InMemoryAuditStore() });
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: mkdtempSync(join(tmpdir(), "web-")),
+      auditStore: new InMemoryAuditStore(),
+    });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;

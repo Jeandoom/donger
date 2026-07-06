@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
+import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
@@ -108,6 +109,12 @@ async function main(): Promise<void> {
   }
 
   // Web Channel（始终启动）
+  const fileBrowser = new LocalFileBrowser({
+    userStore,
+    conversationStore,
+    workspaceDir: cfg.workspaceDir,
+  });
+
   const webChannel = new WebChannel({
     port: cfg.port,
     workspaceDir: cfg.workspaceDir,
@@ -119,6 +126,7 @@ async function main(): Promise<void> {
     auditStore,
     sessionStore,
     dingtalkConfig: cfg.dingtalk ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret } : undefined,
+    fileBrowser,
   });
   const webOrch = createOrch(webChannel);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
