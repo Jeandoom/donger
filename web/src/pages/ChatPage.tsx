@@ -1,4 +1,6 @@
 import { useRef, useState } from "react";
+import { FolderTree } from "lucide-react";
+import { FileBrowserDrawer } from "../components/files/FileBrowserDrawer";
 import { SecondarySidebar } from "../components/layout/SecondarySidebar";
 import { Button } from "../components/ui/button";
 import type { FileInfo } from "../lib/chatReducer";
@@ -32,6 +34,7 @@ export function ChatPage() {
   const [text, setText] = useState("");
   const [pendingFiles, setPendingFiles] = useState<FileInfo[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const MAX_FILES = 5;
@@ -112,7 +115,7 @@ export function ChatPage() {
 
       {/* 右侧栏：聊天区域 */}
       <div className="flex flex-1 flex-col">
-        <div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs text-muted-foreground">
           <span
             className={
               connection === "open"
@@ -124,6 +127,14 @@ export function ChatPage() {
           >
             ● {connection === "open" ? "已连接" : connection === "connecting" ? "连接中" : "未连接"}
           </span>
+          <button
+            type="button"
+            className="flex items-center gap-1 rounded px-2 py-1 hover:bg-accent"
+            onClick={() => setDrawerOpen(true)}
+            title="文件浏览"
+          >
+            <FolderTree size={14} /> 文件
+          </button>
         </div>
 
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
@@ -241,6 +252,12 @@ export function ChatPage() {
           </Button>
         </div>
       </div>
+
+      <FileBrowserDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        activeConversationId={activeConversationId}
+      />
     </div>
   );
 }
