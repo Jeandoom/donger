@@ -13,7 +13,8 @@ export type ChatAction =
   | { type: "clear_approval" }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
-  | { type: "new_conversation"; conversation: ConversationSummary };
+  | { type: "new_conversation"; conversation: ConversationSummary }
+  | { type: "remove_conversation"; conversationId: string };
 
 export function initialChatState(): ChatState {
   return {
@@ -73,6 +74,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: [],
         loadingConversations: false,
       };
+    case "remove_conversation": {
+      const remaining = state.conversations.filter((c) => c.id !== action.conversationId);
+      const isActive = state.activeConversationId === action.conversationId;
+      return {
+        ...state,
+        conversations: remaining,
+        activeConversationId: isActive
+          ? (remaining[0]?.id ?? null)
+          : state.activeConversationId,
+        messages: isActive ? [] : state.messages,
+      };
+    }
     default:
       return state;
   }
