@@ -3,6 +3,9 @@ import {
   AppError,
   ChannelError,
   ConfigError,
+  ForbiddenError,
+  NotFoundError,
+  PayloadTooLargeError,
   RunnerError,
   TaskError,
   ValidationError,
@@ -28,5 +31,20 @@ describe("AppError", () => {
     expect(new ChannelError("CH_BAD", "x")).toBeInstanceOf(AppError);
     expect(new RunnerError("RUNNER_FAIL", "x")).toBeInstanceOf(AppError);
     expect(new ValidationError("VALIDATION_BAD", "x")).toBeInstanceOf(AppError);
+  });
+
+  it("ForbiddenError/NotFoundError/PayloadTooLargeError 走 instanceof 链", () => {
+    const f = new ForbiddenError("FORBIDDEN", "越界");
+    expect(f.code).toBe("FORBIDDEN");
+    expect(f.name).toBe("ForbiddenError");
+    expect(f).toBeInstanceOf(AppError);
+
+    const n = new NotFoundError("NOT_FOUND", "文件不存在");
+    expect(n.code).toBe("NOT_FOUND");
+    expect(n.name).toBe("NotFoundError");
+
+    const p = new PayloadTooLargeError("TOO_LARGE", "超 5MB");
+    expect(p.code).toBe("TOO_LARGE");
+    expect(p.name).toBe("PayloadTooLargeError");
   });
 });

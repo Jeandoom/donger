@@ -25,3 +25,12 @@ export class RunnerError extends AppError {}
 
 /** 输入/数据校验错误 */
 export class ValidationError extends AppError {}
+
+/** 越权访问（路径穿越 / 跨用户 / 会话不属于该用户） */
+export class ForbiddenError extends AppError {}
+
+/** 资源不存在 */
+export class NotFoundError extends AppError {}
+
+/** 实体过大（超出预览/下载上限） */
+export class PayloadTooLargeError extends AppError {}
