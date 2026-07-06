@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ConversationSummary, WsIn, WsOut } from "../types";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
@@ -18,6 +18,11 @@ export function useWebChat(url: string) {
     } catch {
       return "web-user";
     }
+  }, []);
+
+  /** 切换会话 */
+  const switchConversation = useCallback((conversationId: string | null) => {
+    dispatch({ type: "switch_conversation", conversationId });
   }, []);
 
   /** 创建新会话 */
@@ -54,6 +59,19 @@ export function useWebChat(url: string) {
     }
   }, [getUserId]);
 
+  // 会话列表加载后：有历史会话则自动进入最新，无历史则创建新会话
+  const [autoInitDone, setAutoInitDone] = useState(false);
+  useEffect(() => {
+    if (state.loadingConversations || autoInitDone) return;
+    const first = state.conversations[0];
+    if (first) {
+      switchConversation(first.id);
+    } else {
+      createNewConversation().catch(() => {});
+    }
+    setAutoInitDone(true);
+  }, [state.loadingConversations, state.conversations, autoInitDone, switchConversation, createNewConversation]);
+
   useEffect(() => {
     dispatch({ type: "connection", state: "connecting" });
     // WebSocket 连接带 token
@@ -64,7 +82,6 @@ export function useWebChat(url: string) {
 
     ws.onopen = () => {
       dispatch({ type: "connection", state: "open" });
-      createNewConversation().catch(() => {});
       loadConversations().catch(() => {});
     };
     ws.onclose = (ev) => {
@@ -83,12 +100,7 @@ export function useWebChat(url: string) {
       }
     };
     return () => ws.close();
-  }, [url, createNewConversation, loadConversations]);
-
-  /** 切换会话 */
-  const switchConversation = useCallback((conversationId: string | null) => {
-    dispatch({ type: "switch_conversation", conversationId });
-  }, []);
+  }, [url, loadConversations]);
 
   /** 新建会话 */
   const newConversation = useCallback(async () => {
@@ -119,6 +131,22 @@ export function useWebChat(url: string) {
     dispatch({ type: "clear_approval" });
   }, []);
 
+  /** 删除会话（软删除，归档） */
+  const deleteConversation = useCallback(async (id: string) => {
+    if (window.confirm("确认删除该会话？")) {
+      try {
+        const token = getToken();
+        await fetch(`/api/conversations/${id}`, {
+          method: "DELETE",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        dispatch({ type: "remove_conversation", conversationId: id });
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }, [getUserId]);
+
   return {
     ...state,
     send,
@@ -126,5 +154,6 @@ export function useWebChat(url: string) {
     switchConversation,
     newConversation,
     loadConversations,
+    deleteConversation,
   };
 }
