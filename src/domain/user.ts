@@ -1,10 +1,12 @@
 import { z } from "zod";
 
+// 历史兼容：已删除 staffId 字段；既有数据的 mergedFrom 仍保留。
+// 管理员判定改用 user_identities 的 externalId，见 config.ts 的 adminExternalIds。
+
 export type UserRole = "admin" | "user";
 
 export const UserSchema = z.object({
   id: z.string(),
-  staffId: z.string(),
   name: z.string(),
   role: z.enum(["admin", "user"]),
   homeDir: z.string(),
