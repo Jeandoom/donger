@@ -1,13 +1,12 @@
-import { Route, Routes } from "react-router-dom";
-import { Shell } from "./components/layout/Shell";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthGuard } from "./components/auth/AuthGuard";
-import { LoginPage } from "./pages/LoginPage";
-import { LoginSuccessPage } from "./pages/LoginSuccessPage";
-import { MergePage } from "./pages/MergePage";
+import { Shell } from "./components/layout/Shell";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConfigPage } from "./pages/ConfigPage";
+import { LoginPage } from "./pages/LoginPage";
+import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 
@@ -17,7 +16,8 @@ export function App() {
       {/* 登录相关路由（免认证） */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/login/success" element={<LoginSuccessPage />} />
-      <Route path="/login/merge" element={<MergePage />} />
+      {/* 合并流程已废弃：旧链接重定向到登录页 */}
+      <Route path="/login/merge" element={<Navigate to="/login" replace />} />
 
       {/* 需要登录的路由 */}
       <Route element={<AuthGuard />}>
