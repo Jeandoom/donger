@@ -39,32 +39,34 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
   const runner = new FakeAgentRunner(script);
   const userHome = mkdtempSync(join(tmpdir(), "donger-e2e-user-"));
   const userStore: UserStore = {
-    async getOrCreate(staffId, name) {
+    async get() {
+      return undefined;
+    },
+    async list() {
+      return [];
+    },
+    async getOrCreateByIdentity(_provider, externalId, name) {
       return {
-        id: `u-${staffId}`,
-        staffId,
-        name,
+        id: `u-${externalId}`,
+        name: name ?? externalId,
         role: "user" as const,
         homeDir: userHome,
         createdAt: "t",
         updatedAt: "t",
       };
     },
-    async get() {
+    async isAdminByExternalId() {
+      return false;
+    },
+    async findByIdentity() {
       return undefined;
     },
-    async getByStaffId() {
-      return undefined;
-    },
-    async updateRole() {},
-    async list() {
+    async addIdentity() {},
+    async getIdentities() {
       return [];
     },
-    async findByIdentity() { return undefined; },
-    async addIdentity() {},
-    async getIdentities() { return []; },
-    async mergeUsers() {},
     async updateProfile() {},
+    async updateRole() {},
   };
   const conversationStore: import("../../src/ports/conversation-store.js").ConversationStore = {
     async create() {
