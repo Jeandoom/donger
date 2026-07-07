@@ -47,6 +47,14 @@ export class DingTalkChannel implements Channel {
     client.registerCallbackListener(TOPIC_ROBOT, (msg) => {
       try {
         const robot = JSON.parse(msg.data) as RobotTextMessage;
+        // senderStaffId 可能为空（如未关联企业账号的临时会话），无法定位用户 → 忽略
+        if (!robot.senderStaffId) {
+          console.warn("[dingtalk] 忽略无 senderStaffId 的消息", {
+            conversationId: robot.conversationId,
+          });
+          client.socketCallBackResponse(msg.headers.messageId, {});
+          return;
+        }
         this.recipients.set(robot.conversationId, robot.senderStaffId);
         this.routeIncoming(normalizeDingTalkMessage(robot));
       } catch (e) {
