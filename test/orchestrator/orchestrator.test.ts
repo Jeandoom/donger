@@ -41,38 +41,45 @@ function fakeChannel(approve: boolean): Channel & {
 function mockUserStore(): UserStore {
   const dir = mkdtempSync(join(tmpdir(), "donger-test-user-"));
   const users = new Map<string, User>();
+  // identity key (provider:externalId) → userId
+  const identities = new Map<string, string>();
   return {
-    async getOrCreate(staffId, name) {
-      let u = users.get(staffId);
-      if (!u) {
-        u = {
-          id: `u-${staffId}`,
-          staffId,
-          name,
-          role: "user" as UserRole,
-          homeDir: dir,
-          createdAt: "t",
-          updatedAt: "t",
-        };
-        users.set(staffId, u);
-      }
-      return u;
+    async get(id) {
+      return users.get(id);
     },
-    async get() {
-      return undefined;
-    },
-    async getByStaffId(staffId) {
-      return users.get(staffId);
-    },
-    async updateRole() {},
     async list() {
       return [...users.values()];
     },
-    async findByIdentity() { return undefined; },
+    async getOrCreateByIdentity(provider, externalId, name) {
+      const key = `${provider}:${externalId}`;
+      const existingId = identities.get(key);
+      if (existingId) return users.get(existingId)!;
+      const id = `u-${externalId}`;
+      const u: User = {
+        id,
+        name: name ?? externalId,
+        role: "user" as UserRole,
+        homeDir: dir,
+        createdAt: "t",
+        updatedAt: "t",
+      };
+      users.set(id, u);
+      identities.set(key, id);
+      return u;
+    },
+    async isAdminByExternalId() {
+      return false;
+    },
+    async findByIdentity(provider, externalId) {
+      const id = identities.get(`${provider}:${externalId}`);
+      return id ? users.get(id) : undefined;
+    },
     async addIdentity() {},
-    async getIdentities() { return []; },
-    async mergeUsers() {},
+    async getIdentities() {
+      return [];
+    },
     async updateProfile() {},
+    async updateRole() {},
   };
 }
 

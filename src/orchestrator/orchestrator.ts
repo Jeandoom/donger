@@ -15,6 +15,7 @@ import type { MessageStore } from "../ports/message-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
+import { NotFoundError } from "../util/errors.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 
@@ -103,10 +104,32 @@ export class Orchestrator {
 
   private latestConvCache?: Map<string, string>;
 
+  /**
+   * 按通道解析/创建用户（统一身份模型）。
+   * - web：requesterId 已是 users.id（JWT sub），直接 get；
+   * - dingtalk：requesterId 是钉钉 staffId，作为 dingtalk provider 的 externalId；
+   * - 其它（CLI 等）：internal provider。
+   */
+  private async resolveUser(msg: IncomingMessage): Promise<User> {
+    const { userStore } = this.deps;
+    if (msg.channelId === "web") {
+      const webUser = await userStore.get(msg.requesterId);
+      if (!webUser) {
+        throw new NotFoundError("USER_NOT_FOUND", `Web 用户不存在: ${msg.requesterId}`);
+      }
+      return webUser;
+    }
+    if (msg.channelId === "dingtalk") {
+      return userStore.getOrCreateByIdentity("dingtalk", msg.requesterId, msg.text.slice(0, 30));
+    }
+    return userStore.getOrCreateByIdentity("internal", msg.requesterId, msg.requesterId);
+  }
+
   async handleMessage(msg: IncomingMessage): Promise<void> {
     const { store, userStore, conversationStore, planner, gates, runner, channel } = this.deps;
 
-    const user = await userStore.getOrCreate(msg.requesterId, msg.requesterId);
+    // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
+    const user = await this.resolveUser(msg);
 
     // "/new" 命令：创建新会话
     if (msg.text.trim().toLowerCase() === "/new") {
@@ -116,10 +139,11 @@ export class Orchestrator {
     }
 
     // 解析会话：conversationId 不存在时从本地取 latest（不再网络请求）
-    const conversationId = msg.conversationId ?? this.getLatestConversationId(user.id, msg.channelId);
+    const conversationId =
+      msg.conversationId ?? this.getLatestConversationId(user.id, msg.channelId);
     const conversation = conversationId
-      ? (await conversationStore.get(conversationId)) ??
-        (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30)))
+      ? ((await conversationStore.get(conversationId)) ??
+        (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30))))
       : await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30));
 
     // 并发控制：
@@ -130,7 +154,9 @@ export class Orchestrator {
       return;
     }
     if (!this.checkUserLimit(user.id)) {
-      await channel.send(msg.threadId, { text: "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。" });
+      await channel.send(msg.threadId, {
+        text: "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。",
+      });
       return;
     }
 
