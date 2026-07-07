@@ -78,4 +78,44 @@ describe("loadConfig", () => {
     expect(c.workspaceDir).toBe("/tmp/ws");
     expect(c.dbPath).toBe("/tmp/x.db");
   });
+
+  it("ADMIN_EXTERNAL_IDS 解析为 Set（逗号分隔、去空白、去空）", () => {
+    const c = loadConfig({ ...base, ADMIN_EXTERNAL_IDS: " ext1 , ext2 ,, " });
+    expect(c.adminExternalIds).toBeInstanceOf(Set);
+    expect([...c.adminExternalIds]).toEqual(["ext1", "ext2"]);
+  });
+
+  it("ADMIN_EXTERNAL_IDS 默认空 Set", () => {
+    expect([...loadConfig(base).adminExternalIds]).toEqual([]);
+  });
+
+  it("向后兼容：ADMIN_STAFF_IDS 被合并进 adminExternalIds 并告警", () => {
+    const warns: string[] = [];
+    const origEmit = process.emitWarning;
+    process.emitWarning = ((msg: unknown) => {
+      warns.push(String(msg));
+    }) as typeof process.emitWarning;
+    try {
+      const c = loadConfig({ ...base, ADMIN_STAFF_IDS: "legacy1,legacy2" });
+      expect([...c.adminExternalIds]).toEqual(["legacy1", "legacy2"]);
+      expect(warns.some((w) => w.includes("ADMIN_STAFF_IDS"))).toBe(true);
+    } finally {
+      process.emitWarning = origEmit;
+    }
+  });
+
+  it("ADMIN_EXTERNAL_IDS 与 ADMIN_STAFF_IDS 同时存在则合并去重", () => {
+    const origEmit = process.emitWarning;
+    process.emitWarning = (() => {}) as typeof process.emitWarning;
+    try {
+      const c = loadConfig({
+        ...base,
+        ADMIN_EXTERNAL_IDS: "ext1",
+        ADMIN_STAFF_IDS: "ext1,legacy2",
+      });
+      expect([...c.adminExternalIds]).toEqual(["ext1", "legacy2"]);
+    } finally {
+      process.emitWarning = origEmit;
+    }
+  });
 });

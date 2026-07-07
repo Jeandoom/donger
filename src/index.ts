@@ -1,13 +1,13 @@
 // donger 应用入口：钉钉 + Web 双通道，共享存储。
 import "dotenv/config";
-import { mkdirSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
-import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
+import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
@@ -17,9 +17,9 @@ import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { Planner } from "./domain/planner.js";
+import type { User } from "./domain/user.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator, type OrchestratorRunOpts } from "./orchestrator/orchestrator.js";
-import type { User } from "./domain/user.js";
 import type { RunOptions } from "./ports/agent-runner.js";
 import type { Channel } from "./ports/channel.js";
 import { createLogger } from "./util/logger.js";
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   const usersDir = join(cfg.workspaceDir, "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {
-    adminStaffIds: new Set(cfg.adminStaffIds),
+    adminExternalIds: cfg.adminExternalIds,
     usersDir,
   });
   userStore.migrate();
@@ -125,7 +125,9 @@ async function main(): Promise<void> {
     usageStore,
     auditStore,
     sessionStore,
-    dingtalkConfig: cfg.dingtalk ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret } : undefined,
+    dingtalkConfig: cfg.dingtalk
+      ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret }
+      : undefined,
     fileBrowser,
   });
   const webOrch = createOrch(webChannel);

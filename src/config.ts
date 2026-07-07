@@ -17,6 +17,9 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3300),
   LOG_LEVEL: LogLevelSchema.default("info"),
   SUPERPOWERS_PLUGIN_PATH: z.string().optional(),
+  // 管理员的外部 ID 白名单（钉钉 userId/staffId，逗号分隔）。
+  ADMIN_EXTERNAL_IDS: z.string().optional().default(""),
+  // 已废弃：保留以向后兼容，值会被合并进 ADMIN_EXTERNAL_IDS。
   ADMIN_STAFF_IDS: z.string().optional(),
   DINGTALK_APP_KEY: z.string().optional(),
   DINGTALK_APP_SECRET: z.string().optional(),
@@ -45,8 +48,8 @@ export interface AppConfig {
   logLevel: LogLevel;
   /** superpowers 插件根目录（含 .claude-plugin/plugin.json）；缺省则不加载 */
   superpowersPluginPath?: string;
-  /** 管理员 staffId 列表（ADMIN_STAFF_IDS，逗号分隔） */
-  adminStaffIds: string[];
+  /** 管理员外部 ID 列表（ADMIN_EXTERNAL_IDS，逗号分隔；兼容 ADMIN_STAFF_IDS） */
+  adminExternalIds: Set<string>;
   dingtalk?: DingTalkConfig;
   /** JWT 签名密钥（空字符串表示未配置，由 index.ts 处理） */
   jwtSecret: string;
@@ -73,10 +76,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     superpowersPluginPath: e.SUPERPOWERS_PLUGIN_PATH,
-    adminStaffIds: (e.ADMIN_STAFF_IDS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
+    adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
     jwtSecret: e.JWT_SECRET ?? "",
     jwtTtlDays: e.JWT_TTL_DAYS,
   };
@@ -89,4 +89,31 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     };
   }
   return cfg;
+}
+
+/**
+ * 解析管理员外部 ID 白名单。
+ * 优先 ADMIN_EXTERNAL_IDS；若仅设置了已废弃的 ADMIN_STAFF_IDS，则自动映射并告警。
+ */
+function parseAdminExternalIds(
+  adminExternalIds: string,
+  legacyAdminStaffIds: string | undefined,
+): Set<string> {
+  const ids = adminExternalIds
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // 向后兼容：ADMIN_STAFF_IDS 仍可生效
+  if (legacyAdminStaffIds && legacyAdminStaffIds.trim()) {
+    process.emitWarning("ADMIN_STAFF_IDS 已废弃，请改用 ADMIN_EXTERNAL_IDS（值改为外部平台 ID）", {
+      code: "DEPRECATED_ADMIN_STAFF_IDS",
+    });
+    for (const id of legacyAdminStaffIds
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      ids.push(id);
+    }
+  }
+  return new Set(ids);
 }

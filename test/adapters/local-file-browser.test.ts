@@ -24,7 +24,7 @@ beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "fb-"));
   db = new Database(":memory:");
   const usersDir = join(tmp, "users");
-  userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir });
+  userStore = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
   userStore.migrate();
   convStore = new SqliteConversationStore(db);
   convStore.migrate();

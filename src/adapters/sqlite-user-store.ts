@@ -8,9 +8,8 @@ export interface SqliteUserStoreOptions {
   /**
    * 管理员的外部 ID 集合（来自 ADMIN_EXTERNAL_IDS 配置）。
    * 值是钉钉 userId（扫码用）或 staffId（IM 用），逗号分隔。
-   * 字段名暂保留 adminStaffIds 以减少改动面，含义已是「外部 ID」。
    */
-  adminStaffIds: Set<string>;
+  adminExternalIds: Set<string>;
   /** 用户目录根（如 data/users/） */
   usersDir: string;
 }
@@ -79,7 +78,7 @@ export class SqliteUserStore implements UserStore {
     }
     // 2. 新建 User
     const id = crypto.randomUUID();
-    const role: UserRole = this.opts.adminStaffIds.has(externalId) ? "admin" : "user";
+    const role: UserRole = this.opts.adminExternalIds.has(externalId) ? "admin" : "user";
     const homeDir = join(this.opts.usersDir, id);
     const now = new Date().toISOString();
     const user: User = {
@@ -113,7 +112,7 @@ export class SqliteUserStore implements UserStore {
 
   /** 检查外部 ID 是否在管理员白名单中 */
   async isAdminByExternalId(externalId: string): Promise<boolean> {
-    return this.opts.adminStaffIds.has(externalId);
+    return this.opts.adminExternalIds.has(externalId);
   }
 
   async updateRole(id: string, role: UserRole): Promise<void> {

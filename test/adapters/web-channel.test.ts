@@ -146,7 +146,7 @@ describe("WebChannel auth", () => {
 
     const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
     const userStore = new SqliteUserStore(db, {
-      adminStaffIds: new Set(),
+      adminExternalIds: new Set(),
       usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-")),
     });
     userStore.migrate();
@@ -170,7 +170,7 @@ describe("WebChannel auth", () => {
     const port = await createAuthChannel();
     const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
     const userStore = new SqliteUserStore(db, {
-      adminStaffIds: new Set(),
+      adminExternalIds: new Set(),
       usersDir: mkdtempSync(join(tmpdir(), "web-auth-users2-")),
     });
     userStore.migrate();
@@ -198,7 +198,7 @@ describe("WebChannel auth", () => {
   async function createSessionToken(): Promise<string> {
     const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
     const userStore = new SqliteUserStore(db, {
-      adminStaffIds: new Set(),
+      adminExternalIds: new Set(),
       usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-stream-")),
     });
     userStore.migrate();
@@ -419,7 +419,7 @@ describe("/api/files/*", () => {
     tmpWs = mkdtempSync(join(tmpdir(), "fb-ws-"));
     const db = new Database(":memory:");
     const usersDir = join(tmpWs, "users");
-    const userStore = new SqliteUserStore(db, { adminStaffIds: new Set(), usersDir });
+    const userStore = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
     userStore.migrate();
     const convStore = new SqliteConversationStore(db);
     convStore.migrate();

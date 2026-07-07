@@ -17,9 +17,9 @@ afterEach(() => {
   rmSync(usersDir, { recursive: true, force: true });
 });
 
-function newStore(adminStaffIds: string[] = []): SqliteUserStore {
+function newStore(adminExternalIds: string[] = []): SqliteUserStore {
   const s = new SqliteUserStore(db, {
-    adminStaffIds: new Set(adminStaffIds),
+    adminExternalIds: new Set(adminExternalIds),
     usersDir,
   });
   s.migrate();
@@ -51,12 +51,12 @@ describe("SqliteUserStore", () => {
     const dbPath = join(tmp, "test.db");
     try {
       const db1 = new Database(dbPath);
-      const s1 = new SqliteUserStore(db1, { adminStaffIds: new Set(), usersDir });
+      const s1 = new SqliteUserStore(db1, { adminExternalIds: new Set(), usersDir });
       s1.migrate();
       await s1.getOrCreateByIdentity("dingtalk", "persist-ext", "持久");
       db1.close();
       const db2 = new Database(dbPath);
-      const s2 = new SqliteUserStore(db2, { adminStaffIds: new Set(), usersDir });
+      const s2 = new SqliteUserStore(db2, { adminExternalIds: new Set(), usersDir });
       s2.migrate();
       expect((await s2.findByIdentity("dingtalk", "persist-ext"))?.name).toBe("持久");
       db2.close();
