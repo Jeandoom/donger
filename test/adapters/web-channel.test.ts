@@ -175,7 +175,7 @@ describe("WebChannel auth", () => {
     });
     userStore.migrate();
     // 先创建用户
-    const user = await userStore.getOrCreate("test-staff", "测试用户");
+    const user = await userStore.getOrCreateByIdentity("internal", "test-staff", "测试用户");
     const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
     const sessionStore = new JwtSessionStore(db, "test-secret");
     sessionStore.migrate();
@@ -202,7 +202,7 @@ describe("WebChannel auth", () => {
       usersDir: mkdtempSync(join(tmpdir(), "web-auth-users-stream-")),
     });
     userStore.migrate();
-    const user = await userStore.getOrCreate("stream-staff", "流测试用户");
+    const user = await userStore.getOrCreateByIdentity("internal", "stream-staff", "流测试用户");
     const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
     const sessionStore = new JwtSessionStore(db, "test-secret");
     sessionStore.migrate();
@@ -434,7 +434,7 @@ describe("/api/files/*", () => {
     web.onMessage(() => {});
     await web.ready();
     port = web.boundPort ?? 0;
-    const user = await userStore.getOrCreate("u1", "alice");
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
     write(join(tmpWs, "users", user.id), ".skills/SKILL.md", "# hi");
     token = (await sessionStore.create(user.id)).token;
   });

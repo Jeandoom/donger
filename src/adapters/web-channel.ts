@@ -371,7 +371,11 @@ export class WebChannel implements Channel {
         res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       },
       close: () => {
-        try { res.end(); } catch { /* ignore */ }
+        try {
+          res.end();
+        } catch {
+          /* ignore */
+        }
       },
     };
 
@@ -382,7 +386,11 @@ export class WebChannel implements Channel {
 
     // 保持连接
     const keepAlive = setInterval(() => {
-      try { res.write(":\n\n"); } catch { /* ignore */ }
+      try {
+        res.write(":\n\n");
+      } catch {
+        /* ignore */
+      }
     }, 30_000);
 
     req.on("close", () => {
@@ -416,12 +424,20 @@ export class WebChannel implements Channel {
         res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       },
       close: () => {
-        try { res.end(); } catch { /* ignore */ }
+        try {
+          res.end();
+        } catch {
+          /* ignore */
+        }
       },
     };
 
     const keepAlive = setInterval(() => {
-      try { res.write(":\n\n"); } catch { /* ignore */ }
+      try {
+        res.write(":\n\n");
+      } catch {
+        /* ignore */
+      }
     }, 30_000);
 
     req.on("close", () => {
@@ -576,37 +592,21 @@ export class WebChannel implements Channel {
       try {
         const { getUserAccessToken, getUserInfoByOAuth } = await import("../util/dingtalk-api.js");
         const tokenResult = await getUserAccessToken(
-          this.dingtalkConfig.appKey, this.dingtalkConfig.appSecret, code,
+          this.dingtalkConfig.appKey,
+          this.dingtalkConfig.appSecret,
+          code,
         );
         const userInfo = await getUserInfoByOAuth(tokenResult.accessToken);
-        const existing = await this.deps.userStore.findByIdentity("dingtalk", userInfo.userId);
-
-        if (existing) {
-          const { token } = await this.sessionStore.create(existing.id);
-          res.writeHead(302, {
-            Location: `/login/merge?token=${token}&userId=${existing.id}&name=${encodeURIComponent(existing.name)}&avatar=${encodeURIComponent(userInfo.avatar ?? "")}`,
-          });
-          res.end();
-        } else {
-          const user = await this.deps.userStore.getOrCreate(userInfo.userId, userInfo.name);
-          await this.deps.userStore.addIdentity(user.id, {
-            id: `${Date.now()}-${Math.random()}`,
-            userId: user.id,
-            provider: "dingtalk",
-            externalId: userInfo.userId,
-            name: userInfo.name,
-            avatar: userInfo.avatar,
-            createdAt: new Date().toISOString(),
-          });
-          if (userInfo.avatar) {
-            await this.deps.userStore.updateProfile(user.id, { avatar: userInfo.avatar });
-          }
-          const { token } = await this.sessionStore.create(user.id);
-          res.writeHead(302, {
-            Location: `/login/success?token=${token}`,
-          });
-          res.end();
-        }
+        // 统一身份模型：直接按 identity 查找/创建并绑定，不再走合并流程。
+        const user = await this.deps.userStore.getOrCreateByIdentity(
+          "dingtalk",
+          userInfo.userId,
+          userInfo.name,
+          userInfo.avatar,
+        );
+        const { token } = await this.sessionStore.create(user.id);
+        res.writeHead(302, { Location: `/login/success?token=${token}` });
+        res.end();
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.error("[auth] 钉钉回调处理失败:", errMsg);
@@ -632,37 +632,25 @@ export class WebChannel implements Channel {
       }
       const identities = await this.deps.userStore.getIdentities(uid);
       res.writeHead(200);
-      res.end(JSON.stringify({ user: { id: user.id, name: user.name, avatar: user.avatar, role: user.role, createdAt: user.createdAt }, identities }));
+      res.end(
+        JSON.stringify({
+          user: {
+            id: user.id,
+            name: user.name,
+            avatar: user.avatar,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          identities,
+        }),
+      );
       return;
     }
 
-    // POST /api/auth/merge-confirm
+    // POST /api/auth/merge-confirm —— 已废弃：统一身份模型下不再需要合并流程
     if (url === "/api/auth/merge-confirm" && req.method === "POST") {
-      const uid = (req as HttpRequest & { userId?: string }).userId;
-      if (!uid || !this.deps.userStore || !this.sessionStore) {
-        res.writeHead(401);
-        res.end(JSON.stringify({ error: "unauthorized" }));
-        return;
-      }
-      const body = JSON.parse(await this.readBody(req)) as { sourceUserId?: string };
-      if (!body.sourceUserId) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: "缺少 sourceUserId" }));
-        return;
-      }
-      try {
-        await this.deps.userStore.mergeUsers(body.sourceUserId, uid);
-        const user = await this.deps.userStore.get(uid);
-        const { token } = await this.sessionStore.create(uid);
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          token,
-          user: { id: user?.id, name: user?.name, avatar: user?.avatar, role: user?.role },
-        }));
-      } catch (e) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
-      }
+      res.writeHead(410);
+      res.end(JSON.stringify({ error: "合并流程已废弃，请重新登录" }));
       return;
     }
 
@@ -762,12 +750,16 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/conversations?userId=xxx
+    // GET /api/conversations?userId=xxx（userId 为 users.id）
     if (url.startsWith("/api/conversations") && req.method === "GET") {
-      let userId = this.extractQuery(url, "userId");
+      const userId = this.extractQuery(url, "userId");
       if (userId && this.deps.userStore) {
-        const user = await this.deps.userStore.getByStaffId(userId);
-        if (user) userId = user.id;
+        const user = await this.deps.userStore.get(userId);
+        if (!user) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "user not found" }));
+          return;
+        }
       }
       if (userId) {
         const list = (await this.deps.conversationStore?.listByUser(userId)) ?? [];
@@ -791,20 +783,19 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/conversations
+    // POST /api/conversations（userId 为 users.id）
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
       const { userId, channelId } = JSON.parse(body) as { userId: string; channelId?: string };
-      let resolvedUserId = userId;
       if (userId && this.deps.userStore) {
-        const user = await this.deps.userStore.getByStaffId(userId);
-        if (user) resolvedUserId = user.id;
+        const user = await this.deps.userStore.get(userId);
+        if (!user) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "user not found" }));
+          return;
+        }
       }
-      const conv = await this.deps.conversationStore?.create(
-        resolvedUserId,
-        channelId ?? "web",
-        "新对话",
-      );
+      const conv = await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
       res.writeHead(201);
       res.end(JSON.stringify(conv));
       return;
