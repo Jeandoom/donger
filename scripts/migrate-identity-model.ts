@@ -1,15 +1,15 @@
 /**
  * 统一身份模型迁移脚本（幂等，可重复执行）。
  *
- * 背景：旧模型用 users.staffId 作为登录主键；新模型以 user_identities 为唯一入口。
- * 本脚本把既有用户的 staffId 回填为一条 dingtalk identity，并清理 staffId 唯一索引，
- * 让历史用户在「钉钉 IM（senderStaffId）」入口下仍可被 getOrCreateByIdentity 命中。
+ * 背景：旧模型用 users.staffId 作为登录主键（NOT NULL UNIQUE）；新模型以 user_identities
+ * 为唯一入口。旧 DB 升级到新代码时会因 staffId NOT NULL 约束导致新用户创建失败。
  *
  * 做了什么：
- *   1. 遍历 users 表，读取 data JSON 里残留的 staffId；
- *   2. 为每个有 staffId 的用户补一条 (provider="dingtalk", externalId=staffId) 的 identity（已存在则跳过）；
- *   3. 删除 users.staffId 的唯一索引（idx_users_staffId）——SQLite 不支持 DROP COLUMN，
- *      staffId 列本身保留但不再写入、不再约束。
+ *   1. schema 升级（复用 SqliteUserStore.migrate）：把旧 users 表重建为 staffId 可空，
+ *      并确保 user_identities 表就绪；
+ *   2. identity 回填：遍历 users，把 data JSON 里残留的 staffId 回填为一条
+ *      (provider="dingtalk", externalId=staffId) 的 identity（已存在则跳过），
+ *      让历史用户在钉钉扫码/IM 入口下仍可被 getOrCreateByIdentity 命中。
  *
  * 用法：node scripts/migrate-identity-model.ts（默认读写 ~/.donger/donger.db）。
  */
@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import "dotenv/config";
 import Database from "better-sqlite3";
+import { SqliteUserStore } from "../src/adapters/sqlite-user-store.js";
 import { loadConfig } from "../src/config.js";
 
 /** 旧版 User 的 JSON 形状（仅取迁移所需字段） */
@@ -30,17 +31,14 @@ function main(): void {
   const cfg = loadConfig(process.env);
   const dbPath = cfg.dbPath || join(homedir(), ".donger", "donger.db");
   const db = new Database(dbPath);
+  const usersDir = join(cfg.workspaceDir, "users");
 
-  // 表不存在（全新部署）→ 无需迁移
-  const hasUsers = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'")
-    .get() as { name: string } | undefined;
-  if (!hasUsers) {
-    console.log("[migrate] users 表不存在，跳过迁移。");
-    db.close();
-    return;
-  }
+  // 1. schema 升级 + 建表（含 user_identities）。表不存在（全新部署）则直接建新版。
+  const store = new SqliteUserStore(db, { adminExternalIds: cfg.adminExternalIds, usersDir });
+  store.migrate();
+  console.log("[migrate] schema 就绪：users.staffId 约束已放宽，user_identities 表已建。");
 
+  // 2. 回填 identity
   const trx = db.transaction(() => {
     const rows = db.prepare("SELECT id, data FROM users").all() as {
       id: string;
@@ -75,16 +73,14 @@ function main(): void {
       if (result.changes > 0) backfilled++;
     }
 
-    // 删除 staffId 唯一索引（列保留但废弃）
-    db.exec("DROP INDEX IF EXISTS idx_users_staffId");
-
     console.log(
-      `[migrate] 完成：回填 identity ${backfilled} 条，跳过 ${skipped} 条，共 ${rows.length} 个用户。`,
+      `[migrate] identity 回填：${backfilled} 条，跳过 ${skipped} 条，共 ${rows.length} 个用户。`,
     );
   });
 
   trx();
   db.close();
+  console.log("[migrate] 完成。");
 }
 
 main();

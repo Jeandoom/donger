@@ -22,6 +22,10 @@ export class SqliteUserStore implements UserStore {
   ) {}
 
   migrate(): void {
+    // 旧版 donger 的 users 表带 `staffId TEXT UNIQUE NOT NULL`；
+    // 新代码 INSERT users 不再写 staffId，会违反 NOT NULL。
+    // SQLite 不支持 ALTER COLUMN，故检测旧 schema 并重建表（幂等）。
+    this.upgradeUsersSchema();
     // users 表保留 staffId 列以兼容既有数据库（SQLite 不支持 DROP COLUMN）；
     // 新代码不再写入 staffId。
     this.db.exec(`
@@ -52,6 +56,32 @@ export class SqliteUserStore implements UserStore {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_user_identities_userId ON user_identities(userId)",
     );
+  }
+
+  /**
+   * 检测旧版 users 表（staffId 带 NOT NULL/UNIQUE 约束）并重建为新版（staffId 可空）。
+   * 幂等：已是新版或表不存在则跳过。SQLite 不支持 DROP/ALTER COLUMN，只能重建表。
+   */
+  private upgradeUsersSchema(): void {
+    const row = this.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+      .get() as { sql: string } | undefined;
+    if (!row?.sql) return; // 表不存在 → 由后续 CREATE TABLE IF NOT EXISTS 建
+    // 旧 schema 判定：staffId 列声明里含 NOT NULL 或 UNIQUE
+    const staffIdDecl = /staffId\s+TEXT\s+([^,]*)/i.exec(row.sql)?.[1] ?? "";
+    if (!/NOT\s+NULL|UNIQUE/i.test(staffIdDecl)) return;
+
+    const rebuild = this.db.transaction(() => {
+      this.db.exec(
+        "CREATE TABLE users_new (id TEXT PRIMARY KEY, staffId TEXT, data TEXT NOT NULL, role TEXT NOT NULL, updatedAt TEXT NOT NULL)",
+      );
+      this.db.exec(
+        "INSERT INTO users_new (id, staffId, data, role, updatedAt) SELECT id, staffId, data, role, updatedAt FROM users",
+      );
+      this.db.exec("DROP TABLE users");
+      this.db.exec("ALTER TABLE users_new RENAME TO users");
+    });
+    rebuild();
   }
 
   async get(id: string): Promise<User | undefined> {

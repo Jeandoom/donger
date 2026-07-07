@@ -151,3 +151,82 @@ describe("isAdminByExternalId", () => {
     expect(await s.isAdminByExternalId("ext1")).toBe(false);
   });
 });
+
+describe("schema 迁移：旧 users 表（staffId NOT NULL）→ 新表", () => {
+  /** 模拟旧版 donger 创建的 users 表（staffId UNIQUE NOT NULL）+ 历史用户 */
+  function seedLegacySchema(): void {
+    db.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        staffId TEXT UNIQUE NOT NULL,
+        data TEXT NOT NULL,
+        role TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )
+    `);
+    db.exec("CREATE INDEX idx_users_staffId ON users(staffId)");
+    const legacy = {
+      id: "legacy-1",
+      staffId: "mGPkjiPkLEiSdZLWytvFVQDQiEiE",
+      name: "测试用户",
+      role: "user",
+      homeDir: usersDir,
+      createdAt: "t",
+      updatedAt: "t",
+    };
+    db.prepare("INSERT INTO users (id, staffId, data, role, updatedAt) VALUES (?,?,?,?,?)").run(
+      legacy.id,
+      legacy.staffId,
+      JSON.stringify(legacy),
+      legacy.role,
+      legacy.updatedAt,
+    );
+  }
+
+  it("migrate 把旧表升级为 staffId 可空，历史数据保留", async () => {
+    seedLegacySchema();
+    const s = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
+    s.migrate();
+
+    // 历史用户仍在
+    const legacy = await s.get("legacy-1");
+    expect(legacy?.name).toBe("测试用户");
+
+    // 关键：新代码 INSERT users 不带 staffId 必须能成功（旧 schema 下会违反 NOT NULL）
+    const user = await s.getOrCreateByIdentity("dingtalk", "new-ext", "新用户");
+    expect(user.id).toBeTruthy();
+    expect(user.name).toBe("新用户");
+  });
+
+  it("升级后 users 表 staffId 列可空（PRAGMA 确认约束已放宽）", () => {
+    seedLegacySchema();
+    const s = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
+    s.migrate();
+    const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    const staffIdCol = cols.find((c) => c.name === "staffId");
+    expect(staffIdCol?.notnull).toBe(0);
+  });
+
+  it("migrate 幂等：连续执行两次不破坏数据", async () => {
+    seedLegacySchema();
+    const s = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
+    s.migrate();
+    s.migrate(); // 第二次
+    const legacy = await s.get("legacy-1");
+    expect(legacy?.name).toBe("测试用户");
+  });
+
+  it("全新 DB（无 users 表）→ 直接建新 schema，staffId 可空", async () => {
+    const s = newStore();
+    const user = await s.getOrCreateByIdentity("dingtalk", "ext1", "Alice");
+    expect(user.id).toBeTruthy();
+    const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    expect(cols.find((c) => c.name === "staffId")?.notnull).toBe(0);
+  });
+});
