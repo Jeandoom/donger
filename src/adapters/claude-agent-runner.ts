@@ -31,12 +31,16 @@ export class ClaudeAgentRunner implements AgentRunner {
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
           // 写入边界：Edit/Write/NotebookEdit 的路径必须落在 workspaceRoot 内
-          if (opts.workspaceRoot && (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit")) {
-            const rawPath = typeof input.file_path === "string"
-              ? input.file_path
-              : typeof input.notebook_path === "string"
-                ? input.notebook_path
-                : null;
+          if (
+            opts.workspaceRoot &&
+            (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit")
+          ) {
+            const rawPath =
+              typeof input.file_path === "string"
+                ? input.file_path
+                : typeof input.notebook_path === "string"
+                  ? input.notebook_path
+                  : null;
             if (rawPath) {
               const abs = isAbsolute(rawPath) ? rawPath : resolve(opts.cwd, rawPath);
               const root = resolve(opts.workspaceRoot);
@@ -75,6 +79,7 @@ export class ClaudeAgentRunner implements AgentRunner {
         },
         abortController: ac,
         resume: opts.resume,
+        sessionStore: opts.sessionStore,
         env: {
           ...process.env,
           ANTHROPIC_BASE_URL: opts.llm.baseUrl,

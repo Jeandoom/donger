@@ -149,7 +149,9 @@ describe("ClaudeAgentRunner", () => {
     const ws = mkdtempSync(join(tmpdir(), "wsroot-"));
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const runner = new ClaudeAgentRunner(new GateRouter());
-    await collect(runner.run(task, { ...opts, workspaceRoot: ws }, async () => ({ approved: true })));
+    await collect(
+      runner.run(task, { ...opts, workspaceRoot: ws }, async () => ({ approved: true })),
+    );
     const r = await captured?.canUseTool?.(
       "Write",
       { file_path: "/etc/passwd", content: "x" },
@@ -162,12 +164,36 @@ describe("ClaudeAgentRunner", () => {
     const ws = mkdtempSync(join(tmpdir(), "wsroot-"));
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const runner = new ClaudeAgentRunner(new GateRouter());
-    await collect(runner.run(task, { ...opts, workspaceRoot: ws }, async () => ({ approved: true })));
+    await collect(
+      runner.run(task, { ...opts, workspaceRoot: ws }, async () => ({ approved: true })),
+    );
     const r = await captured?.canUseTool?.(
       "Write",
       { file_path: join(ws, "sessions", "c1", "a.txt"), content: "x" },
       { toolUseID: "tu" },
     );
     expect(r?.behavior).toBe("allow");
+  });
+
+  it("sessionStore 透传到 query options", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const fakeSessionStore = {
+      append: () => Promise.resolve(),
+      load: () => Promise.resolve(null),
+    };
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(task, { ...opts, sessionStore: fakeSessionStore as never }, async () => ({
+        approved: true,
+      })),
+    );
+    expect(captured?.sessionStore).toBe(fakeSessionStore);
+  });
+
+  it("无 sessionStore 时 query options 不含 sessionStore 字段", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(runner.run(task, opts, async () => ({ approved: true })));
+    expect(captured?.sessionStore).toBeUndefined();
   });
 });
