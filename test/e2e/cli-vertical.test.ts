@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { CliChannel } from "../../src/adapters/cli-channel.js";
-import { FakeAgentRunner } from "../../src/adapters/fake-agent-runner.js";
+import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-runner.js";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
-import type { User } from "../../src/domain/user.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
 import type { UserStore } from "../../src/ports/user-store.js";
 
 /** 轮询输出直到包含 needle（带超时），用于 CLI 异步时序同步 */
@@ -24,7 +24,7 @@ async function waitFor(get: () => string, needle: string, ms = 1000): Promise<vo
   throw new Error(`waitFor 超时：未出现 "${needle}"`);
 }
 
-function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
+function setup(script: FakeScript) {
   const input = new PassThrough();
   const output = new PassThrough();
   let out = "";
@@ -92,6 +92,29 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
     },
     async update() {},
   };
+  const runtimeMgr = new RuntimeManager({
+    transcriptStore: {
+      async append() {},
+      async load() {
+        return null;
+      },
+      async listSessions() {
+        return [];
+      },
+      async listSubkeys() {
+        return [];
+      },
+      async delete() {},
+    },
+    conversationStore,
+    config: {
+      workspaceDir: mkdtempSync(join(tmpdir(), "donger-e2e-ws-")),
+      llm: { model: "m", baseUrl: "u", authToken: "t" },
+      defaultPluginPaths: [],
+      superpowersPluginPath: "/opt/superpowers",
+      defaultSystemPromptAppend: "测试",
+    },
+  });
   const orch = new Orchestrator({
     store,
     userStore,
@@ -102,11 +125,7 @@ function setup(script: Parameters<typeof FakeAgentRunner>[0]) {
     gates,
     runner,
     channel,
-    runOptsFor: async (_t, plan, _user: User) => ({
-      cwd: ".",
-      skills: plan.skills,
-      llm: { model: "m", baseUrl: "u", authToken: "t" },
-    }),
+    runtimeMgr,
   });
   channel.onMessage((m) => {
     void orch.handleMessage(m);

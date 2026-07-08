@@ -1,13 +1,12 @@
 import { join } from "node:path";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
-import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
-import type { Plan, Planner } from "../domain/planner.js";
+import type { Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
+import type { AgentRunner } from "../ports/agent-runner.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
@@ -18,12 +17,7 @@ import type { UserStore } from "../ports/user-store.js";
 import { NotFoundError } from "../util/errors.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
-
-export interface OrchestratorRunOpts {
-  resume?: string;
-  /** 当前会话 ID，用于运行时目录路径 */
-  conversationId: string;
-}
+import type { RuntimeManager } from "./runtime-manager.js";
 
 export interface OrchestratorDeps {
   store: TaskStore;
@@ -36,12 +30,8 @@ export interface OrchestratorDeps {
   gates: GateRouter;
   runner: AgentRunner;
   channel: Channel;
-  runOptsFor: (
-    task: Task,
-    plan: Plan,
-    user: User,
-    opts: OrchestratorRunOpts,
-  ) => Promise<RunOptions> | RunOptions;
+  /** 会话运行态总管：组装 RunOptions（cwd/skills/plugins/sessionStore/resume）+ 回写 sdkSessionId */
+  runtimeMgr: RuntimeManager;
 }
 
 export class Orchestrator {
@@ -190,21 +180,21 @@ export class Orchestrator {
       await store.create(task);
 
       await store.updateStatus(task.id, nextStatus("created", "plan"));
-      const baseOpts = await this.deps.runOptsFor(task, plan, user, {
-        resume: conversation.sdkSessionId || undefined,
-        conversationId: conversation.id,
-      });
 
-      // 记忆注入
-      let systemPromptAppend = baseOpts.systemPromptAppend;
+      // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并
+      let memoryAppend: string | undefined;
       if (memory) {
         const hits = memory.search(task.prompt).slice(0, 5);
         if (hits.length > 0) {
           const memCtx = hits.map((h) => `- ${h.summary}`).join("\n");
-          systemPromptAppend = `${systemPromptAppend ?? ""}\n\n## 相关记忆\n${memCtx}`;
+          memoryAppend = `## 相关记忆\n${memCtx}`;
         }
       }
-      const opts: RunOptions = { ...baseOpts, systemPromptAppend };
+
+      const { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
+        plan,
+        systemPromptAppend: memoryAppend,
+      });
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));
       const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
@@ -215,8 +205,8 @@ export class Orchestrator {
 
       // 尝试运行，如果 SDK session 过期则清空重试一次
       const SESSION_EXPIRED_RE = /No conversation found with session ID/i;
+      let attemptOpts = opts;
       for (let attempt = 0; attempt < 2; attempt++) {
-        const attemptOpts = attempt === 0 ? opts : { ...opts, resume: undefined };
         rawEvents = runner.run({ ...task, status: "running" }, attemptOpts, resolver);
         // 预读第一个事件判断是否 session 过期
         const first = await rawEvents[Symbol.asyncIterator]().next();
@@ -229,8 +219,13 @@ export class Orchestrator {
           first.value.error &&
           SESSION_EXPIRED_RE.test(first.value.error)
         ) {
-          // session 过期，清空 sdkSessionId 重试
-          await conversationStore.update(conversation.id, { sdkSessionId: "" });
+          // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）
+          await this.deps.runtimeMgr.clearResume(conversation.id);
+          const refreshed = await this.deps.runtimeMgr.prepare(user, conversation, {
+            plan,
+            systemPromptAppend: memoryAppend,
+          });
+          attemptOpts = refreshed.runOptions;
           continue;
         }
         // 构造包含已读第一项的流
@@ -333,12 +328,13 @@ export class Orchestrator {
         }
       }
 
-      // 回写 sdkSessionId
+      // 回写 sdkSessionId（经 RuntimeManager.commit）
       if (capturedSessionId && capturedSessionId !== conversation.sdkSessionId) {
-        await conversationStore.update(conversation.id, {
-          sdkSessionId: capturedSessionId,
-          title: !conversation.sdkSessionId ? task.prompt.slice(0, 30) : conversation.title,
-        });
+        await this.deps.runtimeMgr.commit(conversation.id, { sdkSessionId: capturedSessionId });
+        // title 更新仍走 conversationStore（RuntimeManager M1 不接管 title）
+        if (!conversation.sdkSessionId) {
+          await conversationStore.update(conversation.id, { title: task.prompt.slice(0, 30) });
+        }
       }
 
       // 非流式渠道：成功后回复完成标记

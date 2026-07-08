@@ -93,7 +93,7 @@ export class RuntimeManager {
       skills,
       pluginPaths: capabilities.pluginPaths,
       llm: this.deps.config.llm,
-      systemPromptAppend: opts.systemPromptAppend ?? this.deps.config.defaultSystemPromptAppend,
+      systemPromptAppend: this.combineSystemPromptAppend(opts.systemPromptAppend),
       abortSignal: opts.abortSignal,
       resume: conversation.sdkSessionId || undefined,
       workspaceRoot: user.homeDir,
@@ -114,6 +114,13 @@ export class RuntimeManager {
       paths.push(this.deps.config.superpowersPluginPath);
     }
     return paths;
+  }
+
+  /** 合并 systemPromptAppend：默认始终在，extra（如记忆上下文）追加其后 */
+  private combineSystemPromptAppend(extra?: string): string {
+    return extra
+      ? `${this.deps.config.defaultSystemPromptAppend}\n\n${extra}`
+      : this.deps.config.defaultSystemPromptAppend;
   }
 
   async commit(conversationId: string, patch: { sdkSessionId?: string }): Promise<void> {

@@ -11,10 +11,12 @@ import { GateRouter } from "../../src/domain/gate-router.js";
 import { Planner } from "../../src/domain/planner.js";
 import type { ApprovalCard, OutgoingMessage } from "../../src/domain/types.js";
 import type { User, UserRole } from "../../src/domain/user.js";
-import { Orchestrator, type OrchestratorRunOpts } from "../../src/orchestrator/orchestrator.js";
-import type { AgentRunner, RunOptions } from "../../src/ports/agent-runner.js";
+import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
+import type { AgentRunner } from "../../src/ports/agent-runner.js";
 import type { Channel } from "../../src/ports/channel.js";
 import type { ConversationStore } from "../../src/ports/conversation-store.js";
+import type { TranscriptStore } from "../../src/ports/transcript-store.js";
 import type { UserStore } from "../../src/ports/user-store.js";
 
 function fakeChannel(approve: boolean): Channel & {
@@ -111,6 +113,38 @@ function mockConversationStore(): ConversationStore {
   };
 }
 
+/** 内存 TranscriptStore（测试用，不落盘） */
+function mockTranscriptStore(): TranscriptStore {
+  return {
+    async append() {},
+    async load() {
+      return null;
+    },
+    async listSessions() {
+      return [];
+    },
+    async listSubkeys() {
+      return [];
+    },
+    async delete() {},
+  };
+}
+
+/** 构造真实 RuntimeManager（内存 transcript，model=m，启用 plan.skills） */
+function makeRuntimeMgr(conversationStore: ConversationStore): RuntimeManager {
+  return new RuntimeManager({
+    transcriptStore: mockTranscriptStore(),
+    conversationStore,
+    config: {
+      workspaceDir: mkdtempSync(join(tmpdir(), "donger-test-ws-")),
+      llm: { model: "m", baseUrl: "u", authToken: "t" },
+      defaultPluginPaths: [],
+      superpowersPluginPath: "/opt/superpowers",
+      defaultSystemPromptAppend: "测试默认 prompt",
+    },
+  });
+}
+
 function setup(approve: boolean, script: FakeScript) {
   const store = new InMemoryTaskStore();
   const usageStore = new InMemoryUsageStore();
@@ -119,26 +153,18 @@ function setup(approve: boolean, script: FakeScript) {
   const runner = new FakeAgentRunner(script);
   const gates = new GateRouter();
   gates.describe({ id: "design", description: "方案审批" });
+  const conversationStore = mockConversationStore();
   const orch = new Orchestrator({
     store,
     userStore: mockUserStore(),
-    conversationStore: mockConversationStore(),
+    conversationStore,
     usageStore,
     auditStore,
     planner: new Planner(),
     gates,
     runner,
     channel,
-    runOptsFor: async (
-      _task,
-      plan,
-      _user: User,
-      _opts: OrchestratorRunOpts,
-    ): Promise<RunOptions> => ({
-      cwd: ".",
-      skills: plan.skills,
-      llm: { model: "m", baseUrl: "u", authToken: "t" },
-    }),
+    runtimeMgr: makeRuntimeMgr(conversationStore),
   });
   return { orch, store, channel, usageStore, auditStore };
 }
@@ -185,21 +211,18 @@ describe("Orchestrator", () => {
         };
       },
     };
+    const conversationStore2 = mockConversationStore();
     const orch2 = new Orchestrator({
       store: store2,
       userStore: mockUserStore(),
-      conversationStore: mockConversationStore(),
+      conversationStore: conversationStore2,
       planner: new Planner(),
       gates: new GateRouter(),
       usageStore: new InMemoryUsageStore(),
       auditStore: new InMemoryAuditStore(),
       runner: throwingRunner,
       channel: channel2,
-      runOptsFor: async () => ({
-        cwd: ".",
-        skills: [],
-        llm: { model: "m", baseUrl: "u", authToken: "t" },
-      }),
+      runtimeMgr: makeRuntimeMgr(conversationStore2),
     });
     await orch2.handleMessage(msg);
     expect(channel2.sent.some((m) => m.text.includes("处理出错"))).toBe(true);
@@ -242,17 +265,13 @@ describe("Orchestrator", () => {
       auditStore: new InMemoryAuditStore(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
-      runOptsFor: async () => ({
-        cwd: ".",
-        skills: [],
-        llm: { model: "m", baseUrl: "u", authToken: "t" },
-      }),
+      runtimeMgr: makeRuntimeMgr(cst),
     });
     await orch.handleMessage({ ...msg, text: "/new" });
     expect(created).toBe(true);
   });
 
-  it("resume 透传到 runOptsFor", async () => {
+  it("resume 透传到 runner（续接会话 sdkSessionId）", async () => {
     let capturedResume: string | undefined;
     const cst: ConversationStore = {
       async create() {
@@ -287,20 +306,26 @@ describe("Orchestrator", () => {
       },
       async update() {},
     };
+    // 捕获 runner 收到的 opts.resume
+    const capturingRunner: AgentRunner = {
+      run(task, opts) {
+        capturedResume = opts.resume;
+        return new FakeAgentRunner({ result: "ok" }).run(task, opts, async () => ({
+          approved: true,
+        }));
+      },
+    };
     const orch = new Orchestrator({
       store: new InMemoryTaskStore(),
       userStore: mockUserStore(),
       conversationStore: cst,
       planner: new Planner(),
       gates: new GateRouter(),
-      runner: new FakeAgentRunner({ result: "ok" }),
+      runner: capturingRunner,
       channel: fakeChannel(true),
       usageStore: new InMemoryUsageStore(),
       auditStore: new InMemoryAuditStore(),
-      runOptsFor: async (_t, _p, _u, opts) => {
-        capturedResume = opts.resume;
-        return { cwd: ".", skills: [], llm: { model: "m", baseUrl: "u", authToken: "t" } };
-      },
+      runtimeMgr: makeRuntimeMgr(cst),
     });
     await orch.handleMessage(msg);
     expect(capturedResume).toBe("sdk-existing");
@@ -399,21 +424,18 @@ describe("Orchestrator", () => {
       },
     };
     const store = new InMemoryTaskStore();
+    const conversationStore = mockConversationStore();
     const orch = new Orchestrator({
       store,
       userStore: mockUserStore(),
-      conversationStore: mockConversationStore(),
+      conversationStore,
       usageStore: new InMemoryUsageStore(),
       auditStore: throwing,
       planner: new Planner(),
       gates: new GateRouter(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
-      runOptsFor: async () => ({
-        cwd: ".",
-        skills: [],
-        llm: { model: "m", baseUrl: "u", authToken: "t" },
-      }),
+      runtimeMgr: makeRuntimeMgr(conversationStore),
     });
     await orch.handleMessage(msg);
     expect((await store.listByStatus("done")).length).toBe(1);
