@@ -1,7 +1,7 @@
 // donger 应用入口：钉钉 + Web 双通道，共享存储。
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, renameSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
@@ -12,18 +12,17 @@ import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
+import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { Planner } from "./domain/planner.js";
-import type { User } from "./domain/user.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
-import { Orchestrator, type OrchestratorRunOpts } from "./orchestrator/orchestrator.js";
-import type { RunOptions } from "./ports/agent-runner.js";
+import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import type { Channel } from "./ports/channel.js";
 import { createLogger } from "./util/logger.js";
-import { ensureRuntimeDir } from "./util/workspace.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -68,6 +67,8 @@ async function main(): Promise<void> {
   auditStore.migrate();
   const messageStore = new SqliteMessageStore(db);
   messageStore.migrate();
+  const transcriptStore = new SqliteTranscriptStore(db);
+  transcriptStore.migrate();
 
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
@@ -75,6 +76,17 @@ async function main(): Promise<void> {
   sessionStore.migrate();
 
   function createOrch(channel: Channel): Orchestrator {
+    const runtimeMgr = new RuntimeManager({
+      transcriptStore,
+      conversationStore,
+      config: {
+        workspaceDir: cfg.workspaceDir,
+        llm: cfg.llm,
+        defaultPluginPaths: [],
+        superpowersPluginPath: cfg.superpowersPluginPath,
+        defaultSystemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+      },
+    });
     return new Orchestrator({
       store,
       userStore,
@@ -86,25 +98,7 @@ async function main(): Promise<void> {
       gates: createDefaultGates(),
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,
-      runOptsFor: async (
-        _task,
-        plan,
-        user: User,
-        opts: OrchestratorRunOpts,
-      ): Promise<RunOptions> => {
-        const cwd = ensureRuntimeDir(user.homeDir, "sessions", "plain", opts.conversationId);
-        const pluginPaths: string[] = [join(user.homeDir, ".skills")];
-        if (cfg.superpowersPluginPath) pluginPaths.push(cfg.superpowersPluginPath);
-        return {
-          cwd,
-          skills: cfg.superpowersPluginPath ? plan.skills : [],
-          pluginPaths,
-          llm: cfg.llm,
-          systemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
-          resume: opts.resume,
-          workspaceRoot: user.homeDir,
-        };
-      },
+      runtimeMgr,
     });
   }
 
