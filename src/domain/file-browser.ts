@@ -1,4 +1,3 @@
-// 文件浏览的纯逻辑：scope→物理根映射、路径穿越校验。无 fs IO。
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 /** user scope 暴露的 4 个精确子目录（绝不放开整个 homeDir） */
@@ -26,7 +25,9 @@ export function scopeRoots(scope: "user" | "runtime", ctx: ScopeRootsContext): s
   if (!ctx.conversationId) {
     throw new Error("runtime scope 需要 conversationId");
   }
-  return [join(ctx.workspaceDir, "sessions", ctx.conversationId)];
+  // runtime 文件在 user's homeDir/sessions/plain/<convId> 下（由 Agent 运行时创建）。
+  // 不能用 workspaceDir 顶层 sessions/，那样找不到真实文件。
+  return [join(ctx.homeDir, "sessions", "plain", ctx.conversationId)];
 }
 
 export type ResolvedPath = { ok: true; abs: string } | { ok: false };

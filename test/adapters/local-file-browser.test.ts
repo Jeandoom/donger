@@ -124,7 +124,8 @@ describe("LocalFileBrowser runtime scope", () => {
   it("会话归属当前用户 → 列出 sessions/<convId> 下文件", async () => {
     const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
     const conv = await convStore.create(user.id, "web", "t");
-    write(tmp, join("sessions", conv.id, "out.png"), "pngdata");
+    // runtime 文件在 user.homeDir/sessions/plain/<convId>/ 下（由 Agent 运行时创建）
+    write(user.homeDir, join("sessions", "plain", conv.id, "out.png"), "pngdata");
     const tree = await browser.listTree(user.id, "runtime", conv.id);
     const convNode = tree.find((n) => n.path === conv.id);
     expect(convNode?.children?.find((c) => c.name === "out.png")).toBeTruthy();

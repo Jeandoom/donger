@@ -94,8 +94,10 @@ export class LocalFileBrowser implements FileBrowser {
       if (!conv || conv.userId !== userId) {
         throw new ForbiddenError("FORBIDDEN", "会话不属于当前用户");
       }
+      const user = await this.deps.userStore.get(userId);
+      if (!user) throw new ForbiddenError("FORBIDDEN", "用户不存在");
       const roots = scopeRoots("runtime", {
-        homeDir: "",
+        homeDir: user.homeDir,
         workspaceDir: this.deps.workspaceDir,
         conversationId,
       });
