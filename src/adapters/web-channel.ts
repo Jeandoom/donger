@@ -497,6 +497,7 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
+      (req as HttpRequest & { userId?: string }).userId = authUserId;
     }
 
     const body = JSON.parse(await this.readBody(req)) as {
