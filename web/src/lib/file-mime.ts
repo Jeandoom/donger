@@ -1,0 +1,32 @@
+// 前端预览类别判定（镜像自 src/domain/file-mime.ts 的 previewKindForExt）。
+// web 是独立子包，不 import 后端 domain；两份保持同步（后端为权威 MIME 源）。
+
+const IMAGE_EXT = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg"]);
+
+const TEXT_EXT = new Set([
+  "md", "markdown", "rst", "txt", "log", "changelog",
+  "js", "mjs", "cjs", "ts", "jsx", "tsx",
+  "py", "pyi", "rb", "go", "rs", "java", "kt", "kts", "c", "h", "cpp", "hpp", "cc", "cxx", "cs",
+  "php", "swift", "scala", "groovy", "gradle",
+  "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+  "sql", "graphql", "gql", "lua", "pl", "r", "dart", "vim", "el",
+  "clj", "cljs", "edn", "ex", "exs", "erl", "hs", "ml", "mli",
+  "proto", "tf", "tfvars", "hcl",
+  "json", "json5", "jsonc", "yaml", "yml", "toml", "ini", "cfg", "conf", "config",
+  "properties", "env", "editorconfig", "gitignore", "gitattributes",
+  "xml", "csv", "tsv", "html", "htm", "css", "scss", "sass", "less",
+  "vue", "svelte", "ipynb",
+  "dockerfile", "makefile", "mk", "cmake",
+  "lock", "map", "diff", "patch",
+]);
+
+export type PreviewKind = "image" | "markdown" | "text" | "binary";
+
+/** 按扩展名（不含点）返回渲染类别。无扩展名文件由调用方先取整个文件名传入。 */
+export function previewKindForExt(ext: string): PreviewKind {
+  const e = ext.toLowerCase();
+  if (IMAGE_EXT.has(e)) return "image";
+  if (e === "md" || e === "markdown") return "markdown";
+  if (TEXT_EXT.has(e)) return "text";
+  return "binary";
+}
