@@ -29,14 +29,14 @@ describe("file-browser domain", () => {
     expect(roots.every((r) => !r.includes("memory") && !r.includes("sessions"))).toBe(true);
   });
 
-  it("scopeRoots(runtime) 返回 homeDir/sessions/plain/<conversationId>", () => {
+  it("scopeRoots(runtime) 返回 homeDir/sessions/<conversationId>/workspace", () => {
     const roots = scopeRoots("runtime", {
       homeDir: "/h",
       workspaceDir: "/w",
       conversationId: "c1",
     });
-    // runtime 文件在 user.homeDir/sessions/plain/<convId> 下（由 Agent 运行时创建）
-    expect(roots).toEqual([join("/h", "sessions", "plain", "c1")]);
+    // runtime 文件在 user.homeDir/sessions/<convId>/workspace/ 下（由 RuntimeManager 创建）
+    expect(roots).toEqual([join("/h", "sessions", "c1", "workspace")]);
   });
 
   it("scopeRoots(runtime) 缺 conversationId 抛错", () => {

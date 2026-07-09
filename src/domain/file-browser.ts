@@ -25,9 +25,8 @@ export function scopeRoots(scope: "user" | "runtime", ctx: ScopeRootsContext): s
   if (!ctx.conversationId) {
     throw new Error("runtime scope 需要 conversationId");
   }
-  // runtime 文件在 user's homeDir/sessions/plain/<convId> 下（由 Agent 运行时创建）。
-  // 不能用 workspaceDir 顶层 sessions/，那样找不到真实文件。
-  return [join(ctx.homeDir, "sessions", "plain", ctx.conversationId)];
+  // runtime 文件在 user's homeDir/sessions/<convId>/workspace/ 下（由 RuntimeManager 创建）。
+  return [join(ctx.homeDir, "sessions", ctx.conversationId, "workspace")];
 }
 
 export type ResolvedPath = { ok: true; abs: string } | { ok: false };
