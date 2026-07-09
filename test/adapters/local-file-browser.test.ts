@@ -118,14 +118,35 @@ describe("LocalFileBrowser user scope", () => {
       browser.readFile(user.id, "user", join(".skills", "lnk.md")),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
+
+  it("readFile 文本类文件返回 text/plain MIME", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    write(join(tmp, "users", user.id), ".skills/app.js", "console.log(1)");
+    const c = await browser.readFile(user.id, "user", join(".skills", "app.js"));
+    expect(c.mime).toBe("text/plain; charset=utf-8");
+  });
+
+  it("readFile svg 返回 image/svg+xml", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    write(join(tmp, "users", user.id), ".skills/logo.svg", "<svg/>");
+    const c = await browser.readFile(user.id, "user", join(".skills", "logo.svg"));
+    expect(c.mime).toBe("image/svg+xml");
+  });
+
+  it("readFile 未知扩展名返回 octet-stream", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    write(join(tmp, "users", user.id), ".skills/data.bin", "\x00\x01");
+    const c = await browser.readFile(user.id, "user", join(".skills", "data.bin"));
+    expect(c.mime).toBe("application/octet-stream");
+  });
 });
 
 describe("LocalFileBrowser runtime scope", () => {
   it("会话归属当前用户 → 列出 sessions/<convId> 下文件", async () => {
     const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
     const conv = await convStore.create(user.id, "web", "t");
-    // runtime 文件在 user.homeDir/sessions/plain/<convId>/ 下（由 Agent 运行时创建）
-    write(user.homeDir, join("sessions", "plain", conv.id, "out.png"), "pngdata");
+    // runtime 文件在 user.homeDir/sessions/<convId>/workspace/ 下（由 RuntimeManager 创建）
+    write(user.homeDir, join("sessions", conv.id, "workspace", "out.png"), "pngdata");
     const tree = await browser.listTree(user.id, "runtime", conv.id);
     const convNode = tree.find((n) => n.path === conv.id);
     expect(convNode?.children?.find((c) => c.name === "out.png")).toBeTruthy();

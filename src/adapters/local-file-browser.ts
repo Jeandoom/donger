@@ -2,6 +2,7 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { IGNORED_NAMES, resolveWithinRoots, scopeRoots } from "../domain/file-browser.js";
+import { mimeForExt } from "../domain/file-mime.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type {
   FileBrowser,
@@ -12,15 +13,6 @@ import type {
 } from "../ports/file-browser.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
-
-const MIME: Record<string, string> = {
-  md: "text/markdown; charset=utf-8",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  png: "image/png",
-  gif: "image/gif",
-  webp: "image/webp",
-};
 
 export interface LocalFileBrowserDeps {
   userStore: UserStore;
@@ -78,7 +70,7 @@ export class LocalFileBrowser implements FileBrowser {
     const ext = abs.split(".").pop()?.toLowerCase() ?? "";
     return {
       buffer: readFileSync(abs),
-      mime: MIME[ext] ?? "application/octet-stream",
+      mime: mimeForExt(ext),
       size: st.size,
     };
   }
