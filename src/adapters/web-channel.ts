@@ -8,6 +8,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
+import { mimeForExt } from "../domain/file-mime.js";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
@@ -288,16 +289,8 @@ export class WebChannel implements Channel {
       const relPath = url.replace("/uploads/", "");
       const absPath = join(this.workspaceDir, "sessions", relPath);
       if (existsSync(absPath)) {
-        const ext = absPath.split(".").pop()?.toLowerCase();
-        const mimeMap: Record<string, string> = {
-          jpg: "image/jpeg",
-          jpeg: "image/jpeg",
-          png: "image/png",
-          gif: "image/gif",
-          webp: "image/webp",
-          md: "text/markdown; charset=utf-8",
-        };
-        res.writeHead(200, { "Content-Type": mimeMap[ext ?? ""] ?? "application/octet-stream" });
+        const ext = absPath.split(".").pop()?.toLowerCase() ?? "";
+        res.writeHead(200, { "Content-Type": mimeForExt(ext) });
         res.end(readFileSync(absPath));
         return;
       }
