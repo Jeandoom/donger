@@ -68,6 +68,8 @@ type SSEClient = {
 
 export interface WebChannelDeps {
   port: number;
+  /** 监听地址（默认 0.0.0.0=全网卡；设 127.0.0.1 仅本机） */
+  host?: string;
   /** 上传文件保存根目录 */
   workspaceDir: string;
   taskStore?: TaskStore;
@@ -130,7 +132,7 @@ export class WebChannel implements Channel {
     const server = createServer((req, res) => this.handleHttp(req, res));
     this.server = server;
     this.readyPromise = new Promise<void>((resolve) => {
-      server.listen(this.deps.port, () => resolve());
+      server.listen(this.deps.port, this.deps.host ?? "0.0.0.0", () => resolve());
     });
   }
 

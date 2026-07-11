@@ -104,7 +104,7 @@ describe("WebChannel GET /api/usage", () => {
     const store = new InMemoryUsageStore();
     await store.record(rec("u1", "t1"));
     const port = await startWith(store);
-    const res = await fetch(`http://localhost:${port}/api/usage`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/usage`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { records: { userId: string }[] };
     expect(body.records.length).toBe(1);
@@ -116,7 +116,7 @@ describe("WebChannel GET /api/usage", () => {
     await store.record(rec("u1", "t1"));
     await store.record(rec("u2", "t2"));
     const port = await startWith(store);
-    const res = await fetch(`http://localhost:${port}/api/usage?userId=u1`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/usage?userId=u1`);
     const body = (await res.json()) as { records: { userId: string }[] };
     expect(body.records.length).toBe(1);
     expect(body.records[0]?.userId).toBe("u1");
@@ -124,7 +124,7 @@ describe("WebChannel GET /api/usage", () => {
 
   it("limit 非法 → 400", async () => {
     const port = await startWith(new InMemoryUsageStore());
-    const res = await fetch(`http://localhost:${port}/api/usage?limit=abc`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/usage?limit=abc`);
     expect(res.status).toBe(400);
   });
 });
@@ -162,7 +162,7 @@ describe("WebChannel auth", () => {
 
   it("GET /api/auth/me 无 token → 401", async () => {
     const port = await createAuthChannel();
-    const res = await fetch(`http://localhost:${port}/api/auth/me`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/auth/me`);
     expect(res.status).toBe(401);
   });
 
@@ -180,7 +180,7 @@ describe("WebChannel auth", () => {
     const sessionStore = new JwtSessionStore(db, "test-secret");
     sessionStore.migrate();
     const { token } = await sessionStore.create(user.id);
-    const res = await fetch(`http://localhost:${port}/api/auth/me`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(200);
@@ -190,7 +190,7 @@ describe("WebChannel auth", () => {
 
   it("GET /api/health 免认证", async () => {
     const port = await createAuthChannel();
-    const res = await fetch(`http://localhost:${port}/api/health`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`);
     expect(res.status).toBe(200);
   });
 
@@ -212,7 +212,7 @@ describe("WebChannel auth", () => {
 
   it("GET /api/conversations/:id/stream 无 token → 401", async () => {
     const port = await createAuthChannel();
-    const res = await fetch(`http://localhost:${port}/api/conversations/abc-123/stream`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/abc-123/stream`);
     expect(res.status).toBe(401);
   });
 
@@ -220,7 +220,7 @@ describe("WebChannel auth", () => {
     const port = await createAuthChannel();
     const token = await createSessionToken();
     const res = await fetch(
-      `http://localhost:${port}/api/conversations/abc-123/stream?token=${token}`,
+      `http://127.0.0.1:${port}/api/conversations/abc-123/stream?token=${token}`,
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
@@ -263,7 +263,7 @@ describe("WebChannel GET /api/audit/conversations", () => {
     await web.ready();
     const port = web.boundPort;
     if (!port) throw new Error("no port");
-    const res = await fetch(`http://localhost:${port}/api/audit/conversations`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/audit/conversations`);
     const body = (await res.json()) as Array<{
       conversationId: string;
       title: string;
@@ -305,7 +305,7 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
     await web.ready();
     const port = web.boundPort;
     if (!port) throw new Error("no port");
-    const res = await fetch(`http://localhost:${port}/api/audit/conversations/${created.id}`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/audit/conversations/${created.id}`);
     const body = (await res.json()) as {
       turns: Array<{ taskId: string; events: Array<{ type: string }> }>;
     };
@@ -325,7 +325,7 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
     await web.ready();
     const port = web.boundPort;
     if (!port) throw new Error("no port");
-    const res = await fetch(`http://localhost:${port}/api/audit/conversations/nope`);
+    const res = await fetch(`http://127.0.0.1:${port}/api/audit/conversations/nope`);
     expect(res.status).toBe(404);
   });
 });
@@ -353,7 +353,7 @@ describe("WebChannel POST /api/upload", () => {
     const body = new FormData();
     const blob = new Blob(["fake-png"], { type: "image/png" });
     body.append("file", blob, "test.png");
-    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
       method: "POST",
       body,
     });
@@ -368,7 +368,7 @@ describe("WebChannel POST /api/upload", () => {
   it("上传 .md 文件成功", async () => {
     const body = new FormData();
     body.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
-    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
       method: "POST",
       body,
     });
@@ -381,7 +381,7 @@ describe("WebChannel POST /api/upload", () => {
   it("不支持的类型返回 400", async () => {
     const body = new FormData();
     body.append("file", new Blob(["<xml/>"], { type: "text/xml" }), "test.xml");
-    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
       method: "POST",
       body,
     });
@@ -393,7 +393,7 @@ describe("WebChannel POST /api/upload", () => {
   it("无 threadId 返回 400", async () => {
     const body = new FormData();
     body.append("file", new Blob(["fake"], { type: "image/png" }), "test.png");
-    const res = await fetch(`http://localhost:${port}/api/upload`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload`, {
       method: "POST",
       body,
     });
@@ -401,7 +401,7 @@ describe("WebChannel POST /api/upload", () => {
   });
 
   it("非 multipart 返回 400", async () => {
-    const res = await fetch(`http://localhost:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -440,22 +440,22 @@ describe("/api/files/*", () => {
   });
 
   it("未带 token → 401", async () => {
-    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=user`);
+    const r = await fetch(`http://127.0.0.1:${port}/api/files/tree?scope=user`);
     expect(r.status).toBe(401);
   });
 
   it("scope 非法 → 400", async () => {
-    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=admin&token=${token}`);
+    const r = await fetch(`http://127.0.0.1:${port}/api/files/tree?scope=admin&token=${token}`);
     expect(r.status).toBe(400);
   });
 
   it("runtime 缺 conversationId → 400", async () => {
-    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=runtime&token=${token}`);
+    const r = await fetch(`http://127.0.0.1:${port}/api/files/tree?scope=runtime&token=${token}`);
     expect(r.status).toBe(400);
   });
 
   it("tree 正常返回 nodes", async () => {
-    const r = await fetch(`http://localhost:${port}/api/files/tree?scope=user&token=${token}`);
+    const r = await fetch(`http://127.0.0.1:${port}/api/files/tree?scope=user&token=${token}`);
     expect(r.status).toBe(200);
     const body = (await r.json()) as { nodes: { name: string }[] };
     expect(body.nodes.map((n) => n.name)).toContain(".skills");
@@ -463,7 +463,7 @@ describe("/api/files/*", () => {
 
   it("content 返回 markdown", async () => {
     const r = await fetch(
-      `http://localhost:${port}/api/files/content?scope=user&path=.skills/SKILL.md&token=${token}`,
+      `http://127.0.0.1:${port}/api/files/content?scope=user&path=.skills/SKILL.md&token=${token}`,
     );
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toContain("text/markdown");
@@ -472,14 +472,14 @@ describe("/api/files/*", () => {
 
   it("content 路径越界 → 403", async () => {
     const r = await fetch(
-      `http://localhost:${port}/api/files/content?scope=user&path=../../x&token=${token}`,
+      `http://127.0.0.1:${port}/api/files/content?scope=user&path=../../x&token=${token}`,
     );
     expect(r.status).toBe(403);
   });
 
   it("content download=1 带 attachment 头", async () => {
     const r = await fetch(
-      `http://localhost:${port}/api/files/content?scope=user&path=.skills/SKILL.md&download=1&token=${token}`,
+      `http://127.0.0.1:${port}/api/files/content?scope=user&path=.skills/SKILL.md&download=1&token=${token}`,
     );
     expect(r.headers.get("content-disposition")).toContain("attachment");
   });

@@ -111,6 +111,7 @@ async function main(): Promise<void> {
 
   const webChannel = new WebChannel({
     port: cfg.port,
+    host: cfg.host,
     workspaceDir: cfg.workspaceDir,
     taskStore: store,
     userStore,
@@ -126,8 +127,8 @@ async function main(): Promise<void> {
   });
   const webOrch = createOrch(webChannel);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
-  log.info({ channel: "web", port: cfg.port }, "就绪");
-  console.log(`\n🌐 Web 客户端：http://localhost:${cfg.port}\n`);
+  log.info({ channel: "web", host: cfg.host, port: cfg.port }, "就绪");
+  console.log(`\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`);
 
   // 钉钉 Channel（有配置才启动）
   if (cfg.dingtalk) {

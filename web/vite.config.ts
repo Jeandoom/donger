@@ -8,10 +8,14 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, "../", "");
   const backendPort = env.PORT ?? "3300";
   const webPort = Number(env.WEB_PORT) || 3303;
-  const backend = `http://localhost:${backendPort}`;
+  // 用 127.0.0.1（IPv4 loopback）而非 localhost：后端默认绑 0.0.0.0（仅 IPv4），
+  // localhost 在本机常解析为 IPv6 ::1，会导致代理 ECONNREFUSED ::1:3300。
+  const backend = `http://127.0.0.1:${backendPort}`;
   return {
     plugins: [react()],
     server: {
+      // 监听全网卡（0.0.0.0）以支持局域网/远程访问；可经 HOST 覆盖。
+      host: env.HOST ?? "0.0.0.0",
       port: webPort,
       proxy: {
         "/api": backend,

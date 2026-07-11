@@ -20,6 +20,7 @@ describe("loadConfig", () => {
     expect(c.memoryDir).toBe("./data/memory");
     expect(c.dbPath).toBe(join(homedir(), ".donger", "donger.db"));
     expect(c.port).toBe(3300);
+    expect(c.host).toBe("0.0.0.0");
     expect(c.logLevel).toBe("info");
     expect(c.superpowersPluginPath).toBeUndefined();
     expect(c.dingtalk).toBeUndefined();
@@ -35,6 +36,11 @@ describe("loadConfig", () => {
 
   it("PORT 字符串被 coerce 为数字", () => {
     expect(loadConfig({ ...base, PORT: "8080" }).port).toBe(8080);
+  });
+
+  it("HOST 默认 0.0.0.0，可被 env 覆盖", () => {
+    expect(loadConfig(base).host).toBe("0.0.0.0");
+    expect(loadConfig({ ...base, HOST: "127.0.0.1" }).host).toBe("127.0.0.1");
   });
 
   it("LOG_LEVEL 自定义生效", () => {
