@@ -5,6 +5,13 @@
 # ============================================================
 set -euo pipefail
 
+# 校验 Node 版本（>= 20，与 package.json engines 对齐）
+NODE_MAJOR="$(node -v | sed 's/^v\([0-9][0-9]*\).*/\1/')"
+if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
+  echo "❌ 错误：需要 Node >= 20，当前为 $(node -v 2>/dev/null || echo '未安装')"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DEPLOY_DIR="$PROJECT_DIR/.deploy"
@@ -80,12 +87,14 @@ cat > "$DEPLOY_DIR/.env" << ENVEOF
 PORT=$BACKEND_PORT
 # 前端 dev 端口（仅开发期，生产期由后端托管 web/dist）
 WEB_PORT=$WEB_PORT
+# 监听地址（0.0.0.0=全网卡可外部访问；配合 DDNS/端口转发用于远程访问）
+HOST=0.0.0.0
 
-# 数据目录（部署专用，与开发目录隔离）
-WORKSPACE_DIR=$DEPLOY_DIR/data/workspace
-DB_PATH=$DEPLOY_DIR/data/donger.db
-MEMORY_DIR=$DEPLOY_DIR/data/memory
-REPO_ROOT=$DEPLOY_DIR/data/repos
+# 数据目录（相对部署目录；运行时 cwd 须在 .deploy/，便于整体搬迁）
+WORKSPACE_DIR=./data/workspace
+DB_PATH=./data/donger.db
+MEMORY_DIR=./data/memory
+REPO_ROOT=./data/repos
 
 # 日志级别
 LOG_LEVEL=info
@@ -104,7 +113,11 @@ echo ""
 echo "=== ✅ 部署完成 ==="
 echo "部署目录: $DEPLOY_DIR"
 echo ""
-echo "启动命令："
+echo "启动命令（须在该目录下执行，相对路径才能正确解析）："
 echo "  cd $DEPLOY_DIR && npm start"
 echo ""
-echo "Web 访问：http://localhost:$BACKEND_PORT"
+echo "访问："
+echo "  本机：  http://localhost:$BACKEND_PORT"
+echo "  远程：  http://<域名或公网IP>:<公网端口>"
+echo "          远程访问配置（DDNS + 端口转发 + 钉钉回调白名单）见："
+echo "          docs/deploy-remote-access.md"
