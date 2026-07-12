@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
+import { clearToken, getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
-import { clearToken, getToken } from "./auth";
 
 type SSEClient = {
   close(): void;
@@ -25,25 +25,28 @@ export function useWebChat() {
     }
   }, []);
 
-  /** 创建新会话 */
-  const createNewConversation = useCallback(async () => {
-    try {
-      const token = getToken();
-      const res = await fetch("/api/conversations", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ userId: getUserId(), channelId: "web" }),
-      });
-      const conv: ConversationSummary = await res.json();
-      dispatch({ type: "new_conversation", conversation: conv });
-      return conv;
-    } catch {
-      return null;
-    }
-  }, [getUserId]);
+  /** 创建新会话（agentId 缺省=默认会话） */
+  const createNewConversation = useCallback(
+    async (agentId?: string) => {
+      try {
+        const token = getToken();
+        const res = await fetch("/api/conversations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ userId: getUserId(), channelId: "web", agentId }),
+        });
+        const conv: ConversationSummary = await res.json();
+        dispatch({ type: "new_conversation", conversation: conv });
+        return conv;
+      } catch {
+        return null;
+      }
+    },
+    [getUserId],
+  );
 
   /** 加载会话列表 */
   const loadConversations = useCallback(async () => {
@@ -60,69 +63,70 @@ export function useWebChat() {
   }, [getUserId]);
 
   /** 连接 SSE 流 */
-  const connectSSE = useCallback((conversationId: string) => {
-    // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
-    const token = getToken();
-    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-    const eventSource = new EventSource(
-      `/api/conversations/${conversationId}/stream${qs}`,
-    );
+  const connectSSE = useCallback(
+    (conversationId: string) => {
+      // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
+      const token = getToken();
+      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+      const eventSource = new EventSource(`/api/conversations/${conversationId}/stream${qs}`);
 
-    sseRef.current = {
-      close: () => eventSource.close(),
-    };
+      sseRef.current = {
+        close: () => eventSource.close(),
+      };
 
-    eventSource.addEventListener("text", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "text") {
-          dispatch({ type: "ws", msg: data });
+      eventSource.addEventListener("text", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "text") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
-    });
+      });
 
-    eventSource.addEventListener("approval_card", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "approval_card") {
-          dispatch({ type: "ws", msg: data });
+      eventSource.addEventListener("approval_card", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "approval_card") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
-    });
+      });
 
-    eventSource.addEventListener("result", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "result") {
-          dispatch({ type: "ws", msg: data });
+      eventSource.addEventListener("result", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "result") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
-    });
+      });
 
-    eventSource.addEventListener("error", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "error") {
-          console.error("[SSE]", data.error);
+      eventSource.addEventListener("error", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "error") {
+            console.error("[SSE]", data.error);
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
-      // EventSource 会自动重连，无需手动处理
-    });
+        // EventSource 会自动重连，无需手动处理
+      });
 
-    eventSource.onopen = () => {
-      dispatch({ type: "connection", state: "open" });
-    };
+      eventSource.onopen = () => {
+        dispatch({ type: "connection", state: "open" });
+      };
 
-    return eventSource;
-  }, [state.activeConversationId]);
+      return eventSource;
+    },
+    [state.activeConversationId],
+  );
 
   // 初始连接
   useEffect(() => {
@@ -145,33 +149,33 @@ export function useWebChat() {
   }, [state.activeConversationId, connectSSE]);
 
   /** 切换会话（先清空本地消息，再异步加载历史消息） */
-  const switchConversation = useCallback(
-    (conversationId: string | null) => {
-      dispatch({ type: "switch_conversation", conversationId });
-      if (!conversationId) return;
+  const switchConversation = useCallback((conversationId: string | null) => {
+    dispatch({ type: "switch_conversation", conversationId });
+    if (!conversationId) return;
 
-      const token = getToken();
-      fetch(`/api/conversations/${conversationId}/messages`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+    const token = getToken();
+    fetch(`/api/conversations/${conversationId}/messages`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json() as Promise<ChatMessage[]>;
       })
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json() as Promise<ChatMessage[]>;
-        })
-        .then((messages) => {
-          dispatch({ type: "set_messages", messages });
-        })
-        .catch(() => {
-          dispatch({ type: "set_messages", messages: [] });
-        });
-    },
-    [],
-  );
+      .then((messages) => {
+        dispatch({ type: "set_messages", messages });
+      })
+      .catch(() => {
+        dispatch({ type: "set_messages", messages: [] });
+      });
+  }, []);
 
-  /** 新建会话 */
-  const newConversation = useCallback(async () => {
-    await createNewConversation();
-  }, [createNewConversation]);
+  /** 新建会话（可指定 agentId 绑定智能体） */
+  const newConversation = useCallback(
+    async (agentId?: string) => {
+      await createNewConversation(agentId);
+    },
+    [createNewConversation],
+  );
 
   const send = useCallback(
     async (text: string, files?: FileInfo[]) => {
@@ -196,26 +200,29 @@ export function useWebChat() {
     [state.activeConversationId],
   );
 
-  const resolveApproval = useCallback(async (approved: boolean, reason?: string) => {
-    // 审批响应通过 HTTP POST 发送
-    const pending = state.pendingApproval;
-    if (!pending) return;
+  const resolveApproval = useCallback(
+    async (approved: boolean, reason?: string) => {
+      // 审批响应通过 HTTP POST 发送
+      const pending = state.pendingApproval;
+      if (!pending) return;
 
-    const token = getToken();
-    try {
-      await fetch(`/api/approvals/${pending.gateId}/respond`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ approved, reason }),
-      });
-      dispatch({ type: "clear_approval" });
-    } catch {
-      // ignore
-    }
-  }, [state.pendingApproval]);
+      const token = getToken();
+      try {
+        await fetch(`/api/approvals/${pending.gateId}/respond`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ approved, reason }),
+        });
+        dispatch({ type: "clear_approval" });
+      } catch {
+        // ignore
+      }
+    },
+    [state.pendingApproval],
+  );
 
   /** 删除会话（软删除，归档） */
   const deleteConversation = useCallback(async (id: string) => {
