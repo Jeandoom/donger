@@ -78,18 +78,12 @@ async function main(): Promise<void> {
   const sessionStore = new JwtSessionStore(db, jwtSecret, cfg.jwtTtlDays * 24 * 60 * 60 * 1000);
   sessionStore.migrate();
 
-  function createOrch(channel: Channel): Orchestrator {
-    const skillPackStore = new SqliteSkillPackStore(db);
-    skillPackStore.migrate();
-    const credentialStore = new SqliteCredentialStore(
-      db,
-      loadOrGenerateAppSecret(db, "skill_secret_key"),
-    );
-    credentialStore.migrate();
-    const skillInstaller = new LocalSkillInstaller({
-      packStore: skillPackStore,
-      getHomeDir: (uid) => join(usersDir, uid),
-    });
+  function createOrch(
+    channel: Channel,
+    skillPackStore: SqliteSkillPackStore,
+    credentialStore: SqliteCredentialStore,
+    skillInstaller: LocalSkillInstaller,
+  ): Orchestrator {
     const runtimeMgr = new RuntimeManager({
       transcriptStore,
       conversationStore,
@@ -118,6 +112,19 @@ async function main(): Promise<void> {
     });
   }
 
+  // 技能 store/installer（WebChannel 与 Orchestrator 共享同一实例）
+  const skillPackStore = new SqliteSkillPackStore(db);
+  skillPackStore.migrate();
+  const credentialStore = new SqliteCredentialStore(
+    db,
+    loadOrGenerateAppSecret(db, "skill_secret_key"),
+  );
+  credentialStore.migrate();
+  const skillInstaller = new LocalSkillInstaller({
+    packStore: skillPackStore,
+    getHomeDir: (uid) => join(usersDir, uid),
+  });
+
   // Web Channel（始终启动）
   const fileBrowser = new LocalFileBrowser({
     userStore,
@@ -140,8 +147,11 @@ async function main(): Promise<void> {
       ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret }
       : undefined,
     fileBrowser,
+    skillPackStore,
+    installer: skillInstaller,
+    credentialStore,
   });
-  const webOrch = createOrch(webChannel);
+  const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   log.info({ channel: "web", host: cfg.host, port: cfg.port }, "就绪");
   console.log(`\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`);
@@ -149,7 +159,7 @@ async function main(): Promise<void> {
   // 钉钉 Channel（有配置才启动）
   if (cfg.dingtalk) {
     const dtChannel = new DingTalkChannel(cfg.dingtalk);
-    const dtOrch = createOrch(dtChannel);
+    const dtOrch = createOrch(dtChannel, skillPackStore, credentialStore, skillInstaller);
     dtChannel.onMessage((m) => void dtOrch.handleMessage(m));
     log.info({ channel: "dingtalk" }, "就绪");
   }

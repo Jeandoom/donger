@@ -14,13 +14,29 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel, CredentialRequest, CredentialRequestItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { CredentialStore } from "../ports/credential-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { SessionStore } from "../ports/session-store.js";
+import type { SkillInstaller } from "../ports/skill-installer.js";
+import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
+import {
+  handleDeleteCredential,
+  handleInstall,
+  handleInstallUpload,
+  handleListCredentials,
+  handleListPacks,
+  handleSetCredential,
+  handleSetPackEnabled,
+  handleSetSkillEnabled,
+  handleUninstall,
+  handleUpdate,
+  type SkillApiDeps,
+} from "./skill-api.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -86,6 +102,9 @@ export interface WebChannelDeps {
   auditStore?: AuditStore;
   sessionStore?: SessionStore;
   fileBrowser?: FileBrowser;
+  skillPackStore?: SkillPackStore;
+  installer?: SkillInstaller;
+  credentialStore?: CredentialStore;
   dingtalkConfig?: { appKey: string; appSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
@@ -973,8 +992,89 @@ export class WebChannel implements Channel {
       return;
     }
 
+    if (await this.handleSkillsApi(url, req, res)) return;
+
     res.writeHead(404);
     res.end(JSON.stringify({ error: "unknown endpoint" }));
+  }
+
+  /** 技能/凭证 API 命中返回 true。委托 skill-api handler。 */
+  private async handleSkillsApi(
+    url: string,
+    req: HttpRequest,
+    res: ServerResponse,
+  ): Promise<boolean> {
+    const deps = this.skillDeps();
+    const uid = (req as HttpRequest & { userId?: string }).userId ?? "";
+    const match = (re: RegExp): RegExpMatchArray | null => url.match(re);
+    const send = (r: { status: number; json: unknown }) => {
+      res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(r.json));
+    };
+    if (!deps) return false;
+
+    if (url === "/api/skills/packs" && req.method === "GET") {
+      send(await handleListPacks(uid, {}, deps));
+      return true;
+    }
+    if (url === "/api/skills/packs/install" && req.method === "POST") {
+      send(await handleInstall(uid, JSON.parse(await this.readBody(req)), deps));
+      return true;
+    }
+    if (url === "/api/skills/packs/install/upload" && req.method === "POST") {
+      send(await handleInstallUpload(uid, JSON.parse(await this.readBody(req)), deps));
+      return true;
+    }
+    if (url === "/api/skills/packs/update" && req.method === "POST") {
+      send(await handleUpdate(uid, JSON.parse(await this.readBody(req)), deps));
+      return true;
+    }
+    if (url === "/api/skills/packs/uninstall" && req.method === "POST") {
+      send(await handleUninstall(uid, JSON.parse(await this.readBody(req)), deps));
+      return true;
+    }
+    if (url === "/api/skills/packs/enable" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as { id: string };
+      send(await handleSetPackEnabled(uid, { id: b.id, enabled: true }, deps));
+      return true;
+    }
+    if (url === "/api/skills/packs/disable" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as { id: string };
+      send(await handleSetPackEnabled(uid, { id: b.id, enabled: false }, deps));
+      return true;
+    }
+    if (url === "/api/skills/skills/enable" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as { id: string };
+      send(await handleSetSkillEnabled(uid, { id: b.id, enabled: true }, deps));
+      return true;
+    }
+    if (url === "/api/skills/skills/disable" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as { id: string };
+      send(await handleSetSkillEnabled(uid, { id: b.id, enabled: false }, deps));
+      return true;
+    }
+    if (url === "/api/credentials" && req.method === "GET") {
+      send(await handleListCredentials(uid, {}, deps));
+      return true;
+    }
+    const credMatch = match(/^\/api\/credentials\/([^/]+)$/);
+    if (credMatch && req.method === "PUT") {
+      const b = JSON.parse(await this.readBody(req)) as { value: string; label?: string };
+      send(await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1]!), ...b }, deps));
+      return true;
+    }
+    if (credMatch && req.method === "DELETE") {
+      send(await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1]!) }, deps));
+      return true;
+    }
+    return false;
+  }
+
+  /** 组装 skill-api 依赖；任一缺失返回 null（路由回 404）。 */
+  private skillDeps(): SkillApiDeps | null {
+    const { skillPackStore, installer, credentialStore } = this.deps;
+    if (!skillPackStore || !installer || !credentialStore) return null;
+    return { packStore: skillPackStore, installer, credentialStore };
   }
 
   /** GET /api/files/tree?scope=user|runtime[&conversationId=] */
