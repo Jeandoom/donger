@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
+import { canUseAgent } from "../domain/agent-policy.js";
+import type { Agent } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";
@@ -7,6 +9,8 @@ import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentRunner } from "../ports/agent-runner.js";
+import type { AgentShareStore } from "../ports/agent-share-store.js";
+import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
@@ -14,7 +18,7 @@ import type { MessageStore } from "../ports/message-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
-import { NotFoundError } from "../util/errors.js";
+import { ForbiddenError, NotFoundError } from "../util/errors.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { RuntimeManager } from "./runtime-manager.js";
@@ -32,6 +36,10 @@ export interface OrchestratorDeps {
   channel: Channel;
   /** 会话运行态总管：组装 RunOptions（cwd/skills/plugins/sessionStore/resume）+ 回写 sdkSessionId */
   runtimeMgr: RuntimeManager;
+  /** 智能体存储（M13；缺省=不支持显式 agent，会话 agentId 必须为空） */
+  agentStore?: AgentStore;
+  /** 智能体分享/授权存储 */
+  agentShareStore?: AgentShareStore;
 }
 
 export class Orchestrator {
@@ -136,6 +144,24 @@ export class Orchestrator {
         (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30))))
       : await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30));
 
+    // 显式 agent 解析（M13）：会话绑了 agentId 时旁路 Planner，校验使用权限
+    let agent: Agent | undefined;
+    if (conversation.agentId) {
+      if (!this.deps.agentStore) {
+        throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
+      }
+      agent = await this.deps.agentStore.get(conversation.agentId);
+      if (!agent) {
+        throw new NotFoundError("AGENT_NOT_FOUND", `智能体不存在: ${conversation.agentId}`);
+      }
+      const granted = this.deps.agentShareStore
+        ? await this.deps.agentShareStore.isGranted(agent.id, user.id)
+        : false;
+      if (!canUseAgent(agent, user, granted)) {
+        throw new ForbiddenError("AGENT_FORBIDDEN", "无权使用该智能体");
+      }
+    }
+
     // 并发控制：
     //  同一会话：串行排队（后到的排队等前序完成）
     //  同一用户：最多 MAX_CONCURRENT_PER_USER 并行（超限提示）
@@ -194,6 +220,7 @@ export class Orchestrator {
       const { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
         plan,
         systemPromptAppend: memoryAppend,
+        agent,
       });
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));
@@ -224,6 +251,7 @@ export class Orchestrator {
           const refreshed = await this.deps.runtimeMgr.prepare(user, conversation, {
             plan,
             systemPromptAppend: memoryAppend,
+            agent,
           });
           attemptOpts = refreshed.runOptions;
           continue;
