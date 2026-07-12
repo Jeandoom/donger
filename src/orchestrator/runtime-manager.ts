@@ -2,12 +2,13 @@ import { isAbsolute, join } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import type { PackSkill, SkillCredentialSpec, SkillPack } from "../domain/skill-pack.js";
+import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { CredentialRequestItem } from "../ports/channel.js";
 import type { CredentialStore } from "../ports/credential-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
@@ -25,12 +26,6 @@ export interface RuntimeManagerConfig {
 export interface PrepareOpts {
   systemPromptAppend?: string;
   abortSignal?: AbortSignal;
-}
-
-export interface CredentialRequirements {
-  required: string[];
-  present: string[];
-  specs: SkillCredentialSpec[];
 }
 
 interface RuntimeManagerDeps {
@@ -130,14 +125,25 @@ export class RuntimeManager {
     return { context, runOptions };
   }
 
-  /** 凭证门用：算出启用 pack 声明的 required 凭证中，用户保险柜尚缺哪些。 */
-  async activeCredentialRequirements(userId: string): Promise<CredentialRequirements> {
+  /** 凭证门用：返回启用 pack 声明、且用户保险柜尚缺的 required 凭证项（带 packName）。 */
+  async missingCredentialItems(userId: string): Promise<CredentialRequestItem[]> {
     const packs = (await this.deps.skillPackStore.listPacks(userId)).filter((p) => p.enabled);
-    const specs = packs.flatMap((p) => p.credentials);
-    const required = uniq(specs.filter((c) => c.required).map((c) => c.key));
-    const vault = await this.deps.credentialStore.list(userId);
-    const present = vault.map((e) => e.key);
-    return { required, present, specs };
+    const vault = new Set((await this.deps.credentialStore.list(userId)).map((e) => e.key));
+    const items: CredentialRequestItem[] = [];
+    for (const p of packs) {
+      for (const c of p.credentials) {
+        if (c.required && !vault.has(c.key)) {
+          items.push({
+            key: c.key,
+            label: c.label,
+            description: c.description,
+            secret: c.secret,
+            packName: p.name,
+          });
+        }
+      }
+    }
+    return items;
   }
 
   /** 解析 pack 绝对路径：预装/绝对路径原样，用户 pack 拼 homeDir。 */

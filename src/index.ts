@@ -114,6 +114,7 @@ async function main(): Promise<void> {
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,
       runtimeMgr,
+      credentialStore,
     });
   }
 

@@ -180,7 +180,7 @@ describe("RuntimeManager", () => {
     expect(runOptions.resume).toBe("sdk-xyz");
   });
 
-  it("activeCredentialRequirements：列出 required 且区分已配/缺失", async () => {
+  it("missingCredentialItems：仅返回缺失的 required 项（带 packName）", async () => {
     await packStore.upsertPack(
       mkPack({
         credentials: [
@@ -191,10 +191,22 @@ describe("RuntimeManager", () => {
     );
     await credStore.setValue("u1", "REQ", "v");
     const m = makeMgr(fakeConvStore([baseConv()]));
-    const req = await m.activeCredentialRequirements("u1");
-    expect(req.required).toEqual(["REQ"]);
-    expect(req.present).toContain("REQ");
-    expect(req.specs.map((s) => s.key)).toEqual(["REQ", "OPT"]);
+    const items = await m.missingCredentialItems("u1");
+    // REQ 已配、OPT 非必需 → 均不出现
+    expect(items).toEqual([]);
+    // 再加一个未配的 required
+    await packStore.upsertPack(
+      mkPack({
+        id: "p2",
+        slug: "demo2",
+        name: "demo2",
+        credentials: [{ key: "MISS", label: "M", required: true, secret: true }],
+      }),
+    );
+    const items2 = await m.missingCredentialItems("u1");
+    expect(items2).toEqual([
+      { key: "MISS", label: "M", description: undefined, secret: true, packName: "demo2" },
+    ]);
   });
 
   it("commit：回写 sdkSessionId 到 ConversationStore", async () => {

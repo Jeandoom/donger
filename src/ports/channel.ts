@@ -8,6 +8,22 @@ export interface ApprovalResult {
   responderId?: string;
 }
 
+/** 凭证门单项：要求用户提供的一个凭证 */
+export interface CredentialRequestItem {
+  key: string;
+  label: string;
+  description?: string;
+  secret: boolean;
+  packName: string;
+}
+
+/** 凭证门请求：任务执行前缺失的必需凭证 */
+export interface CredentialRequest {
+  taskId: string;
+  conversationId: string;
+  items: CredentialRequestItem[];
+}
+
 /** IM / 控制台入口端口 */
 export interface Channel {
   readonly id: string;
@@ -22,6 +38,8 @@ export interface Channel {
   /** 推送审批卡片（SSE 版本） */
   pushApprovalCard?(conversationId: string, gateId: string, title: string, summary: string): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
+  /** 收集缺失凭证（WebChannel 实现；钉钉不实现 → 凭证门降级为失败提示）。 */
+  requestCredentials?(threadId: string, req: CredentialRequest): Promise<Record<string, string>>;
   /** 收到确认（可选）；返回 ack 上下文供 ackEnd 用 */
   ack?(threadId: string): Promise<unknown>;
   /** 撤销确认（可选，任务完成后调用） */

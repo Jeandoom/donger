@@ -6,13 +6,19 @@ export type TaskEvent =
   | "start"
   | "request_approval"
   | "resume"
+  | "request_credentials"
+  | "credentials_provided"
   | "finish"
   | "fail"
   | "cancel";
 
 const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = {
   created: { plan: "planning", cancel: "canceled" },
-  planning: { start: "running", cancel: "canceled" },
+  planning: {
+    start: "running",
+    request_credentials: "awaiting_credentials",
+    cancel: "canceled",
+  },
   running: {
     request_approval: "awaiting_approval",
     finish: "done",
@@ -20,6 +26,7 @@ const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = 
     cancel: "canceled",
   },
   awaiting_approval: { resume: "running", fail: "failed", cancel: "canceled" },
+  awaiting_credentials: { credentials_provided: "planning", fail: "failed", cancel: "canceled" },
   done: {},
   failed: {},
   canceled: {},

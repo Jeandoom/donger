@@ -2,17 +2,22 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { CliChannel } from "../../src/adapters/cli-channel.js";
 import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-runner.js";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
+import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
-import { Planner } from "../../src/domain/planner.js";
+import type { SkillPack } from "../../src/domain/skill-pack.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
+import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { UserStore } from "../../src/ports/user-store.js";
+import { loadOrGenerateAppSecret } from "../../src/util/app-secret.js";
 
 /** 轮询输出直到包含 needle（带超时），用于 CLI 异步时序同步 */
 async function waitFor(get: () => string, needle: string, ms = 1000): Promise<void> {
@@ -92,6 +97,19 @@ function setup(script: FakeScript) {
     },
     async update() {},
   };
+  const db = new Database(":memory:");
+  const skillPackStore = new SqliteSkillPackStore(db);
+  skillPackStore.migrate();
+  const credentialStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+  credentialStore.migrate();
+  const fakeInstaller: SkillInstaller = {
+    installFromGit: async () => ({} as SkillPack),
+    installFromUpload: async () => ({} as SkillPack),
+    installFromPaste: async () => ({} as SkillPack),
+    installBuiltin: async () => ({} as SkillPack),
+    uninstall: async () => {},
+    update: async () => ({} as SkillPack),
+  };
   const runtimeMgr = new RuntimeManager({
     transcriptStore: {
       async append() {},
@@ -110,10 +128,12 @@ function setup(script: FakeScript) {
     config: {
       workspaceDir: mkdtempSync(join(tmpdir(), "donger-e2e-ws-")),
       llm: { model: "m", baseUrl: "u", authToken: "t" },
-      defaultPluginPaths: [],
-      superpowersPluginPath: "/opt/superpowers",
       defaultSystemPromptAppend: "测试",
     },
+    skillPackStore,
+    credentialStore,
+    installer: fakeInstaller,
+    builtinSkillsDir: "",
   });
   const orch = new Orchestrator({
     store,
@@ -121,11 +141,11 @@ function setup(script: FakeScript) {
     conversationStore,
     usageStore: new InMemoryUsageStore(),
     auditStore: new InMemoryAuditStore(),
-    planner: new Planner(),
     gates,
     runner,
     channel,
     runtimeMgr,
+    credentialStore,
   });
   channel.onMessage((m) => {
     void orch.handleMessage(m);

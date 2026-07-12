@@ -135,8 +135,11 @@ function mockTranscriptStore(): TranscriptStore {
   };
 }
 
-/** 构造真实 RuntimeManager（内存 transcript + 内存 skill/credential store，model=m） */
-function makeRuntimeMgr(conversationStore: ConversationStore): RuntimeManager {
+/** 构造真实 RuntimeManager + 其依赖的 credentialStore（内存 transcript + 内存 skill/credential store，model=m） */
+function makeRuntimeMgr(conversationStore: ConversationStore): {
+  mgr: RuntimeManager;
+  credentialStore: SqliteCredentialStore;
+} {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
@@ -150,7 +153,7 @@ function makeRuntimeMgr(conversationStore: ConversationStore): RuntimeManager {
     uninstall: async () => {},
     update: async () => ({} as SkillPack),
   };
-  return new RuntimeManager({
+  const mgr = new RuntimeManager({
     transcriptStore: mockTranscriptStore(),
     conversationStore,
     config: {
@@ -163,6 +166,7 @@ function makeRuntimeMgr(conversationStore: ConversationStore): RuntimeManager {
     installer: fakeInstaller,
     builtinSkillsDir: "",
   });
+  return { mgr, credentialStore };
 }
 
 function setup(approve: boolean, script: FakeScript) {
@@ -174,6 +178,7 @@ function setup(approve: boolean, script: FakeScript) {
   const gates = new GateRouter();
   gates.describe({ id: "design", description: "方案审批" });
   const conversationStore = mockConversationStore();
+  const { mgr: runtimeMgr, credentialStore } = makeRuntimeMgr(conversationStore);
   const orch = new Orchestrator({
     store,
     userStore: mockUserStore(),
@@ -183,7 +188,8 @@ function setup(approve: boolean, script: FakeScript) {
     gates,
     runner,
     channel,
-    runtimeMgr: makeRuntimeMgr(conversationStore),
+    runtimeMgr,
+    credentialStore,
   });
   return { orch, store, channel, usageStore, auditStore };
 }
@@ -231,6 +237,7 @@ describe("Orchestrator", () => {
       },
     };
     const conversationStore2 = mockConversationStore();
+    const { mgr: runtimeMgr2, credentialStore: credentialStore2 } = makeRuntimeMgr(conversationStore2);
     const orch2 = new Orchestrator({
       store: store2,
       userStore: mockUserStore(),
@@ -240,7 +247,8 @@ describe("Orchestrator", () => {
       auditStore: new InMemoryAuditStore(),
       runner: throwingRunner,
       channel: channel2,
-      runtimeMgr: makeRuntimeMgr(conversationStore2),
+      runtimeMgr: runtimeMgr2,
+      credentialStore: credentialStore2,
     });
     await orch2.handleMessage(msg);
     expect(channel2.sent.some((m) => m.text.includes("处理出错"))).toBe(true);
@@ -273,6 +281,7 @@ describe("Orchestrator", () => {
       },
       async update() {},
     };
+    const { mgr: runtimeMgrNew, credentialStore: credentialStoreNew } = makeRuntimeMgr(cst);
     const orch = new Orchestrator({
       store: new InMemoryTaskStore(),
       userStore: mockUserStore(),
@@ -282,7 +291,8 @@ describe("Orchestrator", () => {
       auditStore: new InMemoryAuditStore(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
-      runtimeMgr: makeRuntimeMgr(cst),
+      runtimeMgr: runtimeMgrNew,
+      credentialStore: credentialStoreNew,
     });
     await orch.handleMessage({ ...msg, text: "/new" });
     expect(created).toBe(true);
@@ -332,6 +342,7 @@ describe("Orchestrator", () => {
         }));
       },
     };
+    const { mgr: runtimeMgrCap, credentialStore: credentialStoreCap } = makeRuntimeMgr(cst);
     const orch = new Orchestrator({
       store: new InMemoryTaskStore(),
       userStore: mockUserStore(),
@@ -341,7 +352,8 @@ describe("Orchestrator", () => {
       channel: fakeChannel(true),
       usageStore: new InMemoryUsageStore(),
       auditStore: new InMemoryAuditStore(),
-      runtimeMgr: makeRuntimeMgr(cst),
+      runtimeMgr: runtimeMgrCap,
+      credentialStore: credentialStoreCap,
     });
     await orch.handleMessage(msg);
     expect(capturedResume).toBe("sdk-existing");
@@ -441,6 +453,8 @@ describe("Orchestrator", () => {
     };
     const store = new InMemoryTaskStore();
     const conversationStore = mockConversationStore();
+    const { mgr: runtimeMgrAudit, credentialStore: credentialStoreAudit } =
+      makeRuntimeMgr(conversationStore);
     const orch = new Orchestrator({
       store,
       userStore: mockUserStore(),
@@ -450,7 +464,8 @@ describe("Orchestrator", () => {
       gates: new GateRouter(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
-      runtimeMgr: makeRuntimeMgr(conversationStore),
+      runtimeMgr: runtimeMgrAudit,
+      credentialStore: credentialStoreAudit,
     });
     await orch.handleMessage(msg);
     expect((await store.listByStatus("done")).length).toBe(1);

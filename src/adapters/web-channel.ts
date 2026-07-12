@@ -12,7 +12,7 @@ import { mimeForExt } from "../domain/file-mime.js";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
-import type { Channel } from "../ports/channel.js";
+import type { Channel, CredentialRequest, CredentialRequestItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
 import type { MessageStore } from "../ports/message-store.js";
@@ -57,6 +57,12 @@ function contentType(absPath: string): string {
 type SSEEvent =
   | { type: "text"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
+  | {
+      type: "credential_card";
+      reqId: string;
+      conversationId: string;
+      items: CredentialRequestItem[];
+    }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "error"; error: string };
 
@@ -196,6 +202,38 @@ export class WebChannel implements Channel {
     (result: { approved: boolean; reason?: string }) => void
   >();
 
+  /** 存储凭证提交的 resolve 函数（key = credential reqId） */
+  private readonly pendingCredentialResolves = new Map<
+    string,
+    (values: Record<string, string>) => void
+  >();
+
+  /** 等待用户提交凭证（通过 SSE credential_card + HTTP POST /api/credentials/:reqId/submit） */
+  async requestCredentials(
+    threadId: string,
+    req: CredentialRequest,
+  ): Promise<Record<string, string>> {
+    void threadId;
+    const reqId = crypto.randomUUID();
+    this.broadcastToConversation(req.conversationId, {
+      type: "credential_card",
+      reqId,
+      conversationId: req.conversationId,
+      items: req.items,
+    });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingCredentialResolves.delete(reqId);
+        reject(new Error("凭证提交超时（300秒）"));
+      }, 300_000);
+      this.pendingCredentialResolves.set(reqId, (values) => {
+        clearTimeout(timeout);
+        this.pendingCredentialResolves.delete(reqId);
+        resolve(values);
+      });
+    });
+  }
+
   /** 向特定会话广播事件 */
   private broadcastToConversation(conversationId: string, event: SSEEvent): void {
     const clients = this.sseClients.get(conversationId);
@@ -267,6 +305,11 @@ export class WebChannel implements Channel {
       // 审批响应
       if (url.startsWith("/api/approvals/") && req.method === "POST" && url.endsWith("/respond")) {
         await this.handleApprovalRespond(req, res);
+        return;
+      }
+      // 凭证门提交
+      if (url.startsWith("/api/credentials/") && req.method === "POST" && url.endsWith("/submit")) {
+        await this.handleCredentialSubmit(url, req, res);
         return;
       }
       // 发送消息
@@ -468,6 +511,31 @@ export class WebChannel implements Channel {
     } else {
       res.writeHead(404);
       res.end(JSON.stringify({ error: "approval not found or expired" }));
+    }
+  }
+
+  /** 凭证门提交：按 reqId 解析 pendingCredentialResolves，把 values 回传给 requestCredentials */
+  private async handleCredentialSubmit(
+    url: string,
+    req: HttpRequest,
+    res: ServerResponse,
+  ): Promise<void> {
+    const match = url.match(/^\/api\/credentials\/([\w-]+)\/submit$/);
+    if (!match) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "invalid credential url" }));
+      return;
+    }
+    const reqId = match[1]!;
+    const body = JSON.parse(await this.readBody(req)) as { values?: Record<string, string> };
+    const resolve = this.pendingCredentialResolves.get(reqId);
+    if (resolve) {
+      resolve(body.values ?? {});
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+    } else {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: "credential request not found or expired" }));
     }
   }
 

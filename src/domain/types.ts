@@ -8,6 +8,7 @@ export const TaskStatusEnum = z.enum([
   "planning",
   "running",
   "awaiting_approval",
+  "awaiting_credentials",
   "done",
   "failed",
   "canceled",

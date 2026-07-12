@@ -9,12 +9,14 @@ import type { AgentRunner } from "../ports/agent-runner.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { CredentialStore } from "../ports/credential-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { NotFoundError } from "../util/errors.js";
 import { makeApprovalResolver } from "./approval-flow.js";
+import { makeCredentialResolver } from "./credential-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 
@@ -30,6 +32,8 @@ export interface OrchestratorDeps {
   channel: Channel;
   /** 会话运行态总管：组装 RunOptions（cwd/skills/plugins/sessionStore/resume）+ 回写 sdkSessionId */
   runtimeMgr: RuntimeManager;
+  /** 用户凭证保险柜：凭证门收集到的值落此，运行时注入 env */
+  credentialStore: CredentialStore;
 }
 
 export class Orchestrator {
@@ -188,9 +192,28 @@ export class Orchestrator {
         }
       }
 
-      const { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
+      let { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
         systemPromptAppend: memoryAppend,
       });
+
+      // 凭证门：缺失必需凭证 → 经对话收集到用户保险柜 → 重 prepare 拿最新 credentialsEnv
+      const missingItems = await this.deps.runtimeMgr.missingCredentialItems(user.id);
+      if (missingItems.length > 0) {
+        const credResolver = makeCredentialResolver(store, channel, msg.threadId);
+        const provided = await credResolver({
+          taskId: task.id,
+          conversationId: conversation.id,
+          items: missingItems,
+        });
+        for (const [k, v] of Object.entries(provided)) {
+          if (v) await this.deps.credentialStore.setValue(user.id, k, v);
+        }
+        opts = (
+          await this.deps.runtimeMgr.prepare(user, conversation, {
+            systemPromptAppend: memoryAppend,
+          })
+        ).runOptions;
+      }
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));
       const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
