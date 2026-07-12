@@ -84,6 +84,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           ...process.env,
           ANTHROPIC_BASE_URL: opts.llm.baseUrl,
           ANTHROPIC_AUTH_TOKEN: opts.llm.authToken,
+          ...opts.credentialsEnv,
         },
       },
     });
