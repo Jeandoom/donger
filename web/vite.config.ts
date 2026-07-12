@@ -8,9 +8,12 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, "../", "");
   const backendPort = env.PORT ?? "3300";
   const webPort = Number(env.WEB_PORT) || 3303;
-  // 用 127.0.0.1（IPv4 loopback）而非 localhost：后端默认绑 0.0.0.0（仅 IPv4），
-  // localhost 在本机常解析为 IPv6 ::1，会导致代理 ECONNREFUSED ::1:3300。
-  const backend = `http://127.0.0.1:${backendPort}`;
+  // 代理目标必须与后端实际监听地址（HOST）一致，否则 ECONNREFUSED。
+  // HOST=0.0.0.0（监听通配）或未设置时，回退到 127.0.0.1：0.0.0.0 是监听通配符，
+  // 作客户端连接目标不可靠（Windows 上行为不一），用 IPv4 loopback 一定可达。
+  // 注意：localhost 在本机常解析为 IPv6 ::1，后端仅绑 IPv4 时会 ECONNREFUSED ::1。
+  const backendHost = !env.HOST || env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
+  const backend = `http://${backendHost}:${backendPort}`;
   return {
     plugins: [react()],
     server: {
