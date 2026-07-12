@@ -51,7 +51,10 @@ export function ShareLandingPage() {
             {getToken() ? (
               <p className="text-muted-foreground">正在进入…</p>
             ) : (
-              <Link to="/login" className="rounded bg-primary px-4 py-2 text-primary-foreground">
+              <Link
+                to={`/login?next=/share/${token}`}
+                className="rounded bg-primary px-4 py-2 text-primary-foreground"
+              >
                 登录后进入该智能体
               </Link>
             )}
