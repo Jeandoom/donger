@@ -21,6 +21,9 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
+import type { AgentShareStore } from "../ports/agent-share-store.js";
+import type { AgentStore } from "../ports/agent-store.js";
+import type { LlmPreset } from "../config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -80,6 +83,9 @@ export interface WebChannelDeps {
   auditStore?: AuditStore;
   sessionStore?: SessionStore;
   fileBrowser?: FileBrowser;
+  agentStore?: AgentStore;
+  agentShareStore?: AgentShareStore;
+  agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   dingtalkConfig?: { appKey: string; appSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
@@ -114,6 +120,9 @@ export class WebChannel implements Channel {
   private readonly messageStore?: MessageStore;
   private readonly sessionStore?: SessionStore;
   private readonly fileBrowser?: FileBrowser;
+  private readonly agentStore?: AgentStore;
+  private readonly agentShareStore?: AgentShareStore;
+  private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
 
@@ -123,6 +132,9 @@ export class WebChannel implements Channel {
     this.messageStore = deps.messageStore;
     this.sessionStore = deps.sessionStore;
     this.fileBrowser = deps.fileBrowser;
+    this.agentStore = deps.agentStore;
+    this.agentShareStore = deps.agentShareStore;
+    this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
   }
 

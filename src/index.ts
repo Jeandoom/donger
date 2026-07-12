@@ -8,6 +8,8 @@ import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
+import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
+import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
@@ -22,6 +24,7 @@ import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import type { Channel } from "./ports/channel.js";
+import { createSecretCipher } from "./util/secret-cipher.js";
 import { createLogger } from "./util/logger.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
@@ -70,6 +73,16 @@ async function main(): Promise<void> {
   const transcriptStore = new SqliteTranscriptStore(db);
   transcriptStore.migrate();
 
+  // Agent 密钥加密器 + Agent/分享 store
+  if (!cfg.secretKeySeed) {
+    log.warn("SECRET_KEY 与 JWT_SECRET 均为空，agent MCP 密钥将使用不安全默认密钥");
+  }
+  const secretCipher = createSecretCipher(cfg.secretKeySeed || "donger-insecure-default");
+  const agentStore = new SqliteAgentStore(db, secretCipher);
+  agentStore.migrate();
+  const agentShareStore = new SqliteAgentShareStore(db);
+  agentShareStore.migrate();
+
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
   const sessionStore = new JwtSessionStore(db, jwtSecret, cfg.jwtTtlDays * 24 * 60 * 60 * 1000);
@@ -100,6 +113,8 @@ async function main(): Promise<void> {
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,
       runtimeMgr,
+      agentStore,
+      agentShareStore,
     });
   }
 
@@ -125,6 +140,12 @@ async function main(): Promise<void> {
       ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret }
       : undefined,
     fileBrowser,
+    agentStore,
+    agentShareStore,
+    agentMeta: {
+      presets: cfg.agentLlmPresets,
+      skillPaths: cfg.superpowersPluginPath ? [cfg.superpowersPluginPath] : [],
+    },
   });
   const webOrch = createOrch(webChannel);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
