@@ -1,4 +1,5 @@
 import type { SessionStore } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "../domain/agent.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { ApprovalDecision, ApprovalRequest, RunnerEvent, Task } from "../domain/types.js";
 
@@ -19,6 +20,10 @@ export interface RunOptions {
   sessionStore?: SessionStore;
   /** 能力快照版本号（审计/回溯用，M1 仅记录，不消费） */
   capabilityVersion?: number;
+  /** 透传 SDK allowedTools（工具白名单） */
+  allowedTools?: string[];
+  /** 透传 SDK mcpServers（已解密） */
+  mcpServers?: McpServerConfig[];
 }
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */
