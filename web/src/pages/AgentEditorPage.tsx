@@ -8,6 +8,12 @@ import {
   fetchAgentMeta,
   updateAgent,
 } from "../lib/agents";
+import {
+  fetchShareStatus,
+  removeShareGrant,
+  type ShareStatus,
+  setShareEnabled,
+} from "../lib/share";
 
 const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   name: "",
@@ -203,6 +209,8 @@ export function AgentEditorPage() {
         </p>
       </Field>
 
+      {!isNew && id ? <SharePanel agentId={id} /> : null}
+
       <div className="flex gap-2">
         <button
           type="button"
@@ -229,6 +237,68 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="space-y-1">
       <div className="text-sm font-medium">{label}</div>
       {children}
+    </div>
+  );
+}
+
+function SharePanel({ agentId }: { agentId: string }) {
+  const [status, setStatus] = useState<ShareStatus | null>(null);
+
+  useEffect(() => {
+    fetchShareStatus(agentId)
+      .then(setStatus)
+      .catch(() => {});
+  }, [agentId]);
+
+  if (!status) return null;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+  const toggle = async () => {
+    const next = await setShareEnabled(agentId, !status.enabled);
+    setStatus({ ...status, ...next });
+  };
+
+  return (
+    <div className="space-y-2 rounded border p-3">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">分享</span>
+        <button type="button" className="rounded border px-2 py-1 text-sm" onClick={toggle}>
+          {status.enabled ? "关闭分享" : "开启分享"}
+        </button>
+      </div>
+      {status.enabled && status.url ? (
+        <>
+          <input
+            readOnly
+            className="w-full rounded border bg-muted px-2 py-1 text-xs"
+            value={`${origin}${status.url}`}
+            onClick={(e) => (e.target as HTMLInputElement).select()}
+          />
+          <div className="text-xs text-muted-foreground">
+            访问者名单（{status.grants.length}）：
+          </div>
+          <ul className="text-xs">
+            {status.grants.map((g) => (
+              <li key={g.userId} className="flex items-center justify-between">
+                <span>{g.userId}</span>
+                <button
+                  type="button"
+                  className="text-destructive"
+                  onClick={async () => {
+                    await removeShareGrant(agentId, g.userId);
+                    setStatus({
+                      ...status,
+                      grants: status.grants.filter((x) => x.userId !== g.userId),
+                    });
+                  }}
+                >
+                  移除
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
     </div>
   );
 }

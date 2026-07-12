@@ -9,6 +9,7 @@ import { ChatPage } from "./pages/ChatPage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
+import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 
@@ -18,6 +19,8 @@ export function App() {
       {/* 登录相关路由（免认证） */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/login/success" element={<LoginSuccessPage />} />
+      {/* 分享落地页（公开；登录后自动授权进入） */}
+      <Route path="/share/:token" element={<ShareLandingPage />} />
       {/* 合并流程已废弃：旧链接重定向到登录页 */}
       <Route path="/login/merge" element={<Navigate to="/login" replace />} />
 
