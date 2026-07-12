@@ -543,7 +543,12 @@ export class WebChannel implements Channel {
 
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // 免认证路由
-    const publicRoutes = ["/api/auth/qrcode-url", "/api/auth/dingtalk/callback", "/api/health"];
+    const publicRoutes = [
+      "/api/auth/qrcode-url",
+      "/api/auth/dingtalk/callback",
+      "/api/agents/by-share",
+      "/api/health",
+    ];
     const isPublic = publicRoutes.some((r) => url.startsWith(r));
 
     if (!isPublic && this.sessionStore) {
@@ -977,6 +982,83 @@ export class WebChannel implements Channel {
       const existing = list.find((c) => c.agentId === id);
       const conv = existing ?? (await this.deps.conversationStore?.createWithAgent(me, "web", a.name, id));
       return this.json(res, conv);
+    }
+
+    // === 分享路由 ===
+    const shareMatch = url.match(/^\/api\/agents\/([\w-]+)\/share$/);
+    if (shareMatch) {
+      const sid = shareMatch[1]!;
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(sid);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+      if (req.method === "GET") {
+        const share = await this.agentShareStore?.getShare(sid);
+        const grants = share?.enabled ? (await this.agentShareStore?.listGrants(sid)) ?? [] : [];
+        return this.json(res, {
+          enabled: !!share?.enabled,
+          token: share?.token,
+          url: share?.token ? `/share/${share.token}` : null,
+          grants,
+        });
+      }
+      if (req.method === "POST") {
+        const { enabled } = JSON.parse(await this.readBody(req)) as { enabled: boolean };
+        if (enabled) {
+          const s = await this.agentShareStore!.enableShare(sid);
+          return this.json(res, { enabled: true, token: s.token, url: `/share/${s.token}` });
+        }
+        await this.agentShareStore!.disableShare(sid);
+        return this.json(res, { enabled: false, token: null, url: null });
+      }
+    }
+    const removeGrantMatch = url.match(/^\/api\/agents\/([\w-]+)\/share\/grants\/([\w-]+)$/);
+    if (removeGrantMatch && req.method === "DELETE") {
+      const sid = removeGrantMatch[1]!;
+      const grantUserId = removeGrantMatch[2]!;
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(sid);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+      await this.agentShareStore!.removeGrant(sid, grantUserId);
+      return this.json(res, { ok: true });
+    }
+    // 公开：by-share（不泄配置）
+    const byShareMatch = url.match(/^\/api\/agents\/by-share\/([\w-]+)$/);
+    if (byShareMatch && req.method === "GET") {
+      const ref = await this.agentShareStore?.findByToken(byShareMatch[1]!);
+      if (!ref || !ref.enabled) return this.json(res, { error: "not found" }, 404);
+      const a = await this.agentStore?.get(ref.agentId);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      return this.json(res, {
+        agentId: a.id,
+        name: a.name,
+        description: a.description,
+        requiresLogin: true,
+      });
+    }
+    // 已登录：accept-share → 幂等 addGrant + get-or-create 会话
+    const acceptMatch = url.match(/^\/api\/agents\/([\w-]+)\/accept-share$/);
+    if (acceptMatch && req.method === "POST") {
+      const sid = acceptMatch[1]!;
+      const me = this.requireUserId(req);
+      const { token } = JSON.parse(await this.readBody(req)) as { token: string };
+      const ref = await this.agentShareStore?.findByToken(token);
+      if (!ref || !ref.enabled || ref.agentId !== sid) {
+        return this.json(res, { error: "invalid token" }, 403);
+      }
+      await this.agentShareStore!.addGrant(sid, me);
+      const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
+      const existing = list.find((c) => c.agentId === sid);
+      const a = await this.agentStore?.get(sid);
+      const conv =
+        existing ??
+        (await this.deps.conversationStore?.createWithAgent(me, "web", a?.name ?? "新对话", sid));
+      return this.json(res, { conversation: conv });
     }
 
     // GET /api/health

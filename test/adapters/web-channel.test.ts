@@ -669,3 +669,98 @@ describe("WebChannel /api/agents", () => {
     expect(c2.id).toBe(c1.id);
   });
 });
+
+describe("WebChannel /api/agents 分享", () => {
+  it("owner 开启分享返回 url；by-share 公开不泄配置", async () => {
+    const { port, token, userId, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "A",
+      skills: ["s"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [{ name: "m", type: "http", url: "https://x", env: { K: "V" } }],
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const j = (await r.json()) as { token: string; url: string };
+    expect(typeof j.token).toBe("string");
+    expect(j.url).toBe(`/share/${j.token}`);
+
+    // 公开 by-share：无 token，只回精简字段
+    const pub = await fetch(`http://127.0.0.1:${port}/api/agents/by-share/${j.token}`);
+    const pj = (await pub.json()) as { name: string; skills?: unknown; mcpServers?: unknown };
+    expect(pj.name).toBe("A");
+    expect(pj.skills).toBeUndefined();
+    expect(pj.mcpServers).toBeUndefined();
+  });
+
+  it("非 owner 不能开分享 → 403", async () => {
+    const { port, token, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "someone-else",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it("accept-share 幂等授权，建 (visitor,agent) 会话", async () => {
+    const { port, token, agentShareStore, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "owner",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+    const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const j1 = (await r1.json()) as { conversation: { id: string; agentId: string } };
+    expect(j1.conversation.agentId).toBe(a.id);
+    // 再 accept 幂等
+    const r2 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const j2 = (await r2.json()) as { conversation: { id: string } };
+    expect(j2.conversation.id).toBe(j1.conversation.id);
+  });
+
+  it("关闭分享后 accept-share → 403", async () => {
+    const { port, token, agentShareStore, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "owner",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+    await agentShareStore.disableShare(a.id);
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    expect(r.status).toBe(403);
+  });
+});
