@@ -172,7 +172,9 @@ export class SqliteSkillPackStore implements SkillPackStore {
       packId: r.packId as string,
       name: r.name as string,
       description: r.description as string,
-      allowedTools: r.allowedToolsJson ? (JSON.parse(r.allowedToolsJson as string) as string[]) : undefined,
+      allowedTools: r.allowedToolsJson
+        ? (JSON.parse(r.allowedToolsJson as string) as string[])
+        : undefined,
       relativePath: r.relativePath as string,
       enabled: r.enabled === 1,
       createdAt: r.createdAt as string,

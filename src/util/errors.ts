@@ -34,3 +34,9 @@ export class NotFoundError extends AppError {}
 
 /** 实体过大（超出预览/下载上限） */
 export class PayloadTooLargeError extends AppError {}
+
+/** 技能安装/卸载/更新错误 */
+export class SkillInstallError extends AppError {}
+
+/** 任务执行所需凭证缺失且无法经渠道收集 */
+export class CredentialRequiredError extends AppError {}
