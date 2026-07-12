@@ -10,7 +10,7 @@ describe("buildRunOptions", () => {
     const opts = buildRunOptions({
       cfg: {
         workspaceDir: "/ws",
-        superpowersPluginPath: undefined as string | undefined,
+        builtinSkillsDir: "",
         llm: { model: "m", baseUrl: "u", authToken: "t" },
       } as never,
       user: { id: "u1", homeDir: userWs } as never,

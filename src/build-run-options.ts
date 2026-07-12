@@ -17,8 +17,8 @@ export function buildRunOptions(args: BuildRunOptionsArgs): RunOptions {
   const { cfg, user, convId } = args;
   // 会话运行时（当前无 entity，走 sessions/<convId>；M13 起按最外层实体分流）
   const cwd = ensureRuntimeDir(user.homeDir, "sessions", "plain", convId);
+  // 技能 Pack 由 RuntimeManager 按"启用 Pack"装配（见 runtime-manager.ts）；smoke 路径仅占位。
   const pluginPaths: string[] = [join(user.homeDir, ".skills")];
-  if (cfg.superpowersPluginPath) pluginPaths.push(cfg.superpowersPluginPath);
   return {
     cwd,
     skills: [],

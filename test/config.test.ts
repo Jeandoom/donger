@@ -22,7 +22,7 @@ describe("loadConfig", () => {
     expect(c.port).toBe(3300);
     expect(c.host).toBe("0.0.0.0");
     expect(c.logLevel).toBe("info");
-    expect(c.superpowersPluginPath).toBeUndefined();
+    expect(c.builtinSkillsDir).toBe(join("./repos", "skills"));
     expect(c.dingtalk).toBeUndefined();
   });
 
@@ -65,12 +65,11 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base, DINGTALK_APP_KEY: "k" }).dingtalk).toBeUndefined();
   });
 
-  it("SUPERPOWERS_PLUGIN_PATH 可选：设了才填", () => {
-    expect(loadConfig(base).superpowersPluginPath).toBeUndefined();
+  it("BUILTIN_SKILLS_DIR 可选：默认 <repoRoot>/skills，设了覆盖", () => {
+    expect(loadConfig(base).builtinSkillsDir).toBe(join("./repos", "skills"));
     expect(
-      loadConfig({ ...base, SUPERPOWERS_PLUGIN_PATH: "/path/to/superpowers" })
-        .superpowersPluginPath,
-    ).toBe("/path/to/superpowers");
+      loadConfig({ ...base, BUILTIN_SKILLS_DIR: "/path/to/skills" }).builtinSkillsDir,
+    ).toBe("/path/to/skills");
   });
 
   it("WORKSPACE_DIR / DB_PATH 默认到 ~/.donger/", () => {

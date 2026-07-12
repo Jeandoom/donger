@@ -18,7 +18,8 @@ const EnvSchema = z.object({
   // 服务监听地址：0.0.0.0=全网卡（可外部访问），127.0.0.1=仅本机。
   HOST: z.string().default("0.0.0.0"),
   LOG_LEVEL: LogLevelSchema.default("info"),
-  SUPERPOWERS_PLUGIN_PATH: z.string().optional(),
+  // 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills
+  BUILTIN_SKILLS_DIR: z.string().default(""),
   // 管理员的外部 ID 白名单（钉钉 userId/staffId，逗号分隔）。
   ADMIN_EXTERNAL_IDS: z.string().optional().default(""),
   // 已废弃：保留以向后兼容，值会被合并进 ADMIN_EXTERNAL_IDS。
@@ -49,8 +50,8 @@ export interface AppConfig {
   port: number;
   host: string;
   logLevel: LogLevel;
-  /** superpowers 插件根目录（含 .claude-plugin/plugin.json）；缺省则不加载 */
-  superpowersPluginPath?: string;
+  /** 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills */
+  builtinSkillsDir: string;
   /** 管理员外部 ID 列表（ADMIN_EXTERNAL_IDS，逗号分隔；兼容 ADMIN_STAFF_IDS） */
   adminExternalIds: Set<string>;
   dingtalk?: DingTalkConfig;
@@ -79,7 +80,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     port: e.PORT,
     host: e.HOST,
     logLevel: e.LOG_LEVEL,
-    superpowersPluginPath: e.SUPERPOWERS_PLUGIN_PATH,
+    builtinSkillsDir: e.BUILTIN_SKILLS_DIR || join(e.REPO_ROOT, "skills"),
     adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
     jwtSecret: e.JWT_SECRET ?? "",
     jwtTtlDays: e.JWT_TTL_DAYS,

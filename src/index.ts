@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const cfg = loadConfig(process.env);
   const log = createLogger(cfg.logLevel, "app");
   log.info(
-    { model: cfg.llm.model, dingtalk: !!cfg.dingtalk, superpowers: !!cfg.superpowersPluginPath },
+    { model: cfg.llm.model, dingtalk: !!cfg.dingtalk, builtin: !!cfg.builtinSkillsDir },
     "donger 启动",
   );
 
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
       skillPackStore,
       credentialStore,
       installer: skillInstaller,
-      builtinSkillsDir: cfg.repoRoot ? join(cfg.repoRoot, "skills") : "",
+      builtinSkillsDir: cfg.builtinSkillsDir,
     });
     return new Orchestrator({
       store,

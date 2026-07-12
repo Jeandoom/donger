@@ -1,6 +1,6 @@
 // 冒烟脚本：用真实 GLM 跑一次 ClaudeAgentRunner，验证 SDK + GLM + 事件归一连通。
 // 用法：LLM_MODEL=GLM-5.2 npx tsx scripts/smoke.ts   （ANTHROPIC_* 走进程 env 继承）
-// 可选：SMOKE_PROMPT="..." SUPERPOWERS_PLUGIN_PATH=... 启用 superpowers。
+// 可选：SMOKE_PROMPT="..." 改 prompt。技能走预装 Pack（BUILTIN_SKILLS_DIR）。
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ import { createWorktree } from "../src/util/git-worktree.js";
 async function main(): Promise<void> {
   const cfg = loadConfig(process.env);
   console.log("[smoke] model=", cfg.llm.model, "baseUrl=", cfg.llm.baseUrl);
-  console.log("[smoke] superpowers=", cfg.superpowersPluginPath ?? "(未启用)");
+  console.log("[smoke] builtinSkillsDir=", cfg.builtinSkillsDir || "(默认)");
 
   // 临时 git 仓库 + worktree（不碰真实代码）
   const repo = mkdtempSync(join(tmpdir(), "donger-smoke-"));
@@ -40,8 +40,8 @@ async function main(): Promise<void> {
 
     const opts = {
       cwd: wt,
-      skills: cfg.superpowersPluginPath ? ["superpowers:brainstorming"] : [],
-      pluginPaths: cfg.superpowersPluginPath ? [cfg.superpowersPluginPath] : [],
+      skills: [],
+      pluginPaths: [],
       llm: cfg.llm,
     };
 
