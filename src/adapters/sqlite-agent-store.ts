@@ -1,8 +1,15 @@
 import type { Database } from "better-sqlite3";
-import type { Agent, AgentInput } from "../domain/agent.js";
+import type { Agent, AgentInput, McpServerConfig } from "../domain/agent.js";
 import { parseAgent } from "../domain/agent.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { SecretCipher } from "../util/secret-cipher.js";
+
+/** 持久化形态：env/headers 是加密后的字符串（而非 Record） */
+type PersistedMcp = Omit<McpServerConfig, "env" | "headers"> & {
+  env?: string;
+  headers?: string;
+};
+type PersistedAgent = Omit<Agent, "mcpServers"> & { mcpServers: PersistedMcp[] };
 
 export class SqliteAgentStore implements AgentStore {
   constructor(
@@ -101,11 +108,11 @@ export class SqliteAgentStore implements AgentStore {
     })();
   }
 
-  /** 加密 mcpServers.env/headers 后序列化 */
+  /** 加密 mcpServers.env/headers 后序列化为持久化形态 */
   private marshal(a: Agent): string {
-    const safe = {
+    const safe: PersistedAgent = {
       ...a,
-      mcpServers: a.mcpServers.map((s) => ({
+      mcpServers: a.mcpServers.map((s): PersistedMcp => ({
         ...s,
         env: s.env ? this.enc(s.env) : undefined,
         headers: s.headers ? this.enc(s.headers) : undefined,
@@ -115,10 +122,10 @@ export class SqliteAgentStore implements AgentStore {
   }
 
   private unmarshal(data: string): Agent {
-    const raw = JSON.parse(data) as Agent;
+    const raw = JSON.parse(data) as PersistedAgent;
     const agent: Agent = {
       ...raw,
-      mcpServers: raw.mcpServers.map((s) => ({
+      mcpServers: raw.mcpServers.map((s): McpServerConfig => ({
         ...s,
         env: s.env ? this.dec(s.env) : undefined,
         headers: s.headers ? this.dec(s.headers) : undefined,

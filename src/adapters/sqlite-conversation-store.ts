@@ -13,17 +13,36 @@ export class SqliteConversationStore implements ConversationStore {
         sdkSessionId TEXT NOT NULL DEFAULT '',
         title TEXT NOT NULL,
         channelId TEXT NOT NULL,
+        agentId TEXT NOT NULL DEFAULT '',
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL,
         archived INTEGER NOT NULL DEFAULT 0
       )
     `);
+    this.ensureAgentIdColumn();
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(userId, archived, updatedAt DESC)",
     );
   }
 
+  /** 旧库无 agentId 列则幂等补列（仿 upgradeUsersSchema） */
+  private ensureAgentIdColumn(): void {
+    const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "agentId")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN agentId TEXT NOT NULL DEFAULT ''");
+    }
+  }
+
   async create(userId: string, channelId: string, title: string): Promise<Conversation> {
+    return this.createWithAgent(userId, channelId, title, "");
+  }
+
+  async createWithAgent(
+    userId: string,
+    channelId: string,
+    title: string,
+    agentId: string,
+  ): Promise<Conversation> {
     const now = new Date().toISOString();
     const conv: Conversation = {
       id: crypto.randomUUID(),
@@ -31,13 +50,14 @@ export class SqliteConversationStore implements ConversationStore {
       sdkSessionId: "",
       title,
       channelId,
+      agentId,
       createdAt: now,
       updatedAt: now,
       archived: false,
     };
     this.db
       .prepare(
-        "INSERT INTO conversations (id, userId, sdkSessionId, title, channelId, createdAt, updatedAt, archived) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO conversations (id, userId, sdkSessionId, title, channelId, agentId, createdAt, updatedAt, archived) VALUES (?,?,?,?,?,?,?,?,?)",
       )
       .run(
         conv.id,
@@ -45,6 +65,7 @@ export class SqliteConversationStore implements ConversationStore {
         conv.sdkSessionId,
         conv.title,
         conv.channelId,
+        conv.agentId,
         conv.createdAt,
         conv.updatedAt,
         0,
@@ -95,6 +116,7 @@ export class SqliteConversationStore implements ConversationStore {
       sdkSessionId: row.sdkSessionId as string,
       title: row.title as string,
       channelId: row.channelId as string,
+      agentId: (row.agentId as string) ?? "",
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,
       archived: row.archived === 1,
