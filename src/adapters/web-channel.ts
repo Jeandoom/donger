@@ -8,9 +8,14 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
+import type { LlmPreset } from "../config.js";
+import { type Agent, parseAgentInput } from "../domain/agent.js";
+import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import type { AgentShareStore } from "../ports/agent-share-store.js";
+import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel, CredentialRequest, CredentialRequestItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
@@ -24,6 +29,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
+import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import {
   handleDeleteCredential,
   handleInstall,
@@ -105,6 +111,9 @@ export interface WebChannelDeps {
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
   credentialStore?: CredentialStore;
+  agentStore?: AgentStore;
+  agentShareStore?: AgentShareStore;
+  agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   dingtalkConfig?: { appKey: string; appSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
@@ -139,6 +148,9 @@ export class WebChannel implements Channel {
   private readonly messageStore?: MessageStore;
   private readonly sessionStore?: SessionStore;
   private readonly fileBrowser?: FileBrowser;
+  private readonly agentStore?: AgentStore;
+  private readonly agentShareStore?: AgentShareStore;
+  private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
 
@@ -148,6 +160,9 @@ export class WebChannel implements Channel {
     this.messageStore = deps.messageStore;
     this.sessionStore = deps.sessionStore;
     this.fileBrowser = deps.fileBrowser;
+    this.agentStore = deps.agentStore;
+    this.agentShareStore = deps.agentShareStore;
+    this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
   }
 
@@ -615,7 +630,12 @@ export class WebChannel implements Channel {
 
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // 免认证路由
-    const publicRoutes = ["/api/auth/qrcode-url", "/api/auth/dingtalk/callback", "/api/health"];
+    const publicRoutes = [
+      "/api/auth/qrcode-url",
+      "/api/auth/dingtalk/callback",
+      "/api/agents/by-share",
+      "/api/health",
+    ];
     const isPublic = publicRoutes.some((r) => url.startsWith(r));
 
     if (!isPublic && this.sessionStore) {
@@ -869,7 +889,11 @@ export class WebChannel implements Channel {
     // POST /api/conversations（userId 为 users.id）
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
-      const { userId, channelId } = JSON.parse(body) as { userId: string; channelId?: string };
+      const { userId, channelId, agentId } = JSON.parse(body) as {
+        userId: string;
+        channelId?: string;
+        agentId?: string;
+      };
       if (userId && this.deps.userStore) {
         const user = await this.deps.userStore.get(userId);
         if (!user) {
@@ -878,7 +902,14 @@ export class WebChannel implements Channel {
           return;
         }
       }
-      const conv = await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
+      const conv = agentId
+        ? await this.deps.conversationStore?.createWithAgent(
+            userId,
+            channelId ?? "web",
+            "新对话",
+            agentId,
+          )
+        : await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
       res.writeHead(201);
       res.end(JSON.stringify(conv));
       return;
@@ -972,6 +1003,161 @@ export class WebChannel implements Channel {
       res.writeHead(200);
       res.end(JSON.stringify({ records }));
       return;
+    }
+
+    // === Agent 路由 ===
+    if (url === "/api/agents" && req.method === "GET") {
+      const me = this.requireUserId(req);
+      const mine = (await this.agentStore?.listByOwner(me)) ?? [];
+      const shared = (await this.agentStore?.listSharedWith(me)) ?? [];
+      const seen = new Set<string>();
+      const out: Array<Record<string, unknown> & { id: string; _mine: boolean }> = [
+        ...mine.map((a) => ({ ...this.agentToDTO(a, true), id: a.id, _mine: true })),
+        ...shared.map((a) => ({ ...this.agentToDTO(a, true), id: a.id, _mine: false })),
+      ];
+      const deduped = out.filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)));
+      return this.json(res, deduped);
+    }
+    if (url === "/api/agents" && req.method === "POST") {
+      const me = this.requireUserId(req);
+      const body = JSON.parse(await this.readBody(req));
+      const input = parseAgentInput({ ...body, ownerId: me });
+      const created = await this.agentStore!.create(input);
+      return this.json(res, this.agentToDTO(created, true), 201);
+    }
+    if (url === "/api/agents/meta/options" && req.method === "GET") {
+      this.requireUserId(req);
+      return this.json(res, {
+        skills: discoverSkills(this.agentMeta?.skillPaths ?? []),
+        tools: BUILTIN_TOOLS,
+        llmPresets: this.agentMeta?.presets ?? [],
+      });
+    }
+    const agentMatch = url.match(/^\/api\/agents\/([\w-]+)$/);
+    if (
+      agentMatch &&
+      !url.includes("/share/") &&
+      !url.includes("/conversation") &&
+      !url.includes("/accept-share") &&
+      !url.includes("/by-share")
+    ) {
+      const id = agentMatch[1]!;
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(id);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
+      if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      if (req.method === "GET") {
+        return this.json(res, this.agentToDTO(a, canManageAgent(a, actor)));
+      }
+      if (req.method === "PATCH") {
+        if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+        const patch = JSON.parse(await this.readBody(req)) as Partial<Agent>;
+        const updated = await this.agentStore!.update(id, this.mergeMaskedMcp(a, patch));
+        return this.json(res, this.agentToDTO(updated, true));
+      }
+      if (req.method === "DELETE") {
+        if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+        await this.agentStore!.delete(id);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+    }
+    const agentConvMatch = url.match(/^\/api\/agents\/([\w-]+)\/conversation$/);
+    if (agentConvMatch && req.method === "GET") {
+      const id = agentConvMatch[1]!;
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(id);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
+      if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
+      const existing = list.find((c) => c.agentId === id);
+      const conv =
+        existing ?? (await this.deps.conversationStore?.createWithAgent(me, "web", a.name, id));
+      return this.json(res, conv);
+    }
+
+    // === 分享路由 ===
+    const shareMatch = url.match(/^\/api\/agents\/([\w-]+)\/share$/);
+    if (shareMatch) {
+      const sid = shareMatch[1]!;
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(sid);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+      if (req.method === "GET") {
+        const share = await this.agentShareStore?.getShare(sid);
+        const grants = share?.enabled ? ((await this.agentShareStore?.listGrants(sid)) ?? []) : [];
+        return this.json(res, {
+          enabled: !!share?.enabled,
+          token: share?.token,
+          url: share?.token ? `/share/${share.token}` : null,
+          grants,
+        });
+      }
+      if (req.method === "POST") {
+        const { enabled } = JSON.parse(await this.readBody(req)) as { enabled: boolean };
+        if (enabled) {
+          const s = await this.agentShareStore!.enableShare(sid);
+          return this.json(res, { enabled: true, token: s.token, url: `/share/${s.token}` });
+        }
+        await this.agentShareStore!.disableShare(sid);
+        return this.json(res, { enabled: false, token: null, url: null });
+      }
+    }
+    const removeGrantMatch = url.match(/^\/api\/agents\/([\w-]+)\/share\/grants\/([\w-]+)$/);
+    if (removeGrantMatch && req.method === "DELETE") {
+      const sid = removeGrantMatch[1]!;
+      const grantUserId = removeGrantMatch[2]!;
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(sid);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+      await this.agentShareStore!.removeGrant(sid, grantUserId);
+      return this.json(res, { ok: true });
+    }
+    // 公开：by-share（不泄配置）
+    const byShareMatch = url.match(/^\/api\/agents\/by-share\/([\w-]+)$/);
+    if (byShareMatch && req.method === "GET") {
+      const ref = await this.agentShareStore?.findByToken(byShareMatch[1]!);
+      if (!ref || !ref.enabled) return this.json(res, { error: "not found" }, 404);
+      const a = await this.agentStore?.get(ref.agentId);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      return this.json(res, {
+        agentId: a.id,
+        name: a.name,
+        description: a.description,
+        requiresLogin: true,
+      });
+    }
+    // 已登录：accept-share → 幂等 addGrant + get-or-create 会话
+    const acceptMatch = url.match(/^\/api\/agents\/([\w-]+)\/accept-share$/);
+    if (acceptMatch && req.method === "POST") {
+      const sid = acceptMatch[1]!;
+      const me = this.requireUserId(req);
+      const { token } = JSON.parse(await this.readBody(req)) as { token: string };
+      const ref = await this.agentShareStore?.findByToken(token);
+      if (!ref || !ref.enabled || ref.agentId !== sid) {
+        return this.json(res, { error: "invalid token" }, 403);
+      }
+      await this.agentShareStore!.addGrant(sid, me);
+      const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
+      const existing = list.find((c) => c.agentId === sid);
+      const a = await this.agentStore?.get(sid);
+      const conv =
+        existing ??
+        (await this.deps.conversationStore?.createWithAgent(me, "web", a?.name ?? "新对话", sid));
+      return this.json(res, { conversation: conv });
     }
 
     // GET /api/health
@@ -1305,6 +1491,67 @@ export class WebChannel implements Channel {
       });
       req.on("end", () => resolve(body));
     });
+  }
+
+  /** 取已鉴权用户 id；未鉴权抛错（由调用方转 HTTP 状态） */
+  private requireUserId(req: HttpRequest): string {
+    const uid = (req as HttpRequest & { userId?: string }).userId;
+    if (!uid) throw new Error("unauthorized");
+    return uid;
+  }
+
+  /** 写 JSON 响应 */
+  private json(res: ServerResponse, body: unknown, status = 200): void {
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(body));
+  }
+
+  /** Agent → DTO；detailed=false 时隐藏配置明细，env/headers 永远掩码 */
+  private agentToDTO(a: Agent, detailed: boolean): Record<string, unknown> {
+    const base: Record<string, unknown> = {
+      id: a.id,
+      ownerId: a.ownerId,
+      name: a.name,
+      description: a.description,
+      createdAt: a.createdAt,
+      updatedAt: a.updatedAt,
+    };
+    const maskedMcp = a.mcpServers.map((m) => ({
+      ...m,
+      env: m.env ? this.maskRecord(m.env) : undefined,
+      headers: m.headers ? this.maskRecord(m.headers) : undefined,
+    }));
+    if (!detailed) return base;
+    return {
+      ...base,
+      systemPrompt: a.systemPrompt,
+      skills: a.skills,
+      tools: a.tools,
+      mcpServers: maskedMcp,
+      llm: a.llm,
+    };
+  }
+
+  private maskRecord(rec: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(Object.keys(rec).map((k) => [k, "••••"]));
+  }
+
+  /** 编辑器回传掩码占位时，用库内原密文值回填 */
+  private mergeMaskedMcp(a: Agent, patch: Partial<Agent>): Partial<Agent> {
+    if (!patch.mcpServers) return patch;
+    return {
+      ...patch,
+      mcpServers: patch.mcpServers.map((m, i) => {
+        const orig = a.mcpServers[i];
+        if (!orig) return m;
+        const env = m.env && Object.values(m.env).some((v) => v === "••••") ? orig.env : m.env;
+        const headers =
+          m.headers && Object.values(m.headers).some((v) => v === "••••")
+            ? orig.headers
+            : m.headers;
+        return { ...m, env, headers };
+      }),
+    };
   }
 
   /** 等 HTTP 服务监听就绪 */

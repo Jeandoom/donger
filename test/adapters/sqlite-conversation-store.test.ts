@@ -50,4 +50,24 @@ describe("SqliteConversationStore", () => {
     await store.update(c.id, { archived: true });
     expect((await store.listByUser("u1")).length).toBe(0);
   });
+
+  it("create 默认 agentId=''；createWithAgent 指定", async () => {
+    const c = await store.create("u", "web", "t");
+    expect(c.agentId).toBe("");
+    const c2 = await store.createWithAgent("u", "web", "t", "agentX");
+    expect(c2.agentId).toBe("agentX");
+    expect((await store.get(c2.id))?.agentId).toBe("agentX");
+  });
+
+  it("旧库无 agentId 列时 migrate 幂等补列", () => {
+    const oldDb = new Database(":memory:");
+    oldDb.exec(
+      `CREATE TABLE conversations (id TEXT PRIMARY KEY, userId TEXT, sdkSessionId TEXT, title TEXT, channelId TEXT, createdAt TEXT, updatedAt TEXT, archived INTEGER)`,
+    );
+    const s = new SqliteConversationStore(oldDb);
+    expect(() => s.migrate()).not.toThrow();
+    // 补列后可正常 create
+    void s.create("u", "web", "t");
+    oldDb.close();
+  });
 });

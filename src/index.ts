@@ -8,6 +8,8 @@ import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
+import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
+import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
@@ -26,6 +28,7 @@ import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { createLogger } from "./util/logger.js";
+import { createSecretCipher } from "./util/secret-cipher.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -73,6 +76,16 @@ async function main(): Promise<void> {
   const transcriptStore = new SqliteTranscriptStore(db);
   transcriptStore.migrate();
 
+  // Agent 密钥加密器 + Agent/分享 store
+  if (!cfg.secretKeySeed) {
+    log.warn("SECRET_KEY 与 JWT_SECRET 均为空，agent MCP 密钥将使用不安全默认密钥");
+  }
+  const secretCipher = createSecretCipher(cfg.secretKeySeed || "donger-insecure-default");
+  const agentStore = new SqliteAgentStore(db, secretCipher);
+  agentStore.migrate();
+  const agentShareStore = new SqliteAgentShareStore(db);
+  agentShareStore.migrate();
+
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
   const sessionStore = new JwtSessionStore(db, jwtSecret, cfg.jwtTtlDays * 24 * 60 * 60 * 1000);
@@ -91,6 +104,7 @@ async function main(): Promise<void> {
         workspaceDir: cfg.workspaceDir,
         llm: cfg.llm,
         defaultSystemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+        agentLlmPresets: cfg.agentLlmPresets,
       },
       skillPackStore,
       credentialStore,
@@ -109,6 +123,8 @@ async function main(): Promise<void> {
       channel,
       runtimeMgr,
       credentialStore,
+      agentStore,
+      agentShareStore,
     });
   }
 
@@ -150,11 +166,19 @@ async function main(): Promise<void> {
     skillPackStore,
     installer: skillInstaller,
     credentialStore,
+    agentStore,
+    agentShareStore,
+    agentMeta: {
+      presets: cfg.agentLlmPresets,
+      skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],
+    },
   });
   const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   log.info({ channel: "web", host: cfg.host, port: cfg.port }, "就绪");
-  console.log(`\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`);
+  console.log(
+    `\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`,
+  );
 
   // 钉钉 Channel（有配置才启动）
   if (cfg.dingtalk) {

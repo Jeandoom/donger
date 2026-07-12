@@ -9,6 +9,7 @@ describe("ConversationSchema", () => {
       sdkSessionId: "s1",
       title: "测试",
       channelId: "web",
+      agentId: "",
       createdAt: "t",
       updatedAt: "t",
       archived: false,

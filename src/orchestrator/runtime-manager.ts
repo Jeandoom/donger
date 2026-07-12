@@ -1,5 +1,7 @@
 import { isAbsolute, join } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
+import type { LlmPreset } from "../config.js";
+import type { Agent, McpServerConfig } from "../domain/agent.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
@@ -21,11 +23,15 @@ export interface RuntimeManagerConfig {
   llm: LLMConfig;
   /** 默认 systemPromptAppend */
   defaultSystemPromptAppend: string;
+  /** Agent 可选 LLM 预置列表（agent.llm.presetId 引用） */
+  agentLlmPresets: LlmPreset[];
 }
 
 export interface PrepareOpts {
   systemPromptAppend?: string;
   abortSignal?: AbortSignal;
+  /** 显式选中的智能体（旁路 Planner；undefined=默认 Planner 路径） */
+  agent?: Agent;
 }
 
 interface RuntimeManagerDeps {
@@ -65,21 +71,44 @@ export class RuntimeManager {
       user.id,
     );
 
-    // —— ContextBuilder：由启用 Pack 派生能力 ——
+    // —— 由启用 Pack 派生默认能力（skills 白名单 + pluginPaths）+ 凭证 ——
     const packs = await this.deps.skillPackStore.listPacks(user.id);
     const skillsByPack = new Map<string, PackSkill[]>();
     for (const p of packs) {
       skillsByPack.set(p.id, await this.deps.skillPackStore.listSkills(user.id, p.id));
     }
     const resolved = resolveActiveSkills(packs, skillsByPack, (p) => this.resolvePackPath(user, p));
-    const capabilities: CapabilitySet = {
-      skills: resolved.whitelist,
-      pluginPaths: resolved.pluginPaths,
-    };
     const credentialsEnv = await this.deps.credentialStore.getMany(
       user.id,
       resolved.declaredCredentialKeys,
     );
+
+    // agent 分支：显式 agent 可覆盖 skills/llm/工具/mcp/系统提示；否则用 Pack 派生默认
+    let skills = resolved.whitelist;
+    let llm: LLMConfig = this.deps.config.llm;
+    let allowedTools: string[] | undefined;
+    let mcpServers: McpServerConfig[] | undefined;
+    let extraPrompt: string | undefined = opts.systemPromptAppend;
+
+    if (opts.agent) {
+      const a = opts.agent;
+      // agent 指定 skills 时直接用；否则沿用 Pack 白名单
+      if (a.skills.length > 0) skills = a.skills;
+      const preset = a.llm.presetId
+        ? this.deps.config.agentLlmPresets.find((p) => p.id === a.llm.presetId)
+        : undefined;
+      if (preset) llm = { ...this.deps.config.llm, model: preset.model, baseUrl: preset.baseUrl };
+      allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
+      mcpServers = a.mcpServers;
+      if (a.systemPrompt) {
+        extraPrompt = `${opts.systemPromptAppend ?? ""}\n\n${a.systemPrompt}`.trim();
+      }
+    }
+
+    const capabilities: CapabilitySet = {
+      skills,
+      pluginPaths: resolved.pluginPaths,
+    };
 
     // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
     const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
@@ -110,16 +139,18 @@ export class RuntimeManager {
 
     const runOptions: RunOptions = {
       cwd: runtimeDir,
-      skills: resolved.whitelist,
+      skills,
       pluginPaths: resolved.pluginPaths,
-      llm: this.deps.config.llm,
-      systemPromptAppend: this.combineSystemPromptAppend(opts.systemPromptAppend),
+      llm,
+      systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
       abortSignal: opts.abortSignal,
       resume: conversation.sdkSessionId || undefined,
       workspaceRoot: user.homeDir,
       sessionStore,
       capabilityVersion: 1,
       credentialsEnv,
+      ...(allowedTools ? { allowedTools } : {}),
+      ...(mcpServers?.length ? { mcpServers } : {}),
     };
 
     return { context, runOptions };
@@ -182,8 +213,4 @@ export class RuntimeManager {
       sessionId: conv.sdkSessionId,
     });
   }
-}
-
-function uniq(arr: string[]): string[] {
-  return [...new Set(arr)];
 }

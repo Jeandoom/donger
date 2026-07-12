@@ -6,6 +6,7 @@ export const ConversationSchema = z.object({
   sdkSessionId: z.string(),
   title: z.string(),
   channelId: z.string(),
+  agentId: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
   archived: z.boolean(),

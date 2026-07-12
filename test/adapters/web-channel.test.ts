@@ -8,9 +8,13 @@ import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "../../src/adapters/local-file-browser.js";
+import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
+import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
+import type { LlmPreset } from "../../src/config.js";
+import { createSecretCipher } from "../../src/util/secret-cipher.js";
 
 function makeWebRoot(): string {
   return mkdtempSync(join(tmpdir(), "webroot-"));
@@ -482,5 +486,324 @@ describe("/api/files/*", () => {
       `http://127.0.0.1:${port}/api/files/content?scope=user&path=.skills/SKILL.md&download=1&token=${token}`,
     );
     expect(r.headers.get("content-disposition")).toContain("attachment");
+  });
+});
+
+async function startWebWithAgents(
+  opts: { presets?: LlmPreset[]; skillPaths?: string[] } = {},
+): Promise<{
+  port: number;
+  token: string;
+  userId: string;
+  agentStore: SqliteAgentStore;
+  agentShareStore: SqliteAgentShareStore;
+}> {
+  const tmp = mkdtempSync(join(tmpdir(), "web-agent-"));
+  const db = new Database(join(tmp, "t.db"));
+  const userStore = new SqliteUserStore(db, {
+    adminExternalIds: new Set<string>(),
+    usersDir: join(tmp, "users"),
+  });
+  userStore.migrate();
+  const convStore = new SqliteConversationStore(db);
+  convStore.migrate();
+  const cipher = createSecretCipher("pw");
+  const agentStore = new SqliteAgentStore(db, cipher);
+  agentStore.migrate();
+  const agentShareStore = new SqliteAgentShareStore(db);
+  agentShareStore.migrate();
+  const sessionStore = new JwtSessionStore(db, "test-secret", 3_600_000);
+  sessionStore.migrate();
+  const user = await userStore.getOrCreateByIdentity("internal", "webu", "tester");
+  const { token } = await sessionStore.create(user.id);
+  web = new WebChannel({
+    port: 0,
+    workspaceDir: tmp,
+    userStore,
+    conversationStore: convStore,
+    sessionStore,
+    agentStore,
+    agentShareStore,
+    agentMeta: { presets: opts.presets ?? [], skillPaths: opts.skillPaths ?? [] },
+  });
+  web.onMessage(() => {});
+  await web.ready();
+  const port = web.boundPort;
+  if (!port) throw new Error("server not listening");
+  return { port, token, userId: user.id, agentStore, agentShareStore };
+}
+
+describe("WebChannel /api/agents", () => {
+  it("未登录 POST → 401", async () => {
+    const { port } = await startWebWithAgents();
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "x",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        llm: {},
+      }),
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it("POST 创建 + GET 列表；DTO 不含明文密钥", async () => {
+    const { port, token } = await startWebWithAgents();
+    const create = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "A",
+        skills: ["s:1"],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [{ name: "m", type: "http", url: "https://x", env: { K: "TOPSECRET" } }],
+        llm: {},
+      }),
+    });
+    expect(create.status).toBe(201);
+    const created = (await create.json()) as { id: string };
+    expect(JSON.stringify(created)).not.toContain("TOPSECRET");
+
+    const list = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const arr = (await list.json()) as Array<{ id: string }>;
+    expect(arr.some((a) => a.id === created.id)).toBe(true);
+  });
+
+  it("GET /:id 非 owner 且无授权 → 403", async () => {
+    const { port, token, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "someone-else",
+      name: "X",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it("PATCH/DELETE 仅 owner 可用（非 owner → 403）", async () => {
+    const { port, token, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "someone-else",
+      name: "X",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const patch = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Y" }),
+    });
+    expect(patch.status).toBe(403);
+    const del = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(del.status).toBe(403);
+  });
+
+  it("owner PATCH 改名 + 删除生效", async () => {
+    const { port, token, userId, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "X",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const patch = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Y" }),
+    });
+    expect(((await patch.json()) as { name: string }).name).toBe("Y");
+    const del = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(del.status).toBe(204);
+    expect(await agentStore.get(a.id)).toBeUndefined();
+  });
+
+  it("meta/options 返回 tools + presets", async () => {
+    const { port, token } = await startWebWithAgents({
+      presets: [{ id: "p", name: "G", model: "m", baseUrl: "u" }],
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/meta/options`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const j = (await r.json()) as { tools: string[]; llmPresets: unknown[] };
+    expect(j.tools).toContain("Bash");
+    expect(j.llmPresets.length).toBe(1);
+  });
+
+  it("GET /:id/conversation get-or-create（幂等）", async () => {
+    const { port, token, userId, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const c1 = (await r1.json()) as { id: string; agentId: string };
+    expect(c1.agentId).toBe(a.id);
+    const r2 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const c2 = (await r2.json()) as { id: string };
+    expect(c2.id).toBe(c1.id);
+  });
+});
+
+describe("WebChannel /api/agents 分享", () => {
+  it("owner 开启分享返回 url；by-share 公开不泄配置", async () => {
+    const { port, token, userId, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "A",
+      skills: ["s"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [{ name: "m", type: "http", url: "https://x", env: { K: "V" } }],
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const j = (await r.json()) as { token: string; url: string };
+    expect(typeof j.token).toBe("string");
+    expect(j.url).toBe(`/share/${j.token}`);
+
+    // 公开 by-share：无 token，只回精简字段
+    const pub = await fetch(`http://127.0.0.1:${port}/api/agents/by-share/${j.token}`);
+    const pj = (await pub.json()) as { name: string; skills?: unknown; mcpServers?: unknown };
+    expect(pj.name).toBe("A");
+    expect(pj.skills).toBeUndefined();
+    expect(pj.mcpServers).toBeUndefined();
+  });
+
+  it("非 owner 不能开分享 → 403", async () => {
+    const { port, token, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "someone-else",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it("accept-share 幂等授权，建 (visitor,agent) 会话", async () => {
+    const { port, token, agentShareStore, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "owner",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+    const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const j1 = (await r1.json()) as { conversation: { id: string; agentId: string } };
+    expect(j1.conversation.agentId).toBe(a.id);
+    // 再 accept 幂等
+    const r2 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const j2 = (await r2.json()) as { conversation: { id: string } };
+    expect(j2.conversation.id).toBe(j1.conversation.id);
+  });
+
+  it("关闭分享后 accept-share → 403", async () => {
+    const { port, token, agentShareStore, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "owner",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+    await agentShareStore.disableShare(a.id);
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it("隔离执行 + 撤销阻断：visitor accept → 有自己的会话 → 撤销后 /conversation 403", async () => {
+    const { port, token, userId, agentShareStore, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "owner",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+
+    // visitor accept-share → 授权 + 建立自己的会话
+    const acc = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const accJson = (await acc.json()) as { conversation: { id: string; agentId: string } };
+    expect(accJson.conversation.agentId).toBe(a.id);
+    // 授权记录在 visitor 名下（隔离：grant 绑定 visitor userId）
+    expect(await agentShareStore.isGranted(a.id, userId)).toBe(true);
+
+    // visitor 可进入该 agent 的会话
+    const conv = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const convJson = (await conv.json()) as { id: string };
+    expect(convJson.id).toBe(accJson.conversation.id);
+
+    // owner 撤销 visitor 授权
+    await agentShareStore.removeGrant(a.id, userId);
+    expect(await agentShareStore.isGranted(a.id, userId)).toBe(false);
+
+    // 撤销后 visitor 再访问该 agent 会话 → 403
+    const blocked = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(blocked.status).toBe(403);
   });
 });

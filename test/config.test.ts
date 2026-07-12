@@ -124,3 +124,46 @@ describe("loadConfig", () => {
     }
   });
 });
+
+describe("config agent 扩展", () => {
+  it("默认 secretKeySeed 派生自 jwtSecret 并告警", () => {
+    const warns: string[] = [];
+    const origEmit = process.emitWarning;
+    process.emitWarning = ((msg: unknown) => {
+      warns.push(String(msg));
+    }) as typeof process.emitWarning;
+    try {
+      const cfg = loadConfig({ ...base, JWT_SECRET: "js" });
+      expect(cfg.secretKeySeed).toBe("js");
+      expect(warns.some((w) => w.includes("SECRET_KEY"))).toBe(true);
+    } finally {
+      process.emitWarning = origEmit;
+    }
+  });
+
+  it("SECRET_KEY 优先于 JWT_SECRET", () => {
+    const origEmit = process.emitWarning;
+    process.emitWarning = (() => {}) as typeof process.emitWarning;
+    try {
+      const cfg = loadConfig({ ...base, SECRET_KEY: "sk", JWT_SECRET: "js" });
+      expect(cfg.secretKeySeed).toBe("sk");
+    } finally {
+      process.emitWarning = origEmit;
+    }
+  });
+
+  it("解析 AGENT_LLM_PRESETS", () => {
+    const cfg = loadConfig({
+      ...base,
+      AGENT_LLM_PRESETS: "GLM4|glm-4.6|https://a;Qwen|qwen|https://b",
+    });
+    expect(cfg.agentLlmPresets).toEqual([
+      { id: "0", name: "GLM4", model: "glm-4.6", baseUrl: "https://a" },
+      { id: "1", name: "Qwen", model: "qwen", baseUrl: "https://b" },
+    ]);
+  });
+
+  it("非法 AGENT_LLM_PRESETS 抛错", () => {
+    expect(() => loadConfig({ ...base, AGENT_LLM_PRESETS: "only-name" })).toThrow();
+  });
+});

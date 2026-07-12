@@ -160,6 +160,7 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
       workspaceDir: mkdtempSync(join(tmpdir(), "donger-test-ws-")),
       llm: { model: "m", baseUrl: "u", authToken: "t" },
       defaultSystemPromptAppend: "测试默认 prompt",
+      agentLlmPresets: [],
     },
     skillPackStore: packStore,
     credentialStore,
@@ -468,6 +469,105 @@ describe("Orchestrator", () => {
       credentialStore: credentialStoreAudit,
     });
     await orch.handleMessage(msg);
+    expect((await store.listByStatus("done")).length).toBe(1);
+  });
+});
+
+describe("Orchestrator agent 路径", () => {
+  function agentConvStore(agentId: string): ConversationStore {
+    const conv: Conversation = {
+      id: "conv-agent",
+      userId: "u-webu",
+      sdkSessionId: "",
+      title: "agent 会话",
+      channelId: "test",
+      agentId,
+      createdAt: "t",
+      updatedAt: "t",
+      archived: false,
+    };
+    return {
+      async create() {
+        return conv;
+      },
+      async get() {
+        return conv;
+      },
+      async getLatest() {
+        return conv;
+      },
+      async listByUser() {
+        return [conv];
+      },
+      async update() {},
+      async createWithAgent(_u, _c, _t, aid) {
+        return { ...conv, agentId: aid };
+      },
+    };
+  }
+
+  const agent: import("../../src/domain/agent.js").Agent = {
+    id: "a1",
+    ownerId: "other",
+    name: "A",
+    skills: ["s:1"],
+    tools: { mode: "all", whitelist: [] },
+    mcpServers: [],
+    llm: {},
+    createdAt: "",
+    updatedAt: "",
+  };
+
+  function buildOrch(
+    convStore: ConversationStore,
+    isGranted: boolean,
+    script: FakeScript,
+  ): { orch: Orchestrator; store: InMemoryTaskStore } {
+    const store = new InMemoryTaskStore();
+    const agentStore = {
+      get: async () => agent,
+      listByOwner: async () => [],
+      listSharedWith: async () => [],
+      create: async () => agent,
+      update: async () => agent,
+      delete: async () => {},
+    } as unknown as import("../../src/ports/agent-store.js").AgentStore;
+    const shareStore = {
+      isGranted: async () => isGranted,
+    } as unknown as import("../../src/ports/agent-share-store.js").AgentShareStore;
+    const { mgr: runtimeMgr, credentialStore } = makeRuntimeMgr(convStore);
+    const orch = new Orchestrator({
+      store,
+      userStore: mockUserStore(),
+      conversationStore: convStore,
+      usageStore: new InMemoryUsageStore(),
+      auditStore: new InMemoryAuditStore(),
+      gates: new GateRouter(),
+      runner: new FakeAgentRunner(script),
+      channel: fakeChannel(true),
+      runtimeMgr,
+      credentialStore,
+      agentStore,
+      agentShareStore: shareStore,
+    });
+    return { orch, store };
+  }
+
+  it("无授权访问他人 agent → Forbidden", async () => {
+    const { orch } = buildOrch(agentConvStore("a1"), false, { result: "ok" });
+    await expect(
+      orch.handleMessage({ channelId: "test", threadId: "th", requesterId: "webu", text: "hi" }),
+    ).rejects.toThrow();
+  });
+
+  it("被授权 → agent 执行成功", async () => {
+    const { orch, store } = buildOrch(agentConvStore("a1"), true, { result: "ok" });
+    await orch.handleMessage({
+      channelId: "test",
+      threadId: "th",
+      requesterId: "webu",
+      text: "hi",
+    });
     expect((await store.listByStatus("done")).length).toBe(1);
   });
 });

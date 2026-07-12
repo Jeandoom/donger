@@ -197,3 +197,43 @@ describe("ClaudeAgentRunner", () => {
     expect(captured?.sessionStore).toBeUndefined();
   });
 });
+
+describe("ClaudeAgentRunner agent options 透传", () => {
+  it("allowedTools 与 mcpServers 透传给 query", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          allowedTools: ["Bash", "Read"],
+          mcpServers: [
+            { name: "fs", type: "http", url: "https://x" },
+            { name: "sh", type: "stdio", command: "npx", args: ["s"] },
+          ],
+        },
+        async () => ({ approved: true }),
+      ),
+    );
+    const callArg = queryMock.mock.calls[0]?.[0] as {
+      options?: { allowedTools?: string[]; mcpServers?: Record<string, unknown> };
+    };
+    expect(callArg.options?.allowedTools).toEqual(["Bash", "Read"]);
+    const mcp = callArg.options?.mcpServers;
+    expect(mcp && "fs" in mcp && "sh" in mcp).toBe(true);
+    expect((mcp as { fs: { type: string } }).fs.type).toBe("http");
+    expect((mcp as { sh: { command: string } }).sh.command).toBe("npx");
+  });
+
+  it("无 allowedTools/mcpServers 时 query options 不含这两个字段", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const callArg = queryMock.mock.calls[0]?.[0] as {
+      options?: { allowedTools?: unknown; mcpServers?: unknown };
+    };
+    expect(callArg.options?.allowedTools).toBeUndefined();
+    expect(callArg.options?.mcpServers).toBeUndefined();
+  });
+});
