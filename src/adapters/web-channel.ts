@@ -8,9 +8,14 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
+import type { LlmPreset } from "../config.js";
+import { type Agent, parseAgentInput } from "../domain/agent.js";
+import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import type { AgentShareStore } from "../ports/agent-share-store.js";
+import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
@@ -21,11 +26,6 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
-import type { AgentShareStore } from "../ports/agent-share-store.js";
-import type { AgentStore } from "../ports/agent-store.js";
-import type { LlmPreset } from "../config.js";
-import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
-import { parseAgentInput, type Agent } from "../domain/agent.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -816,7 +816,12 @@ export class WebChannel implements Channel {
         }
       }
       const conv = agentId
-        ? await this.deps.conversationStore?.createWithAgent(userId, channelId ?? "web", "新对话", agentId)
+        ? await this.deps.conversationStore?.createWithAgent(
+            userId,
+            channelId ?? "web",
+            "新对话",
+            agentId,
+          )
         : await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
       res.writeHead(201);
       res.end(JSON.stringify(conv));
@@ -942,7 +947,13 @@ export class WebChannel implements Channel {
       });
     }
     const agentMatch = url.match(/^\/api\/agents\/([\w-]+)$/);
-    if (agentMatch && !url.includes("/share/") && !url.includes("/conversation") && !url.includes("/accept-share") && !url.includes("/by-share")) {
+    if (
+      agentMatch &&
+      !url.includes("/share/") &&
+      !url.includes("/conversation") &&
+      !url.includes("/accept-share") &&
+      !url.includes("/by-share")
+    ) {
       const id = agentMatch[1]!;
       const me = this.requireUserId(req);
       const a = await this.agentStore?.get(id);
@@ -980,7 +991,8 @@ export class WebChannel implements Channel {
       if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
       const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
       const existing = list.find((c) => c.agentId === id);
-      const conv = existing ?? (await this.deps.conversationStore?.createWithAgent(me, "web", a.name, id));
+      const conv =
+        existing ?? (await this.deps.conversationStore?.createWithAgent(me, "web", a.name, id));
       return this.json(res, conv);
     }
 
@@ -996,7 +1008,7 @@ export class WebChannel implements Channel {
       if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
       if (req.method === "GET") {
         const share = await this.agentShareStore?.getShare(sid);
-        const grants = share?.enabled ? (await this.agentShareStore?.listGrants(sid)) ?? [] : [];
+        const grants = share?.enabled ? ((await this.agentShareStore?.listGrants(sid)) ?? []) : [];
         return this.json(res, {
           enabled: !!share?.enabled,
           token: share?.token,
@@ -1364,8 +1376,7 @@ export class WebChannel implements Channel {
       mcpServers: patch.mcpServers.map((m, i) => {
         const orig = a.mcpServers[i];
         if (!orig) return m;
-        const env =
-          m.env && Object.values(m.env).some((v) => v === "••••") ? orig.env : m.env;
+        const env = m.env && Object.values(m.env).some((v) => v === "••••") ? orig.env : m.env;
         const headers =
           m.headers && Object.values(m.headers).some((v) => v === "••••")
             ? orig.headers

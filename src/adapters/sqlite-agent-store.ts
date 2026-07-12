@@ -112,11 +112,13 @@ export class SqliteAgentStore implements AgentStore {
   private marshal(a: Agent): string {
     const safe: PersistedAgent = {
       ...a,
-      mcpServers: a.mcpServers.map((s): PersistedMcp => ({
-        ...s,
-        env: s.env ? this.enc(s.env) : undefined,
-        headers: s.headers ? this.enc(s.headers) : undefined,
-      })),
+      mcpServers: a.mcpServers.map(
+        (s): PersistedMcp => ({
+          ...s,
+          env: s.env ? this.enc(s.env) : undefined,
+          headers: s.headers ? this.enc(s.headers) : undefined,
+        }),
+      ),
     };
     return JSON.stringify(safe);
   }
@@ -125,11 +127,13 @@ export class SqliteAgentStore implements AgentStore {
     const raw = JSON.parse(data) as PersistedAgent;
     const agent: Agent = {
       ...raw,
-      mcpServers: raw.mcpServers.map((s): McpServerConfig => ({
-        ...s,
-        env: s.env ? this.dec(s.env) : undefined,
-        headers: s.headers ? this.dec(s.headers) : undefined,
-      })),
+      mcpServers: raw.mcpServers.map(
+        (s): McpServerConfig => ({
+          ...s,
+          env: s.env ? this.dec(s.env) : undefined,
+          headers: s.headers ? this.dec(s.headers) : undefined,
+        }),
+      ),
     };
     return parseAgent(agent);
   }

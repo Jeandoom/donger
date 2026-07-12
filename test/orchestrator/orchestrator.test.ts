@@ -531,7 +531,12 @@ describe("Orchestrator agent 路径", () => {
 
   it("被授权 → agent 执行成功", async () => {
     const { orch, store } = buildOrch(agentConvStore("a1"), true, { result: "ok" });
-    await orch.handleMessage({ channelId: "test", threadId: "th", requesterId: "webu", text: "hi" });
+    await orch.handleMessage({
+      channelId: "test",
+      threadId: "th",
+      requesterId: "webu",
+      text: "hi",
+    });
     expect((await store.listByStatus("done")).length).toBe(1);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
 
 const cipher = createSecretCipher("test-password");
@@ -11,7 +11,7 @@ describe("SecretCipher", () => {
   });
   it("密文篡改抛错（GCM tag 失败）", () => {
     const blob = cipher.encrypt("secret");
-    const tampered = "v1:" + blob.slice(3).replace(/^./, "X");
+    const tampered = `v1:${blob.slice(3).replace(/^./, "X")}`;
     expect(() => cipher.decrypt(tampered)).toThrow();
   });
   it("缺 v1: 前缀抛错", () => {

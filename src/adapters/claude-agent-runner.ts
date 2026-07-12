@@ -1,8 +1,8 @@
 import { isAbsolute, resolve, sep } from "node:path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import type { GateRouter } from "../domain/gate-router.js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
+import type { GateRouter } from "../domain/gate-router.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 
@@ -31,9 +31,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           append: opts.systemPromptAppend ?? "",
         },
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
-        ...(opts.mcpServers?.length
-          ? { mcpServers: mcpServersToSdk(opts.mcpServers) }
-          : {}),
+        ...(opts.mcpServers?.length ? { mcpServers: mcpServersToSdk(opts.mcpServers) } : {}),
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
           // 写入边界：Edit/Write/NotebookEdit 的路径必须落在 workspaceRoot 内
@@ -177,7 +175,12 @@ function mcpServersToSdk(servers: McpServerConfig[]): Record<string, SdkMcpServe
   for (const s of servers) {
     out[s.name] =
       s.type === "stdio"
-        ? ({ type: "stdio", command: s.command, args: s.args ?? [], env: s.env } as SdkMcpServerConfig)
+        ? ({
+            type: "stdio",
+            command: s.command,
+            args: s.args ?? [],
+            env: s.env,
+          } as SdkMcpServerConfig)
         : ({ type: "http", url: s.url, headers: s.headers } as SdkMcpServerConfig);
   }
   return out;

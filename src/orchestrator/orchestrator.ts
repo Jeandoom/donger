@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
-import { canUseAgent } from "../domain/agent-policy.js";
 import type { Agent } from "../domain/agent.js";
+import { canUseAgent } from "../domain/agent-policy.js";
+import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";

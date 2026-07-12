@@ -24,8 +24,8 @@ import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import type { Channel } from "./ports/channel.js";
-import { createSecretCipher } from "./util/secret-cipher.js";
 import { createLogger } from "./util/logger.js";
+import { createSecretCipher } from "./util/secret-cipher.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -150,7 +150,9 @@ async function main(): Promise<void> {
   const webOrch = createOrch(webChannel);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   log.info({ channel: "web", host: cfg.host, port: cfg.port }, "就绪");
-  console.log(`\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`);
+  console.log(
+    `\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`,
+  );
 
   // 钉钉 Channel（有配置才启动）
   if (cfg.dingtalk) {

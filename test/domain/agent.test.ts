@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentSchema, parseAgent } from "../../src/domain/agent.js";
 
 const valid = {

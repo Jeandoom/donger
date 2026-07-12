@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { canManageAgent, canUseAgent } from "../../src/domain/agent-policy.js";
+import { describe, expect, it } from "vitest";
 import type { Agent } from "../../src/domain/agent.js";
+import { canManageAgent, canUseAgent } from "../../src/domain/agent-policy.js";
 
 const agent: Agent = {
   id: "a1",

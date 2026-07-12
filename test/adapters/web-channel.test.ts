@@ -489,7 +489,9 @@ describe("/api/files/*", () => {
   });
 });
 
-async function startWebWithAgents(opts: { presets?: LlmPreset[]; skillPaths?: string[] } = {}): Promise<{
+async function startWebWithAgents(
+  opts: { presets?: LlmPreset[]; skillPaths?: string[] } = {},
+): Promise<{
   port: number;
   token: string;
   userId: string;
