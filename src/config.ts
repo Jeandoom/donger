@@ -29,6 +29,10 @@ const EnvSchema = z.object({
   DINGTALK_CARD_TEMPLATE_ID: z.string().optional(),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  // Agent MCP 密钥主密钥 seed；缺省从 JWT_SECRET 派生（见 resolveSecretSeed）
+  SECRET_KEY: z.string().optional(),
+  // Agent 可选 LLM 预置模型，格式 name|model|baseUrl，多条用 ; 分隔
+  AGENT_LLM_PRESETS: z.string().optional().default(""),
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */
@@ -38,6 +42,14 @@ export interface DingTalkConfig {
   robotCode: string;
   /** AI 卡片模板 ID（可选；有则用 AI 卡片流式回复） */
   cardTemplateId?: string;
+}
+
+/** Agent 可选 LLM 预置模型（authToken 复用全局 ANTHROPIC_AUTH_TOKEN） */
+export interface LlmPreset {
+  id: string;
+  name: string;
+  model: string;
+  baseUrl: string;
 }
 
 export interface AppConfig {
@@ -58,6 +70,10 @@ export interface AppConfig {
   jwtSecret: string;
   /** JWT 过期天数 */
   jwtTtlDays: number;
+  /** Agent 密钥主密钥 seed（SECRET_KEY，缺省派生自 JWT_SECRET） */
+  secretKeySeed: string;
+  /** Agent 可选 LLM 预置列表 */
+  agentLlmPresets: LlmPreset[];
 }
 
 /**
@@ -83,6 +99,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
     jwtSecret: e.JWT_SECRET ?? "",
     jwtTtlDays: e.JWT_TTL_DAYS,
+    secretKeySeed: resolveSecretSeed(e.SECRET_KEY, e.JWT_SECRET ?? ""),
+    agentLlmPresets: parseLlmPresets(e.AGENT_LLM_PRESETS),
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {
@@ -120,4 +138,40 @@ function parseAdminExternalIds(
     }
   }
   return new Set(ids);
+}
+
+/**
+ * 解析 Agent 密钥主密钥 seed。
+ * 优先 SECRET_KEY；缺省从 JWT_SECRET 派生（并告警）；两者皆空返回空串。
+ */
+function resolveSecretSeed(secretKey: string | undefined, jwtSecret: string): string {
+  if (secretKey && secretKey.trim()) return secretKey.trim();
+  if (jwtSecret) {
+    process.emitWarning("SECRET_KEY 未配置，从 JWT_SECRET 派生 agent 密钥主密钥", {
+      code: "SECRET_KEY_DERIVED",
+    });
+    return jwtSecret;
+  }
+  return "";
+}
+
+/**
+ * 解析 Agent LLM 预置列表：name|model|baseUrl，多条用 ; 分隔。
+ * 任一条目字段缺失抛错。
+ */
+function parseLlmPresets(raw: string): LlmPreset[] {
+  return raw
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((entry, i) => {
+      const parts = entry.split("|").map((p) => p?.trim());
+      const name = parts[0];
+      const model = parts[1];
+      const baseUrl = parts[2];
+      if (!name || !model || !baseUrl) {
+        throw new Error(`AGENT_LLM_PRESETS 条目格式应为 name|model|baseUrl：${entry}`);
+      }
+      return { id: String(i), name, model, baseUrl };
+    });
 }
