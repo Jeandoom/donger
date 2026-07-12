@@ -1,48 +1,58 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import type { Plan } from "../domain/planner.js";
+import type { PackSkill, SkillCredentialSpec, SkillPack } from "../domain/skill-pack.js";
+import { resolveActiveSkills } from "../domain/skill-resolution.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { CredentialStore } from "../ports/credential-store.js";
+import type { SkillInstaller } from "../ports/skill-installer.js";
+import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
+import { seedBuiltinPacksIfAbsent } from "../util/builtin-skills.js";
 import { ensureRuntimeDir } from "../util/workspace.js";
 
 export interface RuntimeManagerConfig {
   workspaceDir: string;
   llm: LLMConfig;
-  /** 额外默认插件路径（每用户 .skills/ 由 prepare 自动追加） */
-  defaultPluginPaths: string[];
-  /** superpowers 插件路径；配置后才启用 plan.skills（沿用原 runOptsFor 语义） */
-  superpowersPluginPath?: string;
   /** 默认 systemPromptAppend */
   defaultSystemPromptAppend: string;
 }
 
 export interface PrepareOpts {
-  plan?: Plan;
   systemPromptAppend?: string;
   abortSignal?: AbortSignal;
+}
+
+export interface CredentialRequirements {
+  required: string[];
+  present: string[];
+  specs: SkillCredentialSpec[];
 }
 
 interface RuntimeManagerDeps {
   transcriptStore: TranscriptStore;
   conversationStore: ConversationStore;
   config: RuntimeManagerConfig;
+  skillPackStore: SkillPackStore;
+  credentialStore: CredentialStore;
+  installer: SkillInstaller;
+  builtinSkillsDir: string;
 }
 
 /**
  * 会话运行态总管（单一对外入口）。
  * 「上下文」= 历史对话数据(transcript) + 运行时目录(runtimeDir) + 可用能力(capabilities)。
- * - prepare：组装 RuntimeContext + RunOptions（含 sessionStore 注入）
+ * - prepare：组装 RuntimeContext + RunOptions（含 sessionStore 注入、凭证 env）
+ * - activeCredentialRequirements：凭证门用，算出缺失的 required 凭证
  * - commit：回写 sdkSessionId
  * - getTranscript：读历史（回溯/重放）
  * - clearResume：清空 sdkSessionId（session 过期重试用）
  *
- * 内部含 ContextBuilder（能力组装）与 RuntimeDirResolver（目录懒创建），
- * 对外只暴露本类的统一 API。
+ * 能力（skills/pluginPaths/凭证）由用户启用的 Pack 驱动（见 domain/skill-resolution.ts）。
  */
 export class RuntimeManager {
   constructor(private readonly deps: RuntimeManagerDeps) {}
@@ -52,14 +62,29 @@ export class RuntimeManager {
     conversation: Conversation,
     opts: PrepareOpts,
   ): Promise<{ context: RuntimeContext; runOptions: RunOptions }> {
-    // —— ContextBuilder：组装能力 ——
-    const pluginPaths = this.buildPluginPaths(user);
+    // 预装 Pack 懒登记（幂等）
+    await seedBuiltinPacksIfAbsent(
+      this.deps.skillPackStore,
+      this.deps.installer,
+      this.deps.builtinSkillsDir,
+      user.id,
+    );
+
+    // —— ContextBuilder：由启用 Pack 派生能力 ——
+    const packs = await this.deps.skillPackStore.listPacks(user.id);
+    const skillsByPack = new Map<string, PackSkill[]>();
+    for (const p of packs) {
+      skillsByPack.set(p.id, await this.deps.skillPackStore.listSkills(user.id, p.id));
+    }
+    const resolved = resolveActiveSkills(packs, skillsByPack, (p) => this.resolvePackPath(user, p));
     const capabilities: CapabilitySet = {
-      skills: opts.plan?.skills ?? [],
-      pluginPaths,
+      skills: resolved.whitelist,
+      pluginPaths: resolved.pluginPaths,
     };
-    // skills 过滤：无 superpowers 时不启用 plan.skills（沿用原 runOptsFor 语义）
-    const skills = this.deps.config.superpowersPluginPath ? capabilities.skills : [];
+    const credentialsEnv = await this.deps.credentialStore.getMany(
+      user.id,
+      resolved.declaredCredentialKeys,
+    );
 
     // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
     const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
@@ -90,8 +115,8 @@ export class RuntimeManager {
 
     const runOptions: RunOptions = {
       cwd: runtimeDir,
-      skills,
-      pluginPaths: capabilities.pluginPaths,
+      skills: resolved.whitelist,
+      pluginPaths: resolved.pluginPaths,
       llm: this.deps.config.llm,
       systemPromptAppend: this.combineSystemPromptAppend(opts.systemPromptAppend),
       abortSignal: opts.abortSignal,
@@ -99,21 +124,27 @@ export class RuntimeManager {
       workspaceRoot: user.homeDir,
       sessionStore,
       capabilityVersion: 1,
+      credentialsEnv,
     };
 
     return { context, runOptions };
   }
 
-  /** 组装插件路径：每用户 .skills/ + 额外默认 + superpowers */
-  private buildPluginPaths(user: User): string[] {
-    const paths: string[] = [join(user.homeDir, ".skills")];
-    for (const p of this.deps.config.defaultPluginPaths) {
-      if (!paths.includes(p)) paths.push(p);
-    }
-    if (this.deps.config.superpowersPluginPath) {
-      paths.push(this.deps.config.superpowersPluginPath);
-    }
-    return paths;
+  /** 凭证门用：算出启用 pack 声明的 required 凭证中，用户保险柜尚缺哪些。 */
+  async activeCredentialRequirements(userId: string): Promise<CredentialRequirements> {
+    const packs = (await this.deps.skillPackStore.listPacks(userId)).filter((p) => p.enabled);
+    const specs = packs.flatMap((p) => p.credentials);
+    const required = uniq(specs.filter((c) => c.required).map((c) => c.key));
+    const vault = await this.deps.credentialStore.list(userId);
+    const present = vault.map((e) => e.key);
+    return { required, present, specs };
+  }
+
+  /** 解析 pack 绝对路径：预装/绝对路径原样，用户 pack 拼 homeDir。 */
+  private resolvePackPath(user: User, pack: SkillPack): string {
+    return pack.builtin || isAbsolute(pack.installedPath)
+      ? pack.installedPath
+      : join(user.homeDir, pack.installedPath);
   }
 
   /** 合并 systemPromptAppend：默认始终在，extra（如记忆上下文）追加其后 */
@@ -145,4 +176,8 @@ export class RuntimeManager {
       sessionId: conv.sdkSessionId,
     });
   }
+}
+
+function uniq(arr: string[]): string[] {
+  return [...new Set(arr)];
 }

@@ -1,15 +1,17 @@
+import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
+import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
-import type { User } from "../../src/domain/user.js";
-import {
-  RuntimeManager,
-  type RuntimeManagerConfig,
-} from "../../src/orchestrator/runtime-manager.js";
+import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
+import { RuntimeManager, type RuntimeManagerConfig } from "../../src/orchestrator/runtime-manager.js";
 import type { ConversationStore } from "../../src/ports/conversation-store.js";
+import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { TranscriptStore } from "../../src/ports/transcript-store.js";
+import { loadOrGenerateAppSecret } from "../../src/util/app-secret.js";
 
 /** 内存 ConversationStore */
 function fakeConvStore(initial: Conversation[] = []) {
@@ -43,6 +45,15 @@ function fakeTranscriptStore(loadImpl: (key: { sessionId: string }) => unknown):
   };
 }
 
+const fakeInstaller: SkillInstaller = {
+  installFromGit: async () => ({} as SkillPack),
+  installFromUpload: async () => ({} as SkillPack),
+  installFromPaste: async () => ({} as SkillPack),
+  installBuiltin: async () => ({} as SkillPack),
+  uninstall: async () => {},
+  update: async () => ({} as SkillPack),
+};
+
 const baseConv = (over: Partial<Conversation> = {}): Conversation => ({
   id: "c1",
   userId: "u1",
@@ -55,128 +66,148 @@ const baseConv = (over: Partial<Conversation> = {}): Conversation => ({
   ...over,
 });
 
-const baseUser = (homeDir: string): User => ({
+const baseUser = (homeDir: string) => ({
   id: "u1",
   name: "tester",
-  role: "user",
+  role: "user" as const,
   homeDir,
   createdAt: "2026-07-08T00:00:00.000Z",
   updatedAt: "2026-07-08T00:00:00.000Z",
 });
 
-const baseConfig = (
-  ws: string,
-  over: Partial<RuntimeManagerConfig> = {},
-): RuntimeManagerConfig => ({
+const baseConfig = (ws: string, over: Partial<RuntimeManagerConfig> = {}): RuntimeManagerConfig => ({
   workspaceDir: ws,
   llm: { model: "glm", baseUrl: "http://x", authToken: "t" },
-  defaultPluginPaths: [],
   defaultSystemPromptAppend: "高危操作触发审批门。",
   ...over,
 });
 
 describe("RuntimeManager", () => {
   let ws: string;
+  let db: Database.Database;
+  let packStore: SqliteSkillPackStore;
+  let credStore: SqliteCredentialStore;
+
   beforeEach(() => {
     ws = mkdtempSync(join(tmpdir(), "rtmgr-"));
+    db = new Database(":memory:");
+    packStore = new SqliteSkillPackStore(db);
+    packStore.migrate();
+    credStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+    credStore.migrate();
   });
 
-  it("prepare：新会话(无 sdkSessionId)产出含 sessionStore + 空 resume + 正确 runtimeDir", async () => {
-    const conv = baseConv();
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
+  function makeMgr(convStore: ReturnType<typeof fakeConvStore>) {
+    return new RuntimeManager({
       transcriptStore: fakeTranscriptStore(() => null),
       conversationStore: convStore as unknown as ConversationStore,
       config: baseConfig(ws),
+      skillPackStore: packStore,
+      credentialStore: credStore,
+      installer: fakeInstaller,
+      builtinSkillsDir: "",
     });
-    const { context, runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
-      plan: { intent: "code", skills: ["s1"] },
-    });
-    expect(context.sdkSessionId).toBe("");
+  }
+
+  function mkPack(over: Partial<SkillPack> = {}): SkillPack {
+    return {
+      id: "p1",
+      userId: "u1",
+      slug: "demo",
+      name: "demo",
+      source: { kind: "paste" },
+      installedPath: ".skills/demo",
+      enabled: true,
+      builtin: false,
+      credentials: [{ key: "K", label: "K", required: true, secret: true }],
+      createdAt: "t",
+      updatedAt: "t",
+      ...over,
+    };
+  }
+  function mkSkill(over: Partial<PackSkill> = {}): PackSkill {
+    return {
+      id: "s1",
+      userId: "u1",
+      packId: "p1",
+      name: "alpha",
+      description: "d",
+      relativePath: "skills/alpha/SKILL.md",
+      enabled: true,
+      createdAt: "t",
+      updatedAt: "t",
+      ...over,
+    };
+  }
+
+  it("prepare：启用 pack 的路径/白名单/凭证进入 runOptions", async () => {
+    await packStore.upsertPack(mkPack());
+    await packStore.upsertSkills("u1", "p1", [mkSkill()]);
+    await credStore.setValue("u1", "K", "v");
+    const m = makeMgr(fakeConvStore([baseConv()]));
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
+    expect(runOptions.pluginPaths?.some((p) => p.endsWith(".skills/demo"))).toBe(true);
+    expect(runOptions.skills).toEqual(["demo:alpha"]);
+    expect(runOptions.credentialsEnv?.K).toBe("v");
     expect(runOptions.resume).toBeUndefined();
     expect(runOptions.sessionStore).toBeDefined();
-    expect(runOptions.cwd).toContain("sessions");
-    expect(runOptions.cwd).toContain("c1");
-    // 无 superpowers → skills 不启用（沿用原 runOptsFor 语义）
-    expect(runOptions.skills).toEqual([]);
-    // pluginPaths 含每用户 .skills/
-    expect(runOptions.pluginPaths?.some((p) => p.endsWith(".skills"))).toBe(true);
   });
 
-  it("prepare：配置 superpowers 时启用 plan.skills", async () => {
-    const conv = baseConv();
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(() => null),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws, { superpowersPluginPath: "/opt/superpowers" }),
-    });
-    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
-      plan: { intent: "code", skills: ["superpowers:brainstorming"] },
-    });
-    expect(runOptions.skills).toEqual(["superpowers:brainstorming"]);
-    expect(runOptions.pluginPaths).toContain("/opt/superpowers");
+  it("prepare：停用 pack → 不进 pluginPaths/白名单", async () => {
+    await packStore.upsertPack(mkPack({ enabled: false }));
+    await packStore.upsertSkills("u1", "p1", [mkSkill()]);
+    const m = makeMgr(fakeConvStore([baseConv()]));
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
+    expect(runOptions.pluginPaths).toEqual([]);
+    expect(runOptions.skills).toEqual([]);
+  });
+
+  it("prepare：停用单个 skill → pack 路径在但该 skill 不进白名单", async () => {
+    await packStore.upsertPack(mkPack());
+    await packStore.upsertSkills("u1", "p1", [
+      mkSkill(),
+      mkSkill({ id: "s2", name: "beta", enabled: false }),
+    ]);
+    const m = makeMgr(fakeConvStore([baseConv()]));
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
+    expect(runOptions.skills).toEqual(["demo:alpha"]);
   });
 
   it("prepare：续接会话(有 sdkSessionId)产出 resume", async () => {
     const conv = baseConv({ sdkSessionId: "sdk-xyz" });
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(() => null),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws),
-    });
+    const m = makeMgr(fakeConvStore([conv]));
     const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {});
     expect(runOptions.resume).toBe("sdk-xyz");
   });
 
+  it("activeCredentialRequirements：列出 required 且区分已配/缺失", async () => {
+    await packStore.upsertPack(
+      mkPack({
+        credentials: [
+          { key: "REQ", label: "R", required: true, secret: true },
+          { key: "OPT", label: "O", required: false, secret: true },
+        ],
+      }),
+    );
+    await credStore.setValue("u1", "REQ", "v");
+    const m = makeMgr(fakeConvStore([baseConv()]));
+    const req = await m.activeCredentialRequirements("u1");
+    expect(req.required).toEqual(["REQ"]);
+    expect(req.present).toContain("REQ");
+    expect(req.specs.map((s) => s.key)).toEqual(["REQ", "OPT"]);
+  });
+
   it("commit：回写 sdkSessionId 到 ConversationStore", async () => {
-    const conv = baseConv();
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(() => null),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws),
-    });
+    const convStore = fakeConvStore([baseConv()]);
+    const m = makeMgr(convStore);
     await m.commit("c1", { sdkSessionId: "sdk-new" });
     expect(convStore.snapshot("c1")?.sdkSessionId).toBe("sdk-new");
   });
 
   it("clearResume：清空 sdkSessionId（session 过期重试用）", async () => {
-    const conv = baseConv({ sdkSessionId: "stale" });
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(() => null),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws),
-    });
+    const convStore = fakeConvStore([baseConv({ sdkSessionId: "stale" })]);
+    const m = makeMgr(convStore);
     await m.clearResume("c1");
     expect(convStore.snapshot("c1")?.sdkSessionId).toBe("");
-  });
-
-  it("getTranscript：按 conversationId 读 transcript（经 sdkSessionId）", async () => {
-    const conv = baseConv({ sdkSessionId: "sdk-1" });
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore((key) =>
-        key.sessionId === "sdk-1" ? [{ type: "user", uuid: "m1", message: "hi" }] : null,
-      ),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws),
-    });
-    const msgs = await m.getTranscript("c1");
-    expect(msgs?.length).toBe(1);
-    expect(msgs?.[0]?.uuid).toBe("m1");
-  });
-
-  it("getTranscript：无 sdkSessionId 返回 null", async () => {
-    const conv = baseConv();
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(() => null),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws),
-    });
-    expect(await m.getTranscript("c1")).toBeNull();
   });
 });

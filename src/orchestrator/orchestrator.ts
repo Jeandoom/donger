@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { GateRouter } from "../domain/gate-router.js";
-import type { Planner } from "../domain/planner.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
@@ -26,7 +25,6 @@ export interface OrchestratorDeps {
   messageStore?: MessageStore;
   usageStore: UsageStore;
   auditStore: AuditStore;
-  planner: Planner;
   gates: GateRouter;
   runner: AgentRunner;
   channel: Channel;
@@ -116,7 +114,7 @@ export class Orchestrator {
   }
 
   async handleMessage(msg: IncomingMessage): Promise<void> {
-    const { store, userStore, conversationStore, planner, gates, runner, channel } = this.deps;
+    const { store, userStore, conversationStore, gates, runner, channel } = this.deps;
 
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
     const user = await this.resolveUser(msg);
@@ -164,7 +162,6 @@ export class Orchestrator {
         memory = undefined;
       }
 
-      const plan = planner.plan(msg.text);
       const now = new Date().toISOString();
       task = {
         id: crypto.randomUUID(),
@@ -173,7 +170,7 @@ export class Orchestrator {
         requesterId: msg.requesterId,
         prompt: msg.text,
         status: "created",
-        skillChain: plan.skills,
+        skillChain: [],
         createdAt: now,
         updatedAt: now,
       };
@@ -192,7 +189,6 @@ export class Orchestrator {
       }
 
       const { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
-        plan,
         systemPromptAppend: memoryAppend,
       });
 
@@ -222,7 +218,6 @@ export class Orchestrator {
           // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）
           await this.deps.runtimeMgr.clearResume(conversation.id);
           const refreshed = await this.deps.runtimeMgr.prepare(user, conversation, {
-            plan,
             systemPromptAppend: memoryAppend,
           });
           attemptOpts = refreshed.runOptions;

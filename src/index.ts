@@ -11,17 +11,20 @@ import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
+import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
+import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
+import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
-import { Planner } from "./domain/planner.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import type { Channel } from "./ports/channel.js";
+import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { createLogger } from "./util/logger.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
@@ -76,16 +79,29 @@ async function main(): Promise<void> {
   sessionStore.migrate();
 
   function createOrch(channel: Channel): Orchestrator {
+    const skillPackStore = new SqliteSkillPackStore(db);
+    skillPackStore.migrate();
+    const credentialStore = new SqliteCredentialStore(
+      db,
+      loadOrGenerateAppSecret(db, "skill_secret_key"),
+    );
+    credentialStore.migrate();
+    const skillInstaller = new LocalSkillInstaller({
+      packStore: skillPackStore,
+      getHomeDir: (uid) => join(usersDir, uid),
+    });
     const runtimeMgr = new RuntimeManager({
       transcriptStore,
       conversationStore,
       config: {
         workspaceDir: cfg.workspaceDir,
         llm: cfg.llm,
-        defaultPluginPaths: [],
-        superpowersPluginPath: cfg.superpowersPluginPath,
         defaultSystemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
       },
+      skillPackStore,
+      credentialStore,
+      installer: skillInstaller,
+      builtinSkillsDir: cfg.repoRoot ? join(cfg.repoRoot, "skills") : "",
     });
     return new Orchestrator({
       store,
@@ -94,7 +110,6 @@ async function main(): Promise<void> {
       messageStore,
       usageStore,
       auditStore,
-      planner: new Planner(),
       gates: createDefaultGates(),
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,

@@ -1,14 +1,17 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-runner.js";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
+import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
-import { Planner } from "../../src/domain/planner.js";
+import type { SkillPack } from "../../src/domain/skill-pack.js";
 import type { ApprovalCard, OutgoingMessage } from "../../src/domain/types.js";
 import type { User, UserRole } from "../../src/domain/user.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
@@ -16,8 +19,10 @@ import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
 import type { AgentRunner } from "../../src/ports/agent-runner.js";
 import type { Channel } from "../../src/ports/channel.js";
 import type { ConversationStore } from "../../src/ports/conversation-store.js";
+import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { TranscriptStore } from "../../src/ports/transcript-store.js";
 import type { UserStore } from "../../src/ports/user-store.js";
+import { loadOrGenerateAppSecret } from "../../src/util/app-secret.js";
 
 function fakeChannel(approve: boolean): Channel & {
   sent: OutgoingMessage[];
@@ -130,18 +135,33 @@ function mockTranscriptStore(): TranscriptStore {
   };
 }
 
-/** 构造真实 RuntimeManager（内存 transcript，model=m，启用 plan.skills） */
+/** 构造真实 RuntimeManager（内存 transcript + 内存 skill/credential store，model=m） */
 function makeRuntimeMgr(conversationStore: ConversationStore): RuntimeManager {
+  const db = new Database(":memory:");
+  const packStore = new SqliteSkillPackStore(db);
+  packStore.migrate();
+  const credentialStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+  credentialStore.migrate();
+  const fakeInstaller: SkillInstaller = {
+    installFromGit: async () => ({} as SkillPack),
+    installFromUpload: async () => ({} as SkillPack),
+    installFromPaste: async () => ({} as SkillPack),
+    installBuiltin: async () => ({} as SkillPack),
+    uninstall: async () => {},
+    update: async () => ({} as SkillPack),
+  };
   return new RuntimeManager({
     transcriptStore: mockTranscriptStore(),
     conversationStore,
     config: {
       workspaceDir: mkdtempSync(join(tmpdir(), "donger-test-ws-")),
       llm: { model: "m", baseUrl: "u", authToken: "t" },
-      defaultPluginPaths: [],
-      superpowersPluginPath: "/opt/superpowers",
       defaultSystemPromptAppend: "测试默认 prompt",
     },
+    skillPackStore: packStore,
+    credentialStore,
+    installer: fakeInstaller,
+    builtinSkillsDir: "",
   });
 }
 
@@ -160,7 +180,6 @@ function setup(approve: boolean, script: FakeScript) {
     conversationStore,
     usageStore,
     auditStore,
-    planner: new Planner(),
     gates,
     runner,
     channel,
@@ -216,7 +235,6 @@ describe("Orchestrator", () => {
       store: store2,
       userStore: mockUserStore(),
       conversationStore: conversationStore2,
-      planner: new Planner(),
       gates: new GateRouter(),
       usageStore: new InMemoryUsageStore(),
       auditStore: new InMemoryAuditStore(),
@@ -259,7 +277,6 @@ describe("Orchestrator", () => {
       store: new InMemoryTaskStore(),
       userStore: mockUserStore(),
       conversationStore: cst,
-      planner: new Planner(),
       gates: new GateRouter(),
       usageStore: new InMemoryUsageStore(),
       auditStore: new InMemoryAuditStore(),
@@ -319,7 +336,6 @@ describe("Orchestrator", () => {
       store: new InMemoryTaskStore(),
       userStore: mockUserStore(),
       conversationStore: cst,
-      planner: new Planner(),
       gates: new GateRouter(),
       runner: capturingRunner,
       channel: fakeChannel(true),
@@ -431,7 +447,6 @@ describe("Orchestrator", () => {
       conversationStore,
       usageStore: new InMemoryUsageStore(),
       auditStore: throwing,
-      planner: new Planner(),
       gates: new GateRouter(),
       runner: new FakeAgentRunner({ result: "ok" }),
       channel: fakeChannel(true),
