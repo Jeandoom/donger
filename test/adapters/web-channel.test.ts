@@ -763,4 +763,45 @@ describe("WebChannel /api/agents 分享", () => {
     });
     expect(r.status).toBe(403);
   });
+
+  it("隔离执行 + 撤销阻断：visitor accept → 有自己的会话 → 撤销后 /conversation 403", async () => {
+    const { port, token, userId, agentShareStore, agentStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: "owner",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+
+    // visitor accept-share → 授权 + 建立自己的会话
+    const acc = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const accJson = (await acc.json()) as { conversation: { id: string; agentId: string } };
+    expect(accJson.conversation.agentId).toBe(a.id);
+    // 授权记录在 visitor 名下（隔离：grant 绑定 visitor userId）
+    expect(await agentShareStore.isGranted(a.id, userId)).toBe(true);
+
+    // visitor 可进入该 agent 的会话
+    const conv = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const convJson = (await conv.json()) as { id: string };
+    expect(convJson.id).toBe(accJson.conversation.id);
+
+    // owner 撤销 visitor 授权
+    await agentShareStore.removeGrant(a.id, userId);
+    expect(await agentShareStore.isGranted(a.id, userId)).toBe(false);
+
+    // 撤销后 visitor 再访问该 agent 会话 → 403
+    const blocked = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(blocked.status).toBe(403);
+  });
 });
