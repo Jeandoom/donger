@@ -1,8 +1,8 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AuthGuard } from "./components/auth/AuthGuard";
 import { Shell } from "./components/layout/Shell";
-import { AgentChatPage } from "./pages/AgentChatPage";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
+import { AgentSessionsPage } from "./pages/AgentSessionsPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -31,7 +31,8 @@ export function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/agents/new" element={<AgentEditorPage />} />
           <Route path="/agents/:id" element={<AgentEditorPage />} />
-          <Route path="/agents/:id/chat" element={<AgentChatPage />} />
+          <Route path="/agents/:id/chat" element={<AgentChatRedirect />} />
+          <Route path="/agent-sessions" element={<AgentSessionsPage />} />
           <Route path="/workflows" element={<WorkflowsPage />} />
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/config" element={<ConfigPage />} />
@@ -40,4 +41,10 @@ export function App() {
       </Route>
     </Routes>
   );
+}
+
+/** /agents/:id/chat → 智能体会话页并定位该智能体（继续最近会话；没有才新建） */
+function AgentChatRedirect() {
+  const { id } = useParams();
+  return <Navigate to={id ? `/agent-sessions?agent=${id}` : "/agent-sessions"} replace />;
 }
