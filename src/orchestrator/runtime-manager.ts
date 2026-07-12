@@ -1,10 +1,12 @@
 import { join } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
+import type { Agent, McpServerConfig } from "../domain/agent.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { Plan } from "../domain/planner.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { User } from "../domain/user.js";
+import type { LlmPreset } from "../config.js";
 import type { RunOptions } from "../ports/agent-runner.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
@@ -19,12 +21,16 @@ export interface RuntimeManagerConfig {
   superpowersPluginPath?: string;
   /** 默认 systemPromptAppend */
   defaultSystemPromptAppend: string;
+  /** Agent 可选 LLM 预置列表（agent.llm.presetId 引用） */
+  agentLlmPresets: LlmPreset[];
 }
 
 export interface PrepareOpts {
   plan?: Plan;
   systemPromptAppend?: string;
   abortSignal?: AbortSignal;
+  /** 显式选中的智能体（旁路 Planner；undefined=默认 Planner 路径） */
+  agent?: Agent;
 }
 
 interface RuntimeManagerDeps {
@@ -54,12 +60,40 @@ export class RuntimeManager {
   ): Promise<{ context: RuntimeContext; runOptions: RunOptions }> {
     // —— ContextBuilder：组装能力 ——
     const pluginPaths = this.buildPluginPaths(user);
+
+    // skills / llm / allowedTools / mcpServers / systemPrompt：agent 分支覆盖默认 Planner 路径
+    let skills: string[];
+    let llm: LLMConfig = this.deps.config.llm;
+    let allowedTools: string[] | undefined;
+    let mcpServers: McpServerConfig[] | undefined;
+    let extraPrompt: string | undefined = opts.systemPromptAppend;
+
+    if (opts.agent) {
+      const a = opts.agent;
+      // agent 指定 skills 时直接用；否则回退到 plan.skills（受 superpowers 开关约束）
+      skills =
+        a.skills.length > 0
+          ? a.skills
+          : this.deps.config.superpowersPluginPath
+            ? (opts.plan?.skills ?? [])
+            : [];
+      const preset = a.llm.presetId
+        ? this.deps.config.agentLlmPresets.find((p) => p.id === a.llm.presetId)
+        : undefined;
+      if (preset) llm = { ...this.deps.config.llm, model: preset.model, baseUrl: preset.baseUrl };
+      allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
+      mcpServers = a.mcpServers;
+      extraPrompt = a.systemPrompt
+        ? `${opts.systemPromptAppend ?? ""}\n\n${a.systemPrompt}`.trim()
+        : opts.systemPromptAppend;
+    } else {
+      skills = this.deps.config.superpowersPluginPath ? (opts.plan?.skills ?? []) : [];
+    }
+
     const capabilities: CapabilitySet = {
-      skills: opts.plan?.skills ?? [],
+      skills,
       pluginPaths,
     };
-    // skills 过滤：无 superpowers 时不启用 plan.skills（沿用原 runOptsFor 语义）
-    const skills = this.deps.config.superpowersPluginPath ? capabilities.skills : [];
 
     // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
     const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
@@ -92,13 +126,15 @@ export class RuntimeManager {
       cwd: runtimeDir,
       skills,
       pluginPaths: capabilities.pluginPaths,
-      llm: this.deps.config.llm,
-      systemPromptAppend: this.combineSystemPromptAppend(opts.systemPromptAppend),
+      llm,
+      systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
       abortSignal: opts.abortSignal,
       resume: conversation.sdkSessionId || undefined,
       workspaceRoot: user.homeDir,
       sessionStore,
       capabilityVersion: 1,
+      ...(allowedTools ? { allowedTools } : {}),
+      ...(mcpServers?.length ? { mcpServers } : {}),
     };
 
     return { context, runOptions };

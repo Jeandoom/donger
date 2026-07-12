@@ -49,6 +49,7 @@ const baseConv = (over: Partial<Conversation> = {}): Conversation => ({
   sdkSessionId: "",
   title: "t",
   channelId: "web",
+  agentId: "",
   createdAt: "2026-07-08T00:00:00.000Z",
   updatedAt: "2026-07-08T00:00:00.000Z",
   archived: false,
@@ -178,5 +179,69 @@ describe("RuntimeManager", () => {
       config: baseConfig(ws),
     });
     expect(await m.getTranscript("c1")).toBeNull();
+  });
+});
+
+describe("RuntimeManager agent 分支", () => {
+  let ws: string;
+  beforeEach(() => {
+    ws = mkdtempSync(join(tmpdir(), "rtmgr-"));
+  });
+
+  it("传 agent 时 skills/systemPrompt/llm/allowedTools/mcpServers 覆盖", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const convStore = fakeConvStore([conv]);
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: convStore as unknown as ConversationStore,
+      config: baseConfig(ws, {
+        agentLlmPresets: [{ id: "p1", name: "GLM", model: "glm-4.6", baseUrl: "https://a" }],
+      }),
+    });
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        systemPrompt: "EXTRA",
+        skills: ["s:1"],
+        tools: { mode: "whitelist", whitelist: ["Bash"] },
+        mcpServers: [{ name: "m", type: "http", url: "https://x" }],
+        llm: { presetId: "p1" },
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    expect(runOptions.skills).toEqual(["s:1"]);
+    expect(runOptions.llm.model).toBe("glm-4.6");
+    expect(runOptions.llm.baseUrl).toBe("https://a");
+    expect(runOptions.allowedTools).toEqual(["Bash"]);
+    expect(runOptions.mcpServers?.[0]?.name).toBe("m");
+    expect(runOptions.systemPromptAppend).toContain("EXTRA");
+  });
+
+  it("agent.tools.mode=all → allowedTools undefined", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const convStore = fakeConvStore([conv]);
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: convStore as unknown as ConversationStore,
+      config: baseConfig(ws, { agentLlmPresets: [] }),
+    });
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        llm: {},
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    expect(runOptions.allowedTools).toBeUndefined();
+    expect(runOptions.mcpServers).toBeUndefined();
   });
 });

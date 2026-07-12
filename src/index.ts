@@ -85,6 +85,7 @@ async function main(): Promise<void> {
         defaultPluginPaths: [],
         superpowersPluginPath: cfg.superpowersPluginPath,
         defaultSystemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+        agentLlmPresets: cfg.agentLlmPresets,
       },
     });
     return new Orchestrator({
