@@ -5,6 +5,18 @@
 export type SSEEvent =
   | { type: "text"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
+  | {
+      type: "credential_card";
+      reqId: string;
+      conversationId: string;
+      items: Array<{
+        key: string;
+        label: string;
+        description?: string;
+        secret: boolean;
+        packName: string;
+      }>;
+    }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "error"; error: string };
 
@@ -27,6 +39,17 @@ export interface PendingApproval {
   summary: string;
 }
 
+export interface PendingCredential {
+  reqId: string;
+  items: Array<{
+    key: string;
+    label: string;
+    description?: string;
+    secret: boolean;
+    packName: string;
+  }>;
+}
+
 export type ConnectionState = "connecting" | "open" | "closed";
 
 /** 会话摘要（从 GET /api/conversations 返回） */
@@ -44,6 +67,7 @@ export interface ConversationSummary {
 export interface ChatState {
   messages: ChatMessage[];
   pendingApproval: PendingApproval | null;
+  pendingCredential: PendingCredential | null;
   connection: ConnectionState;
   /** 用户会话列表 */
   conversations: ConversationSummary[];

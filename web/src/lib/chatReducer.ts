@@ -11,6 +11,7 @@ export type ChatAction =
   | { type: "ws"; msg: SSEEvent }
   | { type: "user_message"; text: string; files?: FileInfo[] }
   | { type: "clear_approval" }
+  | { type: "clear_credential" }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
   | { type: "new_conversation"; conversation: ConversationSummary }
@@ -22,6 +23,7 @@ export function initialChatState(): ChatState {
   return {
     messages: [],
     pendingApproval: null,
+    pendingCredential: null,
     connection: "connecting",
     conversations: [],
     activeConversationId: null,
@@ -55,6 +57,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
     case "clear_approval":
       return { ...state, pendingApproval: null };
+    case "clear_credential":
+      return { ...state, pendingCredential: null };
     case "ws":
       return applyWsOut(state, action.msg);
     case "set_conversations":
@@ -107,6 +111,11 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
       return {
         ...state,
         pendingApproval: { gateId: msg.gateId, title: msg.title, summary: msg.summary },
+      };
+    case "credential_card":
+      return {
+        ...state,
+        pendingCredential: { reqId: msg.reqId, items: msg.items },
       };
     case "result":
       if (msg.subtype === "success") {

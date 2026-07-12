@@ -22,11 +22,13 @@ export function ChatPage() {
   const {
     messages,
     pendingApproval,
+    pendingCredential,
     connection,
     conversations,
     activeConversationId,
     send,
     resolveApproval,
+    submitCredential,
     switchConversation,
     newConversation,
     deleteConversation,
@@ -188,6 +190,13 @@ export function ChatPage() {
               </div>
             </div>
           )}
+          {pendingCredential && (
+            <CredentialCard
+              key={pendingCredential.reqId}
+              items={pendingCredential.items}
+              onSubmit={(values) => submitCredential(values)}
+            />
+          )}
         </div>
 
         {pendingFiles.length > 0 && (
@@ -258,6 +267,58 @@ export function ChatPage() {
         onClose={() => setDrawerOpen(false)}
         activeConversationId={activeConversationId}
       />
+    </div>
+  );
+}
+
+function CredentialCard({
+  items,
+  onSubmit,
+}: {
+  items: Array<{
+    key: string;
+    label: string;
+    description?: string;
+    secret: boolean;
+    packName: string;
+  }>;
+  onSubmit: (values: Record<string, string>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  return (
+    <div className="mr-auto max-w-[80%] rounded-lg border border-blue-400 bg-blue-50 p-3">
+      <div className="text-sm font-semibold text-blue-800">🔑 需要凭证</div>
+      <div className="mt-1 text-xs text-blue-700">
+        运行此任务需要以下凭证（保存到你的凭证库，以后自动复用）：
+      </div>
+      <div className="mt-2 space-y-2">
+        {items.map((it) => (
+          <div key={it.key}>
+            <div className="text-xs font-medium text-blue-800">
+              {it.label}（{it.packName} · <code>{it.key}</code>）
+            </div>
+            <input
+              type={it.secret ? "password" : "text"}
+              className="mt-0.5 w-full rounded border border-blue-300 bg-white px-2 py-1 text-sm"
+              placeholder={it.description ?? `输入 ${it.key}`}
+              value={values[it.key] ?? ""}
+              onChange={(e) => setValues((v) => ({ ...v, [it.key]: e.target.value }))}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-2">
+        <Button
+          size="sm"
+          onClick={() => {
+            const filled: Record<string, string> = {};
+            for (const [k, v] of Object.entries(values)) if (v) filled[k] = v;
+            onSubmit(filled);
+          }}
+        >
+          提交并继续
+        </Button>
+      </div>
     </div>
   );
 }

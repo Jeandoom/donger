@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { cn } from "../../lib/utils";
 import { apiFetch, clearToken, getToken } from "../../lib/auth";
+import { cn } from "../../lib/utils";
 
 const items = [
   { to: "/", label: "会话", end: true },
   { to: "/agents", label: "智能体" },
   { to: "/workflows", label: "工作流" },
   { to: "/skills", label: "技能" },
+  { to: "/credentials", label: "凭证" },
   { to: "/config", label: "配置" },
   { to: "/audit", label: "执行审计" },
 ];

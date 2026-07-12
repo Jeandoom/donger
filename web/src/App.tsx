@@ -5,6 +5,7 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConfigPage } from "./pages/ConfigPage";
+import { CredentialsPage } from "./pages/CredentialsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { SkillsPage } from "./pages/SkillsPage";
@@ -26,6 +27,7 @@ export function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/workflows" element={<WorkflowsPage />} />
           <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/credentials" element={<CredentialsPage />} />
           <Route path="/config" element={<ConfigPage />} />
           <Route path="/audit" element={<AuditPage />} />
         </Route>

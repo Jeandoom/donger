@@ -1,0 +1,142 @@
+// 技能页数据获取 + 纯函数。后端契约见 skill-api.ts。
+import { apiFetch } from "./auth";
+
+export interface SkillCredentialSpecDTO {
+  key: string;
+  label: string;
+  description?: string;
+  required: boolean;
+  secret: boolean;
+  configured?: boolean; // 仅 pack 视图里带
+}
+
+export interface PackSkillDTO {
+  id: string;
+  packId: string;
+  name: string;
+  description: string;
+  allowedTools?: string[];
+  relativePath: string;
+  enabled: boolean;
+}
+
+export interface SkillPackDTO {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string;
+  version?: string;
+  source: { kind: "git" | "upload" | "paste" | "builtin"; url?: string; originalFilename?: string };
+  installedPath: string;
+  enabled: boolean;
+  builtin: boolean;
+  credentials: SkillCredentialSpecDTO[];
+  skills: PackSkillDTO[];
+}
+
+export interface CredentialEntryDTO {
+  key: string;
+  label?: string;
+  updatedAt: string;
+  usedBy: string[];
+}
+
+export async function fetchPacks(): Promise<SkillPackDTO[]> {
+  const res = await apiFetch("/api/skills/packs");
+  if (!res.ok) throw new Error(`list packs ${res.status}`);
+  const data = (await res.json()) as { packs: SkillPackDTO[] };
+  return data.packs;
+}
+
+export async function installPack(source: unknown): Promise<SkillPackDTO> {
+  const res = await apiFetch("/api/skills/packs/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `install ${res.status}`);
+  return (await res.json()).pack as SkillPackDTO;
+}
+
+export async function installUpload(filename: string, content: string): Promise<SkillPackDTO> {
+  const res = await apiFetch("/api/skills/packs/install/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename, content }),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `upload ${res.status}`);
+  return (await res.json()).pack as SkillPackDTO;
+}
+
+export async function setPackEnabled(id: string, enabled: boolean): Promise<void> {
+  await apiFetch(`/api/skills/packs/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function setSkillEnabled(id: string, enabled: boolean): Promise<void> {
+  await apiFetch(`/api/skills/skills/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function uninstallPack(id: string): Promise<void> {
+  await apiFetch("/api/skills/packs/uninstall", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function updatePack(id: string): Promise<void> {
+  await apiFetch("/api/skills/packs/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function fetchCredentials(): Promise<CredentialEntryDTO[]> {
+  const res = await apiFetch("/api/credentials");
+  if (!res.ok) throw new Error(`list credentials ${res.status}`);
+  const data = (await res.json()) as { credentials: CredentialEntryDTO[] };
+  return data.credentials;
+}
+
+export async function setCredential(key: string, value: string, label?: string): Promise<void> {
+  await apiFetch(`/api/credentials/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value, label }),
+  });
+}
+
+export async function deleteCredential(key: string): Promise<void> {
+  await apiFetch(`/api/credentials/${encodeURIComponent(key)}`, { method: "DELETE" });
+}
+
+async function safeErr(res: Response): Promise<string | undefined> {
+  try {
+    const j = (await res.json()) as { error?: string };
+    return j.error;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 凭证状态：区分已配置 / 缺失（用于徽章展示）。 */
+export function credentialStatus(pack: { credentials: SkillCredentialSpecDTO[] }): {
+  configured: string[];
+  missing: string[];
+} {
+  const configured: string[] = [];
+  const missing: string[] = [];
+  for (const c of pack.credentials) {
+    (c.configured ? configured : missing).push(c.key);
+  }
+  return { configured, missing };
+}
