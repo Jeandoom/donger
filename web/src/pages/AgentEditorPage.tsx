@@ -1,0 +1,234 @@
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  type AgentDTO,
+  type AgentMeta,
+  createAgent,
+  fetchAgent,
+  fetchAgentMeta,
+  updateAgent,
+} from "../lib/agents";
+
+const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
+  name: "",
+  description: "",
+  systemPrompt: "",
+  skills: [],
+  tools: { mode: "all", whitelist: [] },
+  mcpServers: [],
+  llm: {},
+};
+
+export function AgentEditorPage() {
+  const { id } = useParams();
+  const isNew = !id || id === "new";
+  const navigate = useNavigate();
+  const [meta, setMeta] = useState<AgentMeta>({ skills: [], tools: [], llmPresets: [] });
+  const [form, setForm] = useState<typeof empty>(empty);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    fetchAgentMeta()
+      .then(setMeta)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!isNew && id) {
+      fetchAgent(id)
+        .then((a) =>
+          setForm({
+            name: a.name,
+            description: a.description ?? "",
+            systemPrompt: a.systemPrompt ?? "",
+            skills: a.skills,
+            tools: a.tools,
+            mcpServers: a.mcpServers,
+            llm: a.llm,
+          }),
+        )
+        .catch(() => navigate("/agents"));
+    }
+  }, [id, isNew, navigate]);
+
+  async function save() {
+    setSaving(true);
+    setError(undefined);
+    try {
+      const saved = isNew ? await createAgent(form) : await updateAgent(id ?? "", form);
+      navigate(`/agents/${saved.id}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-4 p-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">{isNew ? "新建智能体" : "编辑智能体"}</h1>
+        {!isNew && id ? (
+          <Link to={`/agents/${id}/chat`} className="rounded border px-3 py-1.5 text-sm">
+            对话
+          </Link>
+        ) : null}
+      </div>
+
+      {error ? <p className="text-destructive">{error}</p> : null}
+
+      <Field label="名称">
+        <input
+          className="w-full rounded border px-2 py-1"
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+        />
+      </Field>
+
+      <Field label="描述">
+        <input
+          className="w-full rounded border px-2 py-1"
+          value={form.description ?? ""}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+        />
+      </Field>
+
+      <Field label="System Prompt（追加到默认之后）">
+        <textarea
+          className="w-full rounded border px-2 py-1"
+          rows={4}
+          value={form.systemPrompt ?? ""}
+          onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
+        />
+      </Field>
+
+      <Field label="Skills（每行一个，如 superpowers:brainstorming）">
+        <textarea
+          className="w-full rounded border px-2 py-1"
+          rows={3}
+          value={form.skills.join("\n")}
+          onChange={(e) =>
+            setForm({
+              ...form,
+              skills: e.target.value
+                .split("\n")
+                .map((s) => s.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+        {meta.skills.length ? (
+          <p className="text-xs text-muted-foreground">
+            可选：{meta.skills.map((s) => s.id).join("、")}
+          </p>
+        ) : null}
+      </Field>
+
+      <Field label="工具">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="radio"
+            checked={form.tools.mode === "all"}
+            onChange={() => setForm({ ...form, tools: { mode: "all", whitelist: [] } })}
+          />
+          全部工具
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="radio"
+            checked={form.tools.mode === "whitelist"}
+            onChange={() =>
+              setForm({ ...form, tools: { mode: "whitelist", whitelist: form.tools.whitelist } })
+            }
+          />
+          白名单
+        </label>
+        {form.tools.mode === "whitelist" ? (
+          <div className="mt-1 flex flex-wrap gap-2">
+            {meta.tools.map((t) => (
+              <label key={t} className="flex items-center gap-1 text-xs">
+                <input
+                  type="checkbox"
+                  checked={form.tools.whitelist.includes(t)}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      tools: {
+                        mode: "whitelist",
+                        whitelist: e.target.checked
+                          ? [...form.tools.whitelist, t]
+                          : form.tools.whitelist.filter((x) => x !== t),
+                      },
+                    })
+                  }
+                />
+                {t}
+              </label>
+            ))}
+          </div>
+        ) : null}
+      </Field>
+
+      <Field label="LLM 预设">
+        <select
+          className="w-full rounded border px-2 py-1"
+          value={form.llm.presetId ?? ""}
+          onChange={(e) => setForm({ ...form, llm: { presetId: e.target.value || undefined } })}
+        >
+          <option value="">系统默认</option>
+          {meta.llmPresets.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}（{p.model}）
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="MCP Servers（JSON）">
+        <textarea
+          className="w-full rounded border px-2 py-1 font-mono text-xs"
+          rows={5}
+          value={JSON.stringify(form.mcpServers, null, 2)}
+          onChange={(e) => {
+            try {
+              setForm({ ...form, mcpServers: JSON.parse(e.target.value) });
+            } catch {
+              /* 编辑中，忽略解析错误 */
+            }
+          }}
+        />
+        <p className="text-xs text-muted-foreground">
+          env/headers 中的密钥会加密入库；编辑时显示为掩码，留掩码即保留原值。
+        </p>
+      </Field>
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="rounded bg-primary px-3 py-1.5 text-primary-foreground disabled:opacity-50"
+          onClick={save}
+          disabled={saving || !form.name}
+        >
+          {saving ? "保存中…" : "保存"}
+        </button>
+        <button
+          type="button"
+          className="rounded border px-3 py-1.5"
+          onClick={() => navigate("/agents")}
+        >
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-sm font-medium">{label}</div>
+      {children}
+    </div>
+  );
+}
