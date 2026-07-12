@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { setToken } from "../lib/auth";
+import { setLoginNext, setToken } from "../lib/auth";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -9,17 +9,25 @@ export function LoginPage() {
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // 登录成功后的回跳目标（分享链接等场景经 ?next= 传入；默认回首页）
+  const next = searchParams.get("next") || "/";
+
+  // 缓存到 localStorage，供 LoginSuccessPage「无 opener 直开」场景读取
+  useEffect(() => {
+    setLoginNext(next);
+  }, [next]);
+
   // @新增：监听弹窗 postMessage
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
       if (ev.data?.type === "login-success" && typeof ev.data.token === "string") {
         setToken(ev.data.token);
-        navigate("/", { replace: true });
+        navigate(next, { replace: true });
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [navigate]);
+  }, [navigate, next]);
 
   // 处理错误
   useEffect(() => {
@@ -66,6 +74,7 @@ export function LoginPage() {
           <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
             {error}
             <button
+              type="button"
               className="ml-2 underline"
               onClick={() => {
                 setError(null);
@@ -88,6 +97,7 @@ export function LoginPage() {
         {qrUrl && !error && (
           <div className="space-y-4">
             <button
+              type="button"
               className="inline-flex items-center gap-2 rounded-lg bg-[#1677FF] px-6 py-3 text-white shadow-lg transition-colors hover:bg-[#1677FF]/90"
               onClick={() => {
                 const w = window.open(qrUrl, "dingtalk-login", "width=500,height=600");
@@ -100,9 +110,7 @@ export function LoginPage() {
               <span className="font-medium">钉钉扫码登录</span>
             </button>
 
-            <p className="text-xs text-muted-foreground">
-              点击按钮后，使用钉钉扫描二维码完成登录
-            </p>
+            <p className="text-xs text-muted-foreground">点击按钮后，使用钉钉扫描二维码完成登录</p>
 
             <div className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
               扫码后请耐心等待，页面会自动跳转…

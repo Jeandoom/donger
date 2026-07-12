@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
-import { getToken } from "./auth";
+import { clearToken, getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState } from "./chatReducer";
 
@@ -25,25 +25,28 @@ export function useWebChat() {
     }
   }, []);
 
-  /** 创建新会话 */
-  const createNewConversation = useCallback(async () => {
-    try {
-      const token = getToken();
-      const res = await fetch("/api/conversations", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ userId: getUserId(), channelId: "web" }),
-      });
-      const conv: ConversationSummary = await res.json();
-      dispatch({ type: "new_conversation", conversation: conv });
-      return conv;
-    } catch {
-      return null;
-    }
-  }, [getUserId]);
+  /** 创建新会话（agentId 缺省=默认会话） */
+  const createNewConversation = useCallback(
+    async (agentId?: string) => {
+      try {
+        const token = getToken();
+        const res = await fetch("/api/conversations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ userId: getUserId(), channelId: "web", agentId }),
+        });
+        const conv: ConversationSummary = await res.json();
+        dispatch({ type: "new_conversation", conversation: conv });
+        return conv;
+      } catch {
+        return null;
+      }
+    },
+    [getUserId],
+  );
 
   /** 加载会话列表 */
   const loadConversations = useCallback(async () => {
@@ -177,10 +180,13 @@ export function useWebChat() {
       });
   }, []);
 
-  /** 新建会话 */
-  const newConversation = useCallback(async () => {
-    await createNewConversation();
-  }, [createNewConversation]);
+  /** 新建会话（可指定 agentId 绑定智能体） */
+  const newConversation = useCallback(
+    async (agentId?: string) => {
+      await createNewConversation(agentId);
+    },
+    [createNewConversation],
+  );
 
   const send = useCallback(
     async (text: string, files?: FileInfo[]) => {

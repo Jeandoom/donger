@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { setToken } from "../lib/auth";
+import { setToken, takeLoginNext } from "../lib/auth";
 
 export function LoginSuccessPage() {
   const [searchParams] = useSearchParams();
@@ -18,16 +18,14 @@ export function LoginSuccessPage() {
 
     // 通知主页面
     if (window.opener) {
-      window.opener.postMessage(
-        { type: "login-success", token },
-        "*",
-      );
+      window.opener.postMessage({ type: "login-success", token }, "*");
       setStatus("done");
       // 短暂延迟后关闭弹窗，给主页面处理时间
       setTimeout(() => window.close(), 500);
     } else {
-      // 不是在弹窗中打开（用户直接浏览器打开），做页面跳转
-      window.location.href = "/";
+      // 不是在弹窗中打开（用户直接浏览器打开），跳到登录前记下的 next（默认首页）
+      const next = takeLoginNext() ?? "/";
+      window.location.href = next;
     }
   }, [searchParams]);
 

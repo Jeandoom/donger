@@ -16,6 +16,7 @@ export function SecondarySidebar({
   onNew,
   newLabel,
   onItemDelete,
+  headerExtra,
 }: {
   title: string;
   items: SecondarySidebarItem[];
@@ -24,6 +25,7 @@ export function SecondarySidebar({
   onNew?: () => void;
   newLabel?: string;
   onItemDelete?: (id: string) => void;
+  headerExtra?: React.ReactNode;
 }) {
   return (
     <div className="flex w-64 shrink-0 flex-col border-r border-border bg-background">
@@ -39,12 +41,10 @@ export function SecondarySidebar({
           </button>
         )}
       </div>
+      {headerExtra && <div className="border-b border-border px-2 py-1.5">{headerExtra}</div>}
       <div className="flex-1 overflow-y-auto p-1.5">
         {items.map((item) => (
-          <div
-            key={item.id}
-            className="group mb-0.5 flex items-center rounded-md"
-          >
+          <div key={item.id} className="group mb-0.5 flex items-center rounded-md">
             <button
               type="button"
               onClick={() => onItemClick(item.id)}

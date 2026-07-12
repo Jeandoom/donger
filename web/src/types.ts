@@ -59,6 +59,7 @@ export interface ConversationSummary {
   sdkSessionId: string;
   title: string;
   channelId: string;
+  agentId: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
