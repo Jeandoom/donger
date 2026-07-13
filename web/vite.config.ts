@@ -20,6 +20,10 @@ export default defineConfig(({ mode }) => {
       // 监听全网卡（0.0.0.0）以支持局域网/远程访问；可经 HOST 覆盖。
       host: env.HOST ?? "0.0.0.0",
       port: webPort,
+      // Vite 6.2+ 默认拦截非 localhost 的 Host 头（防 DNS rebinding）。
+      // 仅当显式绑 loopback（本机独占）时保留默认保护；其余远程访问场景一律放行。
+      allowedHosts:
+        env.HOST === "127.0.0.1" || env.HOST === "localhost" ? undefined : true,
       proxy: {
         "/api": backend,
         "/ws": { target: backend.replace("http", "ws"), ws: true },
