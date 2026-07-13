@@ -32,9 +32,16 @@ export function initialChatState(): ChatState {
   };
 }
 
-// ponytail: crypto.randomUUID 作 React key，浏览器与 Node20+ 均可用；非持久化路径。
+let fallbackId = 0;
+
+// This is only a non-persistent React key; randomUUID may be absent on insecure origins.
 function makeId(): string {
-  return crypto.randomUUID();
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  fallbackId += 1;
+  return `local-${Date.now().toString(36)}-${fallbackId.toString(36)}`;
 }
 
 function appendBot(state: ChatState, text: string): ChatState {
