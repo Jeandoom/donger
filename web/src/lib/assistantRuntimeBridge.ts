@@ -6,8 +6,8 @@ import {
 } from "@assistant-ui/react";
 import { useMemo } from "react";
 import type { ChatMessage } from "../types";
-import type { FileInfo } from "./chatReducer";
 import { getComposerPayload, toAssistantMessage } from "./chatMessageAdapter";
+import type { FileInfo } from "./chatReducer";
 
 export interface ChatRuntimeInput {
   messages: readonly ChatMessage[];
@@ -34,9 +34,10 @@ export function createChatRuntimeAdapter(
 }
 
 export function useAssistantRuntimeBridge(input: ChatRuntimeInput): AssistantRuntime {
+  const { messages, loading, send, attachmentAdapter } = input;
   const adapter = useMemo(
-    () => createChatRuntimeAdapter(input),
-    [input.messages, input.loading, input.send, input.attachmentAdapter],
+    () => createChatRuntimeAdapter({ messages, loading, send, attachmentAdapter }),
+    [messages, loading, send, attachmentAdapter],
   );
   return useExternalStoreRuntime(adapter);
 }

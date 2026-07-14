@@ -1,8 +1,8 @@
 import type { AppendMessage } from "@assistant-ui/react";
 import { describe, expect, it } from "vitest";
 import {
-  MAX_MESSAGE_ATTACHMENTS,
   getComposerPayload,
+  MAX_MESSAGE_ATTACHMENTS,
   toAssistantMessage,
 } from "../src/lib/chatMessageAdapter";
 import type { ChatMessage } from "../src/types";
