@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
-import { clearToken, getToken } from "./auth";
+import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, makeId } from "./chatReducer";
 
@@ -11,6 +11,7 @@ type SSEClient = {
 export function useWebChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
   const sseRef = useRef<SSEClient | null>(null);
+  const messagesRequestRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // 从 JWT 中解析 userId
@@ -63,81 +64,78 @@ export function useWebChat() {
   }, [getUserId]);
 
   /** 连接 SSE 流 */
-  const connectSSE = useCallback(
-    (conversationId: string) => {
-      // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
-      const token = getToken();
-      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-      const eventSource = new EventSource(`/api/conversations/${conversationId}/stream${qs}`);
+  const connectSSE = useCallback((conversationId: string) => {
+    // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
+    const token = getToken();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+    const eventSource = new EventSource(`/api/conversations/${conversationId}/stream${qs}`);
 
-      sseRef.current = {
-        close: () => eventSource.close(),
-      };
+    sseRef.current = {
+      close: () => eventSource.close(),
+    };
 
-      eventSource.addEventListener("text", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "text") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
+    eventSource.addEventListener("text", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "text") {
+          dispatch({ type: "ws", msg: data });
         }
-      });
+      } catch {
+        // ignore
+      }
+    });
 
-      eventSource.addEventListener("approval_card", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "approval_card") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
+    eventSource.addEventListener("approval_card", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "approval_card") {
+          dispatch({ type: "ws", msg: data });
         }
-      });
+      } catch {
+        // ignore
+      }
+    });
 
-      eventSource.addEventListener("credential_card", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "credential_card") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
+    eventSource.addEventListener("credential_card", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "credential_card") {
+          dispatch({ type: "ws", msg: data });
         }
-      });
+      } catch {
+        // ignore
+      }
+    });
 
-      eventSource.addEventListener("result", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "result") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
+    eventSource.addEventListener("result", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "result") {
+          dispatch({ type: "ws", msg: data });
         }
-      });
+      } catch {
+        // ignore
+      }
+    });
 
-      eventSource.addEventListener("error", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "error") {
-            console.error("[SSE]", data.error);
-          }
-        } catch {
-          // ignore
+    eventSource.addEventListener("error", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "error") {
+          console.error("[SSE]", data.error);
         }
-        // EventSource 会自动重连，无需手动处理
-      });
+      } catch {
+        // ignore
+      }
+      // EventSource 会自动重连，无需手动处理
+    });
 
-      eventSource.onopen = () => {
-        dispatch({ type: "connection", state: "open" });
-      };
+    eventSource.onopen = () => {
+      dispatch({ type: "connection", state: "open" });
+    };
 
-      return eventSource;
-    },
-    [state.activeConversationId],
-  );
+    return eventSource;
+  }, []);
 
   // 初始连接
   useEffect(() => {
@@ -159,24 +157,37 @@ export function useWebChat() {
     };
   }, [state.activeConversationId, connectSSE]);
 
+  useEffect(() => () => messagesRequestRef.current?.abort(), []);
+
   /** 切换会话（先清空本地消息，再异步加载历史消息） */
   const switchConversation = useCallback((conversationId: string | null) => {
+    messagesRequestRef.current?.abort();
     dispatch({ type: "switch_conversation", conversationId });
     if (!conversationId) return;
-
+    const controller = new AbortController();
+    messagesRequestRef.current = controller;
     const token = getToken();
     fetch(`/api/conversations/${conversationId}/messages`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: controller.signal,
     })
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json() as Promise<ChatMessage[]>;
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<ChatMessage[]>;
       })
       .then((messages) => {
-        dispatch({ type: "set_messages", messages });
+        if (messagesRequestRef.current === controller) {
+          dispatch({ type: "set_messages", messages });
+        }
       })
-      .catch(() => {
-        dispatch({ type: "set_messages", messages: [] });
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (messagesRequestRef.current === controller) {
+          dispatch({ type: "set_messages", messages: [] });
+        }
+      })
+      .finally(() => {
+        if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
       });
   }, []);
 
