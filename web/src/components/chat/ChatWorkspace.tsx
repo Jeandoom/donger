@@ -14,6 +14,7 @@ import type {
 import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
 import { SecondarySidebar } from "../layout/SecondarySidebar";
 import { AssistantThread } from "./AssistantThread";
+import { MobileConversationSheet } from "./MobileConversationSheet";
 
 export interface ChatWorkspaceProps {
   conversations: ConversationSummary[];
@@ -55,6 +56,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   return (
     <div className="flex min-w-0 flex-1">
       <SecondarySidebar
+        className="hidden lg:flex"
         title={props.sidebarTitle}
         items={sidebarItems}
         selectedId={props.activeConversationId}
@@ -65,14 +67,25 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         headerExtra={props.sidebarHeaderExtra}
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs">
-          <span>
-            {props.connection === "open"
-              ? "● 已连接"
-              : props.connection === "closed"
-                ? "● 未连接"
-                : "● 连接中"}
-          </span>
+        <div className="flex items-center justify-between border-b border-border px-2 py-1 text-xs lg:px-4 lg:py-2">
+          <div className="flex items-center gap-2">
+            <MobileConversationSheet
+              title={props.sidebarTitle}
+              items={sidebarItems}
+              selectedId={props.activeConversationId}
+              onSelect={props.onSelectConversation}
+              onDelete={props.onDeleteConversation}
+              onNew={props.onNewConversation}
+              headerExtra={props.sidebarHeaderExtra}
+            />
+            <span>
+              {props.connection === "open"
+                ? "● 已连接"
+                : props.connection === "closed"
+                  ? "● 未连接"
+                  : "● 连接中"}
+            </span>
+          </div>
           <button type="button" onClick={() => setDrawerOpen(true)}>
             文件
           </button>

@@ -17,6 +17,8 @@ export function SecondarySidebar({
   newLabel,
   onItemDelete,
   headerExtra,
+  className,
+  onItemSelected,
 }: {
   title: string;
   items: SecondarySidebarItem[];
@@ -26,9 +28,13 @@ export function SecondarySidebar({
   newLabel?: string;
   onItemDelete?: (id: string) => void;
   headerExtra?: React.ReactNode;
+  className?: string;
+  onItemSelected?: () => void;
 }) {
   return (
-    <div className="flex w-64 shrink-0 flex-col border-r border-border bg-background">
+    <div
+      className={cn("flex w-64 shrink-0 flex-col border-r border-border bg-background", className)}
+    >
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
         {onNew && (
@@ -47,7 +53,11 @@ export function SecondarySidebar({
           <div key={item.id} className="group mb-0.5 flex items-center rounded-md">
             <button
               type="button"
-              onClick={() => onItemClick(item.id)}
+              aria-label={`打开会话：${item.title}`}
+              onClick={() => {
+                onItemClick(item.id);
+                onItemSelected?.();
+              }}
               className={cn(
                 "flex-1 rounded-md px-3 py-2 text-left text-sm",
                 selectedId === item.id ? "bg-accent" : "hover:bg-accent",
