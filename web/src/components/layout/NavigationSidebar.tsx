@@ -46,7 +46,13 @@ interface UserInfo {
   role: string;
 }
 
-export function NavigationSidebar() {
+export function NavigationSidebar({
+  className,
+  onNavigate,
+}: {
+  className?: string;
+  onNavigate?: () => void;
+}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState<UserInfo | null>(null);
@@ -95,7 +101,9 @@ export function NavigationSidebar() {
   };
 
   return (
-    <nav className="flex h-full w-48 flex-col border-r border-border bg-muted/40 p-2">
+    <nav
+      className={cn("flex h-full w-48 flex-col border-r border-border bg-muted/40 p-2", className)}
+    >
       <div className="px-2 py-3 text-sm font-semibold">🤖 donger</div>
       {entries.map((e) =>
         isParent(e) ? (
@@ -114,6 +122,7 @@ export function NavigationSidebar() {
                   <NavLink
                     key={c.to}
                     to={c.to}
+                    onClick={onNavigate}
                     className={({ isActive }) =>
                       cn(
                         "block rounded-md px-3 py-1.5 text-sm",
@@ -132,6 +141,7 @@ export function NavigationSidebar() {
             key={e.to}
             to={e.to}
             end={e.end}
+            onClick={onNavigate}
             className={({ isActive }) =>
               cn(
                 "block rounded-md px-3 py-2 text-sm",
