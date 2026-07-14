@@ -68,8 +68,11 @@ export function FileBrowserDrawer(props: {
       />
       {/* 抽屉 */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="文件浏览"
         className={cn(
-          "fixed right-0 top-0 z-50 flex h-full w-80 flex-col border-l border-border bg-background shadow-xl transition-transform",
+          "fixed right-0 top-0 z-50 flex h-full w-full flex-col border-l border-border bg-background shadow-xl transition-transform sm:w-80",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
@@ -98,7 +101,7 @@ export function FileBrowserDrawer(props: {
           <div className="flex-1" />
           <button
             type="button"
-            className="p-1 text-muted-foreground hover:text-foreground"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground sm:min-h-8 sm:min-w-8"
             onClick={() => void reload()}
             title="刷新"
           >
@@ -106,7 +109,7 @@ export function FileBrowserDrawer(props: {
           </button>
           <button
             type="button"
-            className="p-1 text-muted-foreground hover:text-foreground"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground sm:min-h-8 sm:min-w-8"
             onClick={onClose}
             title="关闭"
           >

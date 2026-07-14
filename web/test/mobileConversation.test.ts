@@ -19,7 +19,7 @@ describe("MobileConversationSheet", () => {
     const trigger = screen.getByRole("button", { name: "打开历史会话" });
     fireEvent.click(trigger);
     expect(document.body.style.overflow).toBe("hidden");
-    fireEvent.click(screen.getByRole("button", { name: /第一条/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开会话：第一条" }));
     expect(onSelect).toHaveBeenCalledWith("c1");
     expect(screen.queryByRole("dialog", { name: "历史会话" })).not.toBeInTheDocument();
     expect(document.body.style.overflow).toBe("");

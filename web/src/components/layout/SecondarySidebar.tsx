@@ -76,8 +76,8 @@ export function SecondarySidebar({
                   e.stopPropagation();
                   onItemDelete(item.id);
                 }}
-                className="mr-1 hidden rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive group-hover:block"
-                title="删除会话"
+                className="mr-1 inline-flex min-h-11 min-w-11 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:min-h-8 sm:min-w-8 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                aria-label={`删除会话：${item.title}`}
               >
                 ×
               </button>
