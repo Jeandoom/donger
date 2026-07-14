@@ -18,8 +18,7 @@ export function PendingInteraction({
   return (
     <>
       {approval ? (
-        <div
-          role="group"
+        <fieldset
           aria-label="审批请求"
           className="rounded-lg border border-yellow-400 bg-yellow-50 p-3"
         >
@@ -37,7 +36,7 @@ export function PendingInteraction({
               驳回
             </Button>
           </div>
-        </div>
+        </fieldset>
       ) : null}
       {credential ? (
         <CredentialCard

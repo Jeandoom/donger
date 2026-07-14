@@ -1,20 +1,20 @@
-import { ChatShell } from "../components/chat/ChatShell";
+import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { isDefaultConv } from "../lib/conversations";
 import { useWebChat } from "../lib/webChat";
 
 export function ChatPage() {
   const wc = useWebChat();
-  const convs = wc.conversations.filter(isDefaultConv);
+  const conversations = wc.conversations.filter(isDefaultConv);
   return (
-    <ChatShell
-      conversations={convs}
+    <ChatWorkspace
+      conversations={conversations}
       activeConversationId={wc.activeConversationId}
       onSelectConversation={wc.switchConversation}
       onDeleteConversation={wc.deleteConversation}
-      onNewConversation={() => wc.newConversation()}
-      sidebarTitle={`会话（${convs.length}）`}
-      newLabel="新会话"
+      onNewConversation={() => void wc.newConversation()}
+      sidebarTitle={`会话（${conversations.length}）`}
       messages={wc.messages}
+      loadingMessages={wc.loadingMessages}
       pendingApproval={wc.pendingApproval}
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}

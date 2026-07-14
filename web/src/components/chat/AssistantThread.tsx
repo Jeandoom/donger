@@ -19,9 +19,7 @@ function uploadUrl(path: string): string | null {
 }
 
 function MessageFiles() {
-  const files = useAuiState(
-    ({ message }) => (message.metadata.custom.files ?? []) as FileInfo[],
-  );
+  const files = useAuiState(({ message }) => (message.metadata.custom.files ?? []) as FileInfo[]);
   if (files.length === 0) return null;
   return (
     <div className="mt-2 flex flex-wrap gap-2">

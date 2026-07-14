@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ChatShell } from "../components/chat/ChatShell";
+import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { isAgentConv } from "../lib/conversations";
 import { useWebChat } from "../lib/webChat";
@@ -8,10 +8,10 @@ import { useWebChat } from "../lib/webChat";
 export function AgentSessionsPage() {
   const wc = useWebChat();
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
-  const [agentId, setAgentId] = useState<string>("");
+  const [agentId, setAgentId] = useState("");
   const [params] = useSearchParams();
   const deepLinkAgent = params.get("agent");
-  const agent = agents.find((a) => a.id === agentId);
+  const agent = agents.find((item) => item.id === agentId);
 
   // 载入智能体列表
   useEffect(() => {
@@ -32,15 +32,16 @@ export function AgentSessionsPage() {
   //         深链且该智能体无会话 → 新建一条。
   useEffect(() => {
     if (!agentId) return;
-    const mine = wc.conversations.filter((c) => isAgentConv(c, agentId));
+    const mine = wc.conversations.filter((conversation) => isAgentConv(conversation, agentId));
     const activeIsMine =
-      !!wc.activeConversationId && mine.some((c) => c.id === wc.activeConversationId);
+      !!wc.activeConversationId &&
+      mine.some((conversation) => conversation.id === wc.activeConversationId);
     if (activeIsMine) return;
     const latest = mine[0];
     if (latest) {
       wc.switchConversation(latest.id);
     } else if (deepLinkAgent === agentId) {
-      wc.newConversation(agentId);
+      void wc.newConversation(agentId);
     }
   }, [
     agentId,
@@ -51,11 +52,13 @@ export function AgentSessionsPage() {
     wc.newConversation,
   ]);
 
-  const convs = agentId ? wc.conversations.filter((c) => isAgentConv(c, agentId)) : [];
+  const conversations = agentId
+    ? wc.conversations.filter((conversation) => isAgentConv(conversation, agentId))
+    : [];
 
   return (
-    <ChatShell
-      conversations={convs}
+    <ChatWorkspace
+      conversations={conversations}
       activeConversationId={wc.activeConversationId}
       onSelectConversation={wc.switchConversation}
       onDeleteConversation={wc.deleteConversation}
@@ -63,22 +66,22 @@ export function AgentSessionsPage() {
         if (agentId) void wc.newConversation(agentId);
       }}
       sidebarTitle={agent ? `智能体：${agent.name}` : "智能体会话"}
-      newLabel="新会话"
       sidebarHeaderExtra={
         <select
           className="w-full rounded border bg-background px-2 py-1 text-xs"
           value={agentId}
-          onChange={(e) => setAgentId(e.target.value)}
+          onChange={(event) => setAgentId(event.target.value)}
         >
           {agents.length === 0 ? <option value="">（暂无可用智能体）</option> : null}
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+          {agents.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
             </option>
           ))}
         </select>
       }
       messages={wc.messages}
+      loadingMessages={wc.loadingMessages}
       pendingApproval={wc.pendingApproval}
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}
