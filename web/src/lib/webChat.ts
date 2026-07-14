@@ -8,6 +8,10 @@ type SSEClient = {
   close(): void;
 };
 
+function errorText(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export function useWebChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
   const sseRef = useRef<SSEClient | null>(null);
@@ -51,15 +55,21 @@ export function useWebChat() {
 
   /** 加载会话列表 */
   const loadConversations = useCallback(async () => {
+    dispatch({ type: "clear_error", key: "conversations" });
     try {
       const token = getToken();
       const res = await fetch(`/api/conversations?userId=${encodeURIComponent(getUserId())}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const list: ConversationSummary[] = await res.json();
       dispatch({ type: "set_conversations", conversations: list });
-    } catch {
-      /* 忽略 */
+    } catch (error: unknown) {
+      dispatch({
+        type: "set_error",
+        key: "conversations",
+        message: errorText(error, "会话列表加载失败"),
+      });
     }
   }, [getUserId]);
 
@@ -122,7 +132,7 @@ export function useWebChat() {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
         if (data.type === "error") {
-          console.error("[SSE]", data.error);
+          dispatch({ type: "set_error", key: "stream", message: data.error });
         }
       } catch {
         // ignore
@@ -132,6 +142,17 @@ export function useWebChat() {
 
     eventSource.onopen = () => {
       dispatch({ type: "connection", state: "open" });
+      dispatch({ type: "clear_error", key: "stream" });
+    };
+
+    eventSource.onerror = (event) => {
+      if (event instanceof MessageEvent && event.data) return;
+      dispatch({ type: "connection", state: "closed" });
+      dispatch({
+        type: "set_error",
+        key: "stream",
+        message: "连接中断，浏览器正在自动重连",
+      });
     };
 
     return eventSource;
@@ -162,6 +183,7 @@ export function useWebChat() {
   /** 切换会话（先清空本地消息，再异步加载历史消息） */
   const switchConversation = useCallback((conversationId: string | null) => {
     messagesRequestRef.current?.abort();
+    dispatch({ type: "clear_error", key: "messages" });
     dispatch({ type: "switch_conversation", conversationId });
     if (!conversationId) return;
     const controller = new AbortController();
@@ -183,6 +205,11 @@ export function useWebChat() {
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         if (messagesRequestRef.current === controller) {
+          dispatch({
+            type: "set_error",
+            key: "messages",
+            message: errorText(error, "历史消息加载失败"),
+          });
           dispatch({ type: "set_messages", messages: [] });
         }
       })
@@ -232,8 +259,9 @@ export function useWebChat() {
       if (!pending) return;
 
       const token = getToken();
+      dispatch({ type: "clear_error", key: "approval" });
       try {
-        await fetch(`/api/approvals/${pending.gateId}/respond`, {
+        const response = await fetch(`/api/approvals/${pending.gateId}/respond`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -241,9 +269,14 @@ export function useWebChat() {
           },
           body: JSON.stringify({ approved, reason }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         dispatch({ type: "clear_approval" });
-      } catch {
-        // ignore
+      } catch (error: unknown) {
+        dispatch({
+          type: "set_error",
+          key: "approval",
+          message: errorText(error, "审批提交失败"),
+        });
       }
     },
     [state.pendingApproval],
@@ -254,8 +287,9 @@ export function useWebChat() {
       const pending = state.pendingCredential;
       if (!pending) return;
       const token = getToken();
+      dispatch({ type: "clear_error", key: "credential" });
       try {
-        await fetch(`/api/credentials/${pending.reqId}/submit`, {
+        const response = await fetch(`/api/credentials/${pending.reqId}/submit`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -263,9 +297,14 @@ export function useWebChat() {
           },
           body: JSON.stringify({ values }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         dispatch({ type: "clear_credential" });
-      } catch {
-        // ignore
+      } catch (error: unknown) {
+        dispatch({
+          type: "set_error",
+          key: "credential",
+          message: errorText(error, "凭证提交失败"),
+        });
       }
     },
     [state.pendingCredential],

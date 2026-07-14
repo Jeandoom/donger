@@ -128,6 +128,8 @@ function AddAttachmentButton() {
 export interface AssistantThreadProps {
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
+  approvalError?: string;
+  credentialError?: string;
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   placeholder: string;
@@ -141,6 +143,8 @@ export function AssistantThread(props: AssistantThreadProps) {
         <PendingInteraction
           approval={props.pendingApproval}
           credential={props.pendingCredential}
+          approvalError={props.approvalError}
+          credentialError={props.credentialError}
           onResolveApproval={props.onResolveApproval}
           onSubmitCredential={props.onSubmitCredential}
         />

@@ -4,6 +4,7 @@ import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
 import type {
+  ChatErrors,
   ChatMessage,
   ConnectionState,
   ConversationSummary,
@@ -31,6 +32,9 @@ export interface ChatWorkspaceProps {
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   inputPlaceholder?: string;
+  errors: ChatErrors;
+  onReloadConversations: () => void;
+  onReloadMessages: () => void;
 }
 
 export function ChatWorkspace(props: ChatWorkspaceProps) {
@@ -62,15 +66,50 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs">
-          <span>{props.connection === "open" ? "● 已连接" : "● 连接中"}</span>
+          <span>
+            {props.connection === "open"
+              ? "● 已连接"
+              : props.connection === "closed"
+                ? "● 未连接"
+                : "● 连接中"}
+          </span>
           <button type="button" onClick={() => setDrawerOpen(true)}>
             文件
           </button>
         </div>
+        {props.errors.stream ? (
+          <div role="status" className="bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+            {props.errors.stream}
+          </div>
+        ) : null}
+        {props.errors.messages ? (
+          <div
+            role="alert"
+            className="flex items-center justify-between bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            <span>{props.errors.messages}</span>
+            <button type="button" onClick={props.onReloadMessages}>
+              重新加载
+            </button>
+          </div>
+        ) : null}
+        {props.errors.conversations ? (
+          <div
+            role="alert"
+            className="flex items-center justify-between bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            <span>{props.errors.conversations}</span>
+            <button type="button" onClick={props.onReloadConversations}>
+              重新加载会话
+            </button>
+          </div>
+        ) : null}
         <AssistantRuntimeProvider runtime={runtime}>
           <AssistantThread
             pendingApproval={props.pendingApproval}
             pendingCredential={props.pendingCredential}
+            approvalError={props.errors.approval}
+            credentialError={props.errors.credential}
             onResolveApproval={props.onResolveApproval}
             onSubmitCredential={props.onSubmitCredential}
             placeholder={props.inputPlaceholder ?? "输入消息…"}

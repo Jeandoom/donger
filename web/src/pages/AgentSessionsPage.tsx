@@ -89,6 +89,9 @@ export function AgentSessionsPage() {
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
       inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}
+      errors={wc.errors}
+      onReloadConversations={() => void wc.loadConversations()}
+      onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
     />
   );
 }

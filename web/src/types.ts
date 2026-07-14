@@ -55,6 +55,10 @@ export interface PendingCredential {
 
 export type ConnectionState = "connecting" | "open" | "closed";
 
+export type ChatErrorKey = "conversations" | "messages" | "stream" | "approval" | "credential";
+
+export type ChatErrors = Partial<Record<ChatErrorKey, string>>;
+
 /** 会话摘要（从 GET /api/conversations 返回） */
 export interface ConversationSummary {
   id: string;
@@ -81,4 +85,5 @@ export interface ChatState {
   loadingConversations: boolean;
   /** 历史消息加载中 */
   loadingMessages: boolean;
+  errors: ChatErrors;
 }

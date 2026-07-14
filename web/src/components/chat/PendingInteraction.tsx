@@ -5,6 +5,8 @@ import { Button } from "../ui/button";
 export interface PendingInteractionProps {
   approval: PendingApproval | null;
   credential: PendingCredential | null;
+  approvalError?: string;
+  credentialError?: string;
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
 }
@@ -12,6 +14,8 @@ export interface PendingInteractionProps {
 export function PendingInteraction({
   approval,
   credential,
+  approvalError,
+  credentialError,
   onResolveApproval,
   onSubmitCredential,
 }: PendingInteractionProps) {
@@ -36,12 +40,18 @@ export function PendingInteraction({
               驳回
             </Button>
           </div>
+          {approvalError ? (
+            <p role="alert" className="mt-2 text-sm text-red-700">
+              {approvalError}
+            </p>
+          ) : null}
         </fieldset>
       ) : null}
       {credential ? (
         <CredentialCard
           key={credential.reqId}
           items={credential.items}
+          error={credentialError}
           onSubmit={onSubmitCredential}
         />
       ) : null}
@@ -51,9 +61,11 @@ export function PendingInteraction({
 
 function CredentialCard({
   items,
+  error,
   onSubmit,
 }: {
   items: PendingCredential["items"];
+  error?: string;
   onSubmit: (values: Record<string, string>) => void;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
@@ -90,6 +102,11 @@ function CredentialCard({
       >
         提交并继续
       </Button>
+      {error ? (
+        <p role="alert" className="mt-2 text-sm text-red-700">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

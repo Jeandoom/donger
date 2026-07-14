@@ -1,4 +1,5 @@
 import type {
+  ChatErrorKey,
   ChatMessage,
   ChatState,
   ConversationSummary,
@@ -24,7 +25,9 @@ export type ChatAction =
   | { type: "new_conversation"; conversation: ConversationSummary }
   | { type: "set_messages"; messages: ChatMessage[] }
   | { type: "loading_messages"; loading: boolean }
-  | { type: "remove_conversation"; conversationId: string };
+  | { type: "remove_conversation"; conversationId: string }
+  | { type: "set_error"; key: ChatErrorKey; message: string }
+  | { type: "clear_error"; key: ChatErrorKey };
 
 export function initialChatState(): ChatState {
   return {
@@ -36,6 +39,7 @@ export function initialChatState(): ChatState {
     activeConversationId: null,
     loadingConversations: true,
     loadingMessages: false,
+    errors: {},
   };
 }
 
@@ -60,6 +64,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "connection":
       return { ...state, connection: action.state };
+    case "set_error":
+      return { ...state, errors: { ...state.errors, [action.key]: action.message } };
+    case "clear_error": {
+      const { [action.key]: _removed, ...remaining } = state.errors;
+      return { ...state, errors: remaining };
+    }
     case "user_message": {
       const msg: ChatMessage = {
         id: action.id ?? makeId(),

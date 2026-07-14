@@ -21,6 +21,9 @@ export function ChatPage() {
       onSend={wc.send}
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
+      errors={wc.errors}
+      onReloadConversations={() => void wc.loadConversations()}
+      onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
     />
   );
 }
