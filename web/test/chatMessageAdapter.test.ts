@@ -97,4 +97,30 @@ describe("chatMessageAdapter", () => {
 
     expect(() => getComposerPayload(message)).toThrow("最多上传 5 个文件");
   });
+
+  it("rejects non-user runtime messages before reading attachments", () => {
+    const message = {
+      role: "system",
+      content: [{ type: "text", text: "system" }],
+      metadata: { custom: {} },
+      parentId: null,
+      sourceId: null,
+      runConfig: undefined,
+    } satisfies AppendMessage;
+
+    expect(() => getComposerPayload(message)).toThrow("仅支持用户消息");
+  });
+
+  it("treats omitted user attachments as an empty list", () => {
+    const message = {
+      role: "user",
+      content: [{ type: "text", text: "hello" }],
+      metadata: { custom: {} },
+      parentId: null,
+      sourceId: null,
+      runConfig: undefined,
+    } satisfies AppendMessage;
+
+    expect(getComposerPayload(message)).toEqual({ text: "hello", files: [] });
+  });
 });

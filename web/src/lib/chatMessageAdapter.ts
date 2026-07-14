@@ -47,11 +47,14 @@ export function getComposerPayload(message: AppendMessage): {
   text: string;
   files: FileInfo[];
 } {
+  if (message.role !== "user") {
+    throw new Error("仅支持用户消息");
+  }
   const text = message.content
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("");
-  const files = message.attachments.flatMap((attachment) =>
+  const files = (message.attachments ?? []).flatMap((attachment) =>
     attachment.content.flatMap((part) => {
       if (part.type !== "data" || part.name !== "donger-file") return [];
       return isFileInfo(part.data) ? [part.data] : [];
