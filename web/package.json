@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.14.26",
+    "@assistant-ui/react-markdown": "0.14.5",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.439.0",
@@ -23,10 +25,13 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "jsdom": "28.1.0",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.10",
     "tailwindcss-animate": "^1.0.7",
