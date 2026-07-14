@@ -1,4 +1,10 @@
-import type { ChatMessage, ChatState, ConversationSummary, SSEEvent } from "../types";
+import type {
+  ChatMessage,
+  ChatState,
+  ConversationSummary,
+  MessageDelivery,
+  SSEEvent,
+} from "../types";
 
 export type FileInfo = {
   path: string;
@@ -9,7 +15,8 @@ export type FileInfo = {
 export type ChatAction =
   | { type: "connection"; state: "connecting" | "open" | "closed" }
   | { type: "ws"; msg: SSEEvent }
-  | { type: "user_message"; text: string; files?: FileInfo[] }
+  | { type: "user_message"; id?: string; text: string; files?: FileInfo[] }
+  | { type: "message_delivery"; id: string; delivery: MessageDelivery }
   | { type: "clear_approval" }
   | { type: "clear_credential" }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
@@ -35,7 +42,7 @@ export function initialChatState(): ChatState {
 let fallbackId = 0;
 
 // This is only a non-persistent React key; randomUUID may be absent on insecure origins.
-function makeId(): string {
+export function makeId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
   }
@@ -55,13 +62,21 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, connection: action.state };
     case "user_message": {
       const msg: ChatMessage = {
-        id: makeId(),
+        id: action.id ?? makeId(),
         role: "user",
         text: action.text,
         files: action.files,
+        delivery: "sending",
       };
       return { ...state, messages: [...state.messages, msg] };
     }
+    case "message_delivery":
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.id ? { ...message, delivery: action.delivery } : message,
+        ),
+      };
     case "clear_approval":
       return { ...state, pendingApproval: null };
     case "clear_credential":

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
 import { clearToken, getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
-import { chatReducer, initialChatState } from "./chatReducer";
+import { chatReducer, initialChatState, makeId } from "./chatReducer";
 
 type SSEClient = {
   close(): void;
@@ -189,14 +189,15 @@ export function useWebChat() {
   );
 
   const send = useCallback(
-    async (text: string, files?: FileInfo[]) => {
+    async (text: string, files?: FileInfo[]): Promise<void> => {
       const conversationId = state.activeConversationId;
       if (!conversationId) return;
 
+      const id = makeId();
       const token = getToken();
+      dispatch({ type: "user_message", id, text, files });
       try {
-        dispatch({ type: "user_message", text, files });
-        await fetch(`/api/conversations/${conversationId}/messages`, {
+        const response = await fetch(`/api/conversations/${conversationId}/messages`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -204,8 +205,10 @@ export function useWebChat() {
           },
           body: JSON.stringify({ text, files }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        dispatch({ type: "message_delivery", id, delivery: "accepted" });
       } catch {
-        // ignore
+        dispatch({ type: "message_delivery", id, delivery: "failed" });
       }
     },
     [state.activeConversationId],
