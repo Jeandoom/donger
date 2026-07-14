@@ -22,10 +22,13 @@ export type SSEEvent =
 
 export type ChatRole = "user" | "bot";
 
+export type MessageDelivery = "sending" | "accepted" | "failed";
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
+  delivery?: MessageDelivery;
   files?: Array<{
     path: string;
     name: string;
