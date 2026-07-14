@@ -32,6 +32,34 @@ describe("ChatWorkspace", () => {
     expect(screen.getByText("● 已连接")).toBeInTheDocument();
   });
 
+  it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
+    render(
+      createElement(ChatWorkspace, {
+        conversations: [],
+        activeConversationId: null,
+        onSelectConversation: vi.fn(),
+        onDeleteConversation: vi.fn(),
+        onNewConversation: vi.fn(),
+        sidebarTitle: "会话",
+        messages: [],
+        loadingMessages: false,
+        pendingApproval: null,
+        pendingCredential: null,
+        connection: "open",
+        onSend: vi.fn().mockResolvedValue(undefined),
+        onResolveApproval: vi.fn(),
+        onSubmitCredential: vi.fn(),
+        errors: {},
+        onReloadConversations: vi.fn(),
+        onReloadMessages: vi.fn(),
+      }),
+    );
+
+    const addAttachment = screen.getByRole("button", { name: "添加附件" });
+    expect(addAttachment).toHaveClass("min-h-11");
+    expect(addAttachment.closest("form")).toHaveClass("pb-safe", "shrink-0");
+  });
+
   it("renders scoped recovery actions", () => {
     const onReloadConversations = vi.fn();
     const onReloadMessages = vi.fn();

@@ -54,7 +54,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   }));
 
   return (
-    <div className="flex min-w-0 flex-1">
+    <div className="flex min-h-0 min-w-0 flex-1">
       <SecondarySidebar
         className="hidden lg:flex"
         title={props.sidebarTitle}
@@ -66,7 +66,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         onItemDelete={props.onDeleteConversation}
         headerExtra={props.sidebarHeaderExtra}
       />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-between border-b border-border px-2 py-1 text-xs lg:px-4 lg:py-2">
           <div className="flex items-center gap-2">
             <MobileConversationSheet

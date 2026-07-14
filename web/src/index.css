@@ -91,3 +91,13 @@ body {
   border: 1px solid hsl(var(--border));
   padding: 0.2em 0.5em;
 }
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+}

@@ -56,7 +56,7 @@ function MessageFiles() {
 
 function UserMessage() {
   return (
-    <MessagePrimitive.Root className="ml-auto max-w-[80%] rounded-lg bg-primary px-3 py-2 text-primary-foreground">
+    <MessagePrimitive.Root className="ml-auto max-w-[80%] break-words rounded-lg bg-primary px-3 py-2 text-primary-foreground">
       <MessagePrimitive.Parts />
       <MessageFiles />
     </MessagePrimitive.Root>
@@ -69,7 +69,7 @@ function AssistantText() {
 
 function AssistantMessage() {
   return (
-    <MessagePrimitive.Root className="mr-auto max-w-[80%] rounded-lg bg-muted px-3 py-2">
+    <MessagePrimitive.Root className="mr-auto max-w-[80%] break-words rounded-lg bg-muted px-3 py-2">
       <MessagePrimitive.Parts components={{ Text: AssistantText }} />
     </MessagePrimitive.Root>
   );
@@ -116,6 +116,7 @@ function AddAttachmentButton() {
         variant="outline"
         size="icon"
         aria-label="添加附件"
+        className="min-h-11 min-w-11"
         disabled={disabled}
         title={disabled ? `最多上传 ${MAX_MESSAGE_ATTACHMENTS} 个文件` : "添加附件"}
       >
@@ -137,8 +138,8 @@ export interface AssistantThreadProps {
 
 export function AssistantThread(props: AssistantThreadProps) {
   return (
-    <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-      <ThreadPrimitive.Viewport className="flex-1 space-y-3 overflow-y-auto p-4">
+    <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto p-4">
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
         <PendingInteraction
           approval={props.pendingApproval}
@@ -149,16 +150,18 @@ export function AssistantThread(props: AssistantThreadProps) {
           onSubmitCredential={props.onSubmitCredential}
         />
       </ThreadPrimitive.Viewport>
-      <ComposerPrimitive.Root className="border-t border-border p-3">
+      <ComposerPrimitive.Root className="pb-safe shrink-0 border-t border-border p-3">
         <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
         <div className="flex gap-2">
           <AddAttachmentButton />
           <ComposerPrimitive.Input
-            className="min-h-10 flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
+            className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm lg:resize-y"
             placeholder={props.placeholder}
           />
           <ComposerPrimitive.Send asChild>
-            <Button type="submit">发送</Button>
+            <Button type="submit" className="min-h-11">
+              发送
+            </Button>
           </ComposerPrimitive.Send>
         </div>
       </ComposerPrimitive.Root>
