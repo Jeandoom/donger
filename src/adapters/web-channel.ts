@@ -5,7 +5,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import type { LlmPreset } from "../config.js";
@@ -389,8 +389,27 @@ export class WebChannel implements Channel {
 
     // /uploads/ 静态文件
     if (url.startsWith("/uploads/")) {
-      const relPath = url.replace("/uploads/", "");
-      const absPath = join(this.workspaceDir, "sessions", relPath);
+      const relPath = decodeURIComponent(url.replace("/uploads/", ""));
+      const [conversationId, ...fileParts] = relPath.split(/[\\/]/);
+      const fileName = fileParts.join(sep);
+      const attachmentDir = conversationId
+        ? await this.resolveAttachmentDir(conversationId)
+        : undefined;
+      const candidate = attachmentDir ? resolve(attachmentDir, fileName) : "";
+      const insideAttachmentDir =
+        !!attachmentDir &&
+        !!fileName &&
+        (candidate === attachmentDir || candidate.startsWith(attachmentDir + sep));
+      const legacyRoot = resolve(this.workspaceDir, "sessions");
+      const legacyPath = resolve(legacyRoot, relPath);
+      const insideLegacyRoot =
+        legacyPath === legacyRoot || legacyPath.startsWith(legacyRoot + sep);
+      const absPath =
+        insideAttachmentDir && existsSync(candidate)
+          ? candidate
+          : insideLegacyRoot
+            ? legacyPath
+            : "";
       if (existsSync(absPath)) {
         const ext = absPath.split(".").pop()?.toLowerCase() ?? "";
         res.writeHead(200, { "Content-Type": mimeForExt(ext) });
@@ -632,7 +651,15 @@ export class WebChannel implements Channel {
       return;
     }
     const files = parsedFiles.data;
-    const sessionRoot = resolve(this.workspaceDir, "sessions", conversationId);
+    const sessionRoot = await this.resolveAttachmentDir(
+      conversationId,
+      (req as HttpRequest & { userId?: string }).userId,
+    );
+    if (!sessionRoot) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: "会话不存在或不属于当前用户" }));
+      return;
+    }
     const invalidFile = files.find((file) => {
       const path = resolve(file.path);
       return (!path.startsWith(sessionRoot + sep) && path !== sessionRoot) || !existsSync(path);
@@ -1442,6 +1469,16 @@ export class WebChannel implements Channel {
       return;
     }
 
+    const sessionDir = await this.resolveAttachmentDir(
+      threadId,
+      (req as HttpRequest & { userId?: string }).userId,
+    );
+    if (!sessionDir) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: "会话不存在或不属于当前用户" }));
+      return;
+    }
+
     return new Promise<void>((resolve) => {
       let fileSaved = false;
 
@@ -1457,7 +1494,8 @@ export class WebChannel implements Channel {
           file: NodeJS.ReadableStream,
           info: { filename: string; encoding: string; mimeType: string },
         ) => {
-          const { filename, mimeType } = info;
+          const filename = basename(info.filename);
+          const { mimeType } = info;
           const ext = filename.split(".").pop()?.toLowerCase();
           const isImage =
             mimeType?.startsWith("image/") &&
@@ -1504,7 +1542,6 @@ export class WebChannel implements Channel {
 
             const ts = Date.now();
             const saveName = `${ts}-${filename}`;
-            const sessionDir = join(this.workspaceDir, "sessions", threadId);
             mkdirSync(sessionDir, { recursive: true });
             const absPath = join(sessionDir, saveName);
             writeFileSync(absPath, Buffer.concat(chunks));
@@ -1535,6 +1572,22 @@ export class WebChannel implements Channel {
 
       req.pipe(bb);
     });
+  }
+
+  private async resolveAttachmentDir(
+    conversationId: string,
+    expectedUserId?: string,
+  ): Promise<string | undefined> {
+    if (this.deps.conversationStore && this.deps.userStore) {
+      const conversation = await this.deps.conversationStore.get(conversationId);
+      if (!conversation || (expectedUserId && conversation.userId !== expectedUserId)) {
+        return undefined;
+      }
+      const user = await this.deps.userStore.get(conversation.userId);
+      if (!user) return undefined;
+      return resolve(user.homeDir, "sessions", conversationId, "workspace", "attachments");
+    }
+    return resolve(this.workspaceDir, "sessions", conversationId);
   }
 
   private extractQuery(url: string, key: string): string | undefined {

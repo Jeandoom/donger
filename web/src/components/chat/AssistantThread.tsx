@@ -18,8 +18,13 @@ import { PendingInteraction } from "./PendingInteraction";
 const THREAD_CONTENT_WIDTH = "mx-auto w-full max-w-3xl px-3 sm:px-5";
 
 function uploadUrl(path: string): string | null {
-  const relativePath = path.split("/sessions/")[1];
-  return relativePath ? `/uploads/${relativePath}` : null;
+  const normalized = path.replaceAll("\\", "/");
+  const relativePath = normalized.split("/sessions/")[1];
+  if (!relativePath) return null;
+  const [conversationId, ...parts] = relativePath.split("/");
+  const fileName = parts.at(-1);
+  if (!conversationId || !fileName) return null;
+  return `/uploads/${encodeURIComponent(conversationId)}/${encodeURIComponent(fileName)}`;
 }
 
 function ThreadWelcome({ hidden }: { hidden: boolean }) {

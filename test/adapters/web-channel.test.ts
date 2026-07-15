@@ -453,6 +453,94 @@ describe("WebChannel POST /api/upload", () => {
   });
 });
 
+describe("WebChannel 会话附件与 runtime 目录统一", () => {
+  let db: Database.Database;
+  let tmp: string;
+
+  afterEach(() => {
+    web?.stop();
+    db?.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("上传文件进入用户 runtime/attachments，并可发送、浏览和预览", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "web-runtime-upload-"));
+    db = new Database(":memory:");
+    const userStore = new SqliteUserStore(db, {
+      adminExternalIds: new Set(),
+      usersDir: join(tmp, "users"),
+    });
+    userStore.migrate();
+    const conversationStore = new SqliteConversationStore(db);
+    conversationStore.migrate();
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const user = await userStore.getOrCreateByIdentity("internal", "runtime-u", "用户");
+    const conversation = await conversationStore.create(user.id, "web", "附件测试");
+    const token = (await sessionStore.create(user.id)).token;
+    const fileBrowser = new LocalFileBrowser({ userStore, conversationStore, workspaceDir: tmp });
+    let receivedPath = "";
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: tmp,
+      userStore,
+      conversationStore,
+      sessionStore,
+      fileBrowser,
+    });
+    web.onMessage((message) => {
+      receivedPath = message.files?.[0]?.path ?? "";
+    });
+    await web.ready();
+    const port = web.boundPort ?? 0;
+
+    const form = new FormData();
+    form.append("file", new Blob(["# runtime"], { type: "text/markdown" }), "readme.md");
+    const upload = await fetch(
+      `http://127.0.0.1:${port}/api/upload?threadId=${conversation.id}`,
+      { method: "POST", headers: { authorization: `Bearer ${token}` }, body: form },
+    );
+    expect(upload.status).toBe(200);
+    const file = (await upload.json()) as {
+      path: string;
+      name: string;
+      type: "markdown";
+      url: string;
+    };
+    expect(file.path).toContain(
+      join("sessions", conversation.id, "workspace", "attachments", ""),
+    );
+
+    const send = await fetch(
+      `http://127.0.0.1:${port}/api/conversations/${conversation.id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ text: "分析附件", files: [file] }),
+      },
+    );
+    expect(send.status).toBe(202);
+    expect(receivedPath).toBe(file.path);
+
+    const tree = await fetch(
+      `http://127.0.0.1:${port}/api/files/tree?scope=runtime&conversationId=${conversation.id}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    const treeBody = (await tree.json()) as {
+      nodes: Array<{ children?: Array<{ name: string; children?: Array<{ name: string }> }> }>;
+    };
+    const attachments = treeBody.nodes[0]?.children?.find((node) => node.name === "attachments");
+    expect(attachments?.children?.some((node) => node.name.endsWith("readme.md"))).toBe(true);
+
+    const preview = await fetch(`http://127.0.0.1:${port}${file.url}`);
+    expect(preview.status).toBe(200);
+    expect(await preview.text()).toBe("# runtime");
+  });
+});
+
 describe("/api/files/*", () => {
   let port: number;
   let token: string;
