@@ -20,6 +20,7 @@ export function ChatPage() {
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}
       onSend={wc.send}
+      onCancel={wc.cancel}
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
       errors={wc.errors}

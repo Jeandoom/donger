@@ -337,11 +337,14 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
 describe("WebChannel POST /api/upload", () => {
   let webTmp: string;
   let port: number;
+  let receivedFiles: Array<{ path: string; name: string; type: string }> | undefined;
 
   beforeEach(async () => {
     webTmp = mkdtempSync(join(tmpdir(), "web-upload-"));
     web = new WebChannel({ port: 0, workspaceDir: webTmp });
-    web.onMessage(() => {});
+    web.onMessage((message) => {
+      receivedFiles = message.files;
+    });
     await web.ready();
     const p = web.boundPort;
     if (!p) throw new Error("no port");
@@ -380,6 +383,42 @@ describe("WebChannel POST /api/upload", () => {
     const j = (await res.json()) as { path: string; name: string; type: string };
     expect(j.name).toBe("readme.md");
     expect(j.type).toBe("markdown");
+  });
+
+  it("发送消息时把当前会话附件传给消息处理器", async () => {
+    const upload = new FormData();
+    upload.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
+    const uploadRes = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
+      method: "POST",
+      body: upload,
+    });
+    const file = (await uploadRes.json()) as {
+      path: string;
+      name: string;
+      type: "markdown";
+    };
+    const sendRes = await fetch(`http://127.0.0.1:${port}/api/conversations/web-1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "总结附件", files: [file] }),
+    });
+
+    expect(sendRes.status).toBe(202);
+    expect(receivedFiles).toEqual([{ path: file.path, name: file.name, type: file.type }]);
+  });
+
+  it("停止端点调用当前会话的取消处理器", async () => {
+    let canceledId = "";
+    web.onCancel((conversationId) => {
+      canceledId = conversationId;
+      return true;
+    });
+    const response = await fetch(`http://127.0.0.1:${port}/api/conversations/web-1/cancel`, {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    expect(canceledId).toBe("web-1");
   });
 
   it("不支持的类型返回 400", async () => {

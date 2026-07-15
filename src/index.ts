@@ -8,18 +8,18 @@ import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
+import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
+import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
-import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
-import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
@@ -175,6 +175,7 @@ async function main(): Promise<void> {
   });
   const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
+  webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
   log.info({ channel: "web", host: cfg.host, port: cfg.port }, "就绪");
   console.log(
     `\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`,

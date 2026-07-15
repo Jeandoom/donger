@@ -30,6 +30,8 @@ export interface Channel {
   /** 流式模式：跳过 ack 确认 + 跳过结果汇总（agent 文本直接展示） */
   readonly streaming?: boolean;
   onMessage(handler: (msg: IncomingMessage) => void): void;
+  /** 注册会话停止处理器（WebChannel 使用）。 */
+  onCancel?(handler: (conversationId: string) => boolean | Promise<boolean>): void;
   send(threadId: string, msg: OutgoingMessage): Promise<void>;
   /** 推送文本消息（SSE 版本，WebChannel 实现） */
   pushText?(conversationId: string, text: string): void;

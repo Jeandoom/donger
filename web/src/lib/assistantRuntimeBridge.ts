@@ -14,6 +14,7 @@ export interface ChatRuntimeInput {
   loading: boolean;
   generating: boolean;
   send: (text: string, files?: FileInfo[]) => Promise<void>;
+  cancel: () => Promise<void>;
   attachmentAdapter: AttachmentAdapter;
 }
 
@@ -31,14 +32,16 @@ export function createChatRuntimeAdapter(
       if (!text.trim() && files.length === 0) return;
       await input.send(text, files.length > 0 ? files : undefined);
     },
+    onCancel: input.cancel,
   };
 }
 
 export function useAssistantRuntimeBridge(input: ChatRuntimeInput): AssistantRuntime {
-  const { messages, loading, generating, send, attachmentAdapter } = input;
+  const { messages, loading, generating, send, cancel, attachmentAdapter } = input;
   const adapter = useMemo(
-    () => createChatRuntimeAdapter({ messages, loading, generating, send, attachmentAdapter }),
-    [messages, loading, generating, send, attachmentAdapter],
+    () =>
+      createChatRuntimeAdapter({ messages, loading, generating, send, cancel, attachmentAdapter }),
+    [messages, loading, generating, send, cancel, attachmentAdapter],
   );
   return useExternalStoreRuntime(adapter);
 }

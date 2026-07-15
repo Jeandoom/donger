@@ -87,6 +87,7 @@ export function AgentSessionsPage() {
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}
       onSend={wc.send}
+      onCancel={wc.cancel}
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
       inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}

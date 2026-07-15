@@ -3,6 +3,7 @@ import type { Agent } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import { appendMessageFiles } from "../domain/message-files.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
@@ -49,10 +50,19 @@ export class Orchestrator {
   private readonly busyConversations = new Map<string, string>();
   // userId → 活跃任务数（并发限制）
   private readonly userActiveCounts = new Map<string, number>();
+  private readonly abortControllers = new Map<string, AbortController>();
   /** 同用户最大并行任务数 */
   private static readonly MAX_CONCURRENT_PER_USER = 10;
 
   constructor(private readonly deps: OrchestratorDeps) {}
+
+  /** 停止指定会话当前正在执行的任务。 */
+  cancelConversation(conversationId: string): boolean {
+    const controller = this.abortControllers.get(conversationId);
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    return true;
+  }
 
   /** 检查用户并发数是否超限 */
   private checkUserLimit(userId: string): boolean {
@@ -181,6 +191,8 @@ export class Orchestrator {
     // 标记会话繁忙 + 用户活跃计数
     this.markBusy(conversation.id, "");
     this.registerActive(user.id);
+    const runController = new AbortController();
+    this.abortControllers.set(conversation.id, runController);
 
     let task: Task | undefined;
     const capturedConversationId = conversation.id;
@@ -198,7 +210,7 @@ export class Orchestrator {
         channelId: msg.channelId,
         threadId: msg.threadId,
         requesterId: msg.requesterId,
-        prompt: msg.text,
+        prompt: appendMessageFiles(msg.text, msg.files),
         status: "created",
         skillChain: [],
         createdAt: now,
@@ -220,6 +232,7 @@ export class Orchestrator {
 
       let { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
         systemPromptAppend: memoryAppend,
+        abortSignal: runController.signal,
         agent,
       });
 
@@ -238,6 +251,7 @@ export class Orchestrator {
         opts = (
           await this.deps.runtimeMgr.prepare(user, conversation, {
             systemPromptAppend: memoryAppend,
+            abortSignal: runController.signal,
             agent,
           })
         ).runOptions;
@@ -270,6 +284,7 @@ export class Orchestrator {
           await this.deps.runtimeMgr.clearResume(conversation.id);
           const refreshed = await this.deps.runtimeMgr.prepare(user, conversation, {
             systemPromptAppend: memoryAppend,
+            abortSignal: runController.signal,
             agent,
           });
           attemptOpts = refreshed.runOptions;
@@ -349,6 +364,12 @@ export class Orchestrator {
         this.deps.messageStore,
       );
 
+      if (runController.signal.aborted) {
+        await store.updateStatus(task.id, "canceled");
+        channel.pushResult?.(conversation.id, "error", "已停止生成");
+        return;
+      }
+
       const ok = last?.type === "result" && last.subtype === "success";
       const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
       await store.updateStatus(
@@ -407,6 +428,13 @@ export class Orchestrator {
           .catch(() => {});
       }
     } catch (err) {
+      if (runController.signal.aborted) {
+        if (task) {
+          await this.deps.store.updateStatus(task.id, "canceled").catch(() => {});
+        }
+        this.deps.channel.pushResult?.(conversation.id, "error", "已停止生成");
+        return;
+      }
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error("[orchestrator] 处理失败:", errMsg);
       if (task) {
@@ -422,6 +450,7 @@ export class Orchestrator {
         // ignore
       }
     } finally {
+      this.abortControllers.delete(conversation.id);
       // 无论成功失败，都解除会话繁忙 + 用户活跃计数
       this.unmarkBusy(conversation.id);
       this.unregisterActive(user.id);

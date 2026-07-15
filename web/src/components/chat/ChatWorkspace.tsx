@@ -31,6 +31,7 @@ export interface ChatWorkspaceProps {
   pendingCredential: PendingCredential | null;
   connection: ConnectionState;
   onSend: (text: string, files?: FileInfo[]) => Promise<void>;
+  onCancel: () => Promise<void>;
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   inputPlaceholder?: string;
@@ -50,6 +51,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     loading: props.loadingMessages,
     generating: props.isGenerating,
     send: props.onSend,
+    cancel: props.onCancel,
     attachmentAdapter,
   });
   const sidebarItems = props.conversations.map((conversation) => ({

@@ -6,7 +6,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { ArrowUp, Bot, Paperclip, UserRound, X } from "lucide-react";
+import { ArrowUp, Bot, Paperclip, Square, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
@@ -251,16 +251,30 @@ export function AssistantThread(props: AssistantThreadProps) {
           />
           <div className="flex items-center justify-between gap-2">
             <AddAttachmentButton />
-            <ComposerPrimitive.Send asChild>
-              <Button
-                type="submit"
-                size="icon"
-                aria-label="发送消息"
-                className="min-h-11 min-w-11 rounded-full"
-              >
-                <ArrowUp aria-hidden="true" size={18} />
-              </Button>
-            </ComposerPrimitive.Send>
+            <ThreadPrimitive.If running={false}>
+              <ComposerPrimitive.Send asChild>
+                <Button
+                  type="submit"
+                  size="icon"
+                  aria-label="发送消息"
+                  className="min-h-11 min-w-11 rounded-full"
+                >
+                  <ArrowUp aria-hidden="true" size={18} />
+                </Button>
+              </ComposerPrimitive.Send>
+            </ThreadPrimitive.If>
+            <ThreadPrimitive.If running>
+              <ComposerPrimitive.Cancel asChild>
+                <Button
+                  type="button"
+                  size="icon"
+                  aria-label="停止输出"
+                  className="min-h-11 min-w-11 rounded-full"
+                >
+                  <Square aria-hidden="true" size={16} fill="currentColor" />
+                </Button>
+              </ComposerPrimitive.Cancel>
+            </ThreadPrimitive.If>
           </div>
         </ComposerPrimitive.Root>
       </div>

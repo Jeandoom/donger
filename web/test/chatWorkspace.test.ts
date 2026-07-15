@@ -19,6 +19,7 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof ChatWorkspace>
       pendingCredential: null,
       connection: "open",
       onSend: vi.fn().mockResolvedValue(undefined),
+      onCancel: vi.fn().mockResolvedValue(undefined),
       onResolveApproval: vi.fn(),
       onSubmitCredential: vi.fn(),
       errors: {},
@@ -69,9 +70,13 @@ describe("ChatWorkspace", () => {
   });
 
   it("shows a thinking indicator while the assistant is generating", () => {
-    renderWorkspace({ isGenerating: true });
+    const onCancel = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({ isGenerating: true, onCancel });
 
     expect(screen.getByRole("status", { name: "思考中" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "停止输出" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "发送消息" })).not.toBeInTheDocument();
   });
 
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
@@ -102,6 +107,7 @@ describe("ChatWorkspace", () => {
         pendingCredential: null,
         connection: "closed",
         onSend: vi.fn().mockResolvedValue(undefined),
+        onCancel: vi.fn().mockResolvedValue(undefined),
         onResolveApproval: vi.fn(),
         onSubmitCredential: vi.fn(),
         errors: {

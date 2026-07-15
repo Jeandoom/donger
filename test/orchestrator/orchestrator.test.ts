@@ -170,12 +170,12 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
   return { mgr, credentialStore };
 }
 
-function setup(approve: boolean, script: FakeScript) {
+function setup(approve: boolean, script: FakeScript, customRunner?: AgentRunner) {
   const store = new InMemoryTaskStore();
   const usageStore = new InMemoryUsageStore();
   const auditStore = new InMemoryAuditStore();
   const channel = fakeChannel(approve);
-  const runner = new FakeAgentRunner(script);
+  const runner = customRunner ?? new FakeAgentRunner(script);
   const gates = new GateRouter();
   gates.describe({ id: "design", description: "方案审批" });
   const conversationStore = mockConversationStore();
@@ -223,6 +223,46 @@ describe("Orchestrator", () => {
     const { orch, store } = setup(true, { intro: "你好！", result: "ok" });
     await orch.handleMessage({ ...msg, text: "你好" });
     expect((await store.listByStatus("done")).length).toBe(1);
+  });
+
+  it("附件路径会进入 Agent prompt 并要求先读取", async () => {
+    let capturedPrompt = "";
+    const runner: AgentRunner = {
+      run(task, opts, resolver) {
+        capturedPrompt = task.prompt;
+        return new FakeAgentRunner({ result: "ok" }).run(task, opts, resolver);
+      },
+    };
+    const { orch } = setup(true, {}, runner);
+    await orch.handleMessage({
+      ...msg,
+      files: [{ path: "D:/sessions/conv-1/readme.md", name: "readme.md", type: "markdown" }],
+    });
+
+    expect(capturedPrompt).toContain("请先使用 Read 工具读取");
+    expect(capturedPrompt).toContain("D:/sessions/conv-1/readme.md");
+  });
+
+  it("停止会话会触发 AbortSignal 并将任务标记为 canceled", async () => {
+    let notifyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const runner: AgentRunner = {
+      async *run(_task, opts) {
+        notifyStarted?.();
+        await new Promise<void>((resolve) => {
+          opts.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const { orch, store } = setup(true, {}, runner);
+    const handling = orch.handleMessage(msg);
+    await started;
+
+    expect(orch.cancelConversation("conv-1")).toBe(true);
+    await handling;
+    expect(await store.listByStatus("canceled")).toHaveLength(1);
   });
 
   it("runner 出错不崩溃", async () => {

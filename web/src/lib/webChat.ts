@@ -264,6 +264,18 @@ export function useWebChat() {
     [state.activeConversationId],
   );
 
+  const cancel = useCallback(async () => {
+    const conversationId = state.activeConversationId;
+    if (!conversationId) return;
+    const token = getToken();
+    const response = await fetch(`/api/conversations/${conversationId}/cancel`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
+    dispatch({ type: "generation", running: false });
+  }, [state.activeConversationId]);
+
   const resolveApproval = useCallback(
     async (approved: boolean, reason?: string) => {
       // 审批响应通过 HTTP POST 发送
@@ -341,6 +353,7 @@ export function useWebChat() {
   return {
     ...state,
     send,
+    cancel,
     resolveApproval,
     submitCredential,
     switchConversation,

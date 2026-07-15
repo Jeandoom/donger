@@ -107,12 +107,20 @@ export interface AuditEvent {
 }
 
 // === 消息（Channel 入/出）===
+export const MessageFileSchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  type: z.enum(["image", "markdown"]),
+});
+export type MessageFile = z.infer<typeof MessageFileSchema>;
+
 export const IncomingMessageSchema = z.object({
   channelId: z.string(),
   threadId: z.string(),
   requesterId: z.string(),
   text: z.string(),
   conversationId: z.string().optional(),
+  files: z.array(MessageFileSchema).optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

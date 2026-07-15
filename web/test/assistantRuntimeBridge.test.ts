@@ -6,11 +6,13 @@ import { DongerAttachmentAdapter } from "../src/lib/dongerAttachmentAdapter";
 describe("createChatRuntimeAdapter", () => {
   it("forwards one Composer submission to the existing send function", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
+    const cancel = vi.fn().mockResolvedValue(undefined);
     const adapter = createChatRuntimeAdapter({
       messages: [],
       loading: false,
       generating: true,
       send,
+      cancel,
       attachmentAdapter: new DongerAttachmentAdapter(),
     });
     const message = {
@@ -25,6 +27,8 @@ describe("createChatRuntimeAdapter", () => {
 
     await adapter.onNew?.(message);
     expect(adapter.isRunning).toBe(true);
+    await adapter.onCancel?.();
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("hello", undefined);
   });

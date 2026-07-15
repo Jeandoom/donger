@@ -5,14 +5,20 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import type { LlmPreset } from "../config.js";
 import { type Agent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import { mimeForExt } from "../domain/file-mime.js";
-import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
+import {
+  type ApprovalCard,
+  type IncomingMessage,
+  type MessageFile,
+  MessageFileSchema,
+  type OutgoingMessage,
+} from "../domain/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
@@ -137,6 +143,7 @@ export class WebChannel implements Channel {
   readonly id = "web";
   readonly streaming = true;
   private handler?: (msg: IncomingMessage) => void;
+  private cancelHandler?: (conversationId: string) => boolean | Promise<boolean>;
   private server?: Server;
   private readyPromise?: Promise<void>;
   /** 会话 ID → SSE 客户端集合 */
@@ -184,6 +191,10 @@ export class WebChannel implements Channel {
   /** 向会话的 SSE 客户端推送文本消息 */
   pushText(conversationId: string, text: string): void {
     this.broadcastToConversation(conversationId, { type: "text", text });
+  }
+
+  onCancel(handler: (conversationId: string) => boolean | Promise<boolean>): void {
+    this.cancelHandler = handler;
   }
 
   /** 向会话的 SSE 客户端推送助手文本增量 */
@@ -356,6 +367,13 @@ export class WebChannel implements Channel {
       const sendMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
       if (sendMatch && req.method === "POST") {
         await this.handleSendMessage(req, res);
+        return;
+      }
+      const cancelMatch = url.match(/^\/api\/conversations\/([\w-]+)\/cancel$/);
+      if (cancelMatch && req.method === "POST") {
+        const conversationId = cancelMatch[1];
+        if (!conversationId) return this.json(res, { error: "invalid conversation url" }, 400);
+        await this.handleCancel(req, res, conversationId);
         return;
       }
       // 其他 API
@@ -605,13 +623,30 @@ export class WebChannel implements Channel {
 
     const body = JSON.parse(await this.readBody(req)) as {
       text: string;
-      files?: Array<{ path: string; name: string; type: "image" | "markdown" }>;
+      files?: MessageFile[];
     };
+    const parsedFiles = MessageFileSchema.array().max(5).safeParse(body.files ?? []);
+    if (!parsedFiles.success) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "附件参数无效或超过 5 个" }));
+      return;
+    }
+    const files = parsedFiles.data;
+    const sessionRoot = resolve(this.workspaceDir, "sessions", conversationId);
+    const invalidFile = files.find((file) => {
+      const path = resolve(file.path);
+      return (!path.startsWith(sessionRoot + sep) && path !== sessionRoot) || !existsSync(path);
+    });
+    if (invalidFile) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: `附件不属于当前会话或不存在: ${invalidFile.name}` }));
+      return;
+    }
 
     // 持久化用户消息
     if (this.messageStore) {
       await this.messageStore
-        .add(conversationId, "user", body.text, JSON.stringify(body.files ?? []))
+        .add(conversationId, "user", body.text, JSON.stringify(files))
         .catch((e) => console.error("[web] 保存用户消息失败", e));
     }
 
@@ -623,11 +658,29 @@ export class WebChannel implements Channel {
         requesterId: (req as HttpRequest & { userId?: string }).userId ?? "web-user",
         text: body.text,
         conversationId,
+        files,
       });
     }
 
     res.writeHead(202);
     res.end(JSON.stringify({ ok: true, conversationId }));
+  }
+
+  private async handleCancel(
+    req: HttpRequest,
+    res: ServerResponse,
+    conversationId: string,
+  ): Promise<void> {
+    if (this.sessionStore) {
+      const userId = await this.authMiddleware(req);
+      if (!userId) return this.json(res, { error: "unauthorized" }, 401);
+      const conversation = await this.deps.conversationStore?.get(conversationId);
+      if (conversation && conversation.userId !== userId) {
+        return this.json(res, { error: "forbidden" }, 403);
+      }
+    }
+    const canceled = (await this.cancelHandler?.(conversationId)) ?? false;
+    this.json(res, { ok: canceled }, canceled ? 200 : 409);
   }
 
   // ---------------------------------------------------------------------------
