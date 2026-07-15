@@ -74,9 +74,23 @@ describe("ChatWorkspace", () => {
     renderWorkspace({ isGenerating: true, onCancel });
 
     expect(screen.getByRole("status", { name: "思考中" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "思考中" })).toHaveTextContent("donger思考中");
     fireEvent.click(screen.getByRole("button", { name: "停止输出" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "发送消息" })).not.toBeInTheDocument();
+  });
+
+  it("hides the thinking indicator after the first assistant text arrives", () => {
+    renderWorkspace({
+      isGenerating: true,
+      messages: [
+        { id: "u1", role: "user", text: "hi" },
+        { id: "a1", role: "bot", text: "你" },
+      ],
+    });
+
+    expect(screen.queryByRole("status", { name: "思考中" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger你");
   });
 
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {

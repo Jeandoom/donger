@@ -46,17 +46,19 @@ function ThreadWelcome({ hidden }: { hidden: boolean }) {
   );
 }
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ visible }: { visible: boolean }) {
+  if (!visible) return null;
   return (
-    <ThreadPrimitive.If running>
-      <div
-        role="status"
-        aria-label="思考中"
-        className={cn(THREAD_CONTENT_WIDTH, "flex items-center gap-3 py-4")}
-      >
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-background shadow-sm">
-          <Bot aria-hidden="true" size={16} />
-        </div>
+    <div
+      role="status"
+      aria-label="思考中"
+      className={cn(THREAD_CONTENT_WIDTH, "flex items-start gap-3 py-5")}
+    >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-background shadow-sm">
+        <Bot aria-hidden="true" size={16} />
+      </div>
+      <div className="min-w-0 flex-1 pt-0.5">
+        <div className="mb-2 text-xs font-medium text-muted-foreground">donger</div>
         <div className="flex items-center gap-1 text-sm text-muted-foreground">
           <span>思考中</span>
           {[0, 1, 2].map((index) => (
@@ -69,7 +71,7 @@ function ThinkingIndicator() {
           ))}
         </div>
       </div>
-    </ThreadPrimitive.If>
+    </div>
   );
 }
 
@@ -216,6 +218,7 @@ export interface AssistantThreadProps {
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   placeholder: string;
+  showThinking: boolean;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -225,7 +228,7 @@ export function AssistantThread(props: AssistantThreadProps) {
       <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
         <ThreadWelcome hidden={hasPendingInteraction} />
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-        <ThinkingIndicator />
+        <ThinkingIndicator visible={props.showThinking} />
         <div className={THREAD_CONTENT_WIDTH}>
           <PendingInteraction
             approval={props.pendingApproval}

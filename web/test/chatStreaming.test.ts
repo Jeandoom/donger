@@ -41,6 +41,16 @@ describe("chat streaming", () => {
     expect(state.messages).toEqual([]);
   });
 
+  it("does not create an empty assistant row for a leading whitespace delta", () => {
+    const state = chatReducer(initialChatState(), {
+      type: "ws",
+      msg: { type: "text_delta", messageId: "assistant-1", text: "\n" },
+    });
+
+    expect(state.messages).toEqual([]);
+    expect(state.isGenerating).toBe(true);
+  });
+
   it("stops the generating state when the SSE stream reports an error", () => {
     const running = chatReducer(initialChatState(), {
       type: "generation",

@@ -64,6 +64,7 @@ function appendBot(state: ChatState, text: string): ChatState {
 
 function appendBotDelta(state: ChatState, messageId: string, text: string): ChatState {
   const existing = state.messages.find((message) => message.id === messageId);
+  if (!existing && !text.trim()) return { ...state, isGenerating: true };
   const messages = existing
     ? state.messages.map((message) =>
         message.id === messageId ? { ...message, text: message.text + text } : message,
