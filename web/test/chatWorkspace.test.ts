@@ -1,63 +1,74 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "../src/components/chat/ChatWorkspace";
 
+function renderWorkspace(overrides: Partial<ComponentProps<typeof ChatWorkspace>> = {}): void {
+  render(
+    createElement(ChatWorkspace, {
+      conversations: [],
+      activeConversationId: null,
+      onSelectConversation: vi.fn(),
+      onDeleteConversation: vi.fn(),
+      onNewConversation: vi.fn(),
+      sidebarTitle: "会话（0）",
+      messages: [],
+      loadingMessages: false,
+      pendingApproval: null,
+      pendingCredential: null,
+      connection: "open",
+      onSend: vi.fn().mockResolvedValue(undefined),
+      onResolveApproval: vi.fn(),
+      onSubmitCredential: vi.fn(),
+      errors: {},
+      onReloadConversations: vi.fn(),
+      onReloadMessages: vi.fn(),
+      ...overrides,
+    }),
+  );
+}
+
 describe("ChatWorkspace", () => {
   it("renders the shared conversation and composer workspace", () => {
-    render(
-      createElement(ChatWorkspace, {
-        conversations: [],
-        activeConversationId: null,
-        onSelectConversation: vi.fn(),
-        onDeleteConversation: vi.fn(),
-        onNewConversation: vi.fn(),
-        sidebarTitle: "会话（0）",
-        messages: [],
-        loadingMessages: false,
-        pendingApproval: null,
-        pendingCredential: null,
-        connection: "open",
-        onSend: vi.fn().mockResolvedValue(undefined),
-        onResolveApproval: vi.fn(),
-        onSubmitCredential: vi.fn(),
-        errors: {},
-        onReloadConversations: vi.fn(),
-        onReloadMessages: vi.fn(),
-      }),
-    );
+    renderWorkspace();
 
     expect(screen.getByText("会话（0）")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "添加附件" })).toBeInTheDocument();
     expect(screen.getByText("● 已连接")).toBeInTheDocument();
   });
 
+  it("shows the assistant-ui welcome state before the first message", () => {
+    renderWorkspace();
+
+    expect(screen.getByRole("heading", { name: "开始新的对话" })).toBeInTheDocument();
+    expect(screen.getByText("发送消息或添加附件，开始一个新的任务。")).toBeInTheDocument();
+  });
+
+  it("presents user and assistant messages as distinct role rows", () => {
+    renderWorkspace({
+      messages: [
+        { id: "u1", role: "user", text: "检查服务" },
+        { id: "a1", role: "bot", text: "服务运行正常" },
+      ],
+    });
+
+    expect(screen.getByLabelText("用户消息")).toHaveTextContent("检查服务");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("服务运行正常");
+    expect(screen.getByText("你")).toBeInTheDocument();
+    expect(screen.getByText("donger")).toBeInTheDocument();
+  });
+
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
-    render(
-      createElement(ChatWorkspace, {
-        conversations: [],
-        activeConversationId: null,
-        onSelectConversation: vi.fn(),
-        onDeleteConversation: vi.fn(),
-        onNewConversation: vi.fn(),
-        sidebarTitle: "会话",
-        messages: [],
-        loadingMessages: false,
-        pendingApproval: null,
-        pendingCredential: null,
-        connection: "open",
-        onSend: vi.fn().mockResolvedValue(undefined),
-        onResolveApproval: vi.fn(),
-        onSubmitCredential: vi.fn(),
-        errors: {},
-        onReloadConversations: vi.fn(),
-        onReloadMessages: vi.fn(),
-      }),
-    );
+    renderWorkspace({ sidebarTitle: "会话" });
 
     const addAttachment = screen.getByRole("button", { name: "添加附件" });
     expect(addAttachment).toHaveClass("min-h-11");
-    expect(addAttachment.closest("form")).toHaveClass("pb-safe", "shrink-0");
+    const composer = screen.getByRole("form", { name: "消息输入" });
+    expect(composer).toHaveClass("pb-safe", "rounded-2xl", "shadow-sm");
+    expect(screen.getByRole("button", { name: "发送消息" })).toHaveClass(
+      "min-h-11",
+      "min-w-11",
+    );
   });
 
   it("renders scoped recovery actions", () => {
