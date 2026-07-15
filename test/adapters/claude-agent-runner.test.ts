@@ -29,7 +29,16 @@ const task: Task = {
 };
 const opts = { cwd: ".", skills: [], llm: { model: "m", baseUrl: "u", authToken: "t" } };
 
-let captured: { canUseTool?: CanUseToolLike; includePartialMessages?: boolean } | null = null;
+let captured: {
+  canUseTool?: CanUseToolLike;
+  includePartialMessages?: boolean;
+  sandbox?: {
+    enabled?: boolean;
+    failIfUnavailable?: boolean;
+    allowUnsandboxedCommands?: boolean;
+  };
+  settingSources?: string[];
+} | null = null;
 
 function mockStream(messages: unknown[]) {
   queryMock.mockImplementation((params: { options?: { canUseTool?: CanUseToolLike } }) => {
@@ -52,6 +61,20 @@ beforeEach(() => {
 });
 
 describe("ClaudeAgentRunner", () => {
+  it("以可用性优先模式启用 SDK sandbox", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(runner.run(task, opts, async () => ({ approved: true })));
+
+    expect(captured?.settingSources).toEqual(["project"]);
+    expect(captured?.sandbox).toEqual({
+      enabled: true,
+      failIfUnavailable: false,
+      allowUnsandboxedCommands: true,
+    });
+  });
+
   it("启用 partial messages 并把 text delta 转成 RunnerEvent", async () => {
     mockStream([
       {

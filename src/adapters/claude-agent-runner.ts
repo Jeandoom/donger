@@ -33,6 +33,12 @@ export class ClaudeAgentRunner implements AgentRunner {
         includePartialMessages: true,
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
         ...(opts.mcpServers?.length ? { mcpServers: mcpServersToSdk(opts.mcpServers) } : {}),
+        settingSources: ["project"],
+        sandbox: {
+          enabled: true,
+          failIfUnavailable: false,
+          allowUnsandboxedCommands: true,
+        },
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
           // 写入边界：Edit/Write/NotebookEdit 的路径必须落在 workspaceRoot 内
