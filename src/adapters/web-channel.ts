@@ -78,6 +78,7 @@ function contentType(absPath: string): string {
 /** SSE 事件类型 */
 type SSEEvent =
   | { type: "text"; text: string }
+  | { type: "text_delta"; messageId: string; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
       type: "credential_card";
@@ -183,6 +184,11 @@ export class WebChannel implements Channel {
   /** 向会话的 SSE 客户端推送文本消息 */
   pushText(conversationId: string, text: string): void {
     this.broadcastToConversation(conversationId, { type: "text", text });
+  }
+
+  /** 向会话的 SSE 客户端推送助手文本增量 */
+  pushTextDelta(conversationId: string, messageId: string, text: string): void {
+    this.broadcastToConversation(conversationId, { type: "text_delta", messageId, text });
   }
 
   /** 向会话的 SSE 客户端推送完成通知 */

@@ -20,7 +20,49 @@ function fakeChannel(): Channel & { sent: OutgoingMessage[] } {
   };
 }
 
+function fakeStreamingChannel() {
+  const deltas: Array<{ messageId: string; text: string }> = [];
+  const texts: string[] = [];
+  const results: Array<{ subtype: "success" | "error"; text: string }> = [];
+  return {
+    id: "web",
+    streaming: true,
+    deltas,
+    texts,
+    results,
+    onMessage: () => {},
+    send: async () => {},
+    pushText: (_conversationId: string, text: string) => texts.push(text),
+    pushTextDelta: (_conversationId: string, messageId: string, text: string) =>
+      deltas.push({ messageId, text }),
+    pushResult: (_conversationId: string, subtype: "success" | "error", text: string) =>
+      results.push({ subtype, text }),
+    requestApproval: async () => ({ approved: true }),
+  };
+}
+
 describe("bridgeEvents", () => {
+  it("Web 增量推流后不再重复推送完整 text，result 只通知完成", async () => {
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        { type: "text_delta", taskId: "t", messageId: "msg-1", text: "Hi" },
+        { type: "text_delta", taskId: "t", messageId: "msg-1", text: "!" },
+        { type: "text", taskId: "t", text: "Hi!" },
+        { type: "result", taskId: "t", subtype: "success", result: "Hi!" },
+      ]),
+    );
+
+    expect(ch.deltas).toEqual([
+      { messageId: "msg-1", text: "Hi" },
+      { messageId: "msg-1", text: "!" },
+    ]);
+    expect(ch.texts).toEqual([]);
+    expect(ch.results).toEqual([{ subtype: "success", text: "Hi!" }]);
+  });
+
   it("text → 发文本", async () => {
     const ch = fakeChannel();
     await bridgeEvents(ch, "th", of([{ type: "text", taskId: "t", text: "hi" }]));

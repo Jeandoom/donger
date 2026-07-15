@@ -310,6 +310,7 @@ export class Orchestrator {
         for await (const e of rawEvents) {
           if (e.type === "session_init") capturedSessionId = e.sessionId;
           yield e; // 先推流（保证审计失败不阻塞推送）
+          if (e.type === "text_delta") continue;
           const extra: { durationMs?: number; model?: string } = {};
           if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
           if (e.type === "tool_result") {

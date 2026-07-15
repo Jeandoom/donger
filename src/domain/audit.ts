@@ -1,5 +1,7 @@
 import type { AuditEvent, RunnerEvent } from "./types.js";
 
+type AuditableRunnerEvent = Exclude<RunnerEvent, { type: "text_delta" }>;
+
 /** 审计 IO 截断上限（toolInput / toolOutput）；agent 文本与 prompt 不截断。 */
 export const AUDIT_TRUNCATE_LIMIT = 4096;
 
@@ -17,7 +19,7 @@ type AuditCtx = {
 
 /** 把一条 RunnerEvent 映射成待持久化的 AuditEvent（不含 id，由 store 生成）。 */
 export function toAuditEvent(
-  e: RunnerEvent,
+  e: AuditableRunnerEvent,
   ctx: AuditCtx,
   extra: { durationMs?: number; model?: string } = {},
 ): Omit<AuditEvent, "id"> {

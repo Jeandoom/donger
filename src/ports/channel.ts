@@ -33,6 +33,8 @@ export interface Channel {
   send(threadId: string, msg: OutgoingMessage): Promise<void>;
   /** 推送文本消息（SSE 版本，WebChannel 实现） */
   pushText?(conversationId: string, text: string): void;
+  /** 推送单条助手消息的文本增量（SSE 版本，WebChannel 实现） */
+  pushTextDelta?(conversationId: string, messageId: string, text: string): void;
   /** 推送完成通知（SSE 版本） */
   pushResult?(conversationId: string, subtype: "success" | "error", text: string): void;
   /** 推送审批卡片（SSE 版本） */

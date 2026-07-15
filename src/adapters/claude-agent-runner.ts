@@ -30,6 +30,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           preset: "claude_code",
           append: opts.systemPromptAppend ?? "",
         },
+        includePartialMessages: true,
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
         ...(opts.mcpServers?.length ? { mcpServers: mcpServersToSdk(opts.mcpServers) } : {}),
         permissionMode: "default",
@@ -93,9 +94,27 @@ export class ClaudeAgentRunner implements AgentRunner {
       },
     });
 
+    let streamingMessageId: string | null = null;
     for await (const m of stream) {
       if (m.type === "system" && "subtype" in m && m.subtype === "init") {
         yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
+      } else if (m.type === "stream_event") {
+        if (m.event.type === "message_start") {
+          streamingMessageId = m.event.message.id;
+        } else if (
+          m.event.type === "content_block_delta" &&
+          m.event.delta.type === "text_delta" &&
+          streamingMessageId
+        ) {
+          yield {
+            type: "text_delta",
+            taskId: task.id,
+            messageId: streamingMessageId,
+            text: m.event.delta.text,
+          };
+        } else if (m.event.type === "message_stop") {
+          streamingMessageId = null;
+        }
       } else if (m.type === "assistant") {
         for (const block of m.message.content) {
           if (block.type === "text") {

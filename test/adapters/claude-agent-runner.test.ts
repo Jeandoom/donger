@@ -29,7 +29,7 @@ const task: Task = {
 };
 const opts = { cwd: ".", skills: [], llm: { model: "m", baseUrl: "u", authToken: "t" } };
 
-let captured: { canUseTool?: CanUseToolLike } | null = null;
+let captured: { canUseTool?: CanUseToolLike; includePartialMessages?: boolean } | null = null;
 
 function mockStream(messages: unknown[]) {
   queryMock.mockImplementation((params: { options?: { canUseTool?: CanUseToolLike } }) => {
@@ -52,6 +52,37 @@ beforeEach(() => {
 });
 
 describe("ClaudeAgentRunner", () => {
+  it("启用 partial messages 并把 text delta 转成 RunnerEvent", async () => {
+    mockStream([
+      {
+        type: "stream_event",
+        event: { type: "message_start", message: { id: "msg-1" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "!" } },
+      },
+      { type: "stream_event", event: { type: "message_stop" } },
+      { type: "assistant", message: { content: [{ type: "text", text: "Hi!" }] } },
+      { type: "result", subtype: "success", result: "Hi!" },
+    ]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+
+    expect(captured?.includePartialMessages).toBe(true);
+    expect(events).toEqual([
+      { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "Hi" },
+      { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "!" },
+      { type: "text", taskId: "t1", text: "Hi!" },
+      { type: "result", taskId: "t1", subtype: "success", result: "Hi!", usage: undefined },
+    ]);
+  });
+
   it("归一 SDKMessage → RunnerEvent（system init / assistant text+tool_use / result）", async () => {
     mockStream([
       { type: "system", subtype: "init", session_id: "s1" },

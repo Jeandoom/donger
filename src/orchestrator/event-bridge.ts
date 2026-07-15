@@ -13,9 +13,13 @@ export async function bridgeEvents(
   messageStore?: MessageStore,
 ): Promise<RunnerEvent | undefined> {
   let last: RunnerEvent | undefined;
+  let streamedMessageId: string | null = null;
   for await (const e of events) {
     last = e;
-    if (e.type === "text") {
+    if (e.type === "text_delta") {
+      streamedMessageId = e.messageId;
+      channel.pushTextDelta?.(conversationId, e.messageId, e.text);
+    } else if (e.type === "text") {
       // 先持久化 bot 消息到数据库，再推送到前端
       if (messageStore && conversationId) {
         await messageStore.add(conversationId, "bot", e.text).catch((err) =>
@@ -23,7 +27,9 @@ export async function bridgeEvents(
         );
       }
       // 通过 SSE 推送（优先 pushText，降级到 send）
-      if (channel.pushText && conversationId) {
+      if (channel.pushTextDelta && streamedMessageId) {
+        streamedMessageId = null;
+      } else if (channel.pushText && conversationId) {
         channel.pushText(conversationId, e.text);
       } else {
         await channel.send(conversationId, { text: e.text });
@@ -36,6 +42,7 @@ export async function bridgeEvents(
         } else {
           await channel.send(conversationId, { text: errorText });
         }
+        channel.pushResult?.(conversationId, "error", errorText);
       } else {
         // success: 推送完成通知
         if (channel.pushResult && conversationId) {

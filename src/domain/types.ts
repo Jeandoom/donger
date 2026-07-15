@@ -58,6 +58,7 @@ export interface TokenUsage {
 // === Runner 事件（AgentRunner 产出的判别联合）===
 export type RunnerEvent =
   | { type: "session_init"; taskId: string; sessionId: string }
+  | { type: "text_delta"; taskId: string; messageId: string; text: string }
   | { type: "text"; taskId: string; text: string }
   | {
       type: "tool_use";
