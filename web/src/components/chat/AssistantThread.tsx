@@ -6,7 +6,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { Bot, UserRound } from "lucide-react";
+import { ArrowUp, Bot, Paperclip, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
@@ -22,7 +22,8 @@ function uploadUrl(path: string): string | null {
   return relativePath ? `/uploads/${relativePath}` : null;
 }
 
-function ThreadWelcome() {
+function ThreadWelcome({ hidden }: { hidden: boolean }) {
+  if (hidden) return null;
   return (
     <ThreadPrimitive.Empty>
       <div
@@ -137,18 +138,23 @@ function ComposerAttachmentPreview() {
   }, [attachment.file, attachment.type]);
 
   return previewUrl ? (
-    <img src={previewUrl} alt="" className="h-10 w-10 rounded object-cover" />
+    <img src={previewUrl} alt="" className="h-9 w-9 rounded-lg object-cover" />
   ) : (
-    <AttachmentPrimitive.unstable_Thumb className="flex h-10 w-10 items-center justify-center rounded bg-background" />
+    <AttachmentPrimitive.unstable_Thumb className="flex h-9 w-9 items-center justify-center rounded-lg bg-background" />
   );
 }
 
 function ComposerAttachment() {
   return (
-    <AttachmentPrimitive.Root className="flex items-center gap-1 rounded bg-muted px-2 py-1 text-xs">
+    <AttachmentPrimitive.Root className="flex max-w-full items-center gap-2 rounded-xl border bg-background px-2 py-1.5 text-xs shadow-sm">
       <ComposerAttachmentPreview />
       <AttachmentPrimitive.Name />
-      <AttachmentPrimitive.Remove aria-label="移除附件">×</AttachmentPrimitive.Remove>
+      <AttachmentPrimitive.Remove
+        aria-label="移除附件"
+        className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        <X aria-hidden="true" size={14} />
+      </AttachmentPrimitive.Remove>
     </AttachmentPrimitive.Root>
   );
 }
@@ -160,14 +166,14 @@ function AddAttachmentButton() {
     <ComposerPrimitive.AddAttachment asChild>
       <Button
         type="button"
-        variant="outline"
+        variant="ghost"
         size="icon"
         aria-label="添加附件"
-        className="min-h-11 min-w-11"
+        className="min-h-11 min-w-11 rounded-full text-muted-foreground"
         disabled={disabled}
         title={disabled ? `最多上传 ${MAX_MESSAGE_ATTACHMENTS} 个文件` : "添加附件"}
       >
-        📎
+        <Paperclip aria-hidden="true" size={18} />
       </Button>
     </ComposerPrimitive.AddAttachment>
   );
@@ -184,35 +190,51 @@ export interface AssistantThreadProps {
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
+  const hasPendingInteraction = Boolean(props.pendingApproval || props.pendingCredential);
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-      <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto p-4">
-        <ThreadWelcome />
+    <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
+      <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
+        <ThreadWelcome hidden={hasPendingInteraction} />
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-        <PendingInteraction
-          approval={props.pendingApproval}
-          credential={props.pendingCredential}
-          approvalError={props.approvalError}
-          credentialError={props.credentialError}
-          onResolveApproval={props.onResolveApproval}
-          onSubmitCredential={props.onSubmitCredential}
-        />
+        <div className={THREAD_CONTENT_WIDTH}>
+          <PendingInteraction
+            approval={props.pendingApproval}
+            credential={props.pendingCredential}
+            approvalError={props.approvalError}
+            credentialError={props.credentialError}
+            onResolveApproval={props.onResolveApproval}
+            onSubmitCredential={props.onSubmitCredential}
+          />
+        </div>
       </ThreadPrimitive.Viewport>
-      <ComposerPrimitive.Root className="pb-safe shrink-0 border-t border-border p-3">
-        <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
-        <div className="flex gap-2">
-          <AddAttachmentButton />
+      <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
+        <ComposerPrimitive.Root
+          aria-label="消息输入"
+          className="pb-safe pointer-events-auto mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
+        >
+          <ComposerPrimitive.Attachments
+            className="mb-2 flex max-w-full flex-wrap gap-2 px-1"
+            components={{ Attachment: ComposerAttachment }}
+          />
           <ComposerPrimitive.Input
-            className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm lg:resize-y"
+            className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground"
             placeholder={props.placeholder}
           />
-          <ComposerPrimitive.Send asChild>
-            <Button type="submit" className="min-h-11">
-              发送
-            </Button>
-          </ComposerPrimitive.Send>
-        </div>
-      </ComposerPrimitive.Root>
+          <div className="flex items-center justify-between gap-2">
+            <AddAttachmentButton />
+            <ComposerPrimitive.Send asChild>
+              <Button
+                type="submit"
+                size="icon"
+                aria-label="发送消息"
+                className="min-h-11 min-w-11 rounded-full"
+              >
+                <ArrowUp aria-hidden="true" size={18} />
+              </Button>
+            </ComposerPrimitive.Send>
+          </div>
+        </ComposerPrimitive.Root>
+      </div>
     </ThreadPrimitive.Root>
   );
 }

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { createElement, type ComponentProps } from "react";
+import { type ComponentProps, createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "../src/components/chat/ChatWorkspace";
 
@@ -58,6 +58,15 @@ describe("ChatWorkspace", () => {
     expect(screen.getByText("donger")).toBeInTheDocument();
   });
 
+  it("hides the welcome state while an interaction card is pending", () => {
+    renderWorkspace({
+      pendingApproval: { gateId: "g1", title: "部署审批", summary: "运行 deploy" },
+    });
+
+    expect(screen.queryByRole("heading", { name: "开始新的对话" })).not.toBeInTheDocument();
+    expect(screen.getByText("部署审批")).toBeInTheDocument();
+  });
+
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
     renderWorkspace({ sidebarTitle: "会话" });
 
@@ -65,10 +74,7 @@ describe("ChatWorkspace", () => {
     expect(addAttachment).toHaveClass("min-h-11");
     const composer = screen.getByRole("form", { name: "消息输入" });
     expect(composer).toHaveClass("pb-safe", "rounded-2xl", "shadow-sm");
-    expect(screen.getByRole("button", { name: "发送消息" })).toHaveClass(
-      "min-h-11",
-      "min-w-11",
-    );
+    expect(screen.getByRole("button", { name: "发送消息" })).toHaveClass("min-h-11", "min-w-11");
   });
 
   it("renders scoped recovery actions", () => {
