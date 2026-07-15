@@ -4,6 +4,7 @@ import type {
   CompleteAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
+import { apiFetch } from "./auth";
 import type { FileInfo } from "./chatReducer";
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
@@ -24,6 +25,8 @@ function fileType(file: File): FileInfo["type"] {
 export class DongerAttachmentAdapter implements AttachmentAdapter {
   readonly accept = ACCEPT;
 
+  constructor(private readonly threadId?: string) {}
+
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const type = fileType(file);
     if (file.size > MAX_FILE_SIZE) throw new Error("文件大小超过 2MB 限制");
@@ -40,11 +43,22 @@ export class DongerAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const formData = new FormData();
     formData.append("file", attachment.file);
-    const response = await fetch(`/api/upload?threadId=web-${Date.now()}`, {
+    const threadId = this.threadId ?? `web-${Date.now()}`;
+    const response = await apiFetch(`/api/upload?threadId=${encodeURIComponent(threadId)}`, {
       method: "POST",
       body: formData,
     });
-    if (!response.ok) throw new Error(`上传失败：HTTP ${response.status}`);
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = (await response.json()) as { error?: unknown; message?: unknown };
+        if (typeof body.error === "string") detail = body.error;
+        else if (typeof body.message === "string") detail = body.message;
+      } catch {
+        // 非 JSON 错误响应保留 HTTP 状态码
+      }
+      throw new Error(`上传失败：${detail}`);
+    }
     const result = (await response.json()) as FileInfo & { url: string };
     const file: FileInfo = { path: result.path, name: result.name, type: result.type };
     return {

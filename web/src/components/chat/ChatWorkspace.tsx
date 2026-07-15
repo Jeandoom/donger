@@ -41,7 +41,10 @@ export interface ChatWorkspaceProps {
 
 export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const attachmentAdapter = useMemo(() => new DongerAttachmentAdapter(), []);
+  const attachmentAdapter = useMemo(
+    () => new DongerAttachmentAdapter(props.activeConversationId ?? undefined),
+    [props.activeConversationId],
+  );
   const runtime = useAssistantRuntimeBridge({
     messages: props.messages,
     loading: props.loadingMessages,
