@@ -74,7 +74,8 @@ describe("ChatWorkspace", () => {
     renderWorkspace({ isGenerating: true, onCancel });
 
     expect(screen.getByRole("status", { name: "思考中" })).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "思考中" })).toHaveTextContent("donger思考中");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger思考中");
+    expect(screen.getAllByLabelText("助手消息")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "停止输出" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "发送消息" })).not.toBeInTheDocument();

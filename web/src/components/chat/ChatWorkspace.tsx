@@ -133,9 +133,6 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             onResolveApproval={props.onResolveApproval}
             onSubmitCredential={props.onSubmitCredential}
             placeholder={props.inputPlaceholder ?? "输入消息…"}
-            showThinking={
-              props.isGenerating && props.messages[props.messages.length - 1]?.role !== "bot"
-            }
           />
         </AssistantRuntimeProvider>
       </div>

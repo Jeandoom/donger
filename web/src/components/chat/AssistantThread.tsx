@@ -46,31 +46,22 @@ function ThreadWelcome({ hidden }: { hidden: boolean }) {
   );
 }
 
-function ThinkingIndicator({ visible }: { visible: boolean }) {
-  if (!visible) return null;
+function ThinkingContent() {
   return (
     <div
       role="status"
       aria-label="思考中"
-      className={cn(THREAD_CONTENT_WIDTH, "flex items-start gap-3 py-5")}
+      className="flex items-center gap-1 text-sm text-muted-foreground"
     >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-background shadow-sm">
-        <Bot aria-hidden="true" size={16} />
-      </div>
-      <div className="min-w-0 flex-1 pt-0.5">
-        <div className="mb-2 text-xs font-medium text-muted-foreground">donger</div>
-        <div className="flex items-center gap-1 text-sm text-muted-foreground">
-          <span>思考中</span>
-          {[0, 1, 2].map((index) => (
-            <span
-              key={index}
-              aria-hidden="true"
-              className="h-1.5 w-1.5 animate-pulse rounded-full bg-current"
-              style={{ animationDelay: `${index * 150}ms` }}
-            />
-          ))}
-        </div>
-      </div>
+      <span>思考中</span>
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          aria-hidden="true"
+          className="h-1.5 w-1.5 animate-pulse rounded-full bg-current"
+          style={{ animationDelay: `${index * 150}ms` }}
+        />
+      ))}
     </div>
   );
 }
@@ -136,6 +127,11 @@ function AssistantText() {
 }
 
 function AssistantMessage() {
+  const isThinking = useAuiState(
+    ({ message }) =>
+      message.status?.type === "running" &&
+      message.content.every((part) => part.type === "text" && !part.text.trim()),
+  );
   return (
     <MessagePrimitive.Root
       aria-label="助手消息"
@@ -147,7 +143,11 @@ function AssistantMessage() {
       <div className="min-w-0 flex-1 pt-0.5">
         <div className="mb-2 text-xs font-medium text-muted-foreground">donger</div>
         <div className="min-w-0 break-words text-sm leading-7 [&_a]:underline [&_code]:break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
-          <MessagePrimitive.Parts components={{ Text: AssistantText }} />
+          {isThinking ? (
+            <ThinkingContent />
+          ) : (
+            <MessagePrimitive.Parts components={{ Text: AssistantText }} />
+          )}
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -218,7 +218,6 @@ export interface AssistantThreadProps {
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   placeholder: string;
-  showThinking: boolean;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -228,7 +227,6 @@ export function AssistantThread(props: AssistantThreadProps) {
       <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
         <ThreadWelcome hidden={hasPendingInteraction} />
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-        <ThinkingIndicator visible={props.showThinking} />
         <div className={THREAD_CONTENT_WIDTH}>
           <PendingInteraction
             approval={props.pendingApproval}
