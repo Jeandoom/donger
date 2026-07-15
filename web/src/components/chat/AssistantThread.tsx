@@ -212,10 +212,9 @@ export function AssistantThread(props: AssistantThreadProps) {
           aria-label="消息输入"
           className="pb-safe pointer-events-auto mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
         >
-          <ComposerPrimitive.Attachments
-            className="mb-2 flex max-w-full flex-wrap gap-2 px-1"
-            components={{ Attachment: ComposerAttachment }}
-          />
+          <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
+            <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
+          </div>
           <ComposerPrimitive.Input
             className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground"
             placeholder={props.placeholder}
