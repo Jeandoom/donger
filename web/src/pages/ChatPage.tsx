@@ -15,6 +15,7 @@ export function ChatPage() {
       sidebarTitle={`会话（${conversations.length}）`}
       messages={wc.messages}
       loadingMessages={wc.loadingMessages}
+      isGenerating={wc.isGenerating}
       pendingApproval={wc.pendingApproval}
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}

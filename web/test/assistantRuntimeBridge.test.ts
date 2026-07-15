@@ -9,6 +9,7 @@ describe("createChatRuntimeAdapter", () => {
     const adapter = createChatRuntimeAdapter({
       messages: [],
       loading: false,
+      generating: true,
       send,
       attachmentAdapter: new DongerAttachmentAdapter(),
     });
@@ -23,6 +24,7 @@ describe("createChatRuntimeAdapter", () => {
     } satisfies AppendMessage;
 
     await adapter.onNew?.(message);
+    expect(adapter.isRunning).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("hello", undefined);
   });

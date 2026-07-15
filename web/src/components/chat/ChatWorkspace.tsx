@@ -26,6 +26,7 @@ export interface ChatWorkspaceProps {
   sidebarHeaderExtra?: React.ReactNode;
   messages: ChatMessage[];
   loadingMessages: boolean;
+  isGenerating: boolean;
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
   connection: ConnectionState;
@@ -44,6 +45,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   const runtime = useAssistantRuntimeBridge({
     messages: props.messages,
     loading: props.loadingMessages,
+    generating: props.isGenerating,
     send: props.onSend,
     attachmentAdapter,
   });

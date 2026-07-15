@@ -25,22 +25,51 @@ function uploadUrl(path: string): string | null {
 function ThreadWelcome({ hidden }: { hidden: boolean }) {
   if (hidden) return null;
   return (
-    <ThreadPrimitive.Empty>
-      <div
-        className={cn(
-          THREAD_CONTENT_WIDTH,
-          "flex min-h-[50vh] flex-col items-center justify-center text-center",
-        )}
-      >
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border bg-background shadow-sm">
-          <Bot aria-hidden="true" size={24} />
+    <ThreadPrimitive.If running={false}>
+      <ThreadPrimitive.Empty>
+        <div
+          className={cn(
+            THREAD_CONTENT_WIDTH,
+            "flex min-h-[50vh] flex-col items-center justify-center text-center",
+          )}
+        >
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border bg-background shadow-sm">
+            <Bot aria-hidden="true" size={24} />
+          </div>
+          <h1 className="mt-5 text-xl font-semibold tracking-tight">开始新的对话</h1>
+          <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+            发送消息或添加附件，开始一个新的任务。
+          </p>
         </div>
-        <h1 className="mt-5 text-xl font-semibold tracking-tight">开始新的对话</h1>
-        <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-          发送消息或添加附件，开始一个新的任务。
-        </p>
+      </ThreadPrimitive.Empty>
+    </ThreadPrimitive.If>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <ThreadPrimitive.If running>
+      <div
+        role="status"
+        aria-label="思考中"
+        className={cn(THREAD_CONTENT_WIDTH, "flex items-center gap-3 py-4")}
+      >
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-background shadow-sm">
+          <Bot aria-hidden="true" size={16} />
+        </div>
+        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+          <span>思考中</span>
+          {[0, 1, 2].map((index) => (
+            <span
+              key={index}
+              aria-hidden="true"
+              className="h-1.5 w-1.5 animate-pulse rounded-full bg-current"
+              style={{ animationDelay: `${index * 150}ms` }}
+            />
+          ))}
+        </div>
       </div>
-    </ThreadPrimitive.Empty>
+    </ThreadPrimitive.If>
   );
 }
 
@@ -196,6 +225,7 @@ export function AssistantThread(props: AssistantThreadProps) {
       <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
         <ThreadWelcome hidden={hasPendingInteraction} />
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+        <ThinkingIndicator />
         <div className={THREAD_CONTENT_WIDTH}>
           <PendingInteraction
             approval={props.pendingApproval}

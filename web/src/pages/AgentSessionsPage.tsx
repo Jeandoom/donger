@@ -82,6 +82,7 @@ export function AgentSessionsPage() {
       }
       messages={wc.messages}
       loadingMessages={wc.loadingMessages}
+      isGenerating={wc.isGenerating}
       pendingApproval={wc.pendingApproval}
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}

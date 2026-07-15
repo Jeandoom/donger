@@ -12,6 +12,7 @@ import type { FileInfo } from "./chatReducer";
 export interface ChatRuntimeInput {
   messages: readonly ChatMessage[];
   loading: boolean;
+  generating: boolean;
   send: (text: string, files?: FileInfo[]) => Promise<void>;
   attachmentAdapter: AttachmentAdapter;
 }
@@ -22,7 +23,7 @@ export function createChatRuntimeAdapter(
   return {
     messages: input.messages,
     isLoading: input.loading,
-    isRunning: false,
+    isRunning: input.generating,
     convertMessage: toAssistantMessage,
     adapters: { attachments: input.attachmentAdapter },
     onNew: async (message) => {
@@ -34,10 +35,10 @@ export function createChatRuntimeAdapter(
 }
 
 export function useAssistantRuntimeBridge(input: ChatRuntimeInput): AssistantRuntime {
-  const { messages, loading, send, attachmentAdapter } = input;
+  const { messages, loading, generating, send, attachmentAdapter } = input;
   const adapter = useMemo(
-    () => createChatRuntimeAdapter({ messages, loading, send, attachmentAdapter }),
-    [messages, loading, send, attachmentAdapter],
+    () => createChatRuntimeAdapter({ messages, loading, generating, send, attachmentAdapter }),
+    [messages, loading, generating, send, attachmentAdapter],
   );
   return useExternalStoreRuntime(adapter);
 }

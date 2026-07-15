@@ -29,11 +29,12 @@ describe("chatReducer", () => {
     expect(s.pendingApproval?.title).toBe("部署确认");
   });
 
-  it("ws:result 追加一条 bot 消息", () => {
+  it("ws:result 只结束生成状态，不重复追加 bot 消息", () => {
     const msg: WsOut = { type: "result", subtype: "success", text: "完成" };
-    const s = chatReducer(initialChatState(), { type: "ws", msg });
-    expect(s.messages[0]?.text).toBe("完成");
-    expect(s.messages[0]?.role).toBe("bot");
+    const running = chatReducer(initialChatState(), { type: "generation", running: true });
+    const s = chatReducer(running, { type: "ws", msg });
+    expect(s.messages).toHaveLength(0);
+    expect(s.isGenerating).toBe(false);
   });
 
   it("clear_approval 清空 pendingApproval", () => {

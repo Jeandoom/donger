@@ -95,6 +95,17 @@ export function useWebChat() {
       }
     });
 
+    eventSource.addEventListener("text_delta", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "text_delta") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("approval_card", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -132,7 +143,7 @@ export function useWebChat() {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
         if (data.type === "error") {
-          dispatch({ type: "set_error", key: "stream", message: data.error });
+          dispatch({ type: "ws", msg: data });
         }
       } catch {
         // ignore
@@ -148,6 +159,7 @@ export function useWebChat() {
     eventSource.onerror = (event) => {
       if (event instanceof MessageEvent && event.data) return;
       dispatch({ type: "connection", state: "closed" });
+      dispatch({ type: "generation", running: false });
       dispatch({
         type: "set_error",
         key: "stream",

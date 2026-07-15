@@ -14,6 +14,7 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof ChatWorkspace>
       sidebarTitle: "会话（0）",
       messages: [],
       loadingMessages: false,
+      isGenerating: false,
       pendingApproval: null,
       pendingCredential: null,
       connection: "open",
@@ -67,6 +68,12 @@ describe("ChatWorkspace", () => {
     expect(screen.getByText("部署审批")).toBeInTheDocument();
   });
 
+  it("shows a thinking indicator while the assistant is generating", () => {
+    renderWorkspace({ isGenerating: true });
+
+    expect(screen.getByRole("status", { name: "思考中" })).toBeInTheDocument();
+  });
+
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
     renderWorkspace({ sidebarTitle: "会话" });
 
@@ -90,6 +97,7 @@ describe("ChatWorkspace", () => {
         sidebarTitle: "会话",
         messages: [],
         loadingMessages: false,
+        isGenerating: false,
         pendingApproval: null,
         pendingCredential: null,
         connection: "closed",

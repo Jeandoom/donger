@@ -4,6 +4,7 @@
 /** SSE 事件类型 */
 export type SSEEvent =
   | { type: "text"; text: string }
+  | { type: "text_delta"; messageId: string; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
       type: "credential_card";
@@ -74,6 +75,7 @@ export interface ConversationSummary {
 
 export interface ChatState {
   messages: ChatMessage[];
+  isGenerating: boolean;
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
   connection: ConnectionState;
