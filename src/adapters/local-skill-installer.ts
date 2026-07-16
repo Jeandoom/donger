@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
 import { parseFrontmatter, scanSkillPack } from "../domain/skill-scan.js";
 import type {
@@ -232,7 +232,11 @@ function shellQuote(s: string): string {
   return `"${s.replace(/(["$`\\])/g, "\\$1")}"`;
 }
 function isInside(child: string, parent: string): boolean {
-  const c = resolve(child);
-  const p = resolve(parent);
-  return c === p || c.startsWith(`${p}/`);
+  const pathFromParent = relative(parent, child);
+  return (
+    pathFromParent === "" ||
+    (pathFromParent !== ".." &&
+      !pathFromParent.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromParent))
+  );
 }

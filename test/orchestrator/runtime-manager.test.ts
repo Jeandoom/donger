@@ -180,7 +180,7 @@ describe("RuntimeManager", () => {
     await credStore.setValue("u1", "K", "v");
     const m = makeMgr(fakeConvStore([baseConv()]));
     const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
-    expect(runOptions.pluginPaths?.some((p) => p.endsWith(".skills/demo"))).toBe(true);
+    expect(runOptions.pluginPaths?.some((p) => p.endsWith(join(".skills", "demo")))).toBe(true);
     expect(runOptions.skills).toEqual(["demo:alpha"]);
     expect(runOptions.credentialsEnv?.K).toBe("v");
     expect(runOptions.resume).toBeUndefined();
