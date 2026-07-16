@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   deleteGitConnection,
   fetchGitConnections,
@@ -16,6 +16,7 @@ const PROVIDERS: Array<{ id: GitProvider; label: string }> = [
 ];
 
 export function GitSettingsPage() {
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const [connections, setConnections] = useState<GitConnectionDTO[]>([]);
   const [oauthConfigured, setOauthConfigured] = useState<Record<GitProvider, boolean>>({
@@ -45,6 +46,7 @@ export function GitSettingsPage() {
       await saveGitPat(provider, tokens[provider] ?? "");
       setTokens((current) => ({ ...current, [provider]: "" }));
       await reload();
+      navigate(returnTo, { replace: true });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
