@@ -891,7 +891,7 @@ export class WebChannel implements Channel {
       for (const [s, exp] of this.oauthStateMap) {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
-      const redirectUri = `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host ?? "localhost"}/api/auth/dingtalk/callback`;
+      const redirectUri = `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
       const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
       res.writeHead(200);
       res.end(JSON.stringify({ url: qrUrl }));
@@ -1842,6 +1842,15 @@ export class WebChannel implements Channel {
     const userId = (req as HttpRequest & { userId?: string }).userId;
     if (!userId) throw new ForbiddenError("AUTH_REQUIRED", "请先登录");
     return userId;
+  }
+
+  private oauthBaseUrl(): string {
+    const publicBaseUrl = this.deps.publicBaseUrl?.replace(/\/+$/, "");
+    if (publicBaseUrl) return publicBaseUrl;
+    const rawHost = this.deps.host ?? "localhost";
+    const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
+    const port = this.boundPort ?? this.deps.port;
+    return `${this.deps.https ? "https" : "http"}://${host}:${port}`;
   }
 
   private requireGitProvider(provider: GitProvider): GitAuthProviderAdapter {

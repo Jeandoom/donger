@@ -91,6 +91,42 @@ async function startWith(usageStore: InMemoryUsageStore): Promise<number> {
   return port;
 }
 
+async function startQrChannel(publicBaseUrl?: string): Promise<number> {
+  const tmp = mkdtempSync(join(tmpdir(), "web-qr-"));
+  web = new WebChannel({
+    port: 0,
+    host: "127.0.0.1",
+    workspaceDir: tmp,
+    dingtalkConfig: { appKey: "ding-app", appSecret: "secret" },
+    publicBaseUrl,
+  });
+  web.onMessage(() => {});
+  await web.ready();
+  const port = web.boundPort;
+  if (!port) throw new Error("server not listening");
+  return port;
+}
+
+describe("WebChannel GET /api/auth/qrcode-url", () => {
+  it("配置 PUBLIC_BASE_URL 时优先用其生成钉钉回调", async () => {
+    const port = await startQrChannel("https://example.com:3333");
+    const response = await fetch(`http://127.0.0.1:${port}/api/auth/qrcode-url`);
+    const body = (await response.json()) as { url: string };
+    expect(new URL(body.url).searchParams.get("redirect_uri")).toBe(
+      "https://example.com:3333/api/auth/dingtalk/callback",
+    );
+  });
+
+  it("未配置 PUBLIC_BASE_URL 时使用监听 host 和实际端口", async () => {
+    const port = await startQrChannel();
+    const response = await fetch(`http://127.0.0.1:${port}/api/auth/qrcode-url`);
+    const body = (await response.json()) as { url: string };
+    expect(new URL(body.url).searchParams.get("redirect_uri")).toBe(
+      `http://127.0.0.1:${port}/api/auth/dingtalk/callback`,
+    );
+  });
+});
+
 function rec(userId: string, taskId: string) {
   return {
     taskId,
