@@ -194,6 +194,7 @@ async function main(): Promise<void> {
   const webChannel = new WebChannel({
     port: cfg.port,
     host: cfg.host,
+    https: cfg.https,
     workspaceDir: cfg.workspaceDir,
     taskStore: store,
     userStore,
@@ -223,9 +224,10 @@ async function main(): Promise<void> {
   const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
-  log.info({ channel: "web", host: cfg.host, port: cfg.port }, "就绪");
+  const webProtocol = cfg.https ? "https" : "http";
+  log.info({ channel: "web", host: cfg.host, port: cfg.port, protocol: webProtocol }, "就绪");
   console.log(
-    `\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 http://localhost:${cfg.port}）\n`,
+    `\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 ${webProtocol}://localhost:${cfg.port}）\n`,
   );
 
   // 钉钉 Channel（有配置才启动）

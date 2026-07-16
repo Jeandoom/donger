@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
-  createServer,
+  createServer as createHttpServer,
   type IncomingMessage as HttpRequest,
-  type Server,
+  type Server as HttpServer,
   type ServerResponse,
 } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
@@ -110,6 +111,8 @@ export interface WebChannelDeps {
   port: number;
   /** 监听地址（默认 0.0.0.0=全网卡；设 127.0.0.1 仅本机） */
   host?: string;
+  /** 配置后使用 HTTPS；证书链文件可选。 */
+  https?: { certPath: string; keyPath: string; chainPath?: string };
   /** 上传文件保存根目录 */
   workspaceDir: string;
   taskStore?: TaskStore;
@@ -153,7 +156,7 @@ export class WebChannel implements Channel {
   readonly streaming = true;
   private handler?: (msg: IncomingMessage) => void;
   private cancelHandler?: (conversationId: string) => boolean | Promise<boolean>;
-  private server?: Server;
+  private server?: HttpServer | HttpsServer;
   private readyPromise?: Promise<void>;
   /** 会话 ID → SSE 客户端集合 */
   private readonly sseClients = new Map<string, Set<SSEClient>>();
@@ -190,7 +193,23 @@ export class WebChannel implements Channel {
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.handler = handler;
 
-    const server = createServer((req, res) => this.handleHttp(req, res));
+    const requestHandler = (req: HttpRequest, res: ServerResponse): Promise<void> =>
+      this.handleHttp(req, res);
+    const server = this.deps.https
+      ? createHttpsServer(
+          {
+            key: readFileSync(this.deps.https.keyPath),
+            cert: this.deps.https.chainPath
+              ? Buffer.concat([
+                  readFileSync(this.deps.https.certPath),
+                  Buffer.from("\n"),
+                  readFileSync(this.deps.https.chainPath),
+                ])
+              : readFileSync(this.deps.https.certPath),
+          },
+          requestHandler,
+        )
+      : createHttpServer(requestHandler);
     this.server = server;
     this.readyPromise = new Promise<void>((resolve) => {
       server.listen(this.deps.port, this.deps.host ?? "0.0.0.0", () => resolve());

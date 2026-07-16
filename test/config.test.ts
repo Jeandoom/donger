@@ -19,7 +19,7 @@ describe("loadConfig", () => {
     expect(c.repoRoot).toBe("./repos");
     expect(c.memoryDir).toBe("./data/memory");
     expect(c.dbPath).toBe(join(homedir(), ".donger", "donger.db"));
-    expect(c.port).toBe(3300);
+    expect(c.port).toBe(3330);
     expect(c.host).toBe("0.0.0.0");
     expect(c.logLevel).toBe("info");
     expect(c.builtinSkillsDir).toBe(join("./repos", "skills"));
@@ -41,6 +41,26 @@ describe("loadConfig", () => {
   it("HOST 默认 0.0.0.0，可被 env 覆盖", () => {
     expect(loadConfig(base).host).toBe("0.0.0.0");
     expect(loadConfig({ ...base, HOST: "127.0.0.1" }).host).toBe("127.0.0.1");
+  });
+
+  it("HTTPS 证书配置三件套被解析", () => {
+    const c = loadConfig({
+      ...base,
+      HTTPS_CERT_PATH: ".data/cert.pem",
+      HTTPS_KEY_PATH: ".data/privkey.pem",
+      HTTPS_CHAIN_PATH: ".data/chain.pem",
+    });
+    expect(c.https).toEqual({
+      certPath: ".data/cert.pem",
+      keyPath: ".data/privkey.pem",
+      chainPath: ".data/chain.pem",
+    });
+  });
+
+  it("HTTPS 证书或私钥缺失时报错", () => {
+    expect(() => loadConfig({ ...base, HTTPS_CERT_PATH: ".data/cert.pem" })).toThrow(
+      "HTTPS_CERT_PATH 与 HTTPS_KEY_PATH 必须同时配置",
+    );
   });
 
   it("LOG_LEVEL 自定义生效", () => {

@@ -14,9 +14,12 @@ const EnvSchema = z.object({
   MEMORY_DIR: z.string().default("./data/memory"),
   WORKSPACE_DIR: z.string().default(""),
   DB_PATH: z.string().default(""),
-  PORT: z.coerce.number().int().positive().default(3300),
+  PORT: z.coerce.number().int().positive().default(3330),
   // 服务监听地址：0.0.0.0=全网卡（可外部访问），127.0.0.1=仅本机。
   HOST: z.string().default("0.0.0.0"),
+  HTTPS_CERT_PATH: z.string().optional().default(""),
+  HTTPS_KEY_PATH: z.string().optional().default(""),
+  HTTPS_CHAIN_PATH: z.string().optional().default(""),
   LOG_LEVEL: LogLevelSchema.default("info"),
   // 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills
   BUILTIN_SKILLS_DIR: z.string().default(""),
@@ -70,6 +73,11 @@ export interface AppConfig {
   dbPath: string;
   port: number;
   host: string;
+  https?: {
+    certPath: string;
+    keyPath: string;
+    chainPath?: string;
+  };
   logLevel: LogLevel;
   /** 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills */
   builtinSkillsDir: string;
@@ -96,6 +104,7 @@ export interface AppConfig {
  */
 export function loadConfig(env: Record<string, string | undefined>): AppConfig {
   const e = EnvSchema.parse(env);
+  const https = parseHttpsConfig(e.HTTPS_CERT_PATH, e.HTTPS_KEY_PATH, e.HTTPS_CHAIN_PATH);
   const cfg: AppConfig = {
     llm: {
       model: e.LLM_MODEL,
@@ -108,6 +117,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     dbPath: e.DB_PATH || join(homedir(), ".donger", "donger.db"),
     port: e.PORT,
     host: e.HOST,
+    https,
     logLevel: e.LOG_LEVEL,
     builtinSkillsDir: e.BUILTIN_SKILLS_DIR || join(e.REPO_ROOT, "skills"),
     adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
@@ -133,6 +143,21 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     };
   }
   return cfg;
+}
+
+function parseHttpsConfig(
+  certPathValue: string,
+  keyPathValue: string,
+  chainPathValue: string,
+): AppConfig["https"] {
+  const certPath = certPathValue.trim();
+  const keyPath = keyPathValue.trim();
+  const chainPath = chainPathValue.trim();
+  if (!certPath && !keyPath && !chainPath) return undefined;
+  if (!certPath || !keyPath) {
+    throw new Error("HTTPS_CERT_PATH 与 HTTPS_KEY_PATH 必须同时配置");
+  }
+  return { certPath, keyPath, ...(chainPath ? { chainPath } : {}) };
 }
 
 /**

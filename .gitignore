@@ -9,6 +9,7 @@ dist/
 # 运行时数据
 *.db
 *.db-journal
+.data/
 data/
 logs/
 repos/
