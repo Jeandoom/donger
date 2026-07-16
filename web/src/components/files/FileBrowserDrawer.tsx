@@ -20,10 +20,10 @@ export function FileBrowserDrawer(props: {
 
   const token = getToken() ?? "";
   // runtime 必须有会话；缺则不加载
-  const convId = scope === "runtime" ? (activeConversationId ?? "") : undefined;
+  const convId = scope !== "user" ? (activeConversationId ?? "") : undefined;
 
   async function reload(): Promise<void> {
-    if (scope === "runtime" && !convId) {
+    if (scope !== "user" && !convId) {
       setNodes([]);
       setError("当前无活跃会话");
       return;
@@ -97,6 +97,16 @@ export function FileBrowserDrawer(props: {
             onClick={() => switchScope("runtime")}
           >
             runtime
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "rounded px-2 py-1 text-xs",
+              scope === "extension" ? "bg-accent font-medium" : "text-muted-foreground",
+            )}
+            onClick={() => switchScope("extension")}
+          >
+            扩展
           </button>
           <div className="flex-1" />
           <button

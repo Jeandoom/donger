@@ -38,6 +38,7 @@ let captured: {
     allowUnsandboxedCommands?: boolean;
   };
   settingSources?: string[];
+  additionalDirectories?: string[];
 } | null = null;
 
 function mockStream(messages: unknown[]) {
@@ -73,6 +74,38 @@ describe("ClaudeAgentRunner", () => {
       failIfUnavailable: false,
       allowUnsandboxedCommands: true,
     });
+  });
+
+  it("透传扩展目录并允许 direct write tools 写入读写目录", async () => {
+    const extension = mkdtempSync(join(tmpdir(), "extension-write-"));
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          workspaceRoot: join(extension, "workspace"),
+          additionalDirectories: [extension],
+          allowedWriteRoots: [extension],
+          readOnlyRoots: [join(extension, "readonly")],
+        },
+        async () => ({ approved: true }),
+      ),
+    );
+    expect(captured?.additionalDirectories).toEqual([extension]);
+    const decision = await captured?.canUseTool?.(
+      "Write",
+      { file_path: join(extension, "a.txt"), content: "x" },
+      { toolUseID: "tu" },
+    );
+    expect(decision?.behavior).toBe("allow");
+    const denied = await captured?.canUseTool?.(
+      "Write",
+      { file_path: join(extension, "readonly", "a.txt"), content: "x" },
+      { toolUseID: "tu-readonly" },
+    );
+    expect(denied?.behavior).toBe("deny");
   });
 
   it("启用 partial messages 并把 text delta 转成 RunnerEvent", async () => {

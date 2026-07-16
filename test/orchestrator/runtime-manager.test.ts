@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { LocalExtensionDirectoryResolver } from "../../src/adapters/local-extension-directory-resolver.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
-import { RuntimeManager, type RuntimeManagerConfig } from "../../src/orchestrator/runtime-manager.js";
+import {
+  RuntimeManager,
+  type RuntimeManagerConfig,
+} from "../../src/orchestrator/runtime-manager.js";
 import type { ConversationStore } from "../../src/ports/conversation-store.js";
 import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { TranscriptStore } from "../../src/ports/transcript-store.js";
@@ -46,12 +50,12 @@ function fakeTranscriptStore(loadImpl: (key: { sessionId: string }) => unknown):
 }
 
 const fakeInstaller: SkillInstaller = {
-  installFromGit: async () => ({} as SkillPack),
-  installFromUpload: async () => ({} as SkillPack),
-  installFromPaste: async () => ({} as SkillPack),
-  installBuiltin: async () => ({} as SkillPack),
+  installFromGit: async () => ({}) as SkillPack,
+  installFromUpload: async () => ({}) as SkillPack,
+  installFromPaste: async () => ({}) as SkillPack,
+  installBuiltin: async () => ({}) as SkillPack,
   uninstall: async () => {},
-  update: async () => ({} as SkillPack),
+  update: async () => ({}) as SkillPack,
 };
 
 const baseConv = (over: Partial<Conversation> = {}): Conversation => ({
@@ -76,7 +80,10 @@ const baseUser = (homeDir: string) => ({
   updatedAt: "2026-07-08T00:00:00.000Z",
 });
 
-const baseConfig = (ws: string, over: Partial<RuntimeManagerConfig> = {}): RuntimeManagerConfig => ({
+const baseConfig = (
+  ws: string,
+  over: Partial<RuntimeManagerConfig> = {},
+): RuntimeManagerConfig => ({
   workspaceDir: ws,
   llm: { model: "glm", baseUrl: "http://x", authToken: "t" },
   defaultSystemPromptAppend: "高危操作触发审批门。",
@@ -89,18 +96,21 @@ function emptySkillDeps() {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+  const credentialStore = new SqliteCredentialStore(
+    db,
+    loadOrGenerateAppSecret(db, "skill_secret_key"),
+  );
   credentialStore.migrate();
   return {
     skillPackStore: packStore,
     credentialStore,
     installer: {
-      installFromGit: async () => ({} as SkillPack),
-      installFromUpload: async () => ({} as SkillPack),
-      installFromPaste: async () => ({} as SkillPack),
-      installBuiltin: async () => ({} as SkillPack),
+      installFromGit: async () => ({}) as SkillPack,
+      installFromUpload: async () => ({}) as SkillPack,
+      installFromPaste: async () => ({}) as SkillPack,
+      installBuiltin: async () => ({}) as SkillPack,
       uninstall: async () => {},
-      update: async () => ({} as SkillPack),
+      update: async () => ({}) as SkillPack,
     } as SkillInstaller,
     builtinSkillsDir: "",
   };
@@ -311,5 +321,35 @@ describe("RuntimeManager agent 分支", () => {
     });
     expect(runOptions.allowedTools).toBeUndefined();
     expect(runOptions.mcpServers).toBeUndefined();
+  });
+
+  it("owner 的扩展目录进入 SDK additionalDirectories 和写入根", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const extension = mkdtempSync(join(tmpdir(), "runtime-extension-"));
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      extensionDirectoryResolver: new LocalExtensionDirectoryResolver(),
+      ...emptySkillDeps(),
+    });
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        gitRepositories: [],
+        extensionDirectories: [{ id: "d1", name: "代码", path: extension, access: "readWrite" }],
+        llm: {},
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    expect(runOptions.additionalDirectories).toEqual([extension]);
+    expect(runOptions.allowedWriteRoots).toEqual([extension]);
+    expect(runOptions.systemPromptAppend).toContain("扩展工作目录");
   });
 });

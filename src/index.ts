@@ -14,6 +14,7 @@ import {
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
+import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
@@ -96,6 +97,7 @@ async function main(): Promise<void> {
   const gitConnectionStore = new SqliteGitConnectionStore(db, secretCipher);
   gitConnectionStore.migrate();
   const repositoryMaterializer = new GitCliRepositoryMaterializer(cfg.gitCloneTimeoutMs);
+  const extensionDirectoryResolver = new LocalExtensionDirectoryResolver();
   const gitAccessGate = new GitAccessGate(
     gitConnectionStore,
     repositoryMaterializer,
@@ -147,6 +149,7 @@ async function main(): Promise<void> {
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
+      extensionDirectoryResolver,
     });
     return new Orchestrator({
       store,
@@ -184,6 +187,8 @@ async function main(): Promise<void> {
     userStore,
     conversationStore,
     workspaceDir: cfg.workspaceDir,
+    agentStore,
+    extensionDirectoryResolver,
   });
 
   const webChannel = new WebChannel({

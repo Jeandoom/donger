@@ -4,6 +4,8 @@ import { basename, join } from "node:path";
 import { IGNORED_NAMES, resolveWithinRoots, scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { AgentStore } from "../ports/agent-store.js";
+import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
 import type {
   FileBrowser,
   FileContent,
@@ -18,6 +20,8 @@ export interface LocalFileBrowserDeps {
   userStore: UserStore;
   conversationStore: ConversationStore;
   workspaceDir: string;
+  agentStore?: AgentStore;
+  extensionDirectoryResolver?: ExtensionDirectoryResolver;
 }
 
 export class LocalFileBrowser implements FileBrowser {
@@ -80,6 +84,27 @@ export class LocalFileBrowser implements FileBrowser {
     scope: FileScope,
     conversationId?: string,
   ): Promise<{ roots: string[]; labels: string[] }> {
+    if (scope === "extension") {
+      if (!conversationId) throw new ForbiddenError("FORBIDDEN", "扩展目录需要 conversationId");
+      const conversation = await this.deps.conversationStore.get(conversationId);
+      if (!conversation || conversation.userId !== userId || !conversation.agentId) {
+        throw new ForbiddenError("FORBIDDEN", "会话不存在或未绑定智能体");
+      }
+      const agent = await this.deps.agentStore?.get(conversation.agentId);
+      if (!agent || agent.ownerId !== userId) {
+        throw new ForbiddenError("FORBIDDEN", "共享智能体不开放创建者的扩展目录");
+      }
+      if (!this.deps.extensionDirectoryResolver) {
+        throw new ForbiddenError("FORBIDDEN", "扩展目录解析器未装配");
+      }
+      const resolution = await this.deps.extensionDirectoryResolver.resolve(
+        agent.extensionDirectories,
+      );
+      return {
+        roots: resolution.available.map((item) => item.path),
+        labels: resolution.available.map((item) => item.name),
+      };
+    }
     if (scope === "runtime") {
       if (!conversationId) throw new ForbiddenError("FORBIDDEN", "runtime 需要 conversationId");
       const conv = await this.deps.conversationStore.get(conversationId);

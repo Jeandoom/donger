@@ -21,6 +21,13 @@ export interface AgentGitRepositoryDTO {
   syncMode: "cloneOnce" | "fastForward";
 }
 
+export interface AgentExtensionDirectoryDTO {
+  id: string;
+  name: string;
+  path: string;
+  access: "readOnly" | "readWrite";
+}
+
 export interface AgentDTO {
   id: string;
   ownerId: string;
@@ -31,14 +38,16 @@ export interface AgentDTO {
   tools: { mode: "all" | "whitelist"; whitelist: string[] };
   mcpServers: McpServerDTO[];
   gitRepositories: AgentGitRepositoryDTO[];
+  extensionDirectories: AgentExtensionDirectoryDTO[];
   llm: { presetId?: string };
   createdAt: string;
   updatedAt: string;
 }
 
-export interface AgentListDTO extends Omit<AgentDTO, "gitRepositories"> {
+export interface AgentListDTO extends Omit<AgentDTO, "gitRepositories" | "extensionDirectories"> {
   _mine: boolean;
   gitRepositories?: AgentGitRepositoryDTO[];
+  extensionDirectories?: AgentExtensionDirectoryDTO[];
 }
 
 export interface AgentMeta {

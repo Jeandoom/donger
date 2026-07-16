@@ -12,6 +12,7 @@ import type { RunOptions } from "../ports/agent-runner.js";
 import type { CredentialRequestItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
+import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
 import type {
   RepositoryMaterializeItem,
   RepositoryMaterializer,
@@ -48,6 +49,7 @@ interface RuntimeManagerDeps {
   installer: SkillInstaller;
   builtinSkillsDir: string;
   repositoryMaterializer?: RepositoryMaterializer;
+  extensionDirectoryResolver?: ExtensionDirectoryResolver;
 }
 
 /**
@@ -95,6 +97,9 @@ export class RuntimeManager {
     let allowedTools: string[] | undefined;
     let mcpServers: McpServerConfig[] | undefined;
     let extraPrompt: string | undefined = opts.systemPromptAppend;
+    let additionalDirectories: string[] | undefined;
+    let allowedWriteRoots: string[] | undefined;
+    let readOnlyRoots: string[] | undefined;
 
     if (opts.agent) {
       const a = opts.agent;
@@ -118,6 +123,33 @@ export class RuntimeManager {
 
     // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
     const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
+
+    if (opts.agent?.extensionDirectories?.length && this.deps.extensionDirectoryResolver) {
+      if (opts.agent.ownerId === user.id) {
+        const resolution = await this.deps.extensionDirectoryResolver.resolve(
+          opts.agent.extensionDirectories,
+        );
+        additionalDirectories = resolution.available.map((item) => item.path);
+        allowedWriteRoots = resolution.available
+          .filter((item) => item.access === "readWrite")
+          .map((item) => item.path);
+        readOnlyRoots = resolution.available
+          .filter((item) => item.access === "readOnly")
+          .map((item) => item.path);
+        const directoryPrompt = [
+          "## 扩展工作目录",
+          ...resolution.available.map(
+            (item) =>
+              `- ${item.name}: ${item.path}（${item.access === "readWrite" ? "读写" : "只读"}）`,
+          ),
+          ...resolution.unavailable.map((item) => `- ${item.name}: 不可用（${item.reason}）`),
+        ].join("\n");
+        extraPrompt = extraPrompt ? `${extraPrompt}\n\n${directoryPrompt}` : directoryPrompt;
+      } else {
+        const warning = "## 扩展工作目录\n共享智能体不会向访问者开放创建者的宿主工作目录。";
+        extraPrompt = extraPrompt ? `${extraPrompt}\n\n${warning}` : warning;
+      }
+    }
 
     if (opts.gitMaterializeItems?.length && this.deps.repositoryMaterializer) {
       const repositories = await this.deps.repositoryMaterializer.materialize({
@@ -176,6 +208,9 @@ export class RuntimeManager {
       abortSignal: opts.abortSignal,
       resume: conversation.sdkSessionId || undefined,
       workspaceRoot: user.homeDir,
+      additionalDirectories,
+      allowedWriteRoots,
+      readOnlyRoots,
       sessionStore,
       capabilityVersion: 1,
       credentialsEnv,

@@ -1473,7 +1473,7 @@ export class WebChannel implements Channel {
     return { packStore: skillPackStore, installer, credentialStore };
   }
 
-  /** GET /api/files/tree?scope=user|runtime[&conversationId=] */
+  /** GET /api/files/tree?scope=user|runtime|extension[&conversationId=] */
   private async handleFileTree(req: HttpRequest, res: ServerResponse): Promise<void> {
     if (!this.fileBrowser) {
       res.writeHead(503);
@@ -1483,12 +1483,12 @@ export class WebChannel implements Channel {
     const userId = (req as HttpRequest & { userId?: string }).userId ?? "";
     const scope = this.extractQuery(req.url ?? "", "scope");
     const conversationId = this.extractQuery(req.url ?? "", "conversationId");
-    if (scope !== "user" && scope !== "runtime") {
+    if (scope !== "user" && scope !== "runtime" && scope !== "extension") {
       res.writeHead(400);
-      res.end(JSON.stringify({ error: "scope 必须是 user 或 runtime" }));
+      res.end(JSON.stringify({ error: "scope 必须是 user、runtime 或 extension" }));
       return;
     }
-    if (scope === "runtime" && !conversationId) {
+    if (scope !== "user" && !conversationId) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: "runtime 需要 conversationId" }));
       return;
@@ -1514,9 +1514,9 @@ export class WebChannel implements Channel {
     const rawPath = this.extractQuery(req.url ?? "", "path");
     const conversationId = this.extractQuery(req.url ?? "", "conversationId");
     const download = this.extractQuery(req.url ?? "", "download") === "1";
-    if (scope !== "user" && scope !== "runtime") {
+    if (scope !== "user" && scope !== "runtime" && scope !== "extension") {
       res.writeHead(400);
-      res.end(JSON.stringify({ error: "scope 必须是 user 或 runtime" }));
+      res.end(JSON.stringify({ error: "scope 必须是 user、runtime 或 extension" }));
       return;
     }
     if (!rawPath) {
@@ -1765,6 +1765,7 @@ export class WebChannel implements Channel {
       tools: a.tools,
       mcpServers: maskedMcp,
       gitRepositories: a.gitRepositories,
+      extensionDirectories: a.extensionDirectories,
       llm: a.llm,
     };
   }

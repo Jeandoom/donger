@@ -33,17 +33,25 @@ export class ClaudeAgentRunner implements AgentRunner {
         includePartialMessages: true,
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
         ...(opts.mcpServers?.length ? { mcpServers: mcpServersToSdk(opts.mcpServers) } : {}),
+        ...(opts.additionalDirectories?.length
+          ? { additionalDirectories: opts.additionalDirectories }
+          : {}),
         settingSources: ["project"],
         sandbox: {
           enabled: true,
           failIfUnavailable: false,
           allowUnsandboxedCommands: true,
+          ...(opts.readOnlyRoots?.length ? { filesystem: { denyWrite: opts.readOnlyRoots } } : {}),
         },
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
-          // 写入边界：Edit/Write/NotebookEdit 的路径必须落在 workspaceRoot 内
+          const writeRoots = [
+            ...(opts.workspaceRoot ? [resolve(opts.workspaceRoot)] : []),
+            ...(opts.allowedWriteRoots ?? []).map((root) => resolve(root)),
+          ];
+          // 写入边界：direct write tools 必须落在用户工作区或显式读写扩展目录内
           if (
-            opts.workspaceRoot &&
+            writeRoots.length > 0 &&
             (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit")
           ) {
             const rawPath =
@@ -54,11 +62,20 @@ export class ClaudeAgentRunner implements AgentRunner {
                   : null;
             if (rawPath) {
               const abs = isAbsolute(rawPath) ? rawPath : resolve(opts.cwd, rawPath);
-              const root = resolve(opts.workspaceRoot);
-              if (!abs.startsWith(root + sep) && abs !== root) {
+              const deniedByReadOnly = (opts.readOnlyRoots ?? [])
+                .map((root) => resolve(root))
+                .some((root) => abs.startsWith(root + sep) || abs === root);
+              if (deniedByReadOnly) {
                 return {
                   behavior: "deny" as const,
-                  message: `写入越界：${rawPath} 不在工作区 ${root} 内`,
+                  message: `写入越界：${rawPath} 位于只读扩展目录内`,
+                  toolUseID: ctx.toolUseID,
+                };
+              }
+              if (!writeRoots.some((root) => abs.startsWith(root + sep) || abs === root)) {
+                return {
+                  behavior: "deny" as const,
+                  message: `写入越界：${rawPath} 不在允许的写入目录内`,
                   toolUseID: ctx.toolUseID,
                 };
               }

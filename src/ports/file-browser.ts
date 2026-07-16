@@ -1,5 +1,5 @@
 // 文件浏览端口：多通道（Web/钉钉/…）共享的文件访问契约。
-export type FileScope = "user" | "runtime";
+export type FileScope = "user" | "runtime" | "extension";
 
 export interface FileNode {
   name: string;

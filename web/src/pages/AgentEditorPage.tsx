@@ -23,6 +23,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
   gitRepositories: [],
+  extensionDirectories: [],
   llm: {},
 };
 
@@ -53,6 +54,7 @@ export function AgentEditorPage() {
             tools: a.tools,
             mcpServers: a.mcpServers,
             gitRepositories: a.gitRepositories ?? [],
+            extensionDirectories: a.extensionDirectories ?? [],
             llm: a.llm,
           }),
         )
@@ -356,6 +358,93 @@ export function AgentEditorPage() {
           >
             添加仓库
           </button>
+        </div>
+      </Field>
+
+      <Field label="扩展工作目录">
+        <div className="space-y-2">
+          {form.extensionDirectories.map((directory, index) => (
+            <div key={directory.id} className="grid gap-2 rounded border p-3 sm:grid-cols-6">
+              <input
+                className="rounded border px-2 py-1 text-sm sm:col-span-2"
+                placeholder="显示名称"
+                value={directory.name}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    extensionDirectories: form.extensionDirectories.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, name: event.target.value } : item,
+                    ),
+                  })
+                }
+              />
+              <input
+                className="rounded border px-2 py-1 text-sm sm:col-span-3"
+                placeholder="宿主机绝对目录"
+                value={directory.path}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    extensionDirectories: form.extensionDirectories.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, path: event.target.value } : item,
+                    ),
+                  })
+                }
+              />
+              <select
+                className="rounded border px-2 py-1 text-sm"
+                value={directory.access}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    extensionDirectories: form.extensionDirectories.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? {
+                            ...item,
+                            access: event.target.value as "readOnly" | "readWrite",
+                          }
+                        : item,
+                    ),
+                  })
+                }
+              >
+                <option value="readWrite">读写</option>
+                <option value="readOnly">只读</option>
+              </select>
+              <button
+                type="button"
+                className="text-left text-xs text-destructive sm:col-span-6"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    extensionDirectories: form.extensionDirectories.filter(
+                      (_, itemIndex) => itemIndex !== index,
+                    ),
+                  })
+                }
+              >
+                删除目录
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="rounded border px-3 py-1.5 text-sm"
+            onClick={() =>
+              setForm({
+                ...form,
+                extensionDirectories: [
+                  ...form.extensionDirectories,
+                  { id: crypto.randomUUID(), name: "", path: "", access: "readWrite" },
+                ],
+              })
+            }
+          >
+            添加工作目录
+          </button>
+          <p className="text-xs text-muted-foreground">
+            目录仅在智能体创建者自己的会话中生效；共享用户不会获得宿主目录权限。
+          </p>
         </div>
       </Field>
 

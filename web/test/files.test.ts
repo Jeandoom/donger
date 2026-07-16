@@ -23,4 +23,15 @@ describe("contentUrl", () => {
     const u = contentUrl({ scope: "user", path: "x.md", token: "t", download: true });
     expect(u).toContain("download=1");
   });
+
+  it("extension scope 携带 conversationId", () => {
+    const u = contentUrl({
+      scope: "extension",
+      path: "docs/readme.md",
+      conversationId: "c1",
+      token: "t",
+    });
+    expect(u).toContain("scope=extension");
+    expect(u).toContain("conversationId=c1");
+  });
 });

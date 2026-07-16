@@ -1,4 +1,4 @@
-export type FileScope = "user" | "runtime";
+export type FileScope = "user" | "runtime" | "extension";
 
 export interface FileNode {
   name: string;

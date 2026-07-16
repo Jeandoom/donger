@@ -16,6 +16,12 @@ export interface RunOptions {
   resume?: string;
   /** 写入边界：写入路径必须落在此目录内（该用户工作区） */
   workspaceRoot?: string;
+  /** SDK cwd 之外允许访问的扩展目录。 */
+  additionalDirectories?: string[];
+  /** workspaceRoot 之外允许 direct write tools 写入的目录。 */
+  allowedWriteRoots?: string[];
+  /** SDK sandbox 尽力阻止写入的扩展目录。 */
+  readOnlyRoots?: string[];
   /** RuntimeManager 注入的 transcript 适配器（SDK Alpha SessionStore） */
   sessionStore?: SessionStore;
   /** 能力快照版本号（审计/回溯用，M1 仅记录，不消费） */

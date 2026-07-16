@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentExtensionDirectoriesSchema } from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
 
 export const McpServerConfigSchema = z.object({
@@ -31,6 +32,7 @@ export const AgentSchema = z.object({
   tools: AgentToolsSchema,
   mcpServers: z.array(McpServerConfigSchema).default([]),
   gitRepositories: AgentGitRepositoriesSchema,
+  extensionDirectories: AgentExtensionDirectoriesSchema,
   llm: AgentLLMSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -38,8 +40,12 @@ export const AgentSchema = z.object({
 export type Agent = z.infer<typeof AgentSchema>;
 
 /** 入参用：不带 id/时间戳（由 store 填充） */
-export type AgentInput = Omit<Agent, "id" | "createdAt" | "updatedAt" | "gitRepositories"> & {
+export type AgentInput = Omit<
+  Agent,
+  "id" | "createdAt" | "updatedAt" | "gitRepositories" | "extensionDirectories"
+> & {
   gitRepositories?: Agent["gitRepositories"];
+  extensionDirectories?: Agent["extensionDirectories"];
 };
 export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true });
 

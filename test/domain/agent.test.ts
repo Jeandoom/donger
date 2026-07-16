@@ -40,5 +40,6 @@ describe("Agent schema", () => {
     expect(a.skills).toEqual(["superpowers:brainstorming"]);
     expect(a.mcpServers[0]?.headers).toEqual({ k: "v" });
     expect(a.gitRepositories).toEqual([]);
+    expect(a.extensionDirectories).toEqual([]);
   });
 });
