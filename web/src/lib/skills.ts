@@ -26,7 +26,12 @@ export interface SkillPackDTO {
   name: string;
   description?: string;
   version?: string;
-  source: { kind: "git" | "upload" | "paste" | "builtin"; url?: string; originalFilename?: string };
+  source: {
+    kind: "git" | "upload" | "paste" | "builtin";
+    url?: string;
+    subPath?: string;
+    originalFilename?: string;
+  };
   installedPath: string;
   enabled: boolean;
   builtin: boolean;

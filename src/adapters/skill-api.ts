@@ -51,6 +51,12 @@ export async function handleInstall(
   let pack: SkillPack;
   try {
     if (src.kind === "git") {
+      if (typeof src.url !== "string" || !src.url.trim()) {
+        return { status: 400, json: { error: "Git 来源缺少 url" } };
+      }
+      if (src.subPath !== undefined && typeof src.subPath !== "string") {
+        return { status: 400, json: { error: "Git 来源 subPath 必须是字符串" } };
+      }
       pack = await d.installer.installFromGit(userId, src as unknown as InstallGitReq);
     } else if (src.kind === "paste") {
       pack = await d.installer.installFromPaste(userId, src as unknown as InstallPasteReq);
@@ -130,7 +136,11 @@ export async function handleListCredentials(
   const packs = await d.packStore.listPacks(userId);
   const usedBy: Record<string, string[]> = {};
   for (const p of packs) {
-    for (const c of p.credentials) (usedBy[c.key] ??= []).push(p.name);
+    for (const c of p.credentials) {
+      const packsUsingCredential = usedBy[c.key] ?? [];
+      packsUsingCredential.push(p.name);
+      usedBy[c.key] = packsUsingCredential;
+    }
   }
   return {
     status: 200,

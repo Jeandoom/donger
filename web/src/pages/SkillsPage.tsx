@@ -200,6 +200,7 @@ function PackCard({
 function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstalled: () => void }) {
   const [tab, setTab] = useState<"git" | "upload" | "paste">("git");
   const [gitUrl, setGitUrl] = useState("");
+  const [gitSubPath, setGitSubPath] = useState("");
   const [gitSlug, setGitSlug] = useState("");
   const [pasteContent, setPasteContent] = useState("");
   const [pasteSlug, setPasteSlug] = useState("");
@@ -214,7 +215,12 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
     try {
       if (tab === "git") {
         if (!gitUrl.trim()) throw new Error("请填写 git 地址");
-        await installPack({ kind: "git", url: gitUrl.trim(), slug: gitSlug.trim() || undefined });
+        await installPack({
+          kind: "git",
+          url: gitUrl.trim(),
+          subPath: gitSubPath.trim() || undefined,
+          slug: gitSlug.trim() || undefined,
+        });
       } else if (tab === "upload") {
         if (!fileContent) throw new Error("请选择文件");
         await installUpload(fileName || "skill.md", fileContent);
@@ -266,6 +272,12 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
                 placeholder="https://github.com/user/skills-repo"
                 value={gitUrl}
                 onChange={(e) => setGitUrl(e.target.value)}
+              />
+              <input
+                className="w-full rounded-md border border-border px-3 py-2 text-sm"
+                placeholder="技能目录（可选，如 skills/.../skill-name；留空安装全部）"
+                value={gitSubPath}
+                onChange={(e) => setGitSubPath(e.target.value)}
               />
               <input
                 className="w-full rounded-md border border-border px-3 py-2 text-sm"

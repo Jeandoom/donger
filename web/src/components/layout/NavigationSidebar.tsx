@@ -9,7 +9,7 @@ interface LeafItem {
   end?: boolean;
 }
 interface ParentItem {
-  key: "agents" | "settings";
+  key: "agents" | "settings" | "observation";
   label: string;
   /** 命中即视为该父项激活（用于自动展开） */
   match: string[];
@@ -30,7 +30,6 @@ const entries: NavEntry[] = [
   },
   { to: "/workflows", label: "工作流" },
   { to: "/skills", label: "技能" },
-  { to: "/credentials", label: "凭证" },
   {
     key: "settings",
     label: "用户配置",
@@ -38,10 +37,19 @@ const entries: NavEntry[] = [
     children: [
       { to: "/settings/profile", label: "基本信息" },
       { to: "/settings/git", label: "Git 配置" },
+      { to: "/settings/models", label: "Models" },
+      { to: "/settings/credentials", label: "凭证" },
     ],
   },
-  { to: "/config", label: "配置" },
-  { to: "/audit", label: "执行审计" },
+  {
+    key: "observation",
+    label: "会话观测",
+    match: ["/audit"],
+    children: [
+      { to: "/audit/history", label: "历史会话" },
+      { to: "/audit/llm", label: "LLM 会话" },
+    ],
+  },
 ];
 
 function isParent(e: NavEntry): e is ParentItem {
@@ -70,9 +78,10 @@ export function NavigationSidebar({
       return {
         agents: localStorage.getItem("donger_nav_agents_open") === "1",
         settings: localStorage.getItem("donger_nav_settings_open") === "1",
+        observation: localStorage.getItem("donger_nav_observation_open") === "1",
       };
     } catch {
-      return { agents: false, settings: false };
+      return { agents: false, settings: false, observation: false };
     }
   });
 

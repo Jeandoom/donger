@@ -71,6 +71,8 @@ export interface ConversationSummary {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** 仅前端存在的未保存会话草稿。 */
+  isDraft?: boolean;
 }
 
 export interface ChatState {

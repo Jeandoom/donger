@@ -5,8 +5,18 @@ import { apiFetch } from "./auth";
 
 export interface AuditEventDTO {
   id: string;
-  type: "user_message" | "session_init" | "text" | "tool_use" | "tool_result" | "result";
+  type:
+    | "user_message"
+    | "session_init"
+    | "llm_input"
+    | "llm_output"
+    | "text"
+    | "tool_use"
+    | "tool_result"
+    | "result";
   text?: string;
+  llmInput?: string;
+  llmOutput?: string;
   toolName?: string;
   toolInput?: string;
   toolUseId?: string;
@@ -63,6 +73,19 @@ export async function fetchAuditDetail(id: string): Promise<AuditDetail> {
   const res = await apiFetch(`/api/audit/conversations/${id}`);
   if (!res.ok) throw new Error(`audit detail ${res.status}`);
   return (await res.json()) as AuditDetail;
+}
+
+export async function debugLlmInput(
+  input: string,
+  presetId?: string,
+): Promise<{ output: string; model: string }> {
+  const res = await apiFetch("/api/llm/debug", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input, presetId }),
+  });
+  if (!res.ok) throw new Error(`llm debug ${res.status}`);
+  return (await res.json()) as { output: string; model: string };
 }
 
 /** 毫秒 → 人类可读；undefined → '—'。 */

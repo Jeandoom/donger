@@ -11,9 +11,11 @@ import { LocalFileBrowser } from "../../src/adapters/local-file-browser.js";
 import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
+import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
 import type { LlmPreset } from "../../src/config.js";
+import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
 import type { GitAccessGate } from "../../src/orchestrator/git-access-gate.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
 
@@ -315,6 +317,38 @@ describe("WebChannel GET /api/audit/conversations", () => {
     expect(body[0]?.title).toBe("修登录bug");
     expect(body[0]?.turnCount).toBe(1);
     db.close();
+  });
+});
+
+describe("WebChannel POST /api/llm/debug", () => {
+  it("使用选中的模型调用调试 runner", async () => {
+    const run = vi.fn(async (input: string, llm: { model: string }) => ({
+      output: `echo:${input}`,
+      model: llm.model,
+    }));
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: mkdtempSync(join(tmpdir(), "web-")),
+      llm: { model: "default", baseUrl: "https://default", authToken: "secret" },
+      llmDebugRunner: { run },
+      agentMeta: { presets: [{ id: "p1", name: "测试模型", model: "m1", baseUrl: "https://m1" }], skillPaths: [] },
+    });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("no port");
+    const res = await fetch(`http://127.0.0.1:${port}/api/llm/debug`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "edited input", presetId: "p1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ output: "echo:edited input", model: "m1" });
+    expect(run).toHaveBeenCalledWith("edited input", {
+      model: "m1",
+      baseUrl: "https://m1",
+      authToken: "secret",
+    });
   });
 });
 
@@ -743,6 +777,7 @@ async function startWebWithAgents(
   userId: string;
   agentStore: SqliteAgentStore;
   agentShareStore: SqliteAgentShareStore;
+  skillPackStore: SqliteSkillPackStore;
 }> {
   const tmp = mkdtempSync(join(tmpdir(), "web-agent-"));
   const db = new Database(join(tmp, "t.db"));
@@ -758,6 +793,8 @@ async function startWebWithAgents(
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
   agentShareStore.migrate();
+  const skillPackStore = new SqliteSkillPackStore(db);
+  skillPackStore.migrate();
   const sessionStore = new JwtSessionStore(db, "test-secret", 3_600_000);
   sessionStore.migrate();
   const user = await userStore.getOrCreateByIdentity("internal", "webu", "tester");
@@ -770,13 +807,14 @@ async function startWebWithAgents(
     sessionStore,
     agentStore,
     agentShareStore,
+    skillPackStore,
     agentMeta: { presets: opts.presets ?? [], skillPaths: opts.skillPaths ?? [] },
   });
   web.onMessage(() => {});
   await web.ready();
   const port = web.boundPort;
   if (!port) throw new Error("server not listening");
-  return { port, token, userId: user.id, agentStore, agentShareStore };
+  return { port, token, userId: user.id, agentStore, agentShareStore, skillPackStore };
 }
 
 describe("WebChannel /api/agents", () => {
@@ -893,6 +931,69 @@ describe("WebChannel /api/agents", () => {
     const j = (await r.json()) as { tools: string[]; llmPresets: unknown[] };
     expect(j.tools).toContain("Bash");
     expect(j.llmPresets.length).toBe(1);
+  });
+
+  it("meta/options 返回当前用户启用 pack 和 skill", async () => {
+    const { port, token, userId, skillPackStore } = await startWebWithAgents();
+    const now = new Date().toISOString();
+    const pack: SkillPack = {
+      id: "pack-enabled",
+      userId,
+      slug: "enabled-pack",
+      name: "enabled-pack",
+      source: { kind: "paste" },
+      installedPath: ".skills/enabled-pack",
+      enabled: true,
+      builtin: false,
+      credentials: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const enabledSkill: PackSkill = {
+      id: "skill-enabled",
+      userId,
+      packId: pack.id,
+      name: "search-orders",
+      description: "查询订单",
+      relativePath: "skills/search-orders/SKILL.md",
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const disabledSkill: PackSkill = {
+      ...enabledSkill,
+      id: "skill-disabled",
+      name: "disabled-skill",
+      enabled: false,
+    };
+    const disabledPack: SkillPack = {
+      ...pack,
+      id: "pack-disabled",
+      slug: "disabled-pack",
+      name: "disabled-pack",
+      enabled: false,
+    };
+    await skillPackStore.upsertPack(pack);
+    await skillPackStore.upsertPack(disabledPack);
+    await skillPackStore.upsertSkills(userId, pack.id, [enabledSkill, disabledSkill]);
+    await skillPackStore.upsertSkills(userId, disabledPack.id, [
+      { ...enabledSkill, id: "skill-disabled-pack", packId: disabledPack.id, name: "hidden-skill" },
+    ]);
+
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/meta/options`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      skills: Array<{ id: string; name: string; description?: string }>;
+    };
+    expect(body.skills).toContainEqual({
+      id: "enabled-pack:search-orders",
+      name: "search-orders",
+      description: "查询订单",
+    });
+    expect(body.skills.map((skill) => skill.id)).not.toContain("enabled-pack:disabled-skill");
+    expect(body.skills.map((skill) => skill.id)).not.toContain("disabled-pack:hidden-skill");
   });
 
   it("GET /:id/conversation get-or-create（幂等）", async () => {

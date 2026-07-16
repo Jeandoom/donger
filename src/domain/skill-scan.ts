@@ -21,6 +21,21 @@ export function parseFrontmatter(md: string): ParsedFrontmatter {
     if (idx < 0) continue;
     const k = line.slice(0, idx).trim();
     let v = line.slice(idx + 1).trim();
+    if (v === "|" || v === ">") {
+      const block: string[] = [];
+      for (i += 1; i < lines.length; i++) {
+        const continuation = lines[i];
+        if (continuation === undefined || continuation.trim() === "---") break;
+        if (continuation.trim() !== "" && !/^\s+/.test(continuation)) {
+          i -= 1;
+          break;
+        }
+        block.push(continuation.replace(/^\s{2}/, "").trimEnd());
+      }
+      raw[k] = (v === "|" ? block.join("\n") : block.join(" ")).trim();
+      if (lines[i]?.trim() === "---") break;
+      continue;
+    }
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
       v = v.slice(1, -1);
     }
@@ -31,7 +46,7 @@ export function parseFrontmatter(md: string): ParsedFrontmatter {
   if (raw.description) fm.description = raw.description;
   if (raw["allowed-tools"]) {
     fm.allowedTools = raw["allowed-tools"]
-      .split(",")
+      .split(/[\s,]+/)
       .map((s) => s.trim())
       .filter(Boolean);
   }
@@ -51,10 +66,10 @@ export interface ScannedPack {
   credentials: SkillCredentialSpec[];
 }
 
-const SKIP_DIRS = new Set(["node_modules", ".git"]);
+const SKIP_DIRS = new Set(["node_modules", ".git", ".donger-sdk-plugin"]);
 
-/** 递归找 packDir 下所有 SKILL.md，解析 frontmatter；读 .claude-plugin/plugin.json 与 donger.manifest.json。 */
-export function scanSkillPack(packDir: string): ScannedPack {
+/** 递归找 skillRoot 下所有 SKILL.md，解析 frontmatter；元数据仍从 packDir 读取。 */
+export function scanSkillPack(packDir: string, skillRoot = packDir): ScannedPack {
   const skills: ScannedSkill[] = [];
   const visit = (d: string) => {
     for (const entry of readdirSync(d)) {
@@ -69,12 +84,12 @@ export function scanSkillPack(packDir: string): ScannedPack {
           name: fm.name ?? "unnamed",
           description: fm.description ?? "",
           allowedTools: fm.allowedTools,
-          relativePath: relative(packDir, abs),
+          relativePath: relative(packDir, abs).replaceAll("\\", "/"),
         });
       }
     }
   };
-  visit(packDir);
+  visit(skillRoot);
 
   let packMeta: ScannedPack["packMeta"] = { name: basename(packDir) };
   const pluginJsonPath = join(packDir, ".claude-plugin", "plugin.json");

@@ -24,6 +24,7 @@ export type ChatAction =
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
   | { type: "new_conversation"; conversation: ConversationSummary }
+  | { type: "persist_conversation"; draftId: string; conversation: ConversationSummary }
   | { type: "set_messages"; messages: ChatMessage[] }
   | { type: "loading_messages"; loading: boolean }
   | { type: "remove_conversation"; conversationId: string }
@@ -55,6 +56,10 @@ export function makeId(): string {
 
   fallbackId += 1;
   return `local-${Date.now().toString(36)}-${fallbackId.toString(36)}`;
+}
+
+export function isDraftConversation(conversation: ConversationSummary | undefined): boolean {
+  return conversation?.isDraft === true;
 }
 
 function appendBot(state: ChatState, text: string): ChatState {
@@ -112,26 +117,58 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "set_conversations":
       return {
         ...state,
-        conversations: action.conversations,
+        conversations: [
+          ...state.conversations.filter((conversation) => conversation.isDraft),
+          ...action.conversations,
+        ],
         loadingConversations: false,
       };
     case "switch_conversation":
-      return {
-        ...state,
-        activeConversationId: action.conversationId,
-        messages: [],
-        isGenerating: false,
-        loadingMessages: true,
-      };
+      {
+        const conversation = state.conversations.find(
+          (item) => item.id === action.conversationId,
+        );
+        const isDraft = isDraftConversation(conversation);
+        return {
+          ...state,
+          activeConversationId: action.conversationId,
+          messages: [],
+          isGenerating: false,
+          loadingMessages: !isDraft && action.conversationId !== null,
+        };
+      }
     case "new_conversation":
+      {
+        const existingDraft = state.conversations.find((item) => item.isDraft);
+        if (existingDraft) {
+          return {
+            ...state,
+            activeConversationId: existingDraft.id,
+            messages: state.activeConversationId === existingDraft.id ? state.messages : [],
+            isGenerating: false,
+            loadingMessages: false,
+          };
+        }
+        return {
+          ...state,
+          conversations: [action.conversation, ...state.conversations],
+          activeConversationId: action.conversation.id,
+          messages: [],
+          isGenerating: false,
+          loadingConversations: false,
+          loadingMessages: false,
+        };
+      }
+    case "persist_conversation":
       return {
         ...state,
-        conversations: [action.conversation, ...state.conversations],
-        activeConversationId: action.conversation.id,
-        messages: [],
-        isGenerating: false,
-        loadingConversations: false,
-        loadingMessages: false,
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === action.draftId ? action.conversation : conversation,
+        ),
+        activeConversationId:
+          state.activeConversationId === action.draftId
+            ? action.conversation.id
+            : state.activeConversationId,
       };
     case "set_messages":
       return { ...state, messages: action.messages, loadingMessages: false, isGenerating: false };

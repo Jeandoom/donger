@@ -117,6 +117,43 @@ export class ClaudeAgentRunner implements AgentRunner {
       },
     });
 
+    yield {
+      type: "llm_input",
+      taskId: task.id,
+      input: serializeJson({
+        prompt: task.prompt,
+        options: {
+          cwd: opts.cwd,
+          model: opts.llm.model,
+          skills: opts.skills,
+          plugins: opts.pluginPaths?.map((path) => ({ type: "local", path })),
+          systemPrompt: {
+            type: "preset",
+            preset: "claude_code",
+            append: opts.systemPromptAppend ?? "",
+          },
+          includePartialMessages: true,
+          allowedTools: opts.allowedTools,
+          mcpServers: opts.mcpServers,
+          additionalDirectories: opts.additionalDirectories,
+          settingSources: ["project"],
+          sandbox: {
+            enabled: true,
+            failIfUnavailable: false,
+            allowUnsandboxedCommands: true,
+            filesystem: opts.readOnlyRoots?.length ? { denyWrite: opts.readOnlyRoots } : undefined,
+          },
+          permissionMode: "default",
+          resume: opts.resume,
+          workspaceRoot: opts.workspaceRoot,
+          allowedWriteRoots: opts.allowedWriteRoots,
+          readOnlyRoots: opts.readOnlyRoots,
+          capabilityVersion: opts.capabilityVersion,
+          credentialKeys: Object.keys(opts.credentialsEnv ?? {}),
+        },
+      }),
+    };
+
     let streamingMessageId: string | null = null;
     for await (const m of stream) {
       if (m.type === "system" && "subtype" in m && m.subtype === "init") {
@@ -139,6 +176,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           streamingMessageId = null;
         }
       } else if (m.type === "assistant") {
+        yield { type: "llm_output", taskId: task.id, output: serializeJson(m) };
         for (const block of m.message.content) {
           if (block.type === "text") {
             yield { type: "text", taskId: task.id, text: block.text };
@@ -153,6 +191,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           }
         }
       } else if (m.type === "user") {
+        yield { type: "llm_input", taskId: task.id, input: serializeJson(m) };
         const content =
           (
             m as {
@@ -209,6 +248,14 @@ export class ClaudeAgentRunner implements AgentRunner {
           : { type: "result", taskId: task.id, subtype: "error", error: "agent 执行出错", usage };
       }
     }
+  }
+}
+
+function serializeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
   }
 }
 

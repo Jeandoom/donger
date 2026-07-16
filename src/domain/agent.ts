@@ -29,6 +29,7 @@ export const AgentSchema = z.object({
   description: z.string().optional(),
   systemPrompt: z.string().optional(),
   skills: z.array(z.string()).default([]),
+  defaultSkill: z.string().min(1).optional(),
   tools: AgentToolsSchema,
   mcpServers: z.array(McpServerConfigSchema).default([]),
   gitRepositories: AgentGitRepositoriesSchema,
@@ -54,4 +55,9 @@ export function parseAgent(raw: unknown): Agent {
 }
 export function parseAgentInput(raw: unknown): AgentInput {
   return AgentInputSchema.parse(raw);
+}
+
+/** 将智能体配置的默认 Skill 作为 slash 指令追加到用户输入。 */
+export function appendDefaultSkill(prompt: string, defaultSkill?: string): string {
+  return defaultSkill ? `${prompt}\n/${defaultSkill}` : prompt;
 }

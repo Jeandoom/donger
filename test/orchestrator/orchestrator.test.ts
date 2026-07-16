@@ -551,6 +551,7 @@ describe("Orchestrator agent 路径", () => {
     ownerId: "other",
     name: "A",
     skills: ["s:1"],
+    defaultSkill: "s:1",
     tools: { mode: "all", whitelist: [] },
     mcpServers: [],
     llm: {},
@@ -562,6 +563,7 @@ describe("Orchestrator agent 路径", () => {
     convStore: ConversationStore,
     isGranted: boolean,
     script: FakeScript,
+    customRunner?: AgentRunner,
   ): { orch: Orchestrator; store: InMemoryTaskStore } {
     const store = new InMemoryTaskStore();
     const agentStore = {
@@ -583,7 +585,7 @@ describe("Orchestrator agent 路径", () => {
       usageStore: new InMemoryUsageStore(),
       auditStore: new InMemoryAuditStore(),
       gates: new GateRouter(),
-      runner: new FakeAgentRunner(script),
+      runner: customRunner ?? new FakeAgentRunner(script),
       channel: fakeChannel(true),
       runtimeMgr,
       credentialStore,
@@ -609,5 +611,23 @@ describe("Orchestrator agent 路径", () => {
       text: "hi",
     });
     expect((await store.listByStatus("done")).length).toBe(1);
+  });
+
+  it("每次 agent 对话自动追加默认 Skill 指令", async () => {
+    let capturedPrompt = "";
+    const runner: AgentRunner = {
+      run(task, opts, resolver) {
+        capturedPrompt = task.prompt;
+        return new FakeAgentRunner({ result: "ok" }).run(task, opts, resolver);
+      },
+    };
+    const { orch } = buildOrch(agentConvStore("a1"), true, { result: "ok" }, runner);
+    await orch.handleMessage({
+      channelId: "test",
+      threadId: "th",
+      requesterId: "webu",
+      text: "查询订单",
+    });
+    expect(capturedPrompt).toBe("查询订单\n/s:1");
   });
 });

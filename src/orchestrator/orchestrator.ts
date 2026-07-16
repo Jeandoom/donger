@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Agent } from "../domain/agent.js";
+import { appendDefaultSkill, type Agent } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { GateRouter } from "../domain/gate-router.js";
@@ -222,7 +222,7 @@ export class Orchestrator {
         channelId: msg.channelId,
         threadId: msg.threadId,
         requesterId: msg.requesterId,
-        prompt: appendMessageFiles(msg.text, msg.files),
+        prompt: appendDefaultSkill(appendMessageFiles(msg.text, msg.files), agent?.defaultSkill),
         status: "created",
         skillChain: [],
         createdAt: now,
@@ -283,9 +283,23 @@ export class Orchestrator {
       let attemptOpts = opts;
       for (let attempt = 0; attempt < 2; attempt++) {
         rawEvents = runner.run({ ...task, status: "running" }, attemptOpts, resolver);
-        // 预读第一个事件判断是否 session 过期
-        const first = await rawEvents[Symbol.asyncIterator]().next();
-        if (first.done) break; // 流为空，直接走后续
+        // 预读第一个实际 SDK 事件判断是否 session 过期；llm_input 是审计事件，不能遮住 result 错误。
+        const iterator = rawEvents[Symbol.asyncIterator]();
+        const prefetched: RunnerEvent[] = [];
+        let first = await iterator.next();
+        while (
+          !first.done &&
+          (first.value.type === "llm_input" || first.value.type === "llm_output")
+        ) {
+          prefetched.push(first.value);
+          first = await iterator.next();
+        }
+        if (first.done) {
+          rawEvents = (async function* () {
+            yield* prefetched;
+          })();
+          break;
+        }
         if (
           attempt === 0 &&
           first.value &&
@@ -306,11 +320,13 @@ export class Orchestrator {
           continue;
         }
         // 构造包含已读第一项的流
-        const restStream = rawEvents;
         rawEvents = (async function* () {
+          yield* prefetched;
           yield first.value as RunnerEvent;
-          for await (const e of restStream) {
-            yield e;
+          for (;;) {
+            const next = await iterator.next();
+            if (next.done) return;
+            yield next.value;
           }
         })();
         break;

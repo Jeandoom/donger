@@ -13,6 +13,7 @@ import type { CredentialRequestItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
 import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
+import type { UserModelConfigStore } from "../ports/model-config-store.js";
 import type {
   RepositoryMaterializeItem,
   RepositoryMaterializer,
@@ -21,6 +22,7 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
 import { seedBuiltinPacksIfAbsent } from "../util/builtin-skills.js";
+import { ensureSdkPluginLayout } from "../util/sdk-plugin-layout.js";
 import { ensureRuntimeDir } from "../util/workspace.js";
 
 export interface RuntimeManagerConfig {
@@ -46,6 +48,7 @@ interface RuntimeManagerDeps {
   config: RuntimeManagerConfig;
   skillPackStore: SkillPackStore;
   credentialStore: CredentialStore;
+  modelConfigStore?: UserModelConfigStore;
   installer: SkillInstaller;
   builtinSkillsDir: string;
   repositoryMaterializer?: RepositoryMaterializer;
@@ -93,7 +96,14 @@ export class RuntimeManager {
 
     // agent 分支：显式 agent 可覆盖 skills/llm/工具/mcp/系统提示；否则用 Pack 派生默认
     let skills = resolved.whitelist;
-    let llm: LLMConfig = this.deps.config.llm;
+    const userModelConfig = await this.deps.modelConfigStore?.get(user.id);
+    let llm: LLMConfig = userModelConfig
+      ? {
+          model: userModelConfig.defaultModel,
+          baseUrl: userModelConfig.url,
+          authToken: userModelConfig.key,
+        }
+      : this.deps.config.llm;
     let allowedTools: string[] | undefined;
     let mcpServers: McpServerConfig[] | undefined;
     let extraPrompt: string | undefined = opts.systemPromptAppend;
@@ -108,7 +118,7 @@ export class RuntimeManager {
       const preset = a.llm.presetId
         ? this.deps.config.agentLlmPresets.find((p) => p.id === a.llm.presetId)
         : undefined;
-      if (preset) llm = { ...this.deps.config.llm, model: preset.model, baseUrl: preset.baseUrl };
+      if (preset) llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
       allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
       mcpServers = a.mcpServers;
       if (a.systemPrompt) {
@@ -244,9 +254,10 @@ export class RuntimeManager {
 
   /** 解析 pack 绝对路径：预装/绝对路径原样，用户 pack 拼 homeDir。 */
   private resolvePackPath(user: User, pack: SkillPack): string {
-    return pack.builtin || isAbsolute(pack.installedPath)
+    const packPath = pack.builtin || isAbsolute(pack.installedPath)
       ? pack.installedPath
       : join(user.homeDir, pack.installedPath);
+    return ensureSdkPluginLayout(packPath, pack.name);
   }
 
   /** 合并 systemPromptAppend：默认始终在，extra（如记忆上下文）追加其后 */

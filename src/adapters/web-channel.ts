@@ -14,6 +14,9 @@ import { type Agent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { GitProvider } from "../domain/git.js";
+import type { LLMConfig } from "../domain/llm-config.js";
+import type { UserModelConfig } from "../domain/model-config.js";
+import { parseUserModelConfig } from "../domain/model-config.js";
 import {
   type ApprovalCard,
   type IncomingMessage,
@@ -33,7 +36,9 @@ import type { CredentialStore } from "../ports/credential-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
 import type { GitAuthProviderAdapter } from "../ports/git-auth-provider.js";
 import type { GitConnectionStore } from "../ports/git-connection-store.js";
+import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { MessageStore } from "../ports/message-store.js";
+import type { UserModelConfigStore } from "../ports/model-config-store.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
@@ -126,6 +131,7 @@ export interface WebChannelDeps {
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
   credentialStore?: CredentialStore;
+  modelConfigStore?: UserModelConfigStore;
   agentStore?: AgentStore;
   agentShareStore?: AgentShareStore;
   gitConnectionStore?: GitConnectionStore;
@@ -133,6 +139,8 @@ export interface WebChannelDeps {
   gitAccessGate?: GitAccessGate;
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
+  llm?: LLMConfig;
+  llmDebugRunner?: LlmDebugRunner;
   dingtalkConfig?: { appKey: string; appSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
@@ -979,6 +987,70 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // GET/PUT /api/settings/models：用户级 Claude Agent 模型配置
+    if (url === "/api/settings/models" && (req.method === "GET" || req.method === "PUT")) {
+      const userId = this.requireRequestUser(req);
+      const store = this.deps.modelConfigStore;
+      if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
+
+      if (req.method === "GET") {
+        const config = await store.get(userId);
+        const fallbackModels = [
+          ...(this.agentMeta?.presets.map((preset) => preset.model) ?? []),
+          this.deps.llm?.model,
+        ].filter((model): model is string => Boolean(model));
+        const defaults: UserModelConfig | undefined = this.deps.llm
+          ? {
+              url: this.deps.llm.baseUrl,
+              key: this.deps.llm.authToken,
+              models: [...new Set(fallbackModels)],
+              defaultModel: this.deps.llm.model,
+            }
+          : undefined;
+        const current = config ?? defaults;
+        if (!current) return this.json(res, { error: "默认模型配置未就绪" }, 503);
+        return this.json(res, {
+          url: current.url,
+          models: current.models,
+          defaultModel: current.defaultModel,
+          keyConfigured: Boolean(current.key),
+        });
+      }
+
+      const body = JSON.parse(await this.readBody(req)) as {
+        url?: unknown;
+        key?: unknown;
+        models?: unknown;
+        defaultModel?: unknown;
+      };
+      const existing = await store.get(userId);
+      const key =
+        typeof body.key === "string" && body.key.trim()
+          ? body.key.trim()
+          : (existing?.key ?? this.deps.llm?.authToken ?? "");
+      try {
+        const config = parseUserModelConfig({
+          url: body.url,
+          key,
+          models: body.models,
+          defaultModel: body.defaultModel,
+        });
+        await store.save(userId, config);
+        return this.json(res, {
+          url: config.url,
+          models: config.models,
+          defaultModel: config.defaultModel,
+          keyConfigured: true,
+        });
+      } catch (error) {
+        return this.json(
+          res,
+          { error: error instanceof Error ? error.message : "模型配置无效" },
+          400,
+        );
+      }
+    }
+
     // POST /api/auth/merge-confirm —— 已废弃：统一身份模型下不再需要合并流程
     if (url === "/api/auth/merge-confirm" && req.method === "POST") {
       res.writeHead(410);
@@ -1173,6 +1245,36 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // POST /api/llm/debug：用已配置模型对编辑后的历史输入做隔离调试调用
+    if (url === "/api/llm/debug" && req.method === "POST") {
+      const body = JSON.parse(await this.readBody(req)) as {
+        input?: unknown;
+        presetId?: unknown;
+      };
+      if (typeof body.input !== "string" || !body.input.trim()) {
+        this.json(res, { error: "input is required" }, 400);
+        return;
+      }
+      if (!this.deps.llm || !this.deps.llmDebugRunner) {
+        this.json(res, { error: "LLM debug runner is not configured" }, 503);
+        return;
+      }
+      const presetId = typeof body.presetId === "string" ? body.presetId : undefined;
+      const preset = presetId
+        ? this.agentMeta?.presets.find((item) => item.id === presetId)
+        : undefined;
+      if (presetId && !preset) {
+        this.json(res, { error: "unknown LLM preset" }, 400);
+        return;
+      }
+      const llm = preset
+        ? { ...this.deps.llm, model: preset.model, baseUrl: preset.baseUrl }
+        : this.deps.llm;
+      const result = await this.deps.llmDebugRunner.run(body.input, llm);
+      this.json(res, { ...result, model: llm.model }, 200);
+      return;
+    }
+
     // GET /api/audit/conversations/:id
     const auditDetailMatch = url.match(/^\/api\/audit\/conversations\/([\w-]+)$/);
     if (auditDetailMatch && req.method === "GET") {
@@ -1255,9 +1357,9 @@ export class WebChannel implements Channel {
       return this.json(res, this.agentToDTO(created, true), 201);
     }
     if (url === "/api/agents/meta/options" && req.method === "GET") {
-      this.requireUserId(req);
+      const userId = this.requireUserId(req);
       return this.json(res, {
-        skills: discoverSkills(this.agentMeta?.skillPaths ?? []),
+        skills: await this.discoverAgentSkills(userId),
         tools: BUILTIN_TOOLS,
         llmPresets: this.agentMeta?.presets ?? [],
       });
@@ -1755,6 +1857,29 @@ export class WebChannel implements Channel {
     return uid;
   }
 
+  private async discoverAgentSkills(
+    userId: string,
+  ): Promise<Array<{ id: string; name: string; description?: string }>> {
+    const skills = discoverSkills(this.agentMeta?.skillPaths ?? []);
+    const enabledSkills = this.deps.skillPackStore
+      ? await this.deps.skillPackStore.listEnabledSkillsWithPack(userId)
+      : [];
+    const options = [
+      ...skills,
+      ...enabledSkills.map(({ skill, pack }) => ({
+        id: `${pack.name}:${skill.name}`,
+        name: skill.name,
+        description: skill.description,
+      })),
+    ];
+    const seen = new Set<string>();
+    return options.filter((option) => {
+      if (seen.has(option.id)) return false;
+      seen.add(option.id);
+      return true;
+    });
+  }
+
   /** 写 JSON 响应 */
   private json(res: ServerResponse, body: unknown, status = 200): void {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -1781,6 +1906,7 @@ export class WebChannel implements Channel {
       ...base,
       systemPrompt: a.systemPrompt,
       skills: a.skills,
+      defaultSkill: a.defaultSkill,
       tools: a.tools,
       mcpServers: maskedMcp,
       gitRepositories: a.gitRepositories,

@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
+import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import {
   GiteeAuthProvider,
@@ -13,8 +14,8 @@ import {
 } from "./adapters/git-auth-providers.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
-import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
+import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
@@ -23,6 +24,7 @@ import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js
 import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
 import { SqliteGitConnectionStore } from "./adapters/sqlite-git-connection-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
+import { SqliteModelConfigStore } from "./adapters/sqlite-model-config-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
@@ -146,6 +148,7 @@ async function main(): Promise<void> {
       },
       skillPackStore,
       credentialStore,
+      modelConfigStore,
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
@@ -177,6 +180,8 @@ async function main(): Promise<void> {
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
   credentialStore.migrate();
+  const modelConfigStore = new SqliteModelConfigStore(db, secretCipher);
+  modelConfigStore.migrate();
   const skillInstaller = new LocalSkillInstaller({
     packStore: skillPackStore,
     getHomeDir: (uid) => join(usersDir, uid),
@@ -210,6 +215,7 @@ async function main(): Promise<void> {
     skillPackStore,
     installer: skillInstaller,
     credentialStore,
+    modelConfigStore,
     agentStore,
     agentShareStore,
     gitConnectionStore,
@@ -220,6 +226,8 @@ async function main(): Promise<void> {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],
     },
+    llm: cfg.llm,
+    llmDebugRunner: new ClaudeLlmDebugRunner(),
   });
   const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
