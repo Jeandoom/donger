@@ -8,11 +8,12 @@ import { AgentSessionsPage } from "./pages/AgentSessionsPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
-import { ConfigPage } from "./pages/ConfigPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
 import { GitSettingsPage } from "./pages/GitSettingsPage";
+import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
+import { ModelsPage } from "./pages/ModelsPage";
 import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { UserProfilePage } from "./pages/UserProfilePage";
@@ -43,12 +44,15 @@ export function App() {
             <Route path="/agent-sessions" element={<AgentSessionsPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/skills" element={<SkillsPage />} />
-            <Route path="/credentials" element={<CredentialsPage />} />
-            <Route path="/settings" element={<Navigate to="/settings/git" replace />} />
+            <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/profile" element={<UserProfilePage />} />
             <Route path="/settings/git" element={<GitSettingsPage />} />
-            <Route path="/config" element={<ConfigPage />} />
-            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/settings/models" element={<ModelsPage />} />
+            <Route path="/settings/credentials" element={<CredentialsPage />} />
+            <Route path="/credentials" element={<Navigate to="/settings/credentials" replace />} />
+            <Route path="/audit" element={<Navigate to="/audit/history" replace />} />
+            <Route path="/audit/history" element={<AuditPage />} />
+            <Route path="/audit/llm" element={<LlmSessionsPage />} />
           </Route>
         </Route>
       </Routes>

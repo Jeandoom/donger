@@ -22,6 +22,20 @@ describe("parseFrontmatter", () => {
     const md = `---\nname: s\ndescription: d\nallowed-tools: Read\n---\n`;
     expect(parseFrontmatter(md).allowedTools).toEqual(["Read"]);
   });
+
+  it("allowed-tools 支持空格分隔", () => {
+    const md = `---\nname: tools\ndescription: d\nallowed-tools: Bash Read\n---\n`;
+    expect(parseFrontmatter(md).allowedTools).toEqual(["Bash", "Read"]);
+  });
+
+  it("解析 | 多行 description", () => {
+    const md = `---\nname: multiline\ndescription: |\n  第一行描述\n  第二行描述\nallowed-tools: Read\n---\n正文`;
+    expect(parseFrontmatter(md)).toEqual({
+      name: "multiline",
+      description: "第一行描述\n第二行描述",
+      allowedTools: ["Read"],
+    });
+  });
 });
 
 describe("scanSkillPack", () => {

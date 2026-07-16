@@ -33,6 +33,10 @@ export function toAuditEvent(
   switch (e.type) {
     case "session_init":
       return { ...base, type: "session_init" };
+    case "llm_input":
+      return { ...base, type: "llm_input", llmInput: e.input };
+    case "llm_output":
+      return { ...base, type: "llm_output", llmOutput: e.output };
     case "text":
       return { ...base, type: "text", text: e.text };
     case "tool_use":

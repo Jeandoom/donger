@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
 import { parseFrontmatter, scanSkillPack } from "../domain/skill-scan.js";
 import type {
@@ -13,6 +13,7 @@ import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import { SkillInstallError } from "../util/errors.js";
 
 const SLUG_RE = /^[a-z0-9-]+$/;
+const GIT_LONG_PATH_CONFIG = "core.longpaths=true";
 
 export interface LocalSkillInstallerDeps {
   packStore: SkillPackStore;
@@ -27,18 +28,27 @@ export class LocalSkillInstaller implements SkillInstaller {
     const dir = this.userPackDir(userId, slug);
     const branch = req.ref ? `--branch ${shellQuote(req.ref)} ` : "";
     try {
-      execSync(`git clone --depth 1 ${branch}${shellQuote(req.url)} ${shellQuote(dir)}`, {
-        stdio: "pipe",
-      });
+      execSync(
+        `git -c ${GIT_LONG_PATH_CONFIG} clone --depth 1 ${branch}${shellQuote(req.url)} ${shellQuote(dir)}`,
+        {
+          stdio: "pipe",
+        },
+      );
+      this.ensurePluginManifest(dir, slug);
+      const subPath = normalizeSubPath(req.subPath);
+      const source: SkillPackSource = {
+        kind: "git",
+        url: req.url,
+        ref: req.ref,
+        ...(subPath ? { subPath } : {}),
+      };
+      const skillRoot = this.resolveSkillRoot(dir, source);
+      return this.persistScanned(userId, slug, dir, source, false, undefined, skillRoot);
     } catch (e) {
-      throw new SkillInstallError("GIT_CLONE_FAILED", `git clone 失败: ${(e as Error).message}`);
+      rmSync(dir, { recursive: true, force: true });
+      if (e instanceof SkillInstallError) throw e;
+      throw new SkillInstallError("GIT_CLONE_FAILED", `git 安装失败: ${(e as Error).message}`);
     }
-    return this.persistScanned(userId, slug, dir, {
-      kind: "git",
-      url: req.url,
-      ref: req.ref,
-      subPath: req.subPath,
-    });
   }
 
   async installFromUpload(userId: string, req: InstallUploadReq): Promise<SkillPack> {
@@ -86,14 +96,18 @@ export class LocalSkillInstaller implements SkillInstaller {
     }
     const dir = this.resolvePackDir(userId, pack);
     try {
-      execSync(`git -C ${shellQuote(dir)} pull --ff-only`, { stdio: "pipe" });
+      execSync(`git -c ${GIT_LONG_PATH_CONFIG} -C ${shellQuote(dir)} pull --ff-only`, {
+        stdio: "pipe",
+      });
     } catch (e) {
       throw new SkillInstallError("GIT_PULL_FAILED", `git pull 失败: ${(e as Error).message}`);
     }
+    this.ensurePluginManifest(dir, pack.slug);
     const before = new Map(
       (await this.deps.packStore.listSkills(userId, packId)).map((s) => [s.name, s]),
     );
-    return this.persistScanned(userId, pack.slug, dir, pack.source, pack.builtin, before);
+    const skillRoot = this.resolveSkillRoot(dir, pack.source);
+    return this.persistScanned(userId, pack.slug, dir, pack.source, pack.builtin, before, skillRoot);
   }
 
   // ---- 内部 ----
@@ -130,8 +144,12 @@ export class LocalSkillInstaller implements SkillInstaller {
     source: SkillPackSource,
     builtin = false,
     preserveSkillFlags?: Map<string, PackSkill>,
+    skillRoot = packDir,
   ): Promise<SkillPack> {
-    const scanned = scanSkillPack(packDir);
+    const scanned = scanSkillPack(packDir, skillRoot);
+    if (source.kind === "git" && scanned.skills.length === 0) {
+      throw new SkillInstallError("GIT_SKILLS_NOT_FOUND", "Git 仓库中未找到 SKILL.md");
+    }
     const now = new Date().toISOString();
     // plugin.json name 与白名单前缀绑定：用户 pack 强制 = slug；预装沿用其 plugin.json name
     const name = builtin ? scanned.packMeta.name : slug;
@@ -209,6 +227,21 @@ export class LocalSkillInstaller implements SkillInstaller {
       }),
     );
   }
+
+  private ensurePluginManifest(dir: string, slug: string): void {
+    const pluginJson = join(dir, ".claude-plugin", "plugin.json");
+    if (existsSync(pluginJson)) return;
+    this.writePluginJson(dir, { name: slug, version: "0.1.0" });
+  }
+
+  private resolveSkillRoot(packDir: string, source: SkillPackSource): string {
+    if (source.kind !== "git" || !source.subPath) return packDir;
+    const skillRoot = resolve(packDir, source.subPath);
+    if (!isInside(skillRoot, packDir) || !existsSync(skillRoot) || !statSync(skillRoot).isDirectory()) {
+      throw new SkillInstallError("GIT_SKILL_PATH_INVALID", `技能目录不存在或非法: ${source.subPath}`);
+    }
+    return skillRoot;
+  }
 }
 
 function slugify(s: string): string {
@@ -228,6 +261,12 @@ function repoSlugFromUrl(url: string): string {
     .pop();
   return slugify(m ?? "repo");
 }
+
+function normalizeSubPath(value?: string): string | undefined {
+  const normalized = value?.trim().replaceAll("\\", "/").replace(/^\.\//, "");
+  return normalized || undefined;
+}
+
 function shellQuote(s: string): string {
   return `"${s.replace(/(["$`\\])/g, "\\$1")}"`;
 }

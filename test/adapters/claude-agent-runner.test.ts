@@ -131,12 +131,16 @@ describe("ClaudeAgentRunner", () => {
     const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
 
     expect(captured?.includePartialMessages).toBe(true);
-    expect(events).toEqual([
+    expect(events.filter((event) => event.type !== "llm_input" && event.type !== "llm_output")).toEqual([
       { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "Hi" },
       { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "!" },
       { type: "text", taskId: "t1", text: "Hi!" },
       { type: "result", taskId: "t1", subtype: "success", result: "Hi!", usage: undefined },
     ]);
+    expect(events.find((event) => event.type === "llm_input")?.input).toContain('"prompt": "做某事"');
+    const outputs = events.filter((event) => event.type === "llm_output");
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]?.output).toContain('"assistant"');
   });
 
   it("归一 SDKMessage → RunnerEvent（system init / assistant text+tool_use / result）", async () => {
@@ -149,11 +153,27 @@ describe("ClaudeAgentRunner", () => {
           content: [{ type: "tool_use", name: "Bash", input: { command: "ls" }, id: "tu1" }],
         },
       },
+      {
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", tool_use_id: "tu1", content: "file.txt" }],
+        },
+      },
       { type: "result", subtype: "success", result: "done" },
     ]);
     const runner = new ClaudeAgentRunner(new GateRouter());
     const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
-    expect(events.map((e) => e.type)).toEqual(["session_init", "text", "tool_use", "result"]);
+    expect(events.map((e) => e.type).filter((type) => type !== "llm_input" && type !== "llm_output")).toEqual([
+      "session_init",
+      "text",
+      "tool_use",
+      "tool_result",
+      "result",
+    ]);
+    const outputs = events.filter((event) => event.type === "llm_output");
+    expect(outputs).toHaveLength(2);
+    expect(outputs[1]?.output).toContain('"tool_use"');
+    expect(events.filter((event) => event.type === "llm_input")).toHaveLength(2);
     const last = events[events.length - 1];
     if (last?.type === "result") expect(last.subtype).toBe("success");
   });

@@ -15,6 +15,8 @@ export class SqliteAuditStore implements AuditStore {
         seq INTEGER NOT NULL,
         type TEXT NOT NULL,
         text TEXT,
+        llmInput TEXT,
+        llmOutput TEXT,
         toolName TEXT,
         toolInput TEXT,
         toolUseId TEXT,
@@ -30,6 +32,8 @@ export class SqliteAuditStore implements AuditStore {
         recordedAt TEXT NOT NULL
       )
     `);
+    this.addColumnIfMissing("audit_events", "llmInput", "TEXT");
+    this.addColumnIfMissing("audit_events", "llmOutput", "TEXT");
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_audit_conv ON audit_events(conversationId, recordedAt, seq)",
     );
@@ -41,10 +45,10 @@ export class SqliteAuditStore implements AuditStore {
     this.db
       .prepare(
         `INSERT INTO audit_events
-         (id, conversationId, taskId, userId, seq, type, text, toolName, toolInput, toolUseId,
+         (id, conversationId, taskId, userId, seq, type, text, llmInput, llmOutput, toolName, toolInput, toolUseId,
           toolOutput, isError, resultSubtype, inputTokens, outputTokens, cacheCreationInputTokens,
           cacheReadInputTokens, model, durationMs, recordedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         rec.id,
@@ -54,6 +58,8 @@ export class SqliteAuditStore implements AuditStore {
         rec.seq,
         rec.type,
         rec.text ?? null,
+        rec.llmInput ?? null,
+        rec.llmOutput ?? null,
         rec.toolName ?? null,
         rec.toolInput ?? null,
         rec.toolUseId ?? null,
@@ -123,6 +129,8 @@ export class SqliteAuditStore implements AuditStore {
       seq: row.seq as number,
       type: row.type as AuditEvent["type"],
       text: (row.text as string) ?? undefined,
+      llmInput: (row.llmInput as string) ?? undefined,
+      llmOutput: (row.llmOutput as string) ?? undefined,
       toolName: (row.toolName as string) ?? undefined,
       toolInput: (row.toolInput as string) ?? undefined,
       toolUseId: (row.toolUseId as string) ?? undefined,
@@ -134,5 +142,12 @@ export class SqliteAuditStore implements AuditStore {
       durationMs: (row.durationMs as number) ?? undefined,
       recordedAt: row.recordedAt as string,
     };
+  }
+
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((item) => item.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 }

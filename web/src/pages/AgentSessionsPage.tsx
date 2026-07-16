@@ -20,9 +20,14 @@ export function AgentSessionsPage() {
   const [gitError, setGitError] = useState("");
   const deepLinkAgent = params.get("agent");
   const agent = agents.find((item) => item.id === agentId);
+  const activeIsDraft = wc.conversations.find(
+    (conversation) => conversation.id === wc.activeConversationId,
+  )?.isDraft;
 
   const checkGitAccess = useCallback(async (): Promise<GitPreflightDTO | undefined> => {
-    if (!wc.activeConversationId) return undefined;
+    if (!wc.activeConversationId || activeIsDraft) {
+      return activeIsDraft ? { ready: true, requirements: [] } : undefined;
+    }
     setGitLoading(true);
     setGitError("");
     try {
@@ -35,7 +40,7 @@ export function AgentSessionsPage() {
     } finally {
       setGitLoading(false);
     }
-  }, [wc.activeConversationId]);
+  }, [activeIsDraft, wc.activeConversationId]);
 
   // 载入智能体列表
   useEffect(() => {
@@ -88,6 +93,7 @@ export function AgentSessionsPage() {
     <ChatWorkspace
       conversations={conversations}
       activeConversationId={wc.activeConversationId}
+      activeConversationIsDraft={activeIsDraft}
       onSelectConversation={wc.switchConversation}
       onDeleteConversation={wc.deleteConversation}
       onNewConversation={() => {
@@ -115,6 +121,7 @@ export function AgentSessionsPage() {
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}
       onCancel={wc.cancel}
+      onEnsureConversation={wc.ensureConversation}
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
       inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}
@@ -126,7 +133,7 @@ export function AgentSessionsPage() {
         if (access?.ready) await wc.send(text, files);
       }}
       blockingContent={
-        wc.activeConversationId && (gitLoading || !gitPreflight.ready || gitError) ? (
+        wc.activeConversationId && !activeIsDraft && (gitLoading || !gitPreflight.ready || gitError) ? (
           <GitAccessBlocker
             loading={gitLoading}
             requirements={gitPreflight.requirements}

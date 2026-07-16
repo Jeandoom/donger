@@ -1,10 +1,10 @@
-import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
 import { LocalExtensionDirectoryResolver } from "../../src/adapters/local-extension-directory-resolver.js";
+import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
@@ -262,6 +262,37 @@ describe("RuntimeManager agent 分支", () => {
   let ws: string;
   beforeEach(() => {
     ws = mkdtempSync(join(tmpdir(), "rtmgr-"));
+  });
+
+  it("使用用户 Models 配置覆盖系统默认 LLM", async () => {
+    const conv = baseConv();
+    const convStore = fakeConvStore([conv]);
+    const modelConfigStore = {
+      migrate() {},
+      async get() {
+        return {
+          url: "https://user-llm.example.com/anthropic",
+          key: "user-key",
+          models: ["claude-sonnet"],
+          defaultModel: "claude-sonnet",
+        };
+      },
+      async save() {},
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: convStore as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+      modelConfigStore,
+    });
+
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {});
+    expect(runOptions.llm).toEqual({
+      model: "claude-sonnet",
+      baseUrl: "https://user-llm.example.com/anthropic",
+      authToken: "user-key",
+    });
   });
 
   it("传 agent 时 skills/systemPrompt/llm/allowedTools/mcpServers 覆盖", async () => {

@@ -32,7 +32,7 @@ export function AuditPage() {
   return (
     <div className="flex h-full">
       <div className="w-64 shrink-0 overflow-y-auto border-r border-border p-2">
-        <div className="px-2 py-1 text-xs text-muted-foreground">审计会话（{list.length}）</div>
+        <div className="px-2 py-1 text-xs text-muted-foreground">历史会话（{list.length}）</div>
         {list.map((c) => (
           <button
             key={c.conversationId}

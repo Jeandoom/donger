@@ -58,6 +58,8 @@ export interface TokenUsage {
 // === Runner 事件（AgentRunner 产出的判别联合）===
 export type RunnerEvent =
   | { type: "session_init"; taskId: string; sessionId: string }
+  | { type: "llm_input"; taskId: string; input: string }
+  | { type: "llm_output"; taskId: string; output: string }
   | { type: "text_delta"; taskId: string; messageId: string; text: string }
   | { type: "text"; taskId: string; text: string }
   | {
@@ -90,8 +92,20 @@ export interface AuditEvent {
   taskId: string;
   userId: string;
   seq: number;
-  type: "user_message" | "session_init" | "text" | "tool_use" | "tool_result" | "result";
+  type:
+    | "user_message"
+    | "session_init"
+    | "llm_input"
+    | "llm_output"
+    | "text"
+    | "tool_use"
+    | "tool_result"
+    | "result";
   text?: string;
+  /** 完整的、已移除密钥的 Agent SDK query 输入。 */
+  llmInput?: string;
+  /** 完整的 Agent SDK 原始输出消息。 */
+  llmOutput?: string;
   toolName?: string;
   toolInput?: string;
   toolUseId?: string;

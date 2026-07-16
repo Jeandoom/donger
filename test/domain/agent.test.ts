@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentSchema, parseAgent } from "../../src/domain/agent.js";
+import { AgentSchema, appendDefaultSkill, parseAgent } from "../../src/domain/agent.js";
 
 const valid = {
   id: "a1",
@@ -41,5 +41,12 @@ describe("Agent schema", () => {
     expect(a.mcpServers[0]?.headers).toEqual({ k: "v" });
     expect(a.gitRepositories).toEqual([]);
     expect(a.extensionDirectories).toEqual([]);
+  });
+
+  it("追加默认 Skill slash 指令", () => {
+    expect(appendDefaultSkill("查询订单", "aliyun:sls-query")).toBe(
+      "查询订单\n/aliyun:sls-query",
+    );
+    expect(appendDefaultSkill("查询订单")).toBe("查询订单");
   });
 });

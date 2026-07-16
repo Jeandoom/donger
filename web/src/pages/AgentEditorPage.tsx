@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentDTO,
@@ -14,12 +14,19 @@ import {
   type ShareStatus,
   setShareEnabled,
 } from "../lib/share";
+import {
+  filterSkillSelectorOptions,
+  getDefaultSkillOptions,
+  mergeSkillSelectorOptions,
+  type SkillSelectorOption,
+} from "../lib/skillSelector";
 
 const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   name: "",
   description: "",
   systemPrompt: "",
   skills: [],
+  defaultSkill: undefined,
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
   gitRepositories: [],
@@ -51,6 +58,7 @@ export function AgentEditorPage() {
             description: a.description ?? "",
             systemPrompt: a.systemPrompt ?? "",
             skills: a.skills,
+            defaultSkill: a.defaultSkill,
             tools: a.tools,
             mcpServers: a.mcpServers,
             gitRepositories: a.gitRepositories ?? [],
@@ -76,7 +84,8 @@ export function AgentEditorPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 p-6">
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-2xl space-y-4 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">{isNew ? "新建智能体" : "编辑智能体"}</h1>
         {!isNew && id ? (
@@ -113,26 +122,42 @@ export function AgentEditorPage() {
         />
       </Field>
 
-      <Field label="Skills（每行一个，如 superpowers:brainstorming）">
-        <textarea
-          className="w-full rounded border px-2 py-1"
-          rows={3}
-          value={form.skills.join("\n")}
-          onChange={(e) =>
+      <Field label="Skills（可多选，支持模糊搜索）">
+        <SkillPicker
+          options={meta.skills}
+          value={form.skills}
+          onChange={(skills) =>
             setForm({
               ...form,
-              skills: e.target.value
-                .split("\n")
-                .map((s) => s.trim())
-                .filter(Boolean),
+              skills,
+              defaultSkill:
+                skills.length > 0 && form.defaultSkill && !skills.includes(form.defaultSkill)
+                  ? undefined
+                  : form.defaultSkill,
             })
           }
         />
-        {meta.skills.length ? (
-          <p className="text-xs text-muted-foreground">
-            可选：{meta.skills.map((s) => s.id).join("、")}
-          </p>
-        ) : null}
+      </Field>
+
+      <Field label="默认 Skill（可选）">
+        <select
+          className="w-full rounded border px-2 py-1"
+          value={form.defaultSkill ?? ""}
+          onChange={(event) =>
+            setForm({ ...form, defaultSkill: event.target.value || undefined })
+          }
+        >
+          <option value="">不设置</option>
+          {getDefaultSkillOptions(meta.skills, form.skills).map((skill) => (
+            <option key={skill.id} value={skill.id}>
+              {skill.name || skill.id}
+              {skill.name && skill.name !== skill.id ? `（${skill.id}）` : ""}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground">
+          对话时会在每次用户输入后自动追加 /{`{默认 Skill}`}，触发对应技能。
+        </p>
       </Field>
 
       <Field label="工具">
@@ -467,6 +492,7 @@ export function AgentEditorPage() {
           取消
         </button>
       </div>
+      </div>
     </div>
   );
 }
@@ -476,6 +502,108 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="space-y-1">
       <div className="text-sm font-medium">{label}</div>
       {children}
+    </div>
+  );
+}
+
+function SkillPicker({
+  options,
+  value,
+  onChange,
+}: {
+  options: SkillSelectorOption[];
+  value: string[];
+  onChange: (skills: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const allOptions = useMemo(() => mergeSkillSelectorOptions(options, value), [options, value]);
+  const filteredOptions = useMemo(
+    () => filterSkillSelectorOptions(allOptions, query),
+    [allOptions, query],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [open]);
+
+  const toggle = (id: string) => {
+    onChange(value.includes(id) ? value.filter((item) => item !== id) : [...value, id]);
+  };
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        className="flex min-h-9 w-full items-center justify-between rounded border px-2 py-1 text-left text-sm"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className={value.length ? "truncate" : "text-muted-foreground"}>
+          {value.length ? `已选择 ${value.length} 个技能` : "请选择技能"}
+        </span>
+        <span className="ml-2 text-muted-foreground">{open ? "▴" : "▾"}</span>
+      </button>
+      {value.length > 0 ? (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {value.map((id) => (
+            <button
+              key={id}
+              type="button"
+              className="rounded bg-accent px-2 py-0.5 text-xs hover:bg-accent/80"
+              onClick={() => toggle(id)}
+              title="点击移除"
+            >
+              {id} ×
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {open ? (
+        <div className="absolute z-30 mt-1 w-full rounded border bg-background p-2 shadow-lg">
+          <input
+            className="mb-2 w-full rounded border px-2 py-1 text-sm"
+            placeholder="搜索技能名称、ID或描述"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="max-h-64 space-y-1 overflow-y-auto">
+            {filteredOptions.length ? (
+              filteredOptions.map((option) => (
+                <label
+                  key={option.id}
+                  className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={value.includes(option.id)}
+                    onChange={() => toggle(option.id)}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate">{option.name || option.id}</span>
+                    {option.description ? (
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {option.id} · {option.description}
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+              ))
+            ) : (
+              <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+                {allOptions.length ? "没有匹配的技能" : "暂无可选技能"}
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -25,7 +25,10 @@ function fileType(file: File): FileInfo["type"] {
 export class DongerAttachmentAdapter implements AttachmentAdapter {
   readonly accept = ACCEPT;
 
-  constructor(private readonly threadId?: string) {}
+  constructor(
+    private readonly threadId?: string,
+    private readonly ensureThreadId?: () => Promise<string | null>,
+  ) {}
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const type = fileType(file);
@@ -43,7 +46,8 @@ export class DongerAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const formData = new FormData();
     formData.append("file", attachment.file);
-    const threadId = this.threadId ?? `web-${Date.now()}`;
+    const threadId =
+      (await this.ensureThreadId?.()) ?? this.threadId ?? `web-${Date.now()}`;
     const response = await apiFetch(`/api/upload?threadId=${encodeURIComponent(threadId)}`, {
       method: "POST",
       body: formData,

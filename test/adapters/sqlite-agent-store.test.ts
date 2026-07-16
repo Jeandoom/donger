@@ -32,9 +32,10 @@ describe("SqliteAgentStore", () => {
   it("create + get 往返，env/headers 在 DB 为密文", async () => {
     const store = new SqliteAgentStore(db, cipher);
     store.migrate();
-    const a = await store.create(input);
+    const a = await store.create({ ...input, defaultSkill: "s:1" });
     const got = await store.get(a.id);
     expect(got?.mcpServers[0]?.headers).toEqual({ SECRET: "top" });
+    expect(got?.defaultSkill).toBe("s:1");
     const row = db.prepare("SELECT data FROM agents WHERE id = ?").get(a.id) as { data: string };
     expect(row.data).not.toContain("top");
     expect(row.data).toContain("v1:");

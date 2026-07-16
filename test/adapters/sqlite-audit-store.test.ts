@@ -32,6 +32,30 @@ describe("SqliteAuditStore", () => {
     expect(() => store.migrate()).not.toThrow();
   });
 
+  it("保存并读取完整 LLM input / output", async () => {
+    await store.record(
+      ev({
+        conversationId: "c1",
+        taskId: "t1",
+        seq: 0,
+        type: "llm_input",
+        llmInput: '{"prompt":"hello","options":{"model":"m"}}',
+      }),
+    );
+    await store.record(
+      ev({
+        conversationId: "c1",
+        taskId: "t1",
+        seq: 1,
+        type: "llm_output",
+        llmOutput: '{"type":"assistant","message":{"content":[]}}',
+      }),
+    );
+    const events = await store.listByConversation("c1");
+    expect(events[0]?.llmInput).toContain('"prompt"');
+    expect(events[1]?.llmOutput).toContain('"assistant"');
+  });
+
   it("record + listByConversation 往返，按 recordedAt,seq 升序", async () => {
     await store.record(
       ev({

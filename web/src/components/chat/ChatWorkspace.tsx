@@ -19,6 +19,7 @@ import { MobileConversationSheet } from "./MobileConversationSheet";
 export interface ChatWorkspaceProps {
   conversations: ConversationSummary[];
   activeConversationId: string | null;
+  activeConversationIsDraft?: boolean;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
   onNewConversation: () => void;
@@ -31,6 +32,7 @@ export interface ChatWorkspaceProps {
   pendingCredential: PendingCredential | null;
   connection: ConnectionState;
   onSend: (text: string, files?: FileInfo[]) => Promise<void>;
+  onEnsureConversation?: () => Promise<string | null>;
   onCancel: () => Promise<void>;
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
@@ -44,8 +46,12 @@ export interface ChatWorkspaceProps {
 export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const attachmentAdapter = useMemo(
-    () => new DongerAttachmentAdapter(props.activeConversationId ?? undefined),
-    [props.activeConversationId],
+    () =>
+      new DongerAttachmentAdapter(
+        props.activeConversationId ?? undefined,
+        props.onEnsureConversation,
+      ),
+    [props.activeConversationId, props.onEnsureConversation],
   );
   const runtime = useAssistantRuntimeBridge({
     messages: props.messages,
@@ -87,11 +93,13 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               headerExtra={props.sidebarHeaderExtra}
             />
             <span>
-              {props.connection === "open"
-                ? "● 已连接"
-                : props.connection === "closed"
-                  ? "● 未连接"
-                  : "● 连接中"}
+              {props.activeConversationIsDraft
+                ? "● 未保存"
+                : props.connection === "open"
+                  ? "● 已连接"
+                  : props.connection === "closed"
+                    ? "● 未连接"
+                    : "● 连接中"}
             </span>
           </div>
           <button type="button" onClick={() => setDrawerOpen(true)}>

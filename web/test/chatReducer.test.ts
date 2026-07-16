@@ -111,4 +111,48 @@ describe("chatReducer", () => {
     expect(s.activeConversationId).toBe("c-new");
     expect(s.loadingConversations).toBe(false);
   });
+
+  it("同一时间只保留一个未保存草稿", () => {
+    const draft = {
+      id: "draft-1",
+      userId: "u1",
+      sdkSessionId: "",
+      title: "新会话",
+      channelId: "web",
+      agentId: "",
+      createdAt: "t",
+      updatedAt: "t",
+      archived: false,
+      isDraft: true,
+    } satisfies ConversationSummary;
+    const anotherDraft = { ...draft, id: "draft-2" };
+    const first = chatReducer(initialChatState(), { type: "new_conversation", conversation: draft });
+    const second = chatReducer(first, { type: "new_conversation", conversation: anotherDraft });
+    expect(second.conversations).toHaveLength(1);
+    expect(second.activeConversationId).toBe("draft-1");
+  });
+
+  it("持久化草稿时替换前端会话 ID", () => {
+    const draft: ConversationSummary = {
+      id: "draft-1",
+      userId: "u1",
+      sdkSessionId: "",
+      title: "新会话",
+      channelId: "web",
+      agentId: "",
+      createdAt: "t",
+      updatedAt: "t",
+      archived: false,
+      isDraft: true,
+    };
+    const saved = { ...draft, id: "saved-1", isDraft: false };
+    const state = chatReducer(initialChatState(), { type: "new_conversation", conversation: draft });
+    const next = chatReducer(state, {
+      type: "persist_conversation",
+      draftId: draft.id,
+      conversation: saved,
+    });
+    expect(next.activeConversationId).toBe("saved-1");
+    expect(next.conversations[0]?.isDraft).toBe(false);
+  });
 });

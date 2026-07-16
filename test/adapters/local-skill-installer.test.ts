@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ let db: Database.Database;
 let packStore: SqliteSkillPackStore;
 let installer: LocalSkillInstaller;
 let homeDir: string;
+const gitRoots: string[] = [];
 
 beforeEach(() => {
   db = new Database(":memory:");
@@ -21,7 +22,10 @@ beforeEach(() => {
     getHomeDir: (uid) => join(homeDir, uid),
   });
 });
-afterEach(() => db.close());
+afterEach(() => {
+  db.close();
+  for (const root of gitRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe("LocalSkillInstaller", () => {
   it("paste：合成 plugin 目录 + 单 skill + 扫描入库", async () => {
@@ -117,4 +121,47 @@ describe("LocalSkillInstaller", () => {
     expect((await packStore.listSkills("u1", pack.id)).map((s) => s.name)).toEqual(["g"]);
     expect(pack.source.kind).toBe("git");
   });
+
+  it("git：支持无 plugin.json 的多级 skills 仓库与 subPath", async () => {
+    const src = mkdtempSync(join(tmpdir(), "git-skills-src-"));
+    gitRoots.push(src);
+    const first = join(src, "skills", "database", "first-skill");
+    const second = join(src, "skills", "database", "second-skill");
+    mkdirSync(first, { recursive: true });
+    mkdirSync(second, { recursive: true });
+    writeFileSync(
+      join(first, "SKILL.md"),
+      "---\nname: first-skill\ndescription: |\n  第一行\n  第二行\n---\n# first",
+    );
+    writeFileSync(
+      join(second, "SKILL.md"),
+      "---\nname: second-skill\ndescription: second\n---\n# second",
+    );
+    const { execSync } = await import("node:child_process");
+    execSync("git init -q", { cwd: src });
+    execSync('git -c user.email=a@b.c -c user.name=a add -A', { cwd: src });
+    execSync('git -c user.email=a@b.c -c user.name=a commit -qm init', { cwd: src });
+
+    const pack = await installer.installFromGit("u1", {
+      url: src,
+      slug: "aiops-skills",
+      subPath: "skills/database",
+    });
+
+    expect(pack.name).toBe("aiops-skills");
+    expect(existsSync(join(homeDir, "u1", ".skills", "aiops-skills", ".claude-plugin", "plugin.json"))).toBe(true);
+    const skills = await packStore.listSkills("u1", pack.id);
+    expect(skills.map((s) => s.name)).toEqual(["first-skill", "second-skill"]);
+    expect(skills[0]?.description).toBe("第一行\n第二行");
+    expect(skills[0]?.relativePath).toBe("skills/database/first-skill/SKILL.md");
+
+    await expect(
+      installer.installFromGit("u1", {
+        url: src,
+        slug: "aiops-skills-invalid",
+        subPath: "../../outside",
+      }),
+    ).rejects.toThrow("技能目录不存在或非法");
+    expect(existsSync(join(homeDir, "u1", ".skills", "aiops-skills-invalid"))).toBe(false);
+  }, 15_000);
 });

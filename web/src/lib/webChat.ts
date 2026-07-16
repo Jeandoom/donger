@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
 import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
-import { chatReducer, initialChatState, makeId } from "./chatReducer";
+import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
 
 type SSEClient = {
   close(): void;
@@ -17,6 +17,7 @@ export function useWebChat() {
   const sseRef = useRef<SSEClient | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const persistDraftRef = useRef<Promise<string | null> | null>(null);
 
   // 从 JWT 中解析 userId
   const getUserId = useCallback((): string => {
@@ -31,24 +32,23 @@ export function useWebChat() {
   }, []);
 
   /** 创建新会话（agentId 缺省=默认会话） */
-  const createNewConversation = useCallback(
-    async (agentId?: string) => {
-      try {
-        const token = getToken();
-        const res = await fetch("/api/conversations", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ userId: getUserId(), channelId: "web", agentId }),
-        });
-        const conv: ConversationSummary = await res.json();
-        dispatch({ type: "new_conversation", conversation: conv });
-        return conv;
-      } catch {
-        return null;
-      }
+  const newConversation = useCallback(
+    async (agentId?: string): Promise<ConversationSummary> => {
+      const now = new Date().toISOString();
+      const conversation: ConversationSummary = {
+        id: `draft-${makeId()}`,
+        userId: getUserId(),
+        sdkSessionId: "",
+        title: "新会话",
+        channelId: "web",
+        agentId: agentId ?? "",
+        createdAt: now,
+        updatedAt: now,
+        archived: false,
+        isDraft: true,
+      };
+      dispatch({ type: "new_conversation", conversation });
+      return conversation;
     },
     [getUserId],
   );
@@ -179,6 +179,10 @@ export function useWebChat() {
   // 连接/重连 SSE
   useEffect(() => {
     if (!state.activeConversationId) return;
+    const activeConversation = state.conversations.find(
+      (conversation) => conversation.id === state.activeConversationId,
+    );
+    if (isDraftConversation(activeConversation)) return;
 
     const eventSource = connectSSE(state.activeConversationId);
 
@@ -188,7 +192,7 @@ export function useWebChat() {
         clearTimeout(reconnectTimerRef.current);
       }
     };
-  }, [state.activeConversationId, connectSSE]);
+  }, [state.activeConversationId, state.conversations, connectSSE]);
 
   useEffect(() => () => messagesRequestRef.current?.abort(), []);
 
@@ -197,7 +201,8 @@ export function useWebChat() {
     messagesRequestRef.current?.abort();
     dispatch({ type: "clear_error", key: "messages" });
     dispatch({ type: "switch_conversation", conversationId });
-    if (!conversationId) return;
+    const conversation = state.conversations.find((item) => item.id === conversationId);
+    if (!conversationId || isDraftConversation(conversation)) return;
     const controller = new AbortController();
     messagesRequestRef.current = controller;
     const token = getToken();
@@ -228,20 +233,60 @@ export function useWebChat() {
       .finally(() => {
         if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
       });
-  }, []);
+  }, [state.conversations]);
 
-  /** 新建会话（可指定 agentId 绑定智能体） */
-  const newConversation = useCallback(
-    async (agentId?: string) => {
-      await createNewConversation(agentId);
+  const persistDraftConversation = useCallback(
+    async (draft: ConversationSummary): Promise<string | null> => {
+      if (!draft.isDraft) return draft.id;
+      if (persistDraftRef.current) return persistDraftRef.current;
+
+      const promise = (async () => {
+        try {
+          const token = getToken();
+          const response = await fetch("/api/conversations", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({
+              userId: draft.userId,
+              channelId: draft.channelId,
+              agentId: draft.agentId || undefined,
+            }),
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const conversation = (await response.json()) as ConversationSummary;
+          dispatch({ type: "persist_conversation", draftId: draft.id, conversation });
+          return conversation.id;
+        } catch {
+          return null;
+        }
+      })();
+      persistDraftRef.current = promise;
+      void promise.finally(() => {
+        if (persistDraftRef.current === promise) persistDraftRef.current = null;
+      });
+      return promise;
     },
-    [createNewConversation],
+    [],
   );
+
+  const ensureConversation = useCallback(async (): Promise<string | null> => {
+    const active = state.conversations.find((item) => item.id === state.activeConversationId);
+    if (!active) return null;
+    return persistDraftConversation(active);
+  }, [persistDraftConversation, state.activeConversationId, state.conversations]);
 
   const send = useCallback(
     async (text: string, files?: FileInfo[]): Promise<void> => {
-      const conversationId = state.activeConversationId;
-      if (!conversationId) return;
+      const active = state.conversations.find((item) => item.id === state.activeConversationId);
+      if (!active) return;
+      const conversationId = await persistDraftConversation(active);
+      if (!conversationId) {
+        dispatch({ type: "set_error", key: "messages", message: "会话保存失败，请重试" });
+        return;
+      }
 
       const id = makeId();
       const token = getToken();
@@ -261,12 +306,13 @@ export function useWebChat() {
         dispatch({ type: "message_delivery", id, delivery: "failed" });
       }
     },
-    [state.activeConversationId],
+    [persistDraftConversation, state.activeConversationId, state.conversations],
   );
 
   const cancel = useCallback(async () => {
     const conversationId = state.activeConversationId;
-    if (!conversationId) return;
+    const active = state.conversations.find((item) => item.id === conversationId);
+    if (!conversationId || isDraftConversation(active)) return;
     const token = getToken();
     const response = await fetch(`/api/conversations/${conversationId}/cancel`, {
       method: "POST",
@@ -274,7 +320,7 @@ export function useWebChat() {
     });
     if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
     dispatch({ type: "generation", running: false });
-  }, [state.activeConversationId]);
+  }, [state.activeConversationId, state.conversations]);
 
   const resolveApproval = useCallback(
     async (approved: boolean, reason?: string) => {
@@ -338,17 +384,20 @@ export function useWebChat() {
   const deleteConversation = useCallback(async (id: string) => {
     if (window.confirm("确认删除该会话？")) {
       try {
-        const token = getToken();
-        await fetch(`/api/conversations/${id}`, {
-          method: "DELETE",
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
+        const conversation = state.conversations.find((item) => item.id === id);
+        if (!isDraftConversation(conversation)) {
+          const token = getToken();
+          await fetch(`/api/conversations/${id}`, {
+            method: "DELETE",
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          });
+        }
         dispatch({ type: "remove_conversation", conversationId: id });
       } catch {
         /* 忽略 */
       }
     }
-  }, []);
+  }, [state.conversations]);
 
   return {
     ...state,
@@ -358,6 +407,7 @@ export function useWebChat() {
     submitCredential,
     switchConversation,
     newConversation,
+    ensureConversation,
     loadConversations,
     deleteConversation,
   };
