@@ -22,6 +22,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   skills: [],
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
+  gitRepositories: [],
   llm: {},
 };
 
@@ -51,6 +52,7 @@ export function AgentEditorPage() {
             skills: a.skills,
             tools: a.tools,
             mcpServers: a.mcpServers,
+            gitRepositories: a.gitRepositories ?? [],
             llm: a.llm,
           }),
         )
@@ -207,6 +209,154 @@ export function AgentEditorPage() {
         <p className="text-xs text-muted-foreground">
           env/headers 中的密钥会加密入库；编辑时显示为掩码，留掩码即保留原值。
         </p>
+      </Field>
+
+      <Field label="Git 仓库">
+        <div className="space-y-3">
+          {form.gitRepositories.map((repository, index) => (
+            <div key={repository.id} className="space-y-2 rounded border p-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  className="rounded border px-2 py-1 text-sm"
+                  placeholder="目录名，如 backend"
+                  value={repository.name}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, name: event.target.value } : item,
+                      ),
+                    })
+                  }
+                />
+                <input
+                  className="rounded border px-2 py-1 text-sm"
+                  placeholder="分支/tag，默认仓库默认分支"
+                  value={repository.ref ?? ""}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, ref: event.target.value || undefined }
+                          : item,
+                      ),
+                    })
+                  }
+                />
+              </div>
+              <input
+                className="w-full rounded border px-2 py-1 text-sm"
+                placeholder="https://github.com/org/repo.git"
+                value={repository.url}
+                onChange={(event) => {
+                  const url = event.target.value;
+                  const provider = url.includes("gitee.com")
+                    ? "gitee"
+                    : url.includes("jihulab.com")
+                      ? "jihulab"
+                      : "github";
+                  setForm({
+                    ...form,
+                    gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, url, provider } : item,
+                    ),
+                  });
+                }}
+              />
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <span>平台：{repository.provider}</span>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={repository.required}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, required: event.target.checked } : item,
+                        ),
+                      })
+                    }
+                  />
+                  必需仓库
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={repository.shallow}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, shallow: event.target.checked } : item,
+                        ),
+                      })
+                    }
+                  />
+                  浅克隆
+                </label>
+                <select
+                  className="rounded border px-2 py-1"
+                  value={repository.syncMode}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? {
+                              ...item,
+                              syncMode: event.target.value as "cloneOnce" | "fastForward",
+                            }
+                          : item,
+                      ),
+                    })
+                  }
+                >
+                  <option value="fastForward">安全同步</option>
+                  <option value="cloneOnce">仅首次克隆</option>
+                </select>
+                <button
+                  type="button"
+                  className="ml-auto text-destructive"
+                  onClick={() =>
+                    setForm({
+                      ...form,
+                      gitRepositories: form.gitRepositories.filter(
+                        (_, itemIndex) => itemIndex !== index,
+                      ),
+                    })
+                  }
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="rounded border px-3 py-1.5 text-sm"
+            onClick={() =>
+              setForm({
+                ...form,
+                gitRepositories: [
+                  ...form.gitRepositories,
+                  {
+                    id: crypto.randomUUID(),
+                    name: "",
+                    provider: "github",
+                    url: "",
+                    required: true,
+                    shallow: true,
+                    syncMode: "fastForward",
+                  },
+                ],
+              })
+            }
+          >
+            添加仓库
+          </button>
+        </div>
       </Field>
 
       {!isNew && id ? <SharePanel agentId={id} /> : null}

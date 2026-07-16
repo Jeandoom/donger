@@ -10,6 +10,17 @@ export interface McpServerDTO {
   headers?: Record<string, string>;
 }
 
+export interface AgentGitRepositoryDTO {
+  id: string;
+  name: string;
+  provider: "github" | "gitee" | "jihulab";
+  url: string;
+  ref?: string;
+  required: boolean;
+  shallow: boolean;
+  syncMode: "cloneOnce" | "fastForward";
+}
+
 export interface AgentDTO {
   id: string;
   ownerId: string;
@@ -19,13 +30,15 @@ export interface AgentDTO {
   skills: string[];
   tools: { mode: "all" | "whitelist"; whitelist: string[] };
   mcpServers: McpServerDTO[];
+  gitRepositories: AgentGitRepositoryDTO[];
   llm: { presetId?: string };
   createdAt: string;
   updatedAt: string;
 }
 
-export interface AgentListDTO extends AgentDTO {
+export interface AgentListDTO extends Omit<AgentDTO, "gitRepositories"> {
   _mine: boolean;
+  gitRepositories?: AgentGitRepositoryDTO[];
 }
 
 export interface AgentMeta {

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
@@ -14,6 +14,7 @@ import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
 import type { LlmPreset } from "../../src/config.js";
+import type { GitAccessGate } from "../../src/orchestrator/git-access-gate.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
 
 function makeWebRoot(): string {
@@ -496,10 +497,11 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
 
     const form = new FormData();
     form.append("file", new Blob(["# runtime"], { type: "text/markdown" }), "readme.md");
-    const upload = await fetch(
-      `http://127.0.0.1:${port}/api/upload?threadId=${conversation.id}`,
-      { method: "POST", headers: { authorization: `Bearer ${token}` }, body: form },
-    );
+    const upload = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${conversation.id}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: form,
+    });
     expect(upload.status).toBe(200);
     const file = (await upload.json()) as {
       path: string;
@@ -507,9 +509,7 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
       type: "markdown";
       url: string;
     };
-    expect(file.path).toContain(
-      join("sessions", conversation.id, "workspace", "attachments", ""),
-    );
+    expect(file.path).toContain(join("sessions", conversation.id, "workspace", "attachments", ""));
 
     const send = await fetch(
       `http://127.0.0.1:${port}/api/conversations/${conversation.id}/messages`,
@@ -538,6 +538,89 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
     const preview = await fetch(`http://127.0.0.1:${port}${file.url}`);
     expect(preview.status).toBe(200);
     expect(await preview.text()).toBe("# runtime");
+  });
+});
+
+describe("WebChannel Git 对话前置权限门", () => {
+  it("未授权返回 428，且不持久化消息或调用 handler", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "web-git-gate-"));
+    const db = new Database(":memory:");
+    const userStore = new SqliteUserStore(db, {
+      adminExternalIds: new Set(),
+      usersDir: join(tmp, "users"),
+    });
+    userStore.migrate();
+    const conversationStore = new SqliteConversationStore(db);
+    conversationStore.migrate();
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const agentStore = new SqliteAgentStore(db, createSecretCipher("test"));
+    agentStore.migrate();
+    const user = await userStore.getOrCreateByIdentity("internal", "git-user", "用户");
+    const agent = await agentStore.create({
+      ownerId: user.id,
+      name: "Git Agent",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      gitRepositories: [
+        {
+          id: "repo-1",
+          name: "private",
+          provider: "github",
+          url: "https://github.com/acme/private.git",
+          required: true,
+          shallow: true,
+          syncMode: "fastForward",
+        },
+      ],
+      llm: {},
+    });
+    const conversation = await conversationStore.createWithAgent(user.id, "web", "Git", agent.id);
+    const token = (await sessionStore.create(user.id)).token;
+    const add = vi.fn(async () => undefined);
+    const handler = vi.fn();
+    const gitAccessGate = {
+      check: vi.fn(async () => ({
+        ready: false,
+        materializeItems: [],
+        requirements: [
+          {
+            provider: "github",
+            reason: "connection_missing",
+            repositories: [{ id: "repo-1", name: "private", fingerprint: "github:acme/private" }],
+          },
+        ],
+      })),
+    } as unknown as GitAccessGate;
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: tmp,
+      userStore,
+      conversationStore,
+      sessionStore,
+      agentStore,
+      gitAccessGate,
+      messageStore: { add } as never,
+    });
+    web.onMessage(handler);
+    await web.ready();
+
+    const response = await fetch(
+      `http://127.0.0.1:${web.boundPort}/api/conversations/${conversation.id}/messages`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "开始任务" }),
+      },
+    );
+
+    expect(response.status).toBe(428);
+    expect((await response.json()) as object).toMatchObject({ code: "GIT_AUTH_REQUIRED" });
+    expect(add).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    db.close();
+    rmSync(tmp, { recursive: true, force: true });
   });
 });
 

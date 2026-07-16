@@ -6,6 +6,12 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
+import {
+  GiteeAuthProvider,
+  GitHubAuthProvider,
+  JihuLabAuthProvider,
+} from "./adapters/git-auth-providers.js";
+import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
@@ -14,6 +20,7 @@ import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
+import { SqliteGitConnectionStore } from "./adapters/sqlite-git-connection-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
@@ -23,6 +30,7 @@ import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
+import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import type { Channel } from "./ports/channel.js";
@@ -85,6 +93,34 @@ async function main(): Promise<void> {
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
   agentShareStore.migrate();
+  const gitConnectionStore = new SqliteGitConnectionStore(db, secretCipher);
+  gitConnectionStore.migrate();
+  const repositoryMaterializer = new GitCliRepositoryMaterializer(cfg.gitCloneTimeoutMs);
+  const gitAccessGate = new GitAccessGate(
+    gitConnectionStore,
+    repositoryMaterializer,
+    cfg.gitAuthCacheTtlMs,
+  );
+  const gitAuthProviders = {
+    github: new GitHubAuthProvider({
+      ...cfg.gitOAuth.github,
+      redirectUri: cfg.publicBaseUrl
+        ? `${cfg.publicBaseUrl}/api/settings/git/oauth/github/callback`
+        : undefined,
+    }),
+    gitee: new GiteeAuthProvider({
+      ...cfg.gitOAuth.gitee,
+      redirectUri: cfg.publicBaseUrl
+        ? `${cfg.publicBaseUrl}/api/settings/git/oauth/gitee/callback`
+        : undefined,
+    }),
+    jihulab: new JihuLabAuthProvider({
+      ...cfg.gitOAuth.jihulab,
+      redirectUri: cfg.publicBaseUrl
+        ? `${cfg.publicBaseUrl}/api/settings/git/oauth/jihulab/callback`
+        : undefined,
+    }),
+  };
 
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
@@ -110,6 +146,7 @@ async function main(): Promise<void> {
       credentialStore,
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,
+      repositoryMaterializer,
     });
     return new Orchestrator({
       store,
@@ -125,6 +162,7 @@ async function main(): Promise<void> {
       credentialStore,
       agentStore,
       agentShareStore,
+      gitAccessGate,
     });
   }
 
@@ -168,6 +206,10 @@ async function main(): Promise<void> {
     credentialStore,
     agentStore,
     agentShareStore,
+    gitConnectionStore,
+    gitAuthProviders,
+    gitAccessGate,
+    publicBaseUrl: cfg.publicBaseUrl,
     agentMeta: {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],

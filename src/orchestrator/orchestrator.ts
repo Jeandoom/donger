@@ -16,6 +16,7 @@ import type { Channel } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
 import type { MessageStore } from "../ports/message-store.js";
+import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
@@ -23,6 +24,7 @@ import { ForbiddenError, NotFoundError } from "../util/errors.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { makeCredentialResolver } from "./credential-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
+import type { GitAccessGate } from "./git-access-gate.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 
 export interface OrchestratorDeps {
@@ -43,6 +45,7 @@ export interface OrchestratorDeps {
   agentStore?: AgentStore;
   /** 智能体分享/授权存储 */
   agentShareStore?: AgentShareStore;
+  gitAccessGate?: GitAccessGate;
 }
 
 export class Orchestrator {
@@ -158,6 +161,7 @@ export class Orchestrator {
 
     // 显式 agent 解析（M13）：会话绑了 agentId 时旁路 Planner，校验使用权限
     let agent: Agent | undefined;
+    let gitMaterializeItems: RepositoryMaterializeItem[] | undefined;
     if (conversation.agentId) {
       if (!this.deps.agentStore) {
         throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
@@ -171,6 +175,14 @@ export class Orchestrator {
         : false;
       if (!canUseAgent(agent, user, granted)) {
         throw new ForbiddenError("AGENT_FORBIDDEN", "无权使用该智能体");
+      }
+      if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
+        const gitAccess = await this.deps.gitAccessGate.check(user, agent);
+        if (!gitAccess.ready) {
+          await channel.send(msg.threadId, { text: "请先完成智能体所需 Git 仓库授权后再对话。" });
+          return;
+        }
+        gitMaterializeItems = gitAccess.materializeItems;
       }
     }
 
@@ -234,6 +246,7 @@ export class Orchestrator {
         systemPromptAppend: memoryAppend,
         abortSignal: runController.signal,
         agent,
+        gitMaterializeItems,
       });
 
       // 凭证门：缺失必需凭证 → 经对话收集到用户保险柜 → 重 prepare 拿最新 credentialsEnv
@@ -253,6 +266,7 @@ export class Orchestrator {
             systemPromptAppend: memoryAppend,
             abortSignal: runController.signal,
             agent,
+            gitMaterializeItems,
           })
         ).runOptions;
       }
@@ -286,6 +300,7 @@ export class Orchestrator {
             systemPromptAppend: memoryAppend,
             abortSignal: runController.signal,
             agent,
+            gitMaterializeItems,
           });
           attemptOpts = refreshed.runOptions;
           continue;

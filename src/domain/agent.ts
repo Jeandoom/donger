@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentGitRepositoriesSchema } from "./git.js";
 
 export const McpServerConfigSchema = z.object({
   name: z.string().min(1),
@@ -29,6 +30,7 @@ export const AgentSchema = z.object({
   skills: z.array(z.string()).default([]),
   tools: AgentToolsSchema,
   mcpServers: z.array(McpServerConfigSchema).default([]),
+  gitRepositories: AgentGitRepositoriesSchema,
   llm: AgentLLMSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -36,7 +38,9 @@ export const AgentSchema = z.object({
 export type Agent = z.infer<typeof AgentSchema>;
 
 /** 入参用：不带 id/时间戳（由 store 填充） */
-export type AgentInput = Omit<Agent, "id" | "createdAt" | "updatedAt">;
+export type AgentInput = Omit<Agent, "id" | "createdAt" | "updatedAt" | "gitRepositories"> & {
+  gitRepositories?: Agent["gitRepositories"];
+};
 export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true });
 
 export function parseAgent(raw: unknown): Agent {

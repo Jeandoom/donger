@@ -45,6 +45,7 @@ export class SqliteAgentStore implements AgentStore {
     const now = new Date().toISOString();
     const agent: Agent = {
       ...input,
+      gitRepositories: input.gitRepositories ?? [],
       id: crypto.randomUUID(),
       createdAt: now,
       updatedAt: now,

@@ -67,9 +67,9 @@ describe("loadConfig", () => {
 
   it("BUILTIN_SKILLS_DIR 可选：默认 <repoRoot>/skills，设了覆盖", () => {
     expect(loadConfig(base).builtinSkillsDir).toBe(join("./repos", "skills"));
-    expect(
-      loadConfig({ ...base, BUILTIN_SKILLS_DIR: "/path/to/skills" }).builtinSkillsDir,
-    ).toBe("/path/to/skills");
+    expect(loadConfig({ ...base, BUILTIN_SKILLS_DIR: "/path/to/skills" }).builtinSkillsDir).toBe(
+      "/path/to/skills",
+    );
   });
 
   it("WORKSPACE_DIR / DB_PATH 默认到 ~/.donger/", () => {
@@ -165,5 +165,22 @@ describe("config agent 扩展", () => {
 
   it("非法 AGENT_LLM_PRESETS 抛错", () => {
     expect(() => loadConfig({ ...base, AGENT_LLM_PRESETS: "only-name" })).toThrow();
+  });
+});
+
+describe("config Git 授权", () => {
+  it("解析 OAuth 与 Git 运行参数", () => {
+    const cfg = loadConfig({
+      ...base,
+      PUBLIC_BASE_URL: "https://donger.example/",
+      GITHUB_CLIENT_ID: "gh-id",
+      GITHUB_CLIENT_SECRET: "gh-secret",
+      GIT_CLONE_TIMEOUT_MS: "90000",
+      GIT_AUTH_CACHE_TTL_MS: "300000",
+    });
+    expect(cfg.publicBaseUrl).toBe("https://donger.example");
+    expect(cfg.gitOAuth.github).toEqual({ clientId: "gh-id", clientSecret: "gh-secret" });
+    expect(cfg.gitCloneTimeoutMs).toBe(90_000);
+    expect(cfg.gitAuthCacheTtlMs).toBe(300_000);
   });
 });

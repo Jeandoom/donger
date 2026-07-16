@@ -4,14 +4,18 @@ import type { LlmPreset } from "../config.js";
 import type { Agent, McpServerConfig } from "../domain/agent.js";
 import type { Conversation } from "../domain/conversation.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
-import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
-import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialRequestItem } from "../ports/channel.js";
+import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
+import type {
+  RepositoryMaterializeItem,
+  RepositoryMaterializer,
+} from "../ports/repository-materializer.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
@@ -32,6 +36,7 @@ export interface PrepareOpts {
   abortSignal?: AbortSignal;
   /** 显式选中的智能体（旁路 Planner；undefined=默认 Planner 路径） */
   agent?: Agent;
+  gitMaterializeItems?: RepositoryMaterializeItem[];
 }
 
 interface RuntimeManagerDeps {
@@ -42,6 +47,7 @@ interface RuntimeManagerDeps {
   credentialStore: CredentialStore;
   installer: SkillInstaller;
   builtinSkillsDir: string;
+  repositoryMaterializer?: RepositoryMaterializer;
 }
 
 /**
@@ -112,6 +118,30 @@ export class RuntimeManager {
 
     // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
     const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
+
+    if (opts.gitMaterializeItems?.length && this.deps.repositoryMaterializer) {
+      const repositories = await this.deps.repositoryMaterializer.materialize({
+        destination: join(runtimeDir, "repos"),
+        items: opts.gitMaterializeItems,
+        signal: opts.abortSignal,
+      });
+      const requiredById = new Map(
+        opts.gitMaterializeItems.map((item) => [item.repository.id, item.repository.required]),
+      );
+      const blocking = repositories.find(
+        (result) => result.status === "error" && requiredById.get(result.repositoryId),
+      );
+      if (blocking)
+        throw new Error(`必需仓库 ${blocking.name} 准备失败：${blocking.message ?? "未知错误"}`);
+      const repositoryPrompt = [
+        "## 会话 Git 仓库",
+        ...repositories.map(
+          (result) =>
+            `- ${result.name}: ${result.path}，${result.status === "ready" ? "已就绪" : (result.message ?? result.status)}`,
+        ),
+      ].join("\n");
+      extraPrompt = extraPrompt ? `${extraPrompt}\n\n${repositoryPrompt}` : repositoryPrompt;
+    }
 
     // —— transcript 适配器：projectKey=userId, conv_id=conversationId ——
     const sessionStore = new SdkSessionStoreAdapter(this.deps.transcriptStore, () => {

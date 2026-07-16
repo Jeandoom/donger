@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { isAgentConv } from "../lib/conversations";
+import { fetchGitPreflight, type GitPreflightDTO, grantGitRepositories } from "../lib/gitSettings";
 import { useWebChat } from "../lib/webChat";
 
 export function AgentSessionsPage() {
@@ -10,8 +12,30 @@ export function AgentSessionsPage() {
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [agentId, setAgentId] = useState("");
   const [params] = useSearchParams();
+  const [gitPreflight, setGitPreflight] = useState<GitPreflightDTO>({
+    ready: false,
+    requirements: [],
+  });
+  const [gitLoading, setGitLoading] = useState(false);
+  const [gitError, setGitError] = useState("");
   const deepLinkAgent = params.get("agent");
   const agent = agents.find((item) => item.id === agentId);
+
+  const checkGitAccess = useCallback(async (): Promise<GitPreflightDTO | undefined> => {
+    if (!wc.activeConversationId) return undefined;
+    setGitLoading(true);
+    setGitError("");
+    try {
+      const result = await fetchGitPreflight(wc.activeConversationId);
+      setGitPreflight(result);
+      return result;
+    } catch (reason) {
+      setGitError(reason instanceof Error ? reason.message : String(reason));
+      return undefined;
+    } finally {
+      setGitLoading(false);
+    }
+  }, [wc.activeConversationId]);
 
   // 载入智能体列表
   useEffect(() => {
@@ -52,6 +76,10 @@ export function AgentSessionsPage() {
     wc.newConversation,
   ]);
 
+  useEffect(() => {
+    if (wc.activeConversationId) void checkGitAccess();
+  }, [wc.activeConversationId, checkGitAccess]);
+
   const conversations = agentId
     ? wc.conversations.filter((conversation) => isAgentConv(conversation, agentId))
     : [];
@@ -86,7 +114,6 @@ export function AgentSessionsPage() {
       pendingApproval={wc.pendingApproval}
       pendingCredential={wc.pendingCredential}
       connection={wc.connection}
-      onSend={wc.send}
       onCancel={wc.cancel}
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
@@ -94,6 +121,30 @@ export function AgentSessionsPage() {
       errors={wc.errors}
       onReloadConversations={() => void wc.loadConversations()}
       onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
+      onSend={async (text, files) => {
+        const access = await checkGitAccess();
+        if (access?.ready) await wc.send(text, files);
+      }}
+      blockingContent={
+        wc.activeConversationId && (gitLoading || !gitPreflight.ready || gitError) ? (
+          <GitAccessBlocker
+            loading={gitLoading}
+            requirements={gitPreflight.requirements}
+            error={gitError || undefined}
+            onRetry={() => void checkGitAccess()}
+            onGrant={(repositoryIds) => {
+              setGitLoading(true);
+              setGitError("");
+              void grantGitRepositories(wc.activeConversationId ?? "", repositoryIds)
+                .then(setGitPreflight)
+                .catch((reason: unknown) =>
+                  setGitError(reason instanceof Error ? reason.message : String(reason)),
+                )
+                .finally(() => setGitLoading(false));
+            }}
+          />
+        ) : undefined
+      }
     />
   );
 }

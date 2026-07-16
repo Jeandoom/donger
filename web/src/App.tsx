@@ -10,10 +10,12 @@ import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
+import { GitSettingsPage } from "./pages/GitSettingsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
+import { UserProfilePage } from "./pages/UserProfilePage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 
 export function App() {
@@ -42,6 +44,9 @@ export function App() {
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/credentials" element={<CredentialsPage />} />
+            <Route path="/settings" element={<Navigate to="/settings/git" replace />} />
+            <Route path="/settings/profile" element={<UserProfilePage />} />
+            <Route path="/settings/git" element={<GitSettingsPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="/audit" element={<AuditPage />} />
           </Route>

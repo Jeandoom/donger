@@ -38,6 +38,7 @@ export interface ChatWorkspaceProps {
   errors: ChatErrors;
   onReloadConversations: () => void;
   onReloadMessages: () => void;
+  blockingContent?: React.ReactNode;
 }
 
 export function ChatWorkspace(props: ChatWorkspaceProps) {
@@ -124,17 +125,21 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             </button>
           </div>
         ) : null}
-        <AssistantRuntimeProvider runtime={runtime}>
-          <AssistantThread
-            pendingApproval={props.pendingApproval}
-            pendingCredential={props.pendingCredential}
-            approvalError={props.errors.approval}
-            credentialError={props.errors.credential}
-            onResolveApproval={props.onResolveApproval}
-            onSubmitCredential={props.onSubmitCredential}
-            placeholder={props.inputPlaceholder ?? "输入消息…"}
-          />
-        </AssistantRuntimeProvider>
+        {props.blockingContent ? (
+          props.blockingContent
+        ) : (
+          <AssistantRuntimeProvider runtime={runtime}>
+            <AssistantThread
+              pendingApproval={props.pendingApproval}
+              pendingCredential={props.pendingCredential}
+              approvalError={props.errors.approval}
+              credentialError={props.errors.credential}
+              onResolveApproval={props.onResolveApproval}
+              onSubmitCredential={props.onSubmitCredential}
+              placeholder={props.inputPlaceholder ?? "输入消息…"}
+            />
+          </AssistantRuntimeProvider>
+        )}
       </div>
       <FileBrowserDrawer
         open={drawerOpen}

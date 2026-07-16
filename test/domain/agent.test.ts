@@ -39,5 +39,6 @@ describe("Agent schema", () => {
     const a = parseAgent(valid);
     expect(a.skills).toEqual(["superpowers:brainstorming"]);
     expect(a.mcpServers[0]?.headers).toEqual({ k: "v" });
+    expect(a.gitRepositories).toEqual([]);
   });
 });

@@ -34,6 +34,15 @@ const EnvSchema = z.object({
   SECRET_KEY: z.string().optional(),
   // Agent 可选 LLM 预置模型，格式 name|model|baseUrl，多条用 ; 分隔
   AGENT_LLM_PRESETS: z.string().optional().default(""),
+  PUBLIC_BASE_URL: z.string().optional().default(""),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
+  GITEE_CLIENT_ID: z.string().optional(),
+  GITEE_CLIENT_SECRET: z.string().optional(),
+  JIHULAB_CLIENT_ID: z.string().optional(),
+  JIHULAB_CLIENT_SECRET: z.string().optional(),
+  GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */
@@ -75,6 +84,10 @@ export interface AppConfig {
   secretKeySeed: string;
   /** Agent 可选 LLM 预置列表 */
   agentLlmPresets: LlmPreset[];
+  publicBaseUrl: string;
+  gitOAuth: Record<"github" | "gitee" | "jihulab", { clientId?: string; clientSecret?: string }>;
+  gitCloneTimeoutMs: number;
+  gitAuthCacheTtlMs: number;
 }
 
 /**
@@ -102,6 +115,14 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     jwtTtlDays: e.JWT_TTL_DAYS,
     secretKeySeed: resolveSecretSeed(e.SECRET_KEY, e.JWT_SECRET ?? ""),
     agentLlmPresets: parseLlmPresets(e.AGENT_LLM_PRESETS),
+    publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
+    gitOAuth: {
+      github: { clientId: e.GITHUB_CLIENT_ID, clientSecret: e.GITHUB_CLIENT_SECRET },
+      gitee: { clientId: e.GITEE_CLIENT_ID, clientSecret: e.GITEE_CLIENT_SECRET },
+      jihulab: { clientId: e.JIHULAB_CLIENT_ID, clientSecret: e.JIHULAB_CLIENT_SECRET },
+    },
+    gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
+    gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {

@@ -3,14 +3,13 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { apiFetch, clearToken, getToken } from "../../lib/auth";
 import { cn } from "../../lib/utils";
 
-const NAV_KEY = "donger_nav_agents_open";
-
 interface LeafItem {
   to: string;
   label: string;
   end?: boolean;
 }
 interface ParentItem {
+  key: "agents" | "settings";
   label: string;
   /** 命中即视为该父项激活（用于自动展开） */
   match: string[];
@@ -21,6 +20,7 @@ type NavEntry = LeafItem | ParentItem;
 const entries: NavEntry[] = [
   { to: "/", label: "会话", end: true },
   {
+    key: "agents",
     label: "智能体",
     match: ["/agents", "/agent-sessions"],
     children: [
@@ -31,6 +31,15 @@ const entries: NavEntry[] = [
   { to: "/workflows", label: "工作流" },
   { to: "/skills", label: "技能" },
   { to: "/credentials", label: "凭证" },
+  {
+    key: "settings",
+    label: "用户配置",
+    match: ["/settings"],
+    children: [
+      { to: "/settings/profile", label: "基本信息" },
+      { to: "/settings/git", label: "Git 配置" },
+    ],
+  },
   { to: "/config", label: "配置" },
   { to: "/audit", label: "执行审计" },
 ];
@@ -56,30 +65,37 @@ export function NavigationSidebar({
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState<UserInfo | null>(null);
-  const [agentsOpen, setAgentsOpen] = useState<boolean>(() => {
+  const [openParents, setOpenParents] = useState<Record<ParentItem["key"], boolean>>(() => {
     try {
-      return localStorage.getItem(NAV_KEY) === "1";
+      return {
+        agents: localStorage.getItem("donger_nav_agents_open") === "1",
+        settings: localStorage.getItem("donger_nav_settings_open") === "1",
+      };
     } catch {
-      return false;
+      return { agents: false, settings: false };
     }
   });
 
   // 命中智能体子树自动展开
   useEffect(() => {
-    if (entries.some((e) => isParent(e) && e.match.some((m) => location.pathname.startsWith(m)))) {
-      setAgentsOpen(true);
+    const active = entries.find(
+      (entry): entry is ParentItem =>
+        isParent(entry) && entry.match.some((match) => location.pathname.startsWith(match)),
+    );
+    if (active) {
+      setOpenParents((current) => ({ ...current, [active.key]: true }));
     }
   }, [location.pathname]);
 
-  const toggleAgents = () => {
-    setAgentsOpen((prev) => {
-      const next = !prev;
+  const toggleParent = (key: ParentItem["key"]) => {
+    setOpenParents((current) => {
+      const next = !current[key];
       try {
-        localStorage.setItem(NAV_KEY, next ? "1" : "0");
+        localStorage.setItem(`donger_nav_${key}_open`, next ? "1" : "0");
       } catch {
         // 忽略
       }
-      return next;
+      return { ...current, [key]: next };
     });
   };
 
@@ -107,16 +123,18 @@ export function NavigationSidebar({
       <div className="px-2 py-3 text-sm font-semibold">🤖 donger</div>
       {entries.map((e) =>
         isParent(e) ? (
-          <div key={e.label} className="mb-0.5">
+          <div key={e.key} className="mb-0.5">
             <button
               type="button"
-              onClick={toggleAgents}
+              onClick={() => toggleParent(e.key)}
               className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm hover:bg-accent"
             >
               <span>{e.label}</span>
-              <span className="text-xs text-muted-foreground">{agentsOpen ? "▾" : "▸"}</span>
+              <span className="text-xs text-muted-foreground">
+                {openParents[e.key] ? "▾" : "▸"}
+              </span>
             </button>
-            {agentsOpen && (
+            {openParents[e.key] && (
               <div className="ml-2 border-l border-border pl-2">
                 {e.children.map((c) => (
                   <NavLink
