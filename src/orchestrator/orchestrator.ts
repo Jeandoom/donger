@@ -161,6 +161,7 @@ export class Orchestrator {
 
     // 显式 agent 解析（M13）：会话绑了 agentId 时旁路 Planner，校验使用权限
     let agent: Agent | undefined;
+    let sharedAgentSkillOwner: User | undefined;
     let gitMaterializeItems: RepositoryMaterializeItem[] | undefined;
     if (conversation.agentId) {
       if (!this.deps.agentStore) {
@@ -175,6 +176,9 @@ export class Orchestrator {
         : false;
       if (!canUseAgent(agent, user, granted)) {
         throw new ForbiddenError("AGENT_FORBIDDEN", "无权使用该智能体");
+      }
+      if (agent.ownerId !== user.id) {
+        sharedAgentSkillOwner = await userStore.get(agent.ownerId);
       }
       if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
         const gitAccess = await this.deps.gitAccessGate.check(user, agent);
@@ -246,6 +250,7 @@ export class Orchestrator {
         systemPromptAppend: memoryAppend,
         abortSignal: runController.signal,
         agent,
+        sharedAgentSkillOwner,
         gitMaterializeItems,
       });
 
@@ -266,6 +271,7 @@ export class Orchestrator {
             systemPromptAppend: memoryAppend,
             abortSignal: runController.signal,
             agent,
+            sharedAgentSkillOwner,
             gitMaterializeItems,
           })
         ).runOptions;
@@ -314,6 +320,7 @@ export class Orchestrator {
             systemPromptAppend: memoryAppend,
             abortSignal: runController.signal,
             agent,
+            sharedAgentSkillOwner,
             gitMaterializeItems,
           });
           attemptOpts = refreshed.runOptions;
