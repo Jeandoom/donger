@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -326,6 +326,82 @@ describe("RuntimeManager agent 分支", () => {
     expect(runOptions.allowedTools).toEqual(["Bash"]);
     expect(runOptions.mcpServers?.[0]?.name).toBe("m");
     expect(runOptions.systemPromptAppend).toContain("EXTRA");
+  });
+
+  it("共享 agent 将创建者选中的 skill 复制到访问者会话目录", async () => {
+    const ownerPackDir = mkdtempSync(join(tmpdir(), "shared-agent-pack-"));
+    mkdirSync(join(ownerPackDir, ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(ownerPackDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "owner-pack", version: "0.1.0" }),
+    );
+    mkdirSync(join(ownerPackDir, "skills", "query"), { recursive: true });
+    writeFileSync(
+      join(ownerPackDir, "skills", "query", "SKILL.md"),
+      "---\nname: query\ndescription: query\n---\n",
+    );
+
+    const owner = {
+      ...baseUser(mkdtempSync(join(tmpdir(), "shared-agent-owner-"))),
+      id: "owner",
+    };
+    const skillDeps = emptySkillDeps();
+    const ownerPack: SkillPack = {
+      id: "owner-pack-id",
+      userId: owner.id,
+      slug: "owner-pack",
+      name: "owner-pack",
+      source: { kind: "paste" },
+      installedPath: ownerPackDir,
+      enabled: true,
+      builtin: false,
+      credentials: [],
+      createdAt: "t",
+      updatedAt: "t",
+    };
+    await skillDeps.skillPackStore.upsertPack(ownerPack);
+    await skillDeps.skillPackStore.upsertSkills(owner.id, ownerPack.id, [
+      {
+        id: "owner-skill-id",
+        userId: owner.id,
+        packId: ownerPack.id,
+        name: "query",
+        description: "query",
+        relativePath: "skills/query/SKILL.md",
+        enabled: true,
+        createdAt: "t",
+        updatedAt: "t",
+      },
+    ]);
+
+    const conv = baseConv();
+    const visitor = baseUser(join(ws, "users", "u1"));
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...skillDeps,
+    });
+    const { runOptions } = await m.prepare(visitor, conv, {
+      agent: {
+        id: "shared-agent",
+        ownerId: owner.id,
+        name: "共享助手",
+        skills: ["owner-pack:query"],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        llm: {},
+        createdAt: "",
+        updatedAt: "",
+      },
+      sharedAgentSkillOwner: owner,
+    });
+
+    const sharedPlugin = runOptions.pluginPaths?.find((path) =>
+      path.includes(".donger-shared-skills"),
+    );
+    expect(sharedPlugin).toBeDefined();
+    expect(existsSync(join(sharedPlugin ?? "", "skills", "query", "SKILL.md"))).toBe(true);
   });
 
   it("agent.tools.mode=all → allowedTools undefined", async () => {

@@ -2,7 +2,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureSdkPluginLayout } from "../../src/util/sdk-plugin-layout.js";
+import {
+  ensureSdkPluginLayout,
+  materializeSharedSkillPlugin,
+} from "../../src/util/sdk-plugin-layout.js";
 
 function writeSkill(root: string, relativePath: string, content = "---\nname: demo\n---\n"): void {
   const path = join(root, relativePath);
@@ -37,5 +40,17 @@ describe("ensureSdkPluginLayout", () => {
     const root = mkdtempSync(join(tmpdir(), "sdk-plugin-"));
     writeSkill(root, "skills/demo/SKILL.md");
     expect(ensureSdkPluginLayout(root, "demo")).toBe(root);
+  });
+
+  it("共享时只复制指定技能到访问者目录", () => {
+    const source = mkdtempSync(join(tmpdir(), "sdk-plugin-source-"));
+    const target = mkdtempSync(join(tmpdir(), "sdk-plugin-target-"));
+    writeSkill(source, "skills/keep/SKILL.md", "---\nname: keep\n---\n");
+    writeSkill(source, "skills/drop/SKILL.md", "---\nname: drop\n---\n");
+
+    const pluginPath = materializeSharedSkillPlugin(source, "demo", ["keep"], target);
+    expect(pluginPath).toBe(target);
+    expect(existsSync(join(target, "skills", "keep", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(target, "skills", "drop", "SKILL.md"))).toBe(false);
   });
 });

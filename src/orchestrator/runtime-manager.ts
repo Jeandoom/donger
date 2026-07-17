@@ -22,7 +22,10 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
 import { seedBuiltinPacksIfAbsent } from "../util/builtin-skills.js";
-import { ensureSdkPluginLayout } from "../util/sdk-plugin-layout.js";
+import {
+  ensureSdkPluginLayout,
+  materializeSharedSkillPlugin,
+} from "../util/sdk-plugin-layout.js";
 import { ensureRuntimeDir } from "../util/workspace.js";
 
 export interface RuntimeManagerConfig {
@@ -39,6 +42,8 @@ export interface PrepareOpts {
   abortSignal?: AbortSignal;
   /** 显式选中的智能体（旁路 Planner；undefined=默认 Planner 路径） */
   agent?: Agent;
+  /** 共享智能体的创建者，仅用于复制其配置中实际选中的技能。 */
+  sharedAgentSkillOwner?: User;
   gitMaterializeItems?: RepositoryMaterializeItem[];
 }
 
@@ -126,13 +131,24 @@ export class RuntimeManager {
       }
     }
 
-    const capabilities: CapabilitySet = {
-      skills,
-      pluginPaths: resolved.pluginPaths,
-    };
-
     // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
     const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
+    const pluginPaths = [
+      ...resolved.pluginPaths,
+      ...(opts.agent && opts.sharedAgentSkillOwner
+        ? await this.materializeSharedAgentSkills(
+            user,
+            runtimeDir,
+            opts.agent,
+            opts.sharedAgentSkillOwner,
+          )
+        : []),
+    ];
+
+    const capabilities: CapabilitySet = {
+      skills,
+      pluginPaths,
+    };
 
     if (opts.agent?.extensionDirectories?.length && this.deps.extensionDirectoryResolver) {
       if (opts.agent.ownerId === user.id) {
@@ -212,7 +228,7 @@ export class RuntimeManager {
     const runOptions: RunOptions = {
       cwd: runtimeDir,
       skills,
-      pluginPaths: resolved.pluginPaths,
+      pluginPaths,
       llm,
       systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
       abortSignal: opts.abortSignal,
@@ -260,6 +276,47 @@ export class RuntimeManager {
     return ensureSdkPluginLayout(packPath, pack.name);
   }
 
+  private async materializeSharedAgentSkills(
+    user: User,
+    runtimeDir: string,
+    agent: Agent,
+    owner: User,
+  ): Promise<string[]> {
+    if (agent.ownerId === user.id) return [];
+    const selected = new Map<string, Set<string>>();
+    for (const skillId of [
+      ...agent.skills,
+      ...(agent.defaultSkill ? [agent.defaultSkill] : []),
+    ]) {
+      const separator = skillId.indexOf(":");
+      if (separator <= 0 || separator === skillId.length - 1) continue;
+      const packName = skillId.slice(0, separator);
+      const skillName = skillId.slice(separator + 1);
+      const names = selected.get(packName) ?? new Set<string>();
+      names.add(skillName);
+      selected.set(packName, names);
+    }
+    if (selected.size === 0) return [];
+
+    const ownerPacks = (await this.deps.skillPackStore.listPacks(owner.id)).filter(
+      (pack) => pack.enabled && selected.has(pack.name),
+    );
+    const targetRoot = join(runtimeDir, ".donger-shared-skills");
+    const paths: string[] = [];
+    for (const pack of ownerPacks) {
+      const packPath = this.resolvePackPath(owner, pack);
+      const target = join(targetRoot, safeDirectoryName(pack.name));
+      const materialized = materializeSharedSkillPlugin(
+        packPath,
+        pack.name,
+        [...(selected.get(pack.name) ?? [])],
+        target,
+      );
+      if (materialized) paths.push(materialized);
+    }
+    return paths;
+  }
+
   /** 合并 systemPromptAppend：默认始终在，extra（如记忆上下文）追加其后 */
   private combineSystemPromptAppend(extra?: string): string {
     return extra
@@ -289,4 +346,8 @@ export class RuntimeManager {
       sessionId: conv.sdkSessionId,
     });
   }
+}
+
+function safeDirectoryName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]+/g, "-") || "pack";
 }

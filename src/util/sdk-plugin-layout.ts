@@ -53,6 +53,35 @@ export function ensureSdkPluginLayout(packDir: string, pluginName: string): stri
   return generatedDir;
 }
 
+/** 将共享智能体实际选中的技能复制到访问者会话目录，避免挂载分享者整个用户目录。 */
+export function materializeSharedSkillPlugin(
+  sourcePackDir: string,
+  pluginName: string,
+  skillNames: string[],
+  targetDir: string,
+): string | undefined {
+  const sourcePluginDir = ensureSdkPluginLayout(sourcePackDir, pluginName);
+  const selected = new Set(skillNames);
+  const skills = scanSkillPack(sourcePluginDir).skills.filter((skill) => selected.has(skill.name));
+  if (skills.length === 0) return undefined;
+
+  rmSync(targetDir, { recursive: true, force: true });
+  const targetSkillsDir = join(targetDir, "skills");
+  mkdirSync(targetSkillsDir, { recursive: true });
+  const usedNames = new Set<string>();
+  for (const skill of skills) {
+    const sourceDir = dirname(join(sourcePluginDir, skill.relativePath));
+    const targetName = uniqueSkillDirectoryName(skill.name, usedNames);
+    cpSync(sourceDir, join(targetSkillsDir, targetName), { recursive: true });
+  }
+  mkdirSync(join(targetDir, ".claude-plugin"), { recursive: true });
+  writeFileSync(
+    join(targetDir, ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: pluginName, version: "0.1.0" }),
+  );
+  return targetDir;
+}
+
 function makeMarker(
   packDir: string,
   skills: Array<{ relativePath: string; name: string }>,
