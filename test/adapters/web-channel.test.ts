@@ -1133,6 +1133,12 @@ describe("WebChannel /api/agents 分享", () => {
     });
     const accJson = (await acc.json()) as { conversation: { id: string; agentId: string } };
     expect(accJson.conversation.agentId).toBe(a.id);
+    const detail = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const detailJson = (await detail.json()) as { editable?: boolean; skills?: unknown };
+    expect(detailJson.editable).toBe(false);
+    expect(detailJson.skills).toBeUndefined();
     // 授权记录在 visitor 名下（隔离：grant 绑定 visitor userId）
     expect(await agentShareStore.isGranted(a.id, userId)).toBe(true);
 

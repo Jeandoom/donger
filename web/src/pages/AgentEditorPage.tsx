@@ -42,6 +42,7 @@ export function AgentEditorPage() {
   const [form, setForm] = useState<typeof empty>(empty);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [readOnly, setReadOnly] = useState(false);
 
   useEffect(() => {
     fetchAgentMeta()
@@ -51,8 +52,15 @@ export function AgentEditorPage() {
 
   useEffect(() => {
     if (!isNew && id) {
+      setReadOnly(false);
       fetchAgent(id)
-        .then((a) =>
+        .then((a) => {
+          const editable = a.editable !== false && Array.isArray(a.skills);
+          if (!editable) {
+            setReadOnly(true);
+            setForm({ ...empty, name: a.name, description: a.description ?? "" });
+            return;
+          }
           setForm({
             name: a.name,
             description: a.description ?? "",
@@ -64,8 +72,8 @@ export function AgentEditorPage() {
             gitRepositories: a.gitRepositories ?? [],
             extensionDirectories: a.extensionDirectories ?? [],
             llm: a.llm,
-          }),
-        )
+          });
+        })
         .catch(() => navigate("/agents"));
     }
   }, [id, isNew, navigate]);
@@ -81,6 +89,35 @@ export function AgentEditorPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (readOnly && !isNew && id) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-2xl space-y-4 p-6">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-semibold">{form.name}</h1>
+            <Link
+              to={`/agents/${id}/chat`}
+              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+            >
+              对话
+            </Link>
+          </div>
+          {form.description ? <p className="text-sm text-muted-foreground">{form.description}</p> : null}
+          <p className="rounded border bg-muted/40 p-3 text-sm text-muted-foreground">
+            这是共享智能体。你可以使用它进行对话，但无权查看或编辑创建者的详细配置。
+          </p>
+          <button
+            type="button"
+            className="rounded border px-3 py-1.5 text-sm"
+            onClick={() => navigate("/agents")}
+          >
+            返回智能体管理
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

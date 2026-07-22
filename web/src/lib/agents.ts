@@ -31,6 +31,7 @@ export interface AgentExtensionDirectoryDTO {
 export interface AgentDTO {
   id: string;
   ownerId: string;
+  editable?: boolean;
   name: string;
   description?: string;
   systemPrompt?: string;

@@ -1381,7 +1381,8 @@ export class WebChannel implements Channel {
       const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
       if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
       if (req.method === "GET") {
-        return this.json(res, this.agentToDTO(a, canManageAgent(a, actor)));
+        const editable = canManageAgent(a, actor);
+        return this.json(res, { ...this.agentToDTO(a, editable), editable });
       }
       if (req.method === "PATCH") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
