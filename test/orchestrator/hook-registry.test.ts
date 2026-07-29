@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
-import type { LoopRunner } from "../../src/orchestrator/loop-runner.js";
 import { HookRegistry } from "../../src/orchestrator/hook-registry.js";
+import type { LoopRunner } from "../../src/orchestrator/loop-runner.js";
 
 const logger = pino({ level: "silent" });
 

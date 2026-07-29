@@ -15,10 +15,10 @@ import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { GitProvider } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import { parseLoopInput } from "../domain/loop.js";
+import { type Loop, parseLoopInput } from "../domain/loop.js";
 import type { UserModelConfig } from "../domain/model-config.js";
 import { parseUserModelConfig } from "../domain/model-config.js";
-import { parseTriggerInput } from "../domain/trigger.js";
+import { parseTriggerInput, type Trigger } from "../domain/trigger.js";
 import {
   type ApprovalCard,
   type IncomingMessage,
@@ -27,7 +27,7 @@ import {
   type OutgoingMessage,
 } from "../domain/types.js";
 import type { User } from "../domain/user.js";
-import { parseWorkflowInput } from "../domain/workflow.js";
+import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
@@ -54,7 +54,12 @@ import type { TriggerStore } from "../ports/trigger-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
-import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
+import {
+  ForbiddenError,
+  NotFoundError,
+  PayloadTooLargeError,
+  ValidationError,
+} from "../util/errors.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import {
   handleDeleteCredential,
@@ -398,7 +403,15 @@ export class WebChannel implements Channel {
 
     // /hooks/* —— Hook 触发器入口，免认证（外部系统回调）
     if (url.startsWith("/hooks/")) {
-      await this.handleHook(req, res);
+      try {
+        await this.handleHook(req, res);
+      } catch {
+        // ponytail: 不向外部回调端点泄露内部错误细节
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("internal error");
+        }
+      }
       return;
     }
 
@@ -443,8 +456,7 @@ export class WebChannel implements Channel {
       try {
         await this.handleApi(url, req, res);
       } catch (e) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        this.writeApiError(res, e);
       }
       return;
     }
@@ -1540,6 +1552,40 @@ export class WebChannel implements Channel {
     res.end(JSON.stringify({ error: "unknown endpoint" }));
   }
 
+  /** 工作流模块资源所有权校验：不存在或不属于该用户均抛 NotFoundError（避免存在性泄露）。 */
+  private async requireOwnedTrigger(id: string, uid: string): Promise<Trigger> {
+    const t = await this.deps.triggerStore!.get(id);
+    if (!t?.ownerId || t.ownerId !== uid) {
+      throw new NotFoundError("NOT_FOUND", "trigger 不存在");
+    }
+    return t;
+  }
+
+  private async requireOwnedWorkflow(id: string, uid: string): Promise<Workflow> {
+    const w = await this.deps.workflowStore!.get(id);
+    if (!w?.ownerId || w.ownerId !== uid) {
+      throw new NotFoundError("NOT_FOUND", "workflow 不存在");
+    }
+    return w;
+  }
+
+  private async requireOwnedLoop(id: string, uid: string): Promise<Loop> {
+    const l = await this.deps.loopStore!.get(id);
+    if (!l?.ownerId || l.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "loop 不存在");
+    return l;
+  }
+
+  /** AppError 子类 → HTTP 状态码映射（缺省 500）。 */
+  private writeApiError(res: ServerResponse, e: unknown): void {
+    let status = 500;
+    if (e instanceof ForbiddenError) status = 403;
+    else if (e instanceof NotFoundError) status = 404;
+    else if (e instanceof ValidationError) status = 400;
+    else if (e instanceof PayloadTooLargeError) status = 413;
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+  }
+
   /** POST /hooks/<slug> —— Hook 触发器入口，免认证。 */
   private async handleHook(req: HttpRequest, res: ServerResponse): Promise<void> {
     if (!this.deps.hookRegistry) {
@@ -1593,18 +1639,18 @@ export class WebChannel implements Channel {
     }
     let m = pathname.match(/^\/api\/triggers\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      const t = await ts!.get(m[1]!);
-      if (!t?.ownerId || t.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "trigger 不存在");
-      this.json(res, t);
+      this.json(res, await this.requireOwnedTrigger(m[1]!, uid));
       return true;
     }
     if (m && req.method === "PUT") {
+      await this.requireOwnedTrigger(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ts!.update(m[1]!, parseTriggerInput({ ...body, ownerId: uid }));
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
+      await this.requireOwnedTrigger(m[1]!, uid);
       const count = await ts!.countWorkflowsReferencing(m[1]!);
       if (count > 0) {
         this.json(res, { error: `被 ${count} 个 workflow 引用，无法删除` }, 409);
@@ -1616,6 +1662,7 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/triggers\/([\w-]+)\/test$/);
     if (m && req.method === "POST" && this.deps.loopRunner) {
+      await this.requireOwnedTrigger(m[1]!, uid);
       const result = await this.deps.loopRunner.testTrigger(m[1]!);
       this.json(res, result);
       return true;
@@ -1634,18 +1681,18 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/workflows\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      const w = await ws!.get(m[1]!);
-      if (!w?.ownerId || w.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "workflow 不存在");
-      this.json(res, w);
+      this.json(res, await this.requireOwnedWorkflow(m[1]!, uid));
       return true;
     }
     if (m && req.method === "PUT") {
+      await this.requireOwnedWorkflow(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ws!.update(m[1]!, parseWorkflowInput({ ...body, ownerId: uid }));
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
+      await this.requireOwnedWorkflow(m[1]!, uid);
       await ws!.delete(m[1]!);
       this.json(res, { ok: true });
       return true;
@@ -1664,24 +1711,25 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      const l = await ls!.get(m[1]!);
-      if (!l?.ownerId || l.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "loop 不存在");
-      this.json(res, l);
+      this.json(res, await this.requireOwnedLoop(m[1]!, uid));
       return true;
     }
     if (m && req.method === "PUT") {
+      await this.requireOwnedLoop(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ls!.update(m[1]!, parseLoopInput({ ...body, ownerId: uid }));
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
+      await this.requireOwnedLoop(m[1]!, uid);
       await ls!.delete(m[1]!);
       this.json(res, { ok: true });
       return true;
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/(enable|disable)$/);
     if (m && req.method === "POST") {
+      await this.requireOwnedLoop(m[1]!, uid);
       const enabled = m[2] === "enable";
       const loop = await ls!.setEnabled(m[1]!, enabled);
       // 启停时同步调度器
@@ -1695,12 +1743,11 @@ export class WebChannel implements Channel {
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/run$/);
     if (m && req.method === "POST" && this.deps.loopRunner) {
       // 手动触发：取 workflow 关联的 trigger 一次性测试+fire
-      const loop = await ls!.get(m[1]!);
-      if (!loop?.ownerId || loop.ownerId !== uid) {
-        throw new NotFoundError("NOT_FOUND", "loop 不存在");
-      }
+      const loop = await this.requireOwnedLoop(m[1]!, uid);
       const wf = loop.workflowId ? await ws!.get(loop.workflowId) : undefined;
-      if (!wf?.triggerId) throw new Error("workflow 未配置 trigger");
+      if (!wf?.triggerId) {
+        throw new ValidationError("WORKFLOW_NO_TRIGGER", "workflow 未配置 trigger");
+      }
       const result = await this.deps.loopRunner.testTrigger(wf.triggerId);
       await this.deps.loopRunner.fire(loop.id, result.sourceOutput);
       this.json(res, { ok: true, matched: result.matched, sourceOutput: result.sourceOutput });
@@ -1708,6 +1755,7 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/runs$/);
     if (m && req.method === "GET") {
+      await this.requireOwnedLoop(m[1]!, uid);
       const runs = await ls!.listRuns(m[1]!, { limit: 50 });
       this.json(res, { runs });
       return true;

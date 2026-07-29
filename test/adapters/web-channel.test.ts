@@ -1173,7 +1173,11 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     db?.close();
   });
 
-  async function startWorkflowChannel(): Promise<{ port: number; token: string }> {
+  async function startWorkflowChannel(): Promise<{
+    port: number;
+    token: string;
+    token2: string;
+  }> {
     db = new Database(":memory:");
     const sessionStore = new JwtSessionStore(db, "test-secret");
     sessionStore.migrate();
@@ -1182,8 +1186,10 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
       usersDir: mkdtempSync(join(tmpdir(), "web-wf-users-")),
     });
     userStore.migrate();
-    const user = await userStore.getOrCreateByIdentity("internal", "wf-staff", "工作流测试");
-    const { token } = await sessionStore.create(user.id);
+    const user1 = await userStore.getOrCreateByIdentity("internal", "wf-staff", "工作流测试");
+    const user2 = await userStore.getOrCreateByIdentity("internal", "wf-staff-2", "工作流测试 2");
+    const { token } = await sessionStore.create(user1.id);
+    const { token: token2 } = await sessionStore.create(user2.id);
 
     const { SqliteTriggerStore } = await import("../../src/adapters/sqlite-trigger-store.js");
     const { SqliteWorkflowStore } = await import("../../src/adapters/sqlite-workflow-store.js");
@@ -1196,6 +1202,11 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     loopStore.migrate();
 
     const tmp = mkdtempSync(join(tmpdir(), "web-wf-"));
+    // ponytail: 最小 loopRunner mock —— 测试只走 /run 校验路径，fire/testTrigger 不会真正被调用
+    const loopRunner = {
+      fire: vi.fn().mockResolvedValue(undefined),
+      testTrigger: vi.fn().mockResolvedValue({ matched: true, sourceOutput: "x" }),
+    } as unknown as import("../../src/orchestrator/loop-runner.js").LoopRunner;
     web = new WebChannel({
       port: 0,
       workspaceDir: tmp,
@@ -1204,12 +1215,13 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
       triggerStore,
       workflowStore,
       loopStore,
+      loopRunner,
     });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
     if (!port) throw new Error("no port");
-    return { port, token };
+    return { port, token, token2 };
   }
 
   it("trigger / workflow / loop 全链路 CRUD + 删除保护", async () => {
@@ -1281,5 +1293,121 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
       method: "POST",
     });
     expect(hookRes.status).toBe(404);
+  });
+
+  it("跨用户访问 trigger / workflow / loop → 404（防越权 + 防存在性泄露）", async () => {
+    const { port, token, token2 } = await startWorkflowChannel();
+    const authA = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    const authB = { Authorization: `Bearer ${token2}`, "Content-Type": "application/json" };
+
+    // 用户 A 建一个 trigger
+    const trig = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+      method: "POST",
+      headers: authA,
+      body: JSON.stringify({
+        name: "T-priv",
+        type: "scheduler",
+        scheduler: {
+          cron: "0 9 * * *",
+          source: { type: "http", url: "https://example.com", method: "GET" },
+          matcher: { kind: "always" },
+        },
+      }),
+    });
+    const trigJson = (await trig.json()) as { id: string };
+
+    // 用户 B 用同样 body 但 ownerId 会被服务端覆盖；尝试读、改、删 A 的 trigger
+    const cases = [
+      ["GET", `/api/triggers/${trigJson.id}`, null],
+      ["PUT", `/api/triggers/${trigJson.id}`, { name: "hijack" }],
+      ["DELETE", `/api/triggers/${trigJson.id}`, null],
+      ["POST", `/api/triggers/${trigJson.id}/test`, null],
+    ] as const;
+    for (const [method, path, body] of cases) {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers: authB,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      expect(res.status).toBe(404);
+    }
+
+    // 用户 A 建 workflow + loop，B 跨用户访问也应 404
+    const wf = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
+      method: "POST",
+      headers: authA,
+      body: JSON.stringify({ name: "W-priv", triggerId: trigJson.id, agentId: "a1" }),
+    });
+    const wfJson = (await wf.json()) as { id: string };
+    const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
+      method: "POST",
+      headers: authA,
+      body: JSON.stringify({ name: "L-priv", workflowId: wfJson.id }),
+    });
+    const loopJson = (await loop.json()) as { id: string };
+
+    for (const [method, path, body] of [
+      ["GET", `/api/workflows/${wfJson.id}`, null],
+      ["PUT", `/api/workflows/${wfJson.id}`, { name: "hijack" }],
+      ["DELETE", `/api/workflows/${wfJson.id}`, null],
+      ["GET", `/api/loops/${loopJson.id}`, null],
+      ["PUT", `/api/loops/${loopJson.id}`, { name: "hijack" }],
+      ["DELETE", `/api/loops/${loopJson.id}`, null],
+    ] as const) {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers: authB,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it("/api/loops/:id/run 在 workflow 无 trigger 时返回 400（非 500）", async () => {
+    const { port, token } = await startWorkflowChannel();
+    const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+    // 建 workflow 故意不绑 trigger，再建 loop 引用它
+    // 注意：workflow create 不强制要求 triggerId 非空（zod schema 仅 .string()）
+    const wf = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "no-trig", triggerId: "", agentId: "a1" }),
+    });
+    // triggerId 为空字符串，schema 应拒绝；如果 schema 接受，则走 /run 校验路径
+    if (wf.status === 201) {
+      const wfJson = (await wf.json()) as { id: string; triggerId: string };
+      const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ name: "L", workflowId: wfJson.id }),
+      });
+      const loopJson = (await loop.json()) as { id: string };
+      const run = await fetch(`http://127.0.0.1:${port}/api/loops/${loopJson.id}/run`, {
+        method: "POST",
+        headers: auth,
+      });
+      expect(run.status).toBe(400);
+      const body = (await run.json()) as { error: string };
+      expect(body.error).toMatch(/trigger/);
+    }
+  });
+
+  it("/api/loops/:id/runs 列出历史 run", async () => {
+    const { port, token } = await startWorkflowChannel();
+    const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    // 直接造一个 loop（不跑）然后查 runs，应为空数组
+    const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "L", workflowId: "wf-x" }),
+    });
+    const loopJson = (await loop.json()) as { id: string };
+    const runs = await fetch(`http://127.0.0.1:${port}/api/loops/${loopJson.id}/runs`, {
+      headers: auth,
+    });
+    expect(runs.status).toBe(200);
+    const body = (await runs.json()) as { runs: unknown[] };
+    expect(body.runs).toEqual([]);
   });
 });
