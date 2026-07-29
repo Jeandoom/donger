@@ -23,19 +23,25 @@ import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
 import { SqliteGitConnectionStore } from "./adapters/sqlite-git-connection-store.js";
+import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModelConfigStore } from "./adapters/sqlite-model-config-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
+import { SqliteTriggerStore } from "./adapters/sqlite-trigger-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
+import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
+import { HookRegistry } from "./orchestrator/hook-registry.js";
+import { LoopRunner } from "./orchestrator/loop-runner.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
+import { SchedulerService } from "./orchestrator/scheduler.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { createLogger } from "./util/logger.js";
@@ -187,6 +193,14 @@ async function main(): Promise<void> {
     getHomeDir: (uid) => join(usersDir, uid),
   });
 
+  // 工作流模块 stores（trigger / workflow / loop）
+  const triggerStore = new SqliteTriggerStore(db);
+  triggerStore.migrate();
+  const workflowStore = new SqliteWorkflowStore(db);
+  workflowStore.migrate();
+  const loopStore = new SqliteLoopStore(db);
+  loopStore.migrate();
+
   // Web Channel（始终启动）
   const fileBrowser = new LocalFileBrowser({
     userStore,
@@ -196,7 +210,7 @@ async function main(): Promise<void> {
     extensionDirectoryResolver,
   });
 
-  const webChannel = new WebChannel({
+  const webChannelDeps: import("./adapters/web-channel.js").WebChannelDeps = {
     port: cfg.port,
     host: cfg.host,
     https: cfg.https,
@@ -222,16 +236,62 @@ async function main(): Promise<void> {
     gitAuthProviders,
     gitAccessGate,
     publicBaseUrl: cfg.publicBaseUrl,
+    triggerStore,
+    workflowStore,
+    loopStore,
     agentMeta: {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],
     },
     llm: cfg.llm,
     llmDebugRunner: new ClaudeLlmDebugRunner(),
-  });
+  };
+  const webChannel = new WebChannel(webChannelDeps);
   const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
+
+  // 工作流运行时：loopRunner / scheduler / hookRegistry（依赖 webOrch，构造后回填 webChannel.deps）
+  const loopRunner = new LoopRunner({
+    loopStore,
+    workflowStore,
+    triggerStore,
+    orchestrator: webOrch,
+    workspaceRoot: cfg.workspaceDir,
+    channelId: "web",
+    logger: log,
+  });
+  const scheduler = new SchedulerService({
+    loopStore,
+    workflowStore,
+    triggerStore,
+    loopRunner,
+    logger: log,
+  });
+  const hookRegistry = new HookRegistry({
+    triggerStore,
+    loopStore,
+    workflowStore,
+    loopRunner,
+    logger: log,
+  });
+  // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
+  webChannelDeps.loopRunner = loopRunner;
+  webChannelDeps.scheduler = scheduler;
+  webChannelDeps.hookRegistry = hookRegistry;
+  await scheduler.restore();
+  log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
+
+  // 进程关闭：先停 scheduler 防止新触发，再关 HTTP
+  const shutdown = (signal: string) => {
+    log.info({ signal }, "关闭中");
+    scheduler.stopAll();
+    webChannel.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
   const webProtocol = cfg.https ? "https" : "http";
   log.info({ channel: "web", host: cfg.host, port: cfg.port, protocol: webProtocol }, "就绪");
   console.log(
