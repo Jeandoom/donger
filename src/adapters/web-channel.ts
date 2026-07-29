@@ -405,11 +405,12 @@ export class WebChannel implements Channel {
     if (url.startsWith("/hooks/")) {
       try {
         await this.handleHook(req, res);
-      } catch {
-        // ponytail: 不向外部回调端点泄露内部错误细节
+      } catch (e) {
+        // ponytail: 不向外部回调端点泄露内部错误细节；413 是体积超限的标准码可透露
         if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("internal error");
+          const status = e instanceof PayloadTooLargeError ? 413 : 500;
+          res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end(status === 413 ? "payload too large" : "internal error");
         }
       }
       return;
@@ -1646,6 +1647,8 @@ export class WebChannel implements Channel {
       await this.requireOwnedTrigger(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ts!.update(m[1]!, parseTriggerInput({ ...body, ownerId: uid }));
+      // ponytail: trigger cron 可能变更，刷新所有引用此 trigger 的 enabled loops
+      await this.deps.scheduler?.refreshByTrigger(m[1]!);
       this.json(res, updated);
       return true;
     }
@@ -2088,11 +2091,16 @@ export class WebChannel implements Channel {
     return u.searchParams.get(key) ?? undefined;
   }
 
-  private readBody(req: HttpRequest): Promise<string> {
-    return new Promise((resolve) => {
+  private readBody(req: HttpRequest, maxBytes = 2 * 1024 * 1024): Promise<string> {
+    return new Promise((resolve, reject) => {
       let body = "";
       req.on("data", (chunk: Buffer) => {
         body += chunk;
+        // ponytail: 2MB 默认上限——JSON 配置远低于此，文件上传走 PUT /api/files/* 不经此路径
+        if (Buffer.byteLength(body) > maxBytes) {
+          req.destroy();
+          reject(new PayloadTooLargeError("PAYLOAD_TOO_LARGE", `请求体超过 ${maxBytes} 字节上限`));
+        }
       });
       req.on("end", () => resolve(body));
     });
@@ -2286,7 +2294,13 @@ export class WebChannel implements Channel {
     return typeof addr === "object" && addr ? addr.port : undefined;
   }
 
-  stop(): void {
-    this.server?.close();
+  /**
+   * 关闭 HTTP 服务，resolve 时所有 in-flight 连接已收尾。
+   * 调用方可 race 一个超时兜底，避免卡死进程退出。
+   */
+  stop(): Promise<void> {
+    return new Promise((resolve) => {
+      this.server?.close(() => resolve());
+    });
   }
 }

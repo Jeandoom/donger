@@ -282,15 +282,15 @@ async function main(): Promise<void> {
   await scheduler.restore();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 
-  // 进程关闭：先停 scheduler 防止新触发，再关 HTTP
-  const shutdown = (signal: string) => {
+  // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
+  const shutdown = async (signal: string) => {
     log.info({ signal }, "关闭中");
     scheduler.stopAll();
-    webChannel.stop();
+    await Promise.race([webChannel.stop(), new Promise((resolve) => setTimeout(resolve, 500))]);
     process.exit(0);
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   const webProtocol = cfg.https ? "https" : "http";
   log.info({ channel: "web", host: cfg.host, port: cfg.port, protocol: webProtocol }, "就绪");

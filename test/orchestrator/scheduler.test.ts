@@ -132,4 +132,83 @@ describe("SchedulerService", () => {
     await s.scheduler.restore();
     expect(s.scheduler.size()).toBe(0);
   });
+
+  it("register 幂等刷新：重复 register 不增长 size", async () => {
+    const s = setup();
+    const t = await s.triggerStore.create({
+      ownerId: "u1",
+      name: "T",
+      type: "scheduler",
+      scheduler: {
+        cron: "* * * * *",
+        source: { type: "file", path: "/x" },
+        matcher: { kind: "always" },
+      },
+    });
+    const w = await s.workflowStore.create({
+      ownerId: "u1",
+      name: "W",
+      triggerId: t.id,
+      agentId: "a1",
+    });
+    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
+    await s.scheduler.register(l);
+    await new Promise((res) => setImmediate(res));
+    expect(s.scheduler.size()).toBe(1);
+    // 重复 register：先 unregister 旧的，再建新的，size 仍为 1
+    await s.scheduler.register(l);
+    await new Promise((res) => setImmediate(res));
+    expect(s.scheduler.size()).toBe(1);
+    s.scheduler.stopAll();
+  });
+
+  it("refreshByTrigger 仅刷新引用该 trigger 的 enabled loops", async () => {
+    const s = setup();
+    const t = await s.triggerStore.create({
+      ownerId: "u1",
+      name: "T",
+      type: "scheduler",
+      scheduler: {
+        cron: "* * * * *",
+        source: { type: "file", path: "/x" },
+        matcher: { kind: "always" },
+      },
+    });
+    const tOther = await s.triggerStore.create({
+      ownerId: "u1",
+      name: "T2",
+      type: "scheduler",
+      scheduler: {
+        cron: "* * * * *",
+        source: { type: "file", path: "/y" },
+        matcher: { kind: "always" },
+      },
+    });
+    const w = await s.workflowStore.create({
+      ownerId: "u1",
+      name: "W",
+      triggerId: t.id,
+      agentId: "a1",
+    });
+    const wOther = await s.workflowStore.create({
+      ownerId: "u1",
+      name: "W2",
+      triggerId: tOther.id,
+      agentId: "a1",
+    });
+    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
+    const lOther = await s.loopStore.create({
+      ownerId: "u1",
+      name: "L2",
+      workflowId: wOther.id,
+    });
+    await s.loopStore.setEnabled(l.id, true);
+    await s.loopStore.setEnabled(lOther.id, true);
+    await s.scheduler.restore();
+    expect(s.scheduler.size()).toBe(2);
+    // refreshByTrigger(t) 应只刷新 l，不影响 lOther；size 保持
+    await s.scheduler.refreshByTrigger(t.id);
+    expect(s.scheduler.size()).toBe(2);
+    s.scheduler.stopAll();
+  });
 });

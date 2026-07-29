@@ -37,13 +37,24 @@ export class SchedulerService {
   }
 
   async register(loop: Loop): Promise<void> {
-    if (this.tasks.has(loop.id)) return;
+    // ponytail: 幂等刷新——若已注册，先 stop 旧 task 再重建。
+    // 这样 trigger 编辑后 cron 变更会真正生效，调用方语义为"按当前 loop 配置保证已注册"。
+    this.unregister(loop.id);
     const cronExpr = await this.resolveCron(loop);
     if (!cronExpr) return;
     const task = cron.schedule(cronExpr, () => {
       void this.fireWithSource(loop);
     });
     this.tasks.set(loop.id, task);
+  }
+
+  /** trigger 编辑后调用：重新注册所有引用该 trigger 的 enabled loops。 */
+  async refreshByTrigger(triggerId: string): Promise<void> {
+    const loops = await this.deps.loopStore.listEnabled();
+    for (const l of loops) {
+      const wf = await this.deps.workflowStore.get(l.workflowId);
+      if (wf?.triggerId === triggerId) await this.register(l);
+    }
   }
 
   private async resolveCron(loop: Loop): Promise<string | null> {
