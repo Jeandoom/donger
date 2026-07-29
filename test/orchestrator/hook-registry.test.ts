@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
+import type { LoopRunner } from "../../src/orchestrator/loop-runner.js";
 import { HookRegistry } from "../../src/orchestrator/hook-registry.js";
 
 const logger = pino({ level: "silent" });
@@ -19,7 +20,7 @@ function setup() {
   const loopRunner = {
     fire: vi.fn().mockResolvedValue(undefined),
     testTrigger: vi.fn(),
-  };
+  } as unknown as LoopRunner;
   const reg = new HookRegistry({ triggerStore, loopStore, workflowStore, loopRunner, logger });
   return { db, triggerStore, workflowStore, loopStore, reg, loopRunner };
 }

@@ -25,7 +25,8 @@ export const LoopInputSchema = LoopSchema.omit({
   nextRunAt: true,
   lastError: true,
 });
-export type LoopInput = z.infer<typeof LoopInputSchema>;
+// ponytail: z.input 让带 .default() 的字段（enabled/tags）在输入类型里可选，与运行时行为一致
+export type LoopInput = z.input<typeof LoopInputSchema>;
 
 export const LoopRunStatusSchema = z.enum(["running", "success", "failed", "stopped"]);
 export type LoopRunStatus = z.infer<typeof LoopRunStatusSchema>;
@@ -46,3 +47,7 @@ export const LoopRunSchema = z.object({
   finishedAt: z.string().nullable().optional(),
 });
 export type LoopRun = z.infer<typeof LoopRunSchema>;
+
+export function parseLoopInput(raw: unknown): LoopInput {
+  return LoopInputSchema.parse(raw);
+}

@@ -15,8 +15,10 @@ import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { GitProvider } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import { parseLoopInput } from "../domain/loop.js";
 import type { UserModelConfig } from "../domain/model-config.js";
 import { parseUserModelConfig } from "../domain/model-config.js";
+import { parseTriggerInput } from "../domain/trigger.js";
 import {
   type ApprovalCard,
   type IncomingMessage,
@@ -25,8 +27,12 @@ import {
   type OutgoingMessage,
 } from "../domain/types.js";
 import type { User } from "../domain/user.js";
+import { parseWorkflowInput } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
+import type { HookRegistry } from "../orchestrator/hook-registry.js";
+import type { LoopRunner } from "../orchestrator/loop-runner.js";
+import type { SchedulerService } from "../orchestrator/scheduler.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
@@ -37,14 +43,17 @@ import type { FileBrowser } from "../ports/file-browser.js";
 import type { GitAuthProviderAdapter } from "../ports/git-auth-provider.js";
 import type { GitConnectionStore } from "../ports/git-connection-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
+import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { UserModelConfigStore } from "../ports/model-config-store.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { TriggerStore } from "../ports/trigger-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
+import type { WorkflowStore } from "../ports/workflow-store.js";
 import { ForbiddenError, NotFoundError, PayloadTooLargeError } from "../util/errors.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import {
@@ -137,6 +146,13 @@ export interface WebChannelDeps {
   gitConnectionStore?: GitConnectionStore;
   gitAuthProviders?: Partial<Record<GitProvider, GitAuthProviderAdapter>>;
   gitAccessGate?: GitAccessGate;
+  /** 工作流模块（M14+M15+M6）—— 缺省=不支持 */
+  triggerStore?: TriggerStore;
+  workflowStore?: WorkflowStore;
+  loopStore?: LoopStore;
+  loopRunner?: LoopRunner;
+  scheduler?: SchedulerService;
+  hookRegistry?: HookRegistry;
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
@@ -379,6 +395,12 @@ export class WebChannel implements Channel {
 
   private async handleHttp(req: HttpRequest, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
+
+    // /hooks/* —— Hook 触发器入口，免认证（外部系统回调）
+    if (url.startsWith("/hooks/")) {
+      await this.handleHook(req, res);
+      return;
+    }
 
     // REST API 优先
     if (url.startsWith("/api/")) {
@@ -1512,8 +1534,185 @@ export class WebChannel implements Channel {
 
     if (await this.handleSkillsApi(url, req, res)) return;
 
+    if (await this.handleWorkflowApi(url, req, res)) return;
+
     res.writeHead(404);
     res.end(JSON.stringify({ error: "unknown endpoint" }));
+  }
+
+  /** POST /hooks/<slug> —— Hook 触发器入口，免认证。 */
+  private async handleHook(req: HttpRequest, res: ServerResponse): Promise<void> {
+    if (!this.deps.hookRegistry) {
+      res.writeHead(404);
+      res.end("hooks disabled");
+      return;
+    }
+    const body = await this.readBody(req);
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === "string") headers[k] = v;
+      else if (Array.isArray(v)) headers[k] = v.join(",");
+    }
+    const result = await this.deps.hookRegistry.handle({
+      method: req.method,
+      url: req.url,
+      headers,
+      body,
+    });
+    res.writeHead(result.status, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end(result.body);
+  }
+
+  /**
+   * 工作流模块 API（triggers / workflows / loops）。命中返回 true。
+   * ponytail: 单文件聚合所有 CRUD 路由，避免拆多文件多 handler。
+   */
+  private async handleWorkflowApi(
+    url: string,
+    req: HttpRequest,
+    res: ServerResponse,
+  ): Promise<boolean> {
+    const pathname = url.split("?")[0] ?? url;
+    const ts = this.deps.triggerStore;
+    const ws = this.deps.workflowStore;
+    const ls = this.deps.loopStore;
+    // 三者全缺省直接放行（路由不适用）
+    if (!ts && !ws && !ls) return false;
+    const uid = this.requireRequestUser(req);
+
+    // ===== Triggers =====
+    if (pathname === "/api/triggers" && req.method === "GET") {
+      this.json(res, { triggers: await ts!.listByOwner(uid) });
+      return true;
+    }
+    if (pathname === "/api/triggers" && req.method === "POST") {
+      const body = JSON.parse(await this.readBody(req));
+      const created = await ts!.create(parseTriggerInput({ ...body, ownerId: uid }));
+      this.json(res, created, 201);
+      return true;
+    }
+    let m = pathname.match(/^\/api\/triggers\/([\w-]+)$/);
+    if (m && req.method === "GET") {
+      const t = await ts!.get(m[1]!);
+      if (!t?.ownerId || t.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "trigger 不存在");
+      this.json(res, t);
+      return true;
+    }
+    if (m && req.method === "PUT") {
+      const body = JSON.parse(await this.readBody(req));
+      const updated = await ts!.update(m[1]!, parseTriggerInput({ ...body, ownerId: uid }));
+      this.json(res, updated);
+      return true;
+    }
+    if (m && req.method === "DELETE") {
+      const count = await ts!.countWorkflowsReferencing(m[1]!);
+      if (count > 0) {
+        this.json(res, { error: `被 ${count} 个 workflow 引用，无法删除` }, 409);
+        return true;
+      }
+      await ts!.delete(m[1]!);
+      this.json(res, { ok: true });
+      return true;
+    }
+    m = pathname.match(/^\/api\/triggers\/([\w-]+)\/test$/);
+    if (m && req.method === "POST" && this.deps.loopRunner) {
+      const result = await this.deps.loopRunner.testTrigger(m[1]!);
+      this.json(res, result);
+      return true;
+    }
+
+    // ===== Workflows =====
+    if (pathname === "/api/workflows" && req.method === "GET") {
+      this.json(res, { workflows: await ws!.listByOwner(uid) });
+      return true;
+    }
+    if (pathname === "/api/workflows" && req.method === "POST") {
+      const body = JSON.parse(await this.readBody(req));
+      const created = await ws!.create(parseWorkflowInput({ ...body, ownerId: uid }));
+      this.json(res, created, 201);
+      return true;
+    }
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)$/);
+    if (m && req.method === "GET") {
+      const w = await ws!.get(m[1]!);
+      if (!w?.ownerId || w.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "workflow 不存在");
+      this.json(res, w);
+      return true;
+    }
+    if (m && req.method === "PUT") {
+      const body = JSON.parse(await this.readBody(req));
+      const updated = await ws!.update(m[1]!, parseWorkflowInput({ ...body, ownerId: uid }));
+      this.json(res, updated);
+      return true;
+    }
+    if (m && req.method === "DELETE") {
+      await ws!.delete(m[1]!);
+      this.json(res, { ok: true });
+      return true;
+    }
+
+    // ===== Loops =====
+    if (pathname === "/api/loops" && req.method === "GET") {
+      this.json(res, { loops: await ls!.listByOwner(uid) });
+      return true;
+    }
+    if (pathname === "/api/loops" && req.method === "POST") {
+      const body = JSON.parse(await this.readBody(req));
+      const created = await ls!.create(parseLoopInput({ ...body, ownerId: uid }));
+      this.json(res, created, 201);
+      return true;
+    }
+    m = pathname.match(/^\/api\/loops\/([\w-]+)$/);
+    if (m && req.method === "GET") {
+      const l = await ls!.get(m[1]!);
+      if (!l?.ownerId || l.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "loop 不存在");
+      this.json(res, l);
+      return true;
+    }
+    if (m && req.method === "PUT") {
+      const body = JSON.parse(await this.readBody(req));
+      const updated = await ls!.update(m[1]!, parseLoopInput({ ...body, ownerId: uid }));
+      this.json(res, updated);
+      return true;
+    }
+    if (m && req.method === "DELETE") {
+      await ls!.delete(m[1]!);
+      this.json(res, { ok: true });
+      return true;
+    }
+    m = pathname.match(/^\/api\/loops\/([\w-]+)\/(enable|disable)$/);
+    if (m && req.method === "POST") {
+      const enabled = m[2] === "enable";
+      const loop = await ls!.setEnabled(m[1]!, enabled);
+      // 启停时同步调度器
+      if (this.deps.scheduler) {
+        if (enabled) await this.deps.scheduler.register(loop);
+        else this.deps.scheduler.unregister(loop.id);
+      }
+      this.json(res, loop);
+      return true;
+    }
+    m = pathname.match(/^\/api\/loops\/([\w-]+)\/run$/);
+    if (m && req.method === "POST" && this.deps.loopRunner) {
+      // 手动触发：取 workflow 关联的 trigger 一次性测试+fire
+      const loop = await ls!.get(m[1]!);
+      if (!loop?.ownerId || loop.ownerId !== uid) {
+        throw new NotFoundError("NOT_FOUND", "loop 不存在");
+      }
+      const wf = loop.workflowId ? await ws!.get(loop.workflowId) : undefined;
+      if (!wf?.triggerId) throw new Error("workflow 未配置 trigger");
+      const result = await this.deps.loopRunner.testTrigger(wf.triggerId);
+      await this.deps.loopRunner.fire(loop.id, result.sourceOutput);
+      this.json(res, { ok: true, matched: result.matched, sourceOutput: result.sourceOutput });
+      return true;
+    }
+    m = pathname.match(/^\/api\/loops\/([\w-]+)\/runs$/);
+    if (m && req.method === "GET") {
+      const runs = await ls!.listRuns(m[1]!, { limit: 50 });
+      this.json(res, { runs });
+      return true;
+    }
+    return false;
   }
 
   /** 技能/凭证 API 命中返回 true。委托 skill-api handler。 */

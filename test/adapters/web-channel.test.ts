@@ -331,7 +331,10 @@ describe("WebChannel POST /api/llm/debug", () => {
       workspaceDir: mkdtempSync(join(tmpdir(), "web-")),
       llm: { model: "default", baseUrl: "https://default", authToken: "secret" },
       llmDebugRunner: { run },
-      agentMeta: { presets: [{ id: "p1", name: "测试模型", model: "m1", baseUrl: "https://m1" }], skillPaths: [] },
+      agentMeta: {
+        presets: [{ id: "p1", name: "测试模型", model: "m1", baseUrl: "https://m1" }],
+        skillPaths: [],
+      },
     });
     web.onMessage(() => {});
     await web.ready();
@@ -1158,5 +1161,125 @@ describe("WebChannel /api/agents 分享", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(blocked.status).toBe(403);
+  });
+});
+
+describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () => {
+  let web: WebChannel;
+  let db: Database.Database;
+
+  afterEach(() => {
+    web?.stop();
+    db?.close();
+  });
+
+  async function startWorkflowChannel(): Promise<{ port: number; token: string }> {
+    db = new Database(":memory:");
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const userStore = new SqliteUserStore(db, {
+      adminExternalIds: new Set(),
+      usersDir: mkdtempSync(join(tmpdir(), "web-wf-users-")),
+    });
+    userStore.migrate();
+    const user = await userStore.getOrCreateByIdentity("internal", "wf-staff", "工作流测试");
+    const { token } = await sessionStore.create(user.id);
+
+    const { SqliteTriggerStore } = await import("../../src/adapters/sqlite-trigger-store.js");
+    const { SqliteWorkflowStore } = await import("../../src/adapters/sqlite-workflow-store.js");
+    const { SqliteLoopStore } = await import("../../src/adapters/sqlite-loop-store.js");
+    const triggerStore = new SqliteTriggerStore(db);
+    triggerStore.migrate();
+    const workflowStore = new SqliteWorkflowStore(db);
+    workflowStore.migrate();
+    const loopStore = new SqliteLoopStore(db);
+    loopStore.migrate();
+
+    const tmp = mkdtempSync(join(tmpdir(), "web-wf-"));
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: tmp,
+      sessionStore,
+      userStore,
+      triggerStore,
+      workflowStore,
+      loopStore,
+    });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("no port");
+    return { port, token };
+  }
+
+  it("trigger / workflow / loop 全链路 CRUD + 删除保护", async () => {
+    const { port, token } = await startWorkflowChannel();
+    const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+    // trigger CREATE
+    const triggerRes = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "T1",
+        type: "scheduler",
+        scheduler: {
+          cron: "0 9 * * *",
+          source: { type: "http", url: "https://example.com", method: "GET" },
+          matcher: { kind: "always" },
+        },
+      }),
+    });
+    expect(triggerRes.status).toBe(201);
+    const trigger = (await triggerRes.json()) as { id: string };
+    expect(trigger.id).toBeTruthy();
+
+    // trigger LIST
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/triggers`, { headers: auth });
+    expect(listRes.status).toBe(200);
+    const list = (await listRes.json()) as { triggers: { id: string }[] };
+    expect(list.triggers).toHaveLength(1);
+
+    // workflow CREATE（引用上面的 trigger）
+    const wfRes = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "W1", triggerId: trigger.id, agentId: "a1" }),
+    });
+    expect(wfRes.status).toBe(201);
+    const workflow = (await wfRes.json()) as { id: string; promptTemplate: string };
+    expect(workflow.promptTemplate).toBe("{{triggerOutput}}"); // 默认值生效
+
+    // trigger DELETE 因被 workflow 引用 → 409
+    const delConflict = await fetch(`http://127.0.0.1:${port}/api/triggers/${trigger.id}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(delConflict.status).toBe(409);
+
+    // loop CREATE（引用 workflow）
+    const loopRes = await fetch(`http://127.0.0.1:${port}/api/loops`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "L1", workflowId: workflow.id }),
+    });
+    expect(loopRes.status).toBe(201);
+    const loop = (await loopRes.json()) as { id: string; enabled: boolean };
+    expect(loop.enabled).toBe(false); // 默认值
+
+    // loop enable
+    const enableRes = await fetch(`http://127.0.0.1:${port}/api/loops/${loop.id}/enable`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(enableRes.status).toBe(200);
+    const enabled = (await enableRes.json()) as { enabled: boolean };
+    expect(enabled.enabled).toBe(true);
+
+    // hook 入口未装配 → 404 "hooks disabled"
+    const hookRes = await fetch(`http://127.0.0.1:${port}/hooks/anything`, {
+      method: "POST",
+    });
+    expect(hookRes.status).toBe(404);
   });
 });

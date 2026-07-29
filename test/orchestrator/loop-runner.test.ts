@@ -58,8 +58,8 @@ describe("LoopRunner", () => {
     await s.runner.fire(l.id, "hello");
     expect(s.orchestrator.handleMessage).toHaveBeenCalledTimes(1);
     const runs = await s.loopStore.listRuns(l.id);
-    expect(runs[0].status).toBe("success");
-    expect(runs[0].renderedPrompt).toBe("do: hello");
+    expect(runs[0]?.status).toBe("success");
+    expect(runs[0]?.renderedPrompt).toBe("do: hello");
   });
 
   it("testTrigger returns matched=true for bodyContains matcher", async () => {
@@ -88,8 +88,8 @@ describe("LoopRunner", () => {
     });
     await s.runner.fire(l.id, "x");
     const runs = await s.loopStore.listRuns(l.id);
-    expect(runs[0].status).toBe("failed");
-    expect(runs[0].error).toMatch(/workflow/i);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.error).toMatch(/workflow/i);
   });
 
   it("skip-if-running: 并发调用只跑一次", async () => {

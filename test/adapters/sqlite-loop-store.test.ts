@@ -44,7 +44,7 @@ describe("SqliteLoopStore", () => {
     });
     const runs = await ls.listRuns(l.id);
     expect(runs.length).toBe(1);
-    expect(runs[0].status).toBe("success");
+    expect(runs[0]?.status).toBe("success");
   });
 
   it("listEnabled returns only enabled loops", async () => {

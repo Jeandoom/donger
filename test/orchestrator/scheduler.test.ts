@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
+import type { LoopRunner } from "../../src/orchestrator/loop-runner.js";
 import { SchedulerService } from "../../src/orchestrator/scheduler.js";
 
 const logger = pino({ level: "silent" });
@@ -19,7 +20,7 @@ function setup() {
   const loopRunner = {
     fire: vi.fn().mockResolvedValue(undefined),
     testTrigger: vi.fn().mockResolvedValue({ matched: true, sourceOutput: "x" }),
-  };
+  } as unknown as LoopRunner;
   const scheduler = new SchedulerService({
     loopStore,
     workflowStore,

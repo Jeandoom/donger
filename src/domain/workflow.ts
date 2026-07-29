@@ -19,7 +19,12 @@ export const WorkflowInputSchema = WorkflowSchema.omit({
   createdAt: true,
   updatedAt: true,
 });
-export type WorkflowInput = z.infer<typeof WorkflowInputSchema>;
+// ponytail: z.input 让带 .default() 的字段（promptTemplate/outputSubdir）在输入类型里可选
+export type WorkflowInput = z.input<typeof WorkflowInputSchema>;
+
+export function parseWorkflowInput(raw: unknown): WorkflowInput {
+  return WorkflowInputSchema.parse(raw);
+}
 
 /** 把 trigger 抓取到的内容包装成 agent 的 user message。 */
 export function renderPromptTemplate(template: string, triggerOutput: string): string {

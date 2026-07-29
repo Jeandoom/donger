@@ -67,5 +67,5 @@ export class HookRegistry {
 
 function extractPath(url?: string): string {
   if (!url) return "";
-  return url.split("?")[0];
+  return url.split("?")[0] ?? "";
 }
