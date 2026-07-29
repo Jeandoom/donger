@@ -44,22 +44,22 @@ export class HookRegistry {
       return response;
     }
 
-    // 找引用此 trigger 的 workflows 及其 enabled loops
+    // ponytail: 两次 owner 级查询，本地交叉过滤；比每个 workflow 单查 loops 快 N 倍
     const workflows = (await this.deps.workflowStore.listByOwner(t.ownerId)).filter(
       (w) => w.triggerId === t.id,
     );
-    for (const w of workflows) {
-      const loops = (await this.deps.loopStore.listByOwner(t.ownerId)).filter(
-        (l) => l.workflowId === w.id && l.enabled,
-      );
-      for (const l of loops) {
-        // 异步触发，不阻塞 HTTP 响应
-        void this.deps.loopRunner
-          .fire(l.id, req.body)
-          .catch((e) =>
-            this.deps.logger.error({ loopId: l.id, err: (e as Error).message }, "hook fire failed"),
-          );
-      }
+    if (workflows.length === 0) return response;
+    const workflowIds = new Set(workflows.map((w) => w.id));
+    const loops = (await this.deps.loopStore.listByOwner(t.ownerId)).filter(
+      (l) => l.enabled && workflowIds.has(l.workflowId),
+    );
+    for (const l of loops) {
+      // 异步触发，不阻塞 HTTP 响应
+      void this.deps.loopRunner
+        .fire(l.id, req.body)
+        .catch((e) =>
+          this.deps.logger.error({ loopId: l.id, err: (e as Error).message }, "hook fire failed"),
+        );
     }
     return response;
   }

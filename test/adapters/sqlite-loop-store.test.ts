@@ -69,4 +69,24 @@ describe("SqliteLoopStore", () => {
     expect(next.name).toBe("L2");
     expect(next.tags).toEqual(["ci", "prod"]);
   });
+
+  it("sweepOrphanedRuns marks running as failed", async () => {
+    const { ls } = newStore();
+    const l = await ls.create({ ownerId: "u1", name: "L", workflowId: "w1" });
+    await ls.createRun({
+      id: "r1",
+      loopId: l.id,
+      workflowId: "w1",
+      triggerId: "t1",
+      agentId: "a1",
+      status: "running",
+      startedAt: new Date().toISOString(),
+    });
+    const swept = await ls.sweepOrphanedRuns("process restart");
+    expect(swept).toBe(1);
+    const r = await ls.getRun("r1");
+    expect(r?.status).toBe("failed");
+    expect(r?.error).toBe("process restart");
+    expect(r?.finishedAt).toBeTruthy();
+  });
 });

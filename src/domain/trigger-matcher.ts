@@ -26,6 +26,9 @@ function getPath(obj: unknown, path: string): unknown {
   return cur;
 }
 
+// ponytail: 防 ReDoS——超过 256KB 的 body 不跑用户正则；本地 admin 场景够用
+const REGEX_BODY_MAX = 256 * 1024;
+
 export function evaluateMatcher(m: TriggerMatcher, ctx: MatcherContext): MatchResult {
   switch (m.kind) {
     case "always":
@@ -35,6 +38,9 @@ export function evaluateMatcher(m: TriggerMatcher, ctx: MatcherContext): MatchRe
     case "bodyContains":
       return { matched: ctx.body.includes(m.keyword), debug: { keyword: m.keyword } };
     case "bodyRegex": {
+      if (ctx.body.length > REGEX_BODY_MAX) {
+        return { matched: false, error: `body exceeds ${REGEX_BODY_MAX} bytes; regex skipped` };
+      }
       let re: RegExp;
       try {
         re = new RegExp(m.pattern);

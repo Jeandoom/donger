@@ -18,8 +18,17 @@ export type TriggerSource = z.infer<typeof TriggerSourceSchema>;
 export const TriggerMatcherSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("always") }),
   z.object({ kind: z.literal("statusEq"), value: z.number() }),
-  z.object({ kind: z.literal("jsonPathEq"), path: z.string(), value: z.string() }),
-  z.object({ kind: z.literal("jsonPathGt"), path: z.string(), value: z.number() }),
+  // ponytail: 仅支持 $.a.b.c 点路径；bracket/wildcard 等需要时换 jsonpath-plus
+  z.object({
+    kind: z.literal("jsonPathEq"),
+    path: z.string().regex(/^\$\.[a-zA-Z0-9_.]+$/, "仅支持 $.a.b.c 形式"),
+    value: z.string(),
+  }),
+  z.object({
+    kind: z.literal("jsonPathGt"),
+    path: z.string().regex(/^\$\.[a-zA-Z0-9_.]+$/, "仅支持 $.a.b.c 形式"),
+    value: z.number(),
+  }),
   z.object({ kind: z.literal("bodyContains"), keyword: z.string() }),
   z.object({ kind: z.literal("bodyRegex"), pattern: z.string() }),
   z.object({ kind: z.literal("bodyFieldEq"), field: z.string(), value: z.string() }),
@@ -53,28 +62,27 @@ const TriggerBaseSchema = z.object({
   updatedAt: z.string(),
 });
 
+// ponytail: DRY——schema 和 input schema 用同一 refine，避免维护双写
+function triggerTypeRefine(
+  t: { type: string; scheduler?: unknown; hook?: unknown },
+  ctx: z.RefinementCtx,
+) {
+  if (t.type === "scheduler" && !t.scheduler) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "scheduler 类型必须提供 scheduler 配置" });
+  }
+  if (t.type === "hook" && !t.hook) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "hook 类型必须提供 hook 配置" });
+  }
+}
+
 export const TriggerInputSchema = TriggerBaseSchema.omit({
   id: true,
   createdAt: true,
   updatedAt: true,
-}).superRefine((t, ctx) => {
-  if (t.type === "scheduler" && !t.scheduler) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "scheduler 类型必须提供 scheduler 配置" });
-  }
-  if (t.type === "hook" && !t.hook) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "hook 类型必须提供 hook 配置" });
-  }
-});
+}).superRefine(triggerTypeRefine);
 export type TriggerInput = z.infer<typeof TriggerInputSchema>;
 
-export const TriggerSchema = TriggerBaseSchema.superRefine((t, ctx) => {
-  if (t.type === "scheduler" && !t.scheduler) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "scheduler 类型必须提供 scheduler 配置" });
-  }
-  if (t.type === "hook" && !t.hook) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "hook 类型必须提供 hook 配置" });
-  }
-});
+export const TriggerSchema = TriggerBaseSchema.superRefine(triggerTypeRefine);
 export type Trigger = z.infer<typeof TriggerSchema>;
 
 export function parseTriggerInput(raw: unknown): TriggerInput {

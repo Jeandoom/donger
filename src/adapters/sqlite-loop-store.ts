@@ -257,4 +257,12 @@ export class SqliteLoopStore implements LoopStore {
     ) as LoopRunRow[];
     return rows.map((r) => this.unmarshalRun(r));
   }
+
+  async sweepOrphanedRuns(reason: string): Promise<number> {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare("UPDATE loop_runs SET status='failed', error=?, finishedAt=? WHERE status='running'")
+      .run(reason, now);
+    return result.changes;
+  }
 }

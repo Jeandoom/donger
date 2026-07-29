@@ -19,4 +19,6 @@ export interface LoopStore {
   updateRun(id: string, patch: Partial<LoopRun>): Promise<void>;
   getRun(id: string): Promise<LoopRun | undefined>;
   listRuns(loopId: string, opts?: { limit?: number; before?: string }): Promise<LoopRun[]>;
+  /** 把所有 status='running' 的 run 标记为 failed（启动时恢复用） */
+  sweepOrphanedRuns(reason: string): Promise<number>;
 }

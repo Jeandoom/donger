@@ -24,6 +24,11 @@ export class SchedulerService {
   }
 
   async restore(): Promise<void> {
+    // 先清扫上次崩溃留下的 running 状态
+    const swept = await this.deps.loopStore.sweepOrphanedRuns("process restart");
+    if (swept > 0) {
+      this.deps.logger.warn({ swept }, "marked orphaned runs as failed");
+    }
     const loops = await this.deps.loopStore.listEnabled();
     for (const l of loops) {
       await this.register(l);

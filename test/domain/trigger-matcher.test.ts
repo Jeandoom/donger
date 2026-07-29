@@ -79,4 +79,11 @@ describe("evaluateMatcher", () => {
     expect(r.matched).toBe(false);
     expect(r.error).toMatch(/regex/i);
   });
+
+  it("skips regex when body exceeds cap (ReDoS guard)", () => {
+    const big = "a".repeat(256 * 1024 + 1);
+    const r = evaluateMatcher({ kind: "bodyRegex", pattern: "a" }, ctx(big));
+    expect(r.matched).toBe(false);
+    expect(r.error).toMatch(/exceeds/i);
+  });
 });
