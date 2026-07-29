@@ -23,6 +23,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/busboy": "^1.5.4",
     "@types/node": "^26.0.1",
+    "@types/node-cron": "^3.0.11",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
@@ -34,6 +35,7 @@
     "dingtalk-stream": "^2.1.6-beta.1",
     "donger-web": "file:web",
     "dotenv": "^17.4.2",
+    "node-cron": "^4.6.0",
     "pino": "^10.3.1",
     "zod": "^4.4.3"
   }
