@@ -13,10 +13,15 @@ import { GitSettingsPage } from "./pages/GitSettingsPage";
 import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
+import { LoopDetailPage } from "./pages/LoopDetailPage";
+import { LoopsPage } from "./pages/LoopsPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
+import { TriggerEditorPage } from "./pages/TriggerEditorPage";
+import { TriggersPage } from "./pages/TriggersPage";
 import { UserProfilePage } from "./pages/UserProfilePage";
+import { WorkflowEditorPage } from "./pages/WorkflowEditorPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 
 export function App() {
@@ -43,6 +48,13 @@ export function App() {
             <Route path="/agents/:id/chat" element={<AgentChatRedirect />} />
             <Route path="/agent-sessions" element={<AgentSessionsPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
+            <Route path="/workflows/new" element={<WorkflowEditorPage />} />
+            <Route path="/workflows/:id" element={<WorkflowEditorPage />} />
+            <Route path="/triggers" element={<TriggersPage />} />
+            <Route path="/triggers/new" element={<TriggerEditorPage />} />
+            <Route path="/triggers/:id" element={<TriggerEditorPage />} />
+            <Route path="/loops" element={<LoopsPage />} />
+            <Route path="/loops/:id" element={<LoopDetailPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/profile" element={<UserProfilePage />} />

@@ -9,7 +9,7 @@ interface LeafItem {
   end?: boolean;
 }
 interface ParentItem {
-  key: "agents" | "settings" | "observation";
+  key: "agents" | "workflows" | "settings" | "observation";
   label: string;
   /** 命中即视为该父项激活（用于自动展开） */
   match: string[];
@@ -28,7 +28,16 @@ const entries: NavEntry[] = [
       { to: "/agent-sessions", label: "智能体会话" },
     ],
   },
-  { to: "/workflows", label: "工作流" },
+  {
+    key: "workflows",
+    label: "工作流",
+    match: ["/workflows", "/triggers"],
+    children: [
+      { to: "/workflows", label: "工作流管理" },
+      { to: "/triggers", label: "触发器管理" },
+    ],
+  },
+  { to: "/loops", label: "LOOPs" },
   { to: "/skills", label: "技能" },
   {
     key: "settings",
@@ -77,11 +86,12 @@ export function NavigationSidebar({
     try {
       return {
         agents: localStorage.getItem("donger_nav_agents_open") === "1",
+        workflows: localStorage.getItem("donger_nav_workflows_open") === "1",
         settings: localStorage.getItem("donger_nav_settings_open") === "1",
         observation: localStorage.getItem("donger_nav_observation_open") === "1",
       };
     } catch {
-      return { agents: false, settings: false, observation: false };
+      return { agents: false, workflows: false, settings: false, observation: false };
     }
   });
 
