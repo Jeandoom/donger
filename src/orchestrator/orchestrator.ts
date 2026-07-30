@@ -138,7 +138,7 @@ export class Orchestrator {
     return userStore.getOrCreateByIdentity("internal", msg.requesterId, msg.requesterId);
   }
 
-  async handleMessage(msg: IncomingMessage): Promise<void> {
+  async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
     const { store, userStore, conversationStore, gates, runner, channel } = this.deps;
 
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
@@ -465,6 +465,7 @@ export class Orchestrator {
           .finalizeCard(msg.threadId)
           .catch(() => {});
       }
+      return conversation.id;
     } catch (err) {
       if (runController.signal.aborted) {
         if (task) {

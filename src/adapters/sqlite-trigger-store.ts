@@ -2,6 +2,7 @@ import type { Database } from "better-sqlite3";
 import type { Trigger, TriggerInput } from "../domain/trigger.js";
 import { TriggerSchema } from "../domain/trigger.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
+import { NotFoundError } from "../util/errors.js";
 
 interface TriggerRow {
   id: string;
@@ -95,7 +96,7 @@ export class SqliteTriggerStore implements TriggerStore {
 
   async update(id: string, patch: Partial<TriggerInput>): Promise<Trigger> {
     const cur = await this.get(id);
-    if (!cur) throw new Error(`trigger 不存在: ${id}`);
+    if (!cur) throw new NotFoundError("TRIGGER_NOT_FOUND", `trigger 不存在: ${id}`);
     const next: Trigger = {
       ...cur,
       ...patch,

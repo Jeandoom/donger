@@ -81,7 +81,9 @@ describe("resolveStaticFile", () => {
 });
 
 let web: WebChannel;
-afterEach(() => web?.stop());
+afterEach(async () => {
+  await web?.stop();
+});
 
 async function startWith(usageStore: InMemoryUsageStore): Promise<number> {
   const tmp = mkdtempSync(join(tmpdir(), "web-ws-"));
@@ -176,8 +178,8 @@ describe("WebChannel auth", () => {
   let web: WebChannel;
   let db: Database.Database;
 
-  afterEach(() => {
-    web?.stop();
+  afterEach(async () => {
+    await web?.stop();
     db?.close();
   });
 
@@ -425,8 +427,8 @@ describe("WebChannel POST /api/upload", () => {
     port = p;
   });
 
-  afterEach(() => {
-    web?.stop();
+  afterEach(async () => {
+    await web?.stop();
     rmSync(webTmp, { recursive: true, force: true });
   });
 
@@ -531,8 +533,8 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
   let db: Database.Database;
   let tmp: string;
 
-  afterEach(() => {
-    web?.stop();
+  afterEach(async () => {
+    await web?.stop();
     db?.close();
     rmSync(tmp, { recursive: true, force: true });
   });
@@ -1168,8 +1170,8 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
   let web: WebChannel;
   let db: Database.Database;
 
-  afterEach(() => {
-    web?.stop();
+  afterEach(async () => {
+    await web?.stop();
     db?.close();
   });
 

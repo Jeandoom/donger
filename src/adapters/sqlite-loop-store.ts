@@ -2,6 +2,7 @@ import type { Database } from "better-sqlite3";
 import type { Loop, LoopInput, LoopRun } from "../domain/loop.js";
 import { LoopRunSchema, LoopSchema } from "../domain/loop.js";
 import type { LoopStore } from "../ports/loop-store.js";
+import { NotFoundError } from "../util/errors.js";
 
 interface LoopRow {
   id: string;
@@ -156,7 +157,7 @@ export class SqliteLoopStore implements LoopStore {
 
   async update(id: string, patch: Partial<LoopInput>): Promise<Loop> {
     const cur = await this.get(id);
-    if (!cur) throw new Error(`loop 不存在: ${id}`);
+    if (!cur) throw new NotFoundError("LOOP_NOT_FOUND", `loop 不存在: ${id}`);
     const next: Loop = {
       ...cur,
       ...patch,
@@ -178,7 +179,7 @@ export class SqliteLoopStore implements LoopStore {
 
   async setEnabled(id: string, enabled: boolean): Promise<Loop> {
     const cur = await this.get(id);
-    if (!cur) throw new Error(`loop 不存在: ${id}`);
+    if (!cur) throw new NotFoundError("LOOP_NOT_FOUND", `loop 不存在: ${id}`);
     const updatedAt = new Date().toISOString();
     this.db
       .prepare("UPDATE loops SET enabled=?, updatedAt=? WHERE id=?")

@@ -1583,6 +1583,7 @@ export class WebChannel implements Channel {
     else if (e instanceof NotFoundError) status = 404;
     else if (e instanceof ValidationError) status = 400;
     else if (e instanceof PayloadTooLargeError) status = 413;
+    else if (e instanceof SyntaxError) status = 400;
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
   }
@@ -1644,6 +1645,8 @@ export class WebChannel implements Channel {
       return true;
     }
     if (m && req.method === "PUT") {
+      // PUT = 全量替换：parseTriggerInput 要求完整对象（name/type/scheduler|hook 等），缺字段返回 400。
+      // store.update 签名虽为 Partial<>，但 HTTP 层强制客户端发全量；如需部分更新请新增 PATCH 路由。
       await this.requireOwnedTrigger(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ts!.update(m[1]!, parseTriggerInput({ ...body, ownerId: uid }));
@@ -1688,6 +1691,7 @@ export class WebChannel implements Channel {
       return true;
     }
     if (m && req.method === "PUT") {
+      // PUT = 全量替换：parseWorkflowInput 要求完整对象（name/triggerId/agentId 等）。
       await this.requireOwnedWorkflow(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ws!.update(m[1]!, parseWorkflowInput({ ...body, ownerId: uid }));
@@ -1718,6 +1722,7 @@ export class WebChannel implements Channel {
       return true;
     }
     if (m && req.method === "PUT") {
+      // PUT = 全量替换：parseLoopInput 要求完整对象（name/workflowId 等）。
       await this.requireOwnedLoop(m[1]!, uid);
       const body = JSON.parse(await this.readBody(req));
       const updated = await ls!.update(m[1]!, parseLoopInput({ ...body, ownerId: uid }));

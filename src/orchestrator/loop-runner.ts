@@ -13,7 +13,7 @@ export interface LoopRunnerDeps {
   loopStore: LoopStore;
   workflowStore: WorkflowStore;
   triggerStore: TriggerStore;
-  orchestrator: { handleMessage(msg: IncomingMessage): Promise<void> };
+  orchestrator: { handleMessage(msg: IncomingMessage): Promise<string | undefined> };
   workspaceRoot: string;
   channelId: string;
   logger: Logger;
@@ -98,10 +98,11 @@ export class LoopRunner {
         requesterId: loop.ownerId,
         text: prompt,
       };
-      await orchestrator.handleMessage(msg);
+      const agentConversationId = await orchestrator.handleMessage(msg);
       await loopStore.updateRun(run.id, {
         status: "success",
         finishedAt: new Date().toISOString(),
+        agentConversationId: agentConversationId ?? null,
       });
       await loopStore.updateRuntimeState(loopId, {
         lastRunId: run.id,

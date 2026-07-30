@@ -2,6 +2,7 @@ import type { Database } from "better-sqlite3";
 import type { Workflow, WorkflowInput } from "../domain/workflow.js";
 import { WorkflowSchema } from "../domain/workflow.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
+import { NotFoundError } from "../util/errors.js";
 
 interface WorkflowRow {
   id: string;
@@ -94,7 +95,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   async update(id: string, patch: Partial<WorkflowInput>): Promise<Workflow> {
     const cur = await this.get(id);
-    if (!cur) throw new Error(`workflow 不存在: ${id}`);
+    if (!cur) throw new NotFoundError("WORKFLOW_NOT_FOUND", `workflow 不存在: ${id}`);
     const next: Workflow = {
       ...cur,
       ...patch,
