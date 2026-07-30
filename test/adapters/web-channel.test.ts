@@ -1412,4 +1412,27 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     const body = (await runs.json()) as { runs: unknown[] };
     expect(body.runs).toEqual([]);
   });
+
+  it("POST /api/triggers 畸形 JSON body → 400 (I4: SyntaxError → 400)", async () => {
+    const { port, token } = await startWorkflowChannel();
+    const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    const res = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+      method: "POST",
+      headers: auth,
+      body: "{not valid json",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/triggers 缺必填字段 → 400 (ZodError → 400)", async () => {
+    const { port, token } = await startWorkflowChannel();
+    const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    // 合法 JSON 但缺 name/type/scheduler
+    const res = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ unrelated: "field" }),
+    });
+    expect(res.status).toBe(400);
+  });
 });

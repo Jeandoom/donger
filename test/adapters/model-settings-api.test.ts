@@ -12,8 +12,8 @@ import { createSecretCipher } from "../../src/util/secret-cipher.js";
 let web: WebChannel | undefined;
 let db: Database.Database | undefined;
 
-afterEach(() => {
-  web?.stop();
+afterEach(async () => {
+  await web?.stop();
   db?.close();
   web = undefined;
   db = undefined;
@@ -61,7 +61,7 @@ describe("用户 Models 配置 API", () => {
       modelConfigStore: modelStore,
       llm: { model: "system", baseUrl: "https://system", authToken: "system-key" },
     });
-    web.stop();
+    await web.stop();
     web = configuredWeb;
     configuredWeb.onMessage(() => {});
     await configuredWeb.ready();

@@ -9,6 +9,7 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from "n
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
+import { ZodError } from "zod";
 import type { LlmPreset } from "../config.js";
 import { type Agent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
@@ -1584,6 +1585,7 @@ export class WebChannel implements Channel {
     else if (e instanceof ValidationError) status = 400;
     else if (e instanceof PayloadTooLargeError) status = 413;
     else if (e instanceof SyntaxError) status = 400;
+    else if (e instanceof ZodError) status = 400;
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
   }

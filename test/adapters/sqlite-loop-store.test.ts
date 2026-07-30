@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
+import { NotFoundError } from "../../src/util/errors.js";
 
 function newStore() {
   const db = new Database(":memory:");
@@ -88,5 +89,15 @@ describe("SqliteLoopStore", () => {
     expect(r?.status).toBe("failed");
     expect(r?.error).toBe("process restart");
     expect(r?.finishedAt).toBeTruthy();
+  });
+
+  it("update(nonexistent) throws NotFoundError (非裸 Error)", async () => {
+    const { ls } = newStore();
+    await expect(ls.update("missing-id", { name: "X" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("setEnabled(nonexistent) throws NotFoundError (非裸 Error)", async () => {
+    const { ls } = newStore();
+    await expect(ls.setEnabled("missing-id", true)).rejects.toBeInstanceOf(NotFoundError);
   });
 });
