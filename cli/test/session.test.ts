@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  autoApprovalResponse,
-  emptyCredentialValues,
-  nextBackoffMs,
-} from "../src/session.js";
 import { errorKind } from "../src/api.js";
+import { autoApprovalResponse, emptyCredentialValues, nextBackoffMs } from "../src/session.js";
 
 describe("nextBackoffMs", () => {
   it("指数退避 1s 起步，30s 封顶", () => {

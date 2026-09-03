@@ -113,15 +113,19 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       request("POST", "/api/conversations", { userId, channelId: "cli", agentId }),
     listConversations: (userId) =>
       request("GET", `/api/conversations?userId=${encodeURIComponent(userId)}`),
-    history: (conversationId) =>
-      request("GET", `/api/conversations/${conversationId}/messages`),
+    history: (conversationId) => request("GET", `/api/conversations/${conversationId}/messages`),
     sendMessage: (conversationId, text, files) =>
-      request("POST", `/api/conversations/${conversationId}/messages`, files ? { text, files } : { text }),
+      request(
+        "POST",
+        `/api/conversations/${conversationId}/messages`,
+        files ? { text, files } : { text },
+      ),
     upload: async (conversationId, filePath) => {
       const name = basename(filePath);
       const ext = name.split(".").pop()?.toLowerCase() ?? "";
       const type = IMAGE_EXTS.has(ext) ? "image" : ext === "md" ? "markdown" : null;
-      if (!type) throw new ApiError("client", 0, "仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)");
+      if (!type)
+        throw new ApiError("client", 0, "仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)");
       const buf = readFileSync(filePath);
       if (buf.length > UPLOAD_MAX_BYTES) {
         throw new ApiError("client", 0, `文件超过 2MB 上限（${Math.round(buf.length / 1024)}KB）`);
@@ -143,9 +147,12 @@ export function createApi(baseUrl: string, token: string): DongerApi {
           `上传失败：无法连接 ${baseUrl}${cause instanceof Error ? `（${cause.message}）` : ""}`,
         );
       }
-      const body = (await res.json().catch(() => null)) as
-        | { path?: string; name?: string; type?: string; error?: string }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        path?: string;
+        name?: string;
+        type?: string;
+        error?: string;
+      } | null;
       if (!res.ok || !body?.path) {
         throw new ApiError(
           errorKind(res.status),

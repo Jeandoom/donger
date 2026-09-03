@@ -3,9 +3,7 @@ import { parseSSEBuffer } from "../src/sse.js";
 
 describe("parseSSEBuffer", () => {
   it("解析单个完整事件", () => {
-    const { events, rest } = parseSSEBuffer(
-      'event: text\ndata: {"type":"text","text":"你好"}\n\n',
-    );
+    const { events, rest } = parseSSEBuffer('event: text\ndata: {"type":"text","text":"你好"}\n\n');
     expect(events).toEqual([{ type: "text", text: "你好" }]);
     expect(rest).toBe("");
   });
@@ -22,7 +20,7 @@ describe("parseSSEBuffer", () => {
 
   it("多事件一次解析 + keep-alive 注释跳过", () => {
     const buf =
-      ': keep-alive\n\n' +
+      ": keep-alive\n\n" +
       'event: text_delta\ndata: {"type":"text_delta","messageId":"m1","text":"a"}\n\n' +
       'event: result\ndata: {"type":"result","subtype":"success","text":"完成"}\n\n';
     const { events, rest } = parseSSEBuffer(buf);

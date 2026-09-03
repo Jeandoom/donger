@@ -1,8 +1,8 @@
-import { createInterface, cursorTo, clearLine } from "node:readline";
+import { clearLine, createInterface, cursorTo } from "node:readline";
 import pc from "picocolors";
 import type { ApiError, AttachmentFile, DongerApi } from "./api.js";
 import { renderMarkdown } from "./render.js";
-import { Session, type ConnStatus, type SessionEvents } from "./session.js";
+import { type ConnStatus, Session, type SessionEvents } from "./session.js";
 import type { AgentSummary } from "./types.js";
 
 export const CLI_VERSION = "0.1.0";
@@ -17,7 +17,17 @@ export interface ChatOptions {
   output?: NodeJS.WritableStream;
 }
 
-const COMMANDS = ["/help", "/status", "/resume", "/agent", "/new", "/file", "/cancel", "/exit"];
+const COMMANDS = [
+  "/help",
+  "/status",
+  "/resume",
+  "/agent",
+  "/new",
+  "/file",
+  "/multi",
+  "/cancel",
+  "/exit",
+];
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -330,17 +340,49 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   });
 
   // ── 主循环 ──
+  let multiBuf: string[] | null = null;
+  async function sendText(t: string): Promise<void> {
+    try {
+      await ensureConversation(forceNewOnce);
+      forceNewOnce = false;
+      const files = pendingFiles.length > 0 ? [...pendingFiles] : undefined;
+      if (files) {
+        emit(pc.dim(`📎 携带附件：${files.map((f) => f.name).join("、")}\n`));
+      }
+      startSpinner();
+      await session!.send(t, files);
+      pendingFiles.length = 0;
+    } catch (e) {
+      stopSpinner();
+      emit(formatError(e));
+    }
+  }
+
   for (;;) {
-    const line = await ask(promptText());
+    const line = await ask(multiBuf ? pc.dim("…multi> ") : promptText());
     if (forceExit || (line === "" && eof)) break;
     const t = line.trim();
+    if (multiBuf !== null) {
+      // I6 多行输入：逐行累积，单独一行 "." 提交，/q 放弃
+      if (t === "/q") {
+        multiBuf = null;
+        emit(pc.dim("(已放弃多行输入)\n"));
+      } else if (t === ".") {
+        const text = multiBuf.join("\n").trim();
+        multiBuf = null;
+        if (text) await sendText(text);
+      } else {
+        multiBuf.push(line);
+      }
+      continue;
+    }
     if (!t) continue;
 
     if (t === "/exit") break;
     if (t === "/help") {
       emit(
         pc.dim(
-          `${COMMANDS.join("  ")}\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /file <路径> 附加图片/md 到下一条消息  /new 新会话（保留当前智能体）  /cancel 中断当前任务  /exit 退出\n`,
+          `${COMMANDS.join("  ")}\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /cancel 中断  /exit 退出\n`,
         ),
       );
       continue;
@@ -380,9 +422,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         );
       });
       const pick = Number.parseInt((await ask("选择会话编号（回车取消）: ")).trim(), 10);
-      const hit = Number.isInteger(pick) && pick >= 1 && pick <= sorted.length
-        ? sorted[pick - 1]
-        : undefined;
+      const hit =
+        Number.isInteger(pick) && pick >= 1 && pick <= sorted.length ? sorted[pick - 1] : undefined;
       if (hit) {
         const targetAgent = hit.agentId ? agent : null;
         await switchTo({ conversationId: hit.id, agent: targetAgent });
@@ -418,21 +459,13 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       await api.cancel(conversationId).catch(() => {});
       continue;
     }
-
-    try {
-      await ensureConversation(forceNewOnce);
-      forceNewOnce = false;
-      const files = pendingFiles.length > 0 ? [...pendingFiles] : undefined;
-      if (files) {
-        emit(pc.dim(`📎 携带附件：${files.map((f) => f.name).join("、")}\n`));
-      }
-      startSpinner();
-      await session!.send(t, files);
-      pendingFiles.length = 0;
-    } catch (e) {
-      stopSpinner();
-      emit(formatError(e));
+    if (t === "/multi") {
+      multiBuf = [];
+      emit(pc.dim("多行输入模式：逐行粘贴/输入，单独一行 . 提交发送，/q 放弃\n"));
+      continue;
     }
+
+    await sendText(t);
   }
   session?.stop();
   rl.close();

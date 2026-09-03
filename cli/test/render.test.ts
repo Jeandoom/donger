@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderMarkdown } from "../src/render.js";
 
-const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const strip = (s: string): string => s.replace(ANSI, "");
 
 describe("renderMarkdown", () => {
   it("非 TTY（color=false）原文直通", () => {

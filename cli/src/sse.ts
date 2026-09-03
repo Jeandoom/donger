@@ -8,8 +8,9 @@ import type { SSEEvent } from "./types.js";
 export function parseSSEBuffer(buffer: string): { events: SSEEvent[]; rest: string } {
   const events: SSEEvent[] = [];
   let rest = buffer;
-  let idx: number;
-  while ((idx = rest.indexOf("\n\n")) >= 0) {
+  for (;;) {
+    const idx = rest.indexOf("\n\n");
+    if (idx < 0) break;
     const block = rest.slice(0, idx);
     rest = rest.slice(idx + 2);
     const event = parseBlock(block);
@@ -48,7 +49,11 @@ export async function* streamSSE(
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new ApiError(errorKind(res.status), res.status, `SSE 连接失败：${res.status} ${res.statusText}`);
+    throw new ApiError(
+      errorKind(res.status),
+      res.status,
+      `SSE 连接失败：${res.status} ${res.statusText}`,
+    );
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

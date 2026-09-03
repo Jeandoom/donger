@@ -1,9 +1,9 @@
-import { Command } from "commander";
 import { createInterface } from "node:readline";
+import { Command } from "commander";
 import pc from "picocolors";
-import { createApi, type ApiError, type DongerApi } from "./api.js";
+import { type ApiError, createApi, type DongerApi } from "./api.js";
 import { CLI_VERSION, runAsk, runChat } from "./chat.js";
-import { loadProfile, resolveBaseUrl, saveProfile, profilePath } from "./config.js";
+import { loadProfile, profilePath, resolveBaseUrl, saveProfile } from "./config.js";
 
 const s = (v: unknown): string => (typeof v === "string" ? v : "");
 const id8 = (v: unknown): string => s(v).slice(0, 8);
@@ -20,7 +20,8 @@ function fmtDate(v: unknown): string {
 
 function formatError(e: unknown): string {
   const err = e as ApiError;
-  if (err?.kind === "auth") return pc.red(`登录已过期或权限不足（${err.message}）→ 运行 donger login`);
+  if (err?.kind === "auth")
+    return pc.red(`登录已过期或权限不足（${err.message}）→ 运行 donger login`);
   if (err?.kind === "network") return pc.red(`${err.message}（确认后端已启动）`);
   return pc.red(e instanceof Error ? e.message : String(e));
 }
@@ -184,7 +185,9 @@ export function buildProgram(): Command {
         const list = asArr(await api.call("GET", "/api/audit/conversations"));
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
-          console.log(`${id8(c.conversationId)}  ${fmtDate(c.createdAt)}  ${truncate(s(c.title), 40)}`);
+          console.log(
+            `${id8(c.conversationId)}  ${fmtDate(c.createdAt)}  ${truncate(s(c.title), 40)}`,
+          );
         }
         console.error(pc.dim(`共 ${list.length} 条`));
       }),
@@ -260,7 +263,10 @@ export function buildProgram(): Command {
       .action((id: string, _opts: object, cmd: Command) =>
         run(async () => {
           const { api } = requireApi(cmd);
-          await api.call("POST", `/api/skills/packs/${enabled ? "enable" : "disable"}`, { id, enabled });
+          await api.call("POST", `/api/skills/packs/${enabled ? "enable" : "disable"}`, {
+            id,
+            enabled,
+          });
           console.log("ok");
         }),
       );
@@ -278,7 +284,9 @@ export function buildProgram(): Command {
         const list = asArr(body.credentials);
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
-          const usedBy = asArr(c.usedBy).map((u) => s(u)).join(",");
+          const usedBy = asArr(c.usedBy)
+            .map((u) => s(u))
+            .join(",");
           console.log(`${s(c.key)}  ${s(c.label)}${usedBy ? pc.dim(`  ← ${usedBy}`) : ""}`);
         }
         console.error(pc.dim(`共 ${list.length} 条`));
@@ -329,18 +337,21 @@ export function buildProgram(): Command {
     .option("-k, --key <key>", "API Key")
     .option("-m, --models <models>", "逗号分隔的模型列表")
     .option("-d, --default <model>", "默认模型")
-    .action((opts: { url?: string; key?: string; models?: string; default?: string }, cmd: Command) =>
-      run(async () => {
-        const { api } = requireApi(cmd);
-        const cur = (await api.call("GET", "/api/settings/models")) as Record<string, unknown>;
-        const body = {
-          url: opts.url ?? s(cur.url),
-          key: opts.key,
-          models: opts.models ? opts.models.split(",").map((x) => x.trim()) : (cur.models as string[]),
-          defaultModel: opts.default ?? s(cur.defaultModel),
-        };
-        printJson(await api.call("PUT", "/api/settings/models", body));
-      }),
+    .action(
+      (opts: { url?: string; key?: string; models?: string; default?: string }, cmd: Command) =>
+        run(async () => {
+          const { api } = requireApi(cmd);
+          const cur = (await api.call("GET", "/api/settings/models")) as Record<string, unknown>;
+          const body = {
+            url: opts.url ?? s(cur.url),
+            key: opts.key,
+            models: opts.models
+              ? opts.models.split(",").map((x) => x.trim())
+              : (cur.models as string[]),
+            defaultModel: opts.default ?? s(cur.defaultModel),
+          };
+          printJson(await api.call("PUT", "/api/settings/models", body));
+        }),
     );
 
   // ── git ──
@@ -403,7 +414,10 @@ export function buildProgram(): Command {
         const body = (await api.call("GET", "/api/workflows")) as { workflows?: unknown[] };
         const list = asArr(body.workflows);
         if (globals(cmd).json) return printJson(list);
-        for (const w of list) console.log(`${id8(w.id)}  ${s(w.name)}  trigger=${id8(w.triggerId)} agent=${id8(w.agentId)}`);
+        for (const w of list)
+          console.log(
+            `${id8(w.id)}  ${s(w.name)}  trigger=${id8(w.triggerId)} agent=${id8(w.agentId)}`,
+          );
         console.error(pc.dim(`共 ${list.length} 条`));
       }),
     );
@@ -427,7 +441,10 @@ export function buildProgram(): Command {
         const body = (await api.call("GET", "/api/triggers")) as { triggers?: unknown[] };
         const list = asArr(body.triggers);
         if (globals(cmd).json) return printJson(list);
-        for (const t of list) console.log(`${id8(t.id)}  ${s(t.type).padEnd(9)}  ${s(t.name)}${t.enabled === false ? pc.red(" (off)") : ""}`);
+        for (const t of list)
+          console.log(
+            `${id8(t.id)}  ${s(t.type).padEnd(9)}  ${s(t.name)}${t.enabled === false ? pc.red(" (off)") : ""}`,
+          );
         console.error(pc.dim(`共 ${list.length} 条`));
       }),
     );
@@ -454,7 +471,9 @@ export function buildProgram(): Command {
         for (const l of list) {
           const flag = l.enabled ? pc.green("on ") : pc.red("off");
           const err = l.lastError ? pc.red(` ⚠ ${truncate(s(l.lastError), 40)}`) : "";
-          console.log(`${id8(l.id)}  ${flag}  ${s(l.name)}  next=${fmtDate(l.nextRunAt) || "-"}${err}`);
+          console.log(
+            `${id8(l.id)}  ${flag}  ${s(l.name)}  next=${fmtDate(l.nextRunAt) || "-"}${err}`,
+          );
         }
         console.error(pc.dim(`共 ${list.length} 条`));
       }),
@@ -493,8 +512,14 @@ export function buildProgram(): Command {
         if (globals(cmd).json) return printJson(list);
         for (const r of list) {
           const icon =
-            r.status === "success" ? pc.green("✔") : r.status === "failed" ? pc.red("✘") : pc.yellow("…");
-          console.log(`${icon} ${id8(r.id)}  ${s(r.status).padEnd(8)}  ${fmtDate(r.startedAt)}${r.error ? pc.red(` ${truncate(s(r.error), 50)}`) : ""}`);
+            r.status === "success"
+              ? pc.green("✔")
+              : r.status === "failed"
+                ? pc.red("✘")
+                : pc.yellow("…");
+          console.log(
+            `${icon} ${id8(r.id)}  ${s(r.status).padEnd(8)}  ${fmtDate(r.startedAt)}${r.error ? pc.red(` ${truncate(s(r.error), 50)}`) : ""}`,
+          );
         }
         console.error(pc.dim(`共 ${list.length} 次`));
       }),
@@ -512,7 +537,9 @@ export function buildProgram(): Command {
         const list = await api.listConversations(uid);
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
-          console.log(`${c.id.slice(0, 8)}  ${fmtDate(c.updatedAt)}  agent=${c.agentId ? c.agentId.slice(0, 8) : "-"}  ${c.title || "（无标题）"}`);
+          console.log(
+            `${c.id.slice(0, 8)}  ${fmtDate(c.updatedAt)}  agent=${c.agentId ? c.agentId.slice(0, 8) : "-"}  ${c.title || "（无标题）"}`,
+          );
         }
         console.error(pc.dim(`共 ${list.length} 条`));
       }),
@@ -527,6 +554,27 @@ export function buildProgram(): Command {
         console.log("ok");
       }),
     );
+  convs
+    .command("prune")
+    .description("批量归档空会话（0 条消息且无自定义标题）")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const uid = (await api.me()).user.id;
+        const list = await api.listConversations(uid);
+        let n = 0;
+        for (const c of list) {
+          if (c.archived) continue;
+          if (c.title && c.title !== "新对话") continue;
+          const msgs = await api.history(c.id).catch(() => []);
+          if (msgs.length === 0) {
+            await api.call("DELETE", `/api/conversations/${c.id}`).catch(() => {});
+            n += 1;
+          }
+        }
+        console.log(`已归档 ${n} 个空会话`);
+      }),
+    );
 
   const agents = program.command("agents").description("智能体查看");
   agents
@@ -538,7 +586,9 @@ export function buildProgram(): Command {
         const list = await api.listAgents();
         if (globals(cmd).json) return printJson(list);
         for (const a of list) {
-          console.log(`${a.id.slice(0, 8)}  ${a._mine ? pc.dim("mine  ") : pc.cyan("shared")}  ${a.name}${a.description ? pc.dim(` - ${truncate(a.description, 40)}`) : ""}`);
+          console.log(
+            `${a.id.slice(0, 8)}  ${a._mine ? pc.dim("mine  ") : pc.cyan("shared")}  ${a.name}${a.description ? pc.dim(` - ${truncate(a.description, 40)}`) : ""}`,
+          );
         }
         console.error(pc.dim(`共 ${list.length} 个`));
       }),
@@ -593,7 +643,10 @@ export function buildProgram(): Command {
     .action((scope: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const body = (await api.call("GET", `/api/files/tree?scope=${encodeURIComponent(scope)}`)) as {
+        const body = (await api.call(
+          "GET",
+          `/api/files/tree?scope=${encodeURIComponent(scope)}`,
+        )) as {
           nodes?: unknown[];
         };
         const walk = (nodes: unknown[], depth: number): void => {
