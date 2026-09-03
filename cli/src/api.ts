@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import type { AgentSummary, ConversationSummary, UserSummary } from "./types.js";
 
 export type ApiErrorKind = "network" | "auth" | "server" | "client";
@@ -37,13 +39,24 @@ export interface DongerApi {
   createConversation(userId: string, agentId?: string): Promise<ConversationSummary>;
   listConversations(userId: string): Promise<ConversationSummary[]>;
   history(conversationId: string): Promise<MessageItem[]>;
-  sendMessage(conversationId: string, text: string): Promise<void>;
+  sendMessage(conversationId: string, text: string, files?: AttachmentFile[]): Promise<void>;
+  /** 上传附件（图片/md，≤2MB），返回 {path,name,type} 供 sendMessage 携带 */
+  upload(conversationId: string, filePath: string): Promise<AttachmentFile>;
   cancel(conversationId: string): Promise<void>;
   respondApproval(gateId: string, approved: boolean, reason?: string): Promise<void>;
   submitCredential(reqId: string, values: Record<string, string>): Promise<void>;
   /** 管理命令通用调用：返回解析后的 JSON（无类型约束，命令层自行取字段） */
   call(method: string, path: string, body?: unknown): Promise<unknown>;
 }
+
+export interface AttachmentFile {
+  path: string;
+  name: string;
+  type: "image" | "markdown";
+}
+
+const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
+const UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 
 export function createApi(baseUrl: string, token: string): DongerApi {
   async function request<T>(
@@ -102,8 +115,46 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       request("GET", `/api/conversations?userId=${encodeURIComponent(userId)}`),
     history: (conversationId) =>
       request("GET", `/api/conversations/${conversationId}/messages`),
-    sendMessage: (conversationId, text) =>
-      request("POST", `/api/conversations/${conversationId}/messages`, { text }),
+    sendMessage: (conversationId, text, files) =>
+      request("POST", `/api/conversations/${conversationId}/messages`, files ? { text, files } : { text }),
+    upload: async (conversationId, filePath) => {
+      const name = basename(filePath);
+      const ext = name.split(".").pop()?.toLowerCase() ?? "";
+      const type = IMAGE_EXTS.has(ext) ? "image" : ext === "md" ? "markdown" : null;
+      if (!type) throw new ApiError("client", 0, "仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)");
+      const buf = readFileSync(filePath);
+      if (buf.length > UPLOAD_MAX_BYTES) {
+        throw new ApiError("client", 0, `文件超过 2MB 上限（${Math.round(buf.length / 1024)}KB）`);
+      }
+      const fd = new FormData();
+      fd.append("file", new Blob([new Uint8Array(buf)]), name);
+      let res: Response;
+      try {
+        res = await fetch(`${baseUrl}/api/upload?threadId=${encodeURIComponent(conversationId)}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: fd,
+        });
+      } catch (e) {
+        const cause = (e as { cause?: unknown })?.cause;
+        throw new ApiError(
+          "network",
+          0,
+          `上传失败：无法连接 ${baseUrl}${cause instanceof Error ? `（${cause.message}）` : ""}`,
+        );
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { path?: string; name?: string; type?: string; error?: string }
+        | null;
+      if (!res.ok || !body?.path) {
+        throw new ApiError(
+          errorKind(res.status),
+          res.status,
+          body?.error ?? `上传失败：${res.status}`,
+        );
+      }
+      return { path: body.path, name: body.name ?? name, type: type };
+    },
     cancel: (conversationId) =>
       request("POST", `/api/conversations/${conversationId}/cancel`, {}, 200),
     respondApproval: (gateId, approved, reason) =>

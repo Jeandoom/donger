@@ -1,4 +1,4 @@
-import type { DongerApi } from "./api.js";
+import type { AttachmentFile, DongerApi } from "./api.js";
 import { classifyEvent } from "./chat-events.js";
 import { streamSSE } from "./sse.js";
 import type { SSEEvent } from "./types.js";
@@ -95,11 +95,11 @@ export class Session {
   }
 
   /** 发送一条消息并等待回合结束（result/error）。抛 ApiError 由上层分类展示。 */
-  async send(text: string): Promise<boolean> {
+  async send(text: string, files?: AttachmentFile[]): Promise<boolean> {
     const done = new Promise<boolean>((resolve) => {
       this.roundWaiter = resolve;
     });
-    await this.api.sendMessage(this.conversationId, text);
+    await this.api.sendMessage(this.conversationId, text, files);
     return done;
   }
 

@@ -1,6 +1,6 @@
 import { createInterface, cursorTo, clearLine } from "node:readline";
 import pc from "picocolors";
-import type { ApiError, DongerApi } from "./api.js";
+import type { ApiError, AttachmentFile, DongerApi } from "./api.js";
 import { Session, type ConnStatus, type SessionEvents } from "./session.js";
 import type { AgentSummary } from "./types.js";
 
@@ -16,7 +16,7 @@ export interface ChatOptions {
   output?: NodeJS.WritableStream;
 }
 
-const COMMANDS = ["/help", "/status", "/resume", "/agent", "/new", "/cancel", "/exit"];
+const COMMANDS = ["/help", "/status", "/resume", "/agent", "/new", "/file", "/cancel", "/exit"];
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -162,6 +162,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
 
   // ── 会话状态 ──
   const meUser = (await api.me()).user;
+  const pendingFiles: AttachmentFile[] = [];
   let conversationId = "";
   // 断言初值保留联合类型：赋值发生在闭包（switchTo）里，字面量 null 会被 TS 收窄成 never
   let currentAgent = null as AgentSummary | null;
@@ -222,6 +223,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     agent: AgentSummary | null;
   }): Promise<void> {
     session?.stop();
+    pendingFiles.length = 0; // 附件与会话绑定（后端校验归属），切会话必须清空
     session = Session.start(api, baseUrl, token, target.conversationId, events);
     conversationId = target.conversationId;
     currentAgent = target.agent;
@@ -322,7 +324,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     if (t === "/help") {
       emit(
         pc.dim(
-          `${COMMANDS.join("  ")}\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /new 新会话（保留当前智能体）  /cancel 中断当前任务  /exit 退出\n`,
+          `${COMMANDS.join("  ")}\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /file <路径> 附加图片/md 到下一条消息  /new 新会话（保留当前智能体）  /cancel 中断当前任务  /exit 退出\n`,
         ),
       );
       continue;
@@ -370,14 +372,43 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
       continue;
     }
+    if (t === "/file") {
+      emit(
+        pc.dim(
+          pendingFiles.length > 0
+            ? `已附加 ${pendingFiles.length} 个：${pendingFiles.map((f) => f.name).join("、")}\n用法 /file <本地路径>（图片/md，≤2MB，最多 5 个）\n`
+            : "用法 /file <本地路径>（图片/md，≤2MB，最多 5 个，随下一条消息发送）\n",
+        ),
+      );
+      continue;
+    }
+    if (t.startsWith("/file ")) {
+      if (pendingFiles.length >= 5) {
+        emit(pc.yellow("最多 5 个附件\n"));
+        continue;
+      }
+      try {
+        const f = await api.upload(conversationId, t.slice(6).trim());
+        pendingFiles.push(f);
+        emit(pc.dim(`📎 已附加 ${f.name}（${pendingFiles.length}/5）\n`));
+      } catch (e) {
+        emit(formatError(e));
+      }
+      continue;
+    }
     if (t === "/cancel") {
       await api.cancel(conversationId).catch(() => {});
       continue;
     }
 
+    const files = pendingFiles.length > 0 ? [...pendingFiles] : undefined;
+    if (files) {
+      emit(pc.dim(`📎 携带附件：${files.map((f) => f.name).join("、")}\n`));
+    }
     startSpinner();
     try {
-      await session!.send(t);
+      await session!.send(t, files);
+      pendingFiles.length = 0;
     } catch (e) {
       emit(formatError(e));
     }
