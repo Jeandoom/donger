@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { noneAssistHint } from "./assist";
+import type { ChatMessage } from "../types";
+
+const NONE_TEXT = "🤷 暂无能处理该任务的智能体：缺能力";
+
+function msg(role: "user" | "assistant", text: string): ChatMessage {
+  return { id: role + text.length, role, text };
+}
+
+describe("noneAssistHint", () => {
+  it("命中 none 标记 → 返回携带原任务的预填文本", () => {
+    const messages = [msg("user", "帮我查本周提交"), msg("assistant", NONE_TEXT)];
+    expect(noneAssistHint(messages)).toBe(
+      "我想完成：帮我查本周提交。请协助创建能处理该任务的 agent 与 skills。",
+    );
+  });
+
+  it("最后一条助手消息不命中 → null", () => {
+    expect(noneAssistHint([msg("user", "x"), msg("assistant", "正常回复")])).toBeNull();
+  });
+
+  it("无用户消息 → null", () => {
+    expect(noneAssistHint([msg("assistant", NONE_TEXT)])).toBeNull();
+  });
+});
