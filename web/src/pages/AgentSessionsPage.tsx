@@ -1,11 +1,28 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { AssistDraftBanner } from "../components/chat/AssistDraftBanner";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
+import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { isAgentConv } from "../lib/conversations";
 import { fetchGitPreflight, type GitPreflightDTO, grantGitRepositories } from "../lib/gitSettings";
 import { useWebChat } from "../lib/webChat";
+
+/** 内置协助智能体的合成下拉条目（不入库，前端常量） */
+const BUILTIN_ASSIST_ENTRY: AgentListDTO = {
+  id: BUILTIN_ASSIST_AGENT_ID,
+  ownerId: "",
+  _mine: true,
+  name: "AI 生成助手",
+  description: "对话式创建 agent / skill",
+  skills: [],
+  tools: { mode: "whitelist", whitelist: [] },
+  mcpServers: [],
+  llm: {},
+  createdAt: "",
+  updatedAt: "",
+};
 
 export function AgentSessionsPage() {
   const wc = useWebChat();
@@ -18,6 +35,7 @@ export function AgentSessionsPage() {
   });
   const [gitLoading, setGitLoading] = useState(false);
   const [gitError, setGitError] = useState("");
+  const [assistDraft, setAssistDraft] = useState("");
   const deepLinkAgent = params.get("agent");
   const agent = agents.find((item) => item.id === agentId);
   const activeIsDraft = wc.conversations.find(
@@ -42,12 +60,22 @@ export function AgentSessionsPage() {
     }
   }, [activeIsDraft, wc.activeConversationId]);
 
-  // 载入智能体列表
+  // 载入智能体列表（内置 assist 条目置顶）
   useEffect(() => {
     fetchAgents()
-      .then(setAgents)
+      .then((list) => setAgents([BUILTIN_ASSIST_ENTRY, ...list]))
       .catch(() => {});
   }, []);
+
+  // 兜底入口（B）带入的草稿：深链进入 assist 会话时读一次（读后即删）
+  useEffect(() => {
+    if (deepLinkAgent !== BUILTIN_ASSIST_AGENT_ID) return;
+    const draft = sessionStorage.getItem(ASSIST_DRAFT_STORAGE_KEY);
+    if (draft) {
+      setAssistDraft(draft);
+      sessionStorage.removeItem(ASSIST_DRAFT_STORAGE_KEY);
+    }
+  }, [deepLinkAgent]);
 
   // 初始选中：深链 ?agent= 优先，否则第一个
   useEffect(() => {
@@ -125,6 +153,18 @@ export function AgentSessionsPage() {
       onResolveApproval={wc.resolveApproval}
       onSubmitCredential={wc.submitCredential}
       inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}
+      aboveComposer={
+        assistDraft ? (
+          <AssistDraftBanner
+            draft={assistDraft}
+            onSend={(text) => {
+              setAssistDraft("");
+              void wc.send(text);
+            }}
+            onDismiss={() => setAssistDraft("")}
+          />
+        ) : undefined
+      }
       errors={wc.errors}
       onReloadConversations={() => void wc.loadConversations()}
       onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}

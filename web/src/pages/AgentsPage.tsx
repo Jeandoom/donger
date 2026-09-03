@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
+import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 
 export function AgentsPage() {
   const navigate = useNavigate();
@@ -22,13 +23,22 @@ export function AgentsPage() {
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">智能体</h1>
-        <button
-          type="button"
-          className="rounded bg-primary px-3 py-1.5 text-primary-foreground"
-          onClick={() => navigate("/agents/new")}
-        >
-          + 新建
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="rounded border px-3 py-1.5 hover:bg-accent"
+            onClick={() => navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
+          >
+            ✨ AI 生成
+          </button>
+          <button
+            type="button"
+            className="rounded bg-primary px-3 py-1.5 text-primary-foreground"
+            onClick={() => navigate("/agents/new")}
+          >
+            + 新建
+          </button>
+        </div>
       </div>
 
       {loading ? <p className="text-muted-foreground">加载中…</p> : null}

@@ -1,35 +1,56 @@
+import { useNavigate } from "react-router-dom";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID, noneAssistHint } from "../lib/assist";
 import { isDefaultConv } from "../lib/conversations";
 import { useWebChat } from "../lib/webChat";
 
 export function ChatPage() {
+  const navigate = useNavigate();
   const wc = useWebChat();
   const conversations = wc.conversations.filter(isDefaultConv);
+  const hint = noneAssistHint(wc.messages);
   return (
-    <ChatWorkspace
-      conversations={conversations}
-      activeConversationId={wc.activeConversationId}
-      activeConversationIsDraft={
-        wc.conversations.find((item) => item.id === wc.activeConversationId)?.isDraft
-      }
-      onSelectConversation={wc.switchConversation}
-      onDeleteConversation={wc.deleteConversation}
-      onNewConversation={() => void wc.newConversation()}
-      sidebarTitle={`会话（${conversations.length}）`}
-      messages={wc.messages}
-      loadingMessages={wc.loadingMessages}
-      isGenerating={wc.isGenerating}
-      pendingApproval={wc.pendingApproval}
-      pendingCredential={wc.pendingCredential}
-      connection={wc.connection}
-      onSend={wc.send}
-      onEnsureConversation={wc.ensureConversation}
-      onCancel={wc.cancel}
-      onResolveApproval={wc.resolveApproval}
-      onSubmitCredential={wc.submitCredential}
-      errors={wc.errors}
-      onReloadConversations={() => void wc.loadConversations()}
-      onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
-    />
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {hint ? (
+        <div className="flex w-full shrink-0 items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs">
+          <span>没有能处理该任务的智能体？让 AI 协助创建一个。</span>
+          <button
+            type="button"
+            className="shrink-0 rounded border px-2 py-1 hover:bg-accent"
+            onClick={() => {
+              sessionStorage.setItem(ASSIST_DRAFT_STORAGE_KEY, hint);
+              navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`);
+            }}
+          >
+            ✨ 让 AI 协助创建
+          </button>
+        </div>
+      ) : null}
+      <ChatWorkspace
+        conversations={conversations}
+        activeConversationId={wc.activeConversationId}
+        activeConversationIsDraft={
+          wc.conversations.find((item) => item.id === wc.activeConversationId)?.isDraft
+        }
+        onSelectConversation={wc.switchConversation}
+        onDeleteConversation={wc.deleteConversation}
+        onNewConversation={() => void wc.newConversation()}
+        sidebarTitle={`会话（${conversations.length}）`}
+        messages={wc.messages}
+        loadingMessages={wc.loadingMessages}
+        isGenerating={wc.isGenerating}
+        pendingApproval={wc.pendingApproval}
+        pendingCredential={wc.pendingCredential}
+        connection={wc.connection}
+        onSend={wc.send}
+        onEnsureConversation={wc.ensureConversation}
+        onCancel={wc.cancel}
+        onResolveApproval={wc.resolveApproval}
+        onSubmitCredential={wc.submitCredential}
+        errors={wc.errors}
+        onReloadConversations={() => void wc.loadConversations()}
+        onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
+      />
+    </div>
   );
 }

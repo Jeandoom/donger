@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Agent, AgentInput } from "../../src/domain/agent.js";
-import type { User } from "../../src/domain/user.js";
 import type { SkillPack } from "../../src/domain/skill-pack.js";
+import type { User } from "../../src/domain/user.js";
 import { ensureDispatcherKb } from "../../src/orchestrator/dispatch-kb.js";
 import { platformToolDefinitions } from "../../src/orchestrator/platform-tools.js";
 import type { AgentStore } from "../../src/ports/agent-store.js";
-import type { SkillPackStore } from "../../src/ports/skill-pack-store.js";
 import type { SkillInstaller } from "../../src/ports/skill-installer.js";
+import type { SkillPackStore } from "../../src/ports/skill-pack-store.js";
 
 const USER: User = {
   id: "u-1",

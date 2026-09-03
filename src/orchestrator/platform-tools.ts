@@ -1,10 +1,10 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   createSdkMcpServer,
   type McpSdkServerConfigWithInstance,
   type SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import type { Agent } from "../domain/agent.js";
 import { canManageAgent } from "../domain/agent-policy.js";

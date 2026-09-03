@@ -24,13 +24,12 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
-import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { makeApprovalResolver } from "./approval-flow.js";
+import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { makeCredentialResolver } from "./credential-flow.js";
 import { dispatchTask } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
-import { createPlatformToolsServer } from "./platform-tools.js";
 import {
   acceptAsk,
   designFirstAsk,
@@ -39,6 +38,7 @@ import {
   executeRejected,
   resolvePhases,
 } from "./phase-flow.js";
+import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 
 export interface OrchestratorDeps {

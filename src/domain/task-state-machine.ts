@@ -27,7 +27,12 @@ const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = 
     fail: "failed",
     cancel: "canceled",
   },
-  awaiting_approval: { resume: "running", redesign: "planning", fail: "failed", cancel: "canceled" },
+  awaiting_approval: {
+    resume: "running",
+    redesign: "planning",
+    fail: "failed",
+    cancel: "canceled",
+  },
   awaiting_credentials: { credentials_provided: "planning", fail: "failed", cancel: "canceled" },
   done: {},
   failed: {},

@@ -37,6 +37,8 @@ export interface ChatWorkspaceProps {
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   inputPlaceholder?: string;
+  /** 输入区上方插槽（assist 草稿横幅等） */
+  aboveComposer?: React.ReactNode;
   errors: ChatErrors;
   onReloadConversations: () => void;
   onReloadMessages: () => void;
@@ -145,6 +147,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onResolveApproval={props.onResolveApproval}
               onSubmitCredential={props.onSubmitCredential}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
+              aboveComposer={props.aboveComposer}
             />
           </AssistantRuntimeProvider>
         )}

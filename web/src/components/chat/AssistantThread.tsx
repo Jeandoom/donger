@@ -223,6 +223,8 @@ export interface AssistantThreadProps {
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onSubmitCredential: (values: Record<string, string>) => void;
   placeholder: string;
+  /** 输入区上方插槽（assist 草稿横幅等） */
+  aboveComposer?: React.ReactNode;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -244,6 +246,7 @@ export function AssistantThread(props: AssistantThreadProps) {
         </div>
       </ThreadPrimitive.Viewport>
       <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
+        {props.aboveComposer}
         <ComposerPrimitive.Root
           aria-label="消息输入"
           className="pb-safe pointer-events-auto mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
