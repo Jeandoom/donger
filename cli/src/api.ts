@@ -41,6 +41,8 @@ export interface DongerApi {
   cancel(conversationId: string): Promise<void>;
   respondApproval(gateId: string, approved: boolean, reason?: string): Promise<void>;
   submitCredential(reqId: string, values: Record<string, string>): Promise<void>;
+  /** 管理命令通用调用：返回解析后的 JSON（无类型约束，命令层自行取字段） */
+  call(method: string, path: string, body?: unknown): Promise<unknown>;
 }
 
 export function createApi(baseUrl: string, token: string): DongerApi {
@@ -108,5 +110,6 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       request("POST", `/api/approvals/${gateId}/respond`, { approved, reason }),
     submitCredential: (reqId, values) =>
       request("POST", `/api/credentials/${reqId}/submit`, { values }),
+    call: (method, path, body) => request(method, path, body),
   };
 }
