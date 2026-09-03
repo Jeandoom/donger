@@ -1841,11 +1841,15 @@ export class WebChannel implements Channel {
     const credMatch = match(/^\/api\/credentials\/([^/]+)$/);
     if (credMatch && req.method === "PUT") {
       const b = JSON.parse(await this.readBody(req)) as { value: string; label?: string };
-      send(await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1] ?? ""), ...b }, deps));
+      send(
+        await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1] ?? ""), ...b }, deps),
+      );
       return true;
     }
     if (credMatch && req.method === "DELETE") {
-      send(await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1] ?? "") }, deps));
+      send(
+        await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1] ?? "") }, deps),
+      );
       return true;
     }
     return false;
