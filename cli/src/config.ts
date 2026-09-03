@@ -6,10 +6,6 @@ import { dirname, join } from "node:path";
 export interface CliProfile {
   baseUrl: string;
   token: string;
-  /** 上次使用的 agent（chat 默认复选） */
-  lastAgentId?: string;
-  /** 上次使用的会话 */
-  lastConversationId?: string;
 }
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:3330";
