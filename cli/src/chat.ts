@@ -1,6 +1,7 @@
 import { createInterface, cursorTo, clearLine } from "node:readline";
 import pc from "picocolors";
 import type { ApiError, AttachmentFile, DongerApi } from "./api.js";
+import { renderMarkdown } from "./render.js";
 import { Session, type ConnStatus, type SessionEvents } from "./session.js";
 import type { AgentSummary } from "./types.js";
 
@@ -170,10 +171,11 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let connState: ConnStatus = "offline";
   let reconnecting = false;
   let lastSigintAt = 0;
+  let forceNewOnce = false;
 
   const events: SessionEvents = {
     onDelta: (t) => emit(t),
-    onPrint: (t) => emit(`\n${t}\n`),
+    onPrint: (t) => emit(`\n${renderMarkdown(t, isTTY)}\n`),
     onApproval: async (gateId, title, summary) => {
       emit(pc.yellow(`\n🔔 审批门：${title}\n${summary}\n`));
       emit(pc.dim("（60 秒内未响应，后端将取消本次审批）\n"));
@@ -235,6 +237,31 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     );
   }
 
+  /** 惰性建会话：boot 不建，首次发消息/传附件才建，避免空会话堆积。forceNew 绕过 get-or-create（/new 语义） */
+  async function ensureConversation(forceNew = false): Promise<void> {
+    if (conversationId && !forceNew) return;
+    const cid =
+      currentAgent && !forceNew
+        ? await api.agentConversation(currentAgent.id)
+        : (await api.createConversation(meUser.id, currentAgent?.id)).id;
+    await switchTo({ conversationId: cid, agent: currentAgent });
+    await session!.connected();
+  }
+
+  /** 回到未创建态（/new、/agent 切换后） */
+  function resetConversation(): void {
+    session?.stop();
+    session = null;
+    conversationId = "";
+    pendingFiles.length = 0;
+    connState = "offline";
+    emit(
+      pc.dim(
+        `已重置${currentAgent ? `：agent「${currentAgent.name}」` : ""}（发送首条消息时创建新会话）\n`,
+      ),
+    );
+  }
+
   async function selectAgent(): Promise<AgentSummary | null> {
     const agents = await api.listAgents().catch(() => []);
     if (agents.length === 0) return null;
@@ -251,17 +278,6 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     return Number.isInteger(n) && n >= 1 && n <= agents.length ? agents[n - 1]! : null;
   }
 
-  async function openDefault(agent: AgentSummary | null): Promise<void> {
-    if (agent) {
-      await switchTo({ conversationId: await api.agentConversation(agent.id), agent });
-    } else {
-      await switchTo({
-        conversationId: (await api.createConversation(meUser.id)).id,
-        agent: null,
-      });
-    }
-  }
-
   // ── 启动横幅（I8）──
   write(`${pc.bold("donger CLI")} ${pc.dim(`v${CLI_VERSION}`)} → ${baseUrl}\n`);
   write(pc.dim(`用户 ${meUser.name}（${meUser.role}）\n`));
@@ -275,7 +291,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
     return selectAgent();
   })();
-  await openDefault(agent);
+  write(pc.dim(`就绪（agent：${agent?.name ?? "默认会话"}），发送首条消息时创建会话\n`));
   write(pc.dim("/help 查看命令 · Ctrl+C 中断任务，连续两次退出\n"));
 
   function formatError(e: unknown): string {
@@ -331,18 +347,19 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
     if (t === "/status") {
       emit(
-        `后端   ${baseUrl}\n用户   ${meUser.name}（${meUser.role}）\n会话   ${conversationId.slice(0, 8)}\n智能体 ${currentAgent?.name ?? "默认会话"}\n连接   ${connState}\n`,
+        `后端   ${baseUrl}\n用户   ${meUser.name}（${meUser.role}）\n会话   ${conversationId ? conversationId.slice(0, 8) : "（未创建，发消息时建立）"}\n智能体 ${currentAgent?.name ?? "默认会话"}\n连接   ${session ? connState : "-"}\n`,
       );
       continue;
     }
     if (t === "/agent") {
       agent = await selectAgent();
-      await openDefault(agent);
+      resetConversation();
       continue;
     }
     if (t === "/new") {
-      // D4 修复：/new 强制新建会话（保留当前 agent），不走 get-or-create
-      await openDefault(currentAgent);
+      // D4 语义：保留当前 agent，下一条消息强制新建（绕过 get-or-create）
+      resetConversation();
+      forceNewOnce = true;
       continue;
     }
     if (t === "/resume") {
@@ -372,6 +389,21 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
       continue;
     }
+    if (t.startsWith("/file ")) {
+      if (pendingFiles.length >= 5) {
+        emit(pc.yellow("最多 5 个附件\n"));
+        continue;
+      }
+      try {
+        await ensureConversation();
+        const f = await api.upload(conversationId, t.slice(6).trim());
+        pendingFiles.push(f);
+        emit(pc.dim(`📎 已附加 ${f.name}（${pendingFiles.length}/5）\n`));
+      } catch (e) {
+        emit(formatError(e));
+      }
+      continue;
+    }
     if (t === "/file") {
       emit(
         pc.dim(
@@ -382,34 +414,23 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       );
       continue;
     }
-    if (t.startsWith("/file ")) {
-      if (pendingFiles.length >= 5) {
-        emit(pc.yellow("最多 5 个附件\n"));
-        continue;
-      }
-      try {
-        const f = await api.upload(conversationId, t.slice(6).trim());
-        pendingFiles.push(f);
-        emit(pc.dim(`📎 已附加 ${f.name}（${pendingFiles.length}/5）\n`));
-      } catch (e) {
-        emit(formatError(e));
-      }
-      continue;
-    }
     if (t === "/cancel") {
       await api.cancel(conversationId).catch(() => {});
       continue;
     }
 
-    const files = pendingFiles.length > 0 ? [...pendingFiles] : undefined;
-    if (files) {
-      emit(pc.dim(`📎 携带附件：${files.map((f) => f.name).join("、")}\n`));
-    }
-    startSpinner();
     try {
+      await ensureConversation(forceNewOnce);
+      forceNewOnce = false;
+      const files = pendingFiles.length > 0 ? [...pendingFiles] : undefined;
+      if (files) {
+        emit(pc.dim(`📎 携带附件：${files.map((f) => f.name).join("、")}\n`));
+      }
+      startSpinner();
       await session!.send(t, files);
       pendingFiles.length = 0;
     } catch (e) {
+      stopSpinner();
       emit(formatError(e));
     }
   }
@@ -426,17 +447,23 @@ export async function runAsk(opts: ChatOptions, text: string): Promise<number> {
     agent = agents.find((a) => a.id === opts.agent || a.name === opts.agent);
     if (!agent) throw new Error(`未找到 agent "${opts.agent}"`);
   }
+  const createdDefault = !agent;
   const conversationId = agent
     ? await api.agentConversation(agent.id)
     : (await api.createConversation((await api.me()).user.id)).id;
 
   const out = opts.output ?? process.stdout;
+  const tty = process.stdout.isTTY === true;
   const session = Session.start(api, opts.baseUrl, opts.token, conversationId, {
     onDelta: (t) => out.write(t),
-    onPrint: (t) => out.write(`${t}\n`),
+    onPrint: (t) => out.write(`\n${renderMarkdown(t, tty)}\n`),
     onRoundEnd: () => {},
   });
   const ok = await session.send(text);
   session.stop();
+  if (createdDefault) {
+    // 一次性问答会话用后即归档，避免空壳堆积
+    await api.call("DELETE", `/api/conversations/${conversationId}`).catch(() => {});
+  }
   return ok ? 0 : 1;
 }

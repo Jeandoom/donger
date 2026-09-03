@@ -69,6 +69,7 @@ export class Session {
   private attempt = 0;
   private stopped = false;
   private connStatus: ConnStatus = "offline";
+  private connWaiters: Array<() => void> = [];
 
   private constructor(
     private readonly api: DongerApi,
@@ -113,9 +114,26 @@ export class Session {
     this.aborter.abort();
   }
 
+  /** 等待 SSE 首次连接成功（超时放行，避免首条消息事件在建立前丢失） */
+  connected(timeoutMs = 5000): Promise<void> {
+    if (this.connStatus === "connected") return Promise.resolve();
+    return new Promise((resolve) => {
+      const waiter = (): void => resolve();
+      this.connWaiters.push(waiter);
+      setTimeout(() => {
+        const i = this.connWaiters.indexOf(waiter);
+        if (i >= 0) this.connWaiters.splice(i, 1);
+        resolve();
+      }, timeoutMs);
+    });
+  }
+
   private setConn(status: ConnStatus, attempt?: number): void {
     this.connStatus = status;
     this.events.onStatus?.(status, attempt);
+    if (status === "connected") {
+      for (const w of this.connWaiters.splice(0)) w();
+    }
   }
 
   private async pump(): Promise<void> {
