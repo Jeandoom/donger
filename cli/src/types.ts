@@ -30,6 +30,7 @@ export interface ConversationSummary {
   agentId: string;
   createdAt: string;
   updatedAt: string;
+  archived?: boolean;
 }
 
 /** 智能体摘要（GET /api/agents 返回项的子集） */

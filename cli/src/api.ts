@@ -1,13 +1,29 @@
 import type { AgentSummary, ConversationSummary, UserSummary } from "./types.js";
 
-/** 后端返回非 2xx 时抛出（message 取 body.error） */
+export type ApiErrorKind = "network" | "auth" | "server" | "client";
+
+/** 按状态码分类错误（401/403=认证，5xx=服务端，其余=客户端参数） */
+export function errorKind(status: number): ApiErrorKind {
+  if (status === 401 || status === 403) return "auth";
+  if (status >= 500) return "server";
+  return "client";
+}
+
+/** 后端返回错误。kind 用于终端分色与引导（auth → 提示重新登录） */
 export class ApiError extends Error {
   constructor(
+    readonly kind: ApiErrorKind,
     readonly status: number,
     message: string,
   ) {
     super(message);
   }
+}
+
+export interface MessageItem {
+  id: string;
+  role: string;
+  text: string;
 }
 
 /** 后端 HTTP 客户端：统一 Bearer 头与 JSON 解析。 */
@@ -19,6 +35,8 @@ export interface DongerApi {
   /** get-or-create 该 agent 的会话，返回 conversationId */
   agentConversation(agentId: string): Promise<string>;
   createConversation(userId: string, agentId?: string): Promise<ConversationSummary>;
+  listConversations(userId: string): Promise<ConversationSummary[]>;
+  history(conversationId: string): Promise<MessageItem[]>;
   sendMessage(conversationId: string, text: string): Promise<void>;
   cancel(conversationId: string): Promise<void>;
   respondApproval(gateId: string, approved: boolean, reason?: string): Promise<void>;
@@ -46,7 +64,7 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       // Node fetch 把 TLS/DNS 等真实原因藏在 cause 里，剥出来给终端
       const cause = (e as { cause?: unknown })?.cause;
       const detail = cause instanceof Error ? `（${cause.message}）` : "";
-      throw new Error(`无法连接 ${baseUrl}${detail}`);
+      throw new ApiError("network", 0, `无法连接 ${baseUrl}${detail}`);
     }
     if (expectStatus && res.status === expectStatus) {
       return undefined as T;
@@ -63,7 +81,7 @@ export function createApi(baseUrl: string, token: string): DongerApi {
         (data as { error?: string; message?: string } | null)?.error ??
         (data as { message?: string } | null)?.message ??
         `${res.status} ${res.statusText}`;
-      throw new ApiError(res.status, msg);
+      throw new ApiError(errorKind(res.status), res.status, msg);
     }
     return data as T;
   }
@@ -78,6 +96,10 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     },
     createConversation: (userId, agentId) =>
       request("POST", "/api/conversations", { userId, channelId: "cli", agentId }),
+    listConversations: (userId) =>
+      request("GET", `/api/conversations?userId=${encodeURIComponent(userId)}`),
+    history: (conversationId) =>
+      request("GET", `/api/conversations/${conversationId}/messages`),
     sendMessage: (conversationId, text) =>
       request("POST", `/api/conversations/${conversationId}/messages`, { text }),
     cancel: (conversationId) =>

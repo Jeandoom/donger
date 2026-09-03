@@ -1,4 +1,4 @@
-import { ApiError } from "./api.js";
+import { ApiError, errorKind } from "./api.js";
 import type { SSEEvent } from "./types.js";
 
 /**
@@ -48,7 +48,7 @@ export async function* streamSSE(
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new ApiError(res.status, `SSE 连接失败：${res.status} ${res.statusText}`);
+    throw new ApiError(errorKind(res.status), res.status, `SSE 连接失败：${res.status} ${res.statusText}`);
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

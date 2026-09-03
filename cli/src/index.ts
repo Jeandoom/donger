@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import { createApi } from "./api.js";
-import { runChat } from "./chat.js";
+import { runAsk, runChat } from "./chat.js";
 import { loadProfile, profilePath, resolveBaseUrl, saveProfile } from "./config.js";
 
 function usage(): void {
@@ -9,10 +9,11 @@ function usage(): void {
 命令:
   login [secret]   用后端 CLI_TOKEN 换 JWT，保存到 ${profilePath()}
   chat             交互式对话（默认命令）
+  ask <文本...>    一次性问答：输出回复后退出，exit code 表成败（审批自动驳回）
 
 选项:
   --url <url>      后端地址（默认 DONGER_URL 环境变量或 http://127.0.0.1:3330）
-  --agent <id|名称> chat 直接选择智能体
+  --agent <id|名称> chat/ask 直接选择智能体
   -h, --help       帮助`);
 }
 
@@ -21,6 +22,7 @@ interface ParsedArgs {
   url?: string;
   agent?: string;
   secret?: string;
+  text?: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -33,8 +35,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "-h" || a === "--help") parsed.cmd = "help";
     else if (a) positional.push(a);
   }
-  if (positional[0] === "login" || positional[0] === "chat") parsed.cmd = positional[0];
-  if (positional[0] === "login") parsed.secret = positional[1];
+  const head = positional[0];
+  if (head === "login" || head === "chat" || head === "ask") parsed.cmd = head;
+  if (head === "login") parsed.secret = positional[1];
+  if (head === "ask") parsed.text = positional.slice(1).join(" ").trim();
   return parsed;
 }
 
@@ -58,7 +62,7 @@ async function runLogin(baseUrl: string, secret?: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { cmd, url, agent, secret } = parseArgs(process.argv.slice(2));
+  const { cmd, url, agent, secret, text } = parseArgs(process.argv.slice(2));
   if (cmd === "help") {
     usage();
     return;
@@ -74,7 +78,17 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  await runChat({ api: createApi(baseUrl, profile.token), baseUrl, token: profile.token, agent });
+  const api = createApi(baseUrl, profile.token);
+  if (cmd === "ask") {
+    if (!text) {
+      console.error('用法: donger ask "问题"');
+      process.exitCode = 1;
+      return;
+    }
+    process.exitCode = await runAsk({ api, baseUrl, token: profile.token, agent }, text);
+    return;
+  }
+  await runChat({ api, baseUrl, token: profile.token, agent });
 }
 
 main().catch((e: unknown) => {
