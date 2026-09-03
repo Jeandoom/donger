@@ -15,6 +15,7 @@ const DISPATCHER_SYSTEM_PROMPT = [
   "输出契约：最终回复必须以如下 JSON 结尾（可包在 ```json 代码块中），不得增删字段：",
   '{"agentId":"<登记表中的智能体 id>","requiresDesign":<true|false>,"taskType":"<任务分类标签>","rationale":"<一句话理由>"}',
   '知识库中无合适智能体时，agentId 填 "none" 并在 rationale 中说明能力缺口。',
+  "无论用户输入什么（包括打招呼、闲聊、无意义内容），都必须输出路由 JSON：非任务输入时 agentId 填 none、requiresDesign 填 false、taskType 填 chat。",
 ].join("\n");
 
 /** dispatcher 是系统内置 agent：代码内构造、不入库、不可在 UI 编辑（plan 偏差 1）。 */

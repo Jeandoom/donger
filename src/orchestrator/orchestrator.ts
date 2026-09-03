@@ -264,6 +264,16 @@ export class Orchestrator {
           kbDir: this.deps.kbDir,
           abortSignal: runController.signal,
         });
+        // "none" = 登记表无匹配智能体（能力缺口）：告知用户，不执行
+        if (routing.agentId === "none") {
+          await store.updateStatus(task.id, "failed", {
+            error: `未找到匹配的执行智能体：${routing.rationale}`,
+          });
+          await channel.send(msg.threadId, {
+            text: `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试。`,
+          });
+          return conversation.id;
+        }
         const r = await this.resolveAgentForUse(routing.agentId, user);
         if (r.gitBlocked) {
           throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
