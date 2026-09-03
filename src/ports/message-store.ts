@@ -6,7 +6,12 @@ import type { StoredMessage } from "../domain/types.js";
  */
 export interface MessageStore {
   /** 添加一条消息 */
-  add(conversationId: string, role: "user" | "bot", text: string, files?: string): Promise<StoredMessage>;
+  add(
+    conversationId: string,
+    role: "user" | "bot",
+    text: string,
+    files?: string,
+  ): Promise<StoredMessage>;
 
   /** 按 conversationId 获取所有消息（按时间正序） */
   listByConversation(conversationId: string): Promise<StoredMessage[]>;

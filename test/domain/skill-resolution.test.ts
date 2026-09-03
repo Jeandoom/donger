@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveActiveSkills } from "../../src/domain/skill-resolution.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
+import { resolveActiveSkills } from "../../src/domain/skill-resolution.js";
 
 function pack(over: Partial<SkillPack> = {}): SkillPack {
   return {
@@ -77,10 +77,14 @@ describe("resolveActiveSkills", () => {
 
   it("optional 凭证进 declared 不进 required", () => {
     const r = resolveActiveSkills(
-      [pack({ credentials: [
-        { key: "REQ", label: "R", required: true, secret: true },
-        { key: "OPT", label: "O", required: false, secret: true },
-      ] })],
+      [
+        pack({
+          credentials: [
+            { key: "REQ", label: "R", required: true, secret: true },
+            { key: "OPT", label: "O", required: false, secret: true },
+          ],
+        }),
+      ],
       new Map([["p1", [skill()]]]),
       (p) => p.installedPath,
     );

@@ -1,7 +1,7 @@
-import Database from "better-sqlite3";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LocalSkillInstaller } from "../../src/adapters/local-skill-installer.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
@@ -35,7 +35,9 @@ describe("LocalSkillInstaller", () => {
     });
     expect(pack.slug).toBe("hello");
     expect(pack.name).toBe("hello");
-    expect(existsSync(join(homeDir, "u1", ".skills", "hello", ".claude-plugin", "plugin.json"))).toBe(true);
+    expect(
+      existsSync(join(homeDir, "u1", ".skills", "hello", ".claude-plugin", "plugin.json")),
+    ).toBe(true);
     const skills = await packStore.listSkills("u1", pack.id);
     expect(skills.map((s) => s.name)).toEqual(["hello"]);
   });
@@ -50,7 +52,10 @@ describe("LocalSkillInstaller", () => {
   });
 
   it("slug 冲突自动 -2 去重", async () => {
-    await installer.installFromPaste("u1", { content: "---\nname: x\ndescription: d\n---\n", slug: "x" });
+    await installer.installFromPaste("u1", {
+      content: "---\nname: x\ndescription: d\n---\n",
+      slug: "x",
+    });
     const p2 = await installer.installFromPaste("u1", {
       content: "---\nname: x\ndescription: d\n---\n",
       slug: "x",
@@ -78,7 +83,10 @@ describe("LocalSkillInstaller", () => {
       JSON.stringify({ name: "fw", version: "1.0.0" }),
     );
     mkdirSync(join(shared, "fw", "skills", "s"), { recursive: true });
-    writeFileSync(join(shared, "fw", "skills", "s", "SKILL.md"), "---\nname: s\ndescription: d\n---\n");
+    writeFileSync(
+      join(shared, "fw", "skills", "s", "SKILL.md"),
+      "---\nname: s\ndescription: d\n---\n",
+    );
     const pack = await installer.installBuiltin("u1", "fw", join(shared, "fw"));
     expect(pack.builtin).toBe(true);
     expect(pack.installedPath).toBe(join(shared, "fw"));
@@ -99,9 +107,15 @@ describe("LocalSkillInstaller", () => {
   it("builtin pack 禁止 uninstall", async () => {
     const shared = mkdtempSync(join(tmpdir(), "b-"));
     mkdirSync(join(shared, "fw", ".claude-plugin"), { recursive: true });
-    writeFileSync(join(shared, "fw", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "fw" }));
+    writeFileSync(
+      join(shared, "fw", ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "fw" }),
+    );
     mkdirSync(join(shared, "fw", "skills", "s"), { recursive: true });
-    writeFileSync(join(shared, "fw", "skills", "s", "SKILL.md"), "---\nname: s\ndescription: d\n---\n");
+    writeFileSync(
+      join(shared, "fw", "skills", "s", "SKILL.md"),
+      "---\nname: s\ndescription: d\n---\n",
+    );
     const pack = await installer.installBuiltin("u1", "fw", join(shared, "fw"));
     await expect(installer.uninstall("u1", pack.id)).rejects.toThrow();
   });
@@ -114,8 +128,8 @@ describe("LocalSkillInstaller", () => {
     writeFileSync(join(src, "skills", "g", "SKILL.md"), '---\nname: g\ndescription: "gg"\n---\n');
     const { execSync } = await import("node:child_process");
     execSync("git init -q", { cwd: src });
-    execSync('git -c user.email=a@b.c -c user.name=a add -A', { cwd: src });
-    execSync('git -c user.email=a@b.c -c user.name=a commit -qm init', { cwd: src });
+    execSync("git -c user.email=a@b.c -c user.name=a add -A", { cwd: src });
+    execSync("git -c user.email=a@b.c -c user.name=a commit -qm init", { cwd: src });
     const pack = await installer.installFromGit("u1", { url: src, slug: "gitpack" });
     expect(pack.name).toBe("gitpack");
     expect((await packStore.listSkills("u1", pack.id)).map((s) => s.name)).toEqual(["g"]);
@@ -139,8 +153,8 @@ describe("LocalSkillInstaller", () => {
     );
     const { execSync } = await import("node:child_process");
     execSync("git init -q", { cwd: src });
-    execSync('git -c user.email=a@b.c -c user.name=a add -A', { cwd: src });
-    execSync('git -c user.email=a@b.c -c user.name=a commit -qm init', { cwd: src });
+    execSync("git -c user.email=a@b.c -c user.name=a add -A", { cwd: src });
+    execSync("git -c user.email=a@b.c -c user.name=a commit -qm init", { cwd: src });
 
     const pack = await installer.installFromGit("u1", {
       url: src,
@@ -149,7 +163,9 @@ describe("LocalSkillInstaller", () => {
     });
 
     expect(pack.name).toBe("aiops-skills");
-    expect(existsSync(join(homeDir, "u1", ".skills", "aiops-skills", ".claude-plugin", "plugin.json"))).toBe(true);
+    expect(
+      existsSync(join(homeDir, "u1", ".skills", "aiops-skills", ".claude-plugin", "plugin.json")),
+    ).toBe(true);
     const skills = await packStore.listSkills("u1", pack.id);
     expect(skills.map((s) => s.name)).toEqual(["first-skill", "second-skill"]);
     expect(skills[0]?.description).toBe("第一行\n第二行");

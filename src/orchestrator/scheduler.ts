@@ -61,7 +61,7 @@ export class SchedulerService {
     const wf = await this.deps.workflowStore.get(loop.workflowId);
     if (!wf) return null;
     const t = await this.deps.triggerStore.get(wf.triggerId);
-    if (!t || t.type !== "scheduler" || !t.scheduler) return null;
+    if (t?.type !== "scheduler" || !t.scheduler) return null;
     if (!cron.validate(t.scheduler.cron)) {
       this.deps.logger.warn({ loopId: loop.id, cron: t.scheduler.cron }, "invalid cron expression");
       return null;

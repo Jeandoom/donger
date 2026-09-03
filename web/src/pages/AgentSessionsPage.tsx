@@ -133,7 +133,9 @@ export function AgentSessionsPage() {
         if (access?.ready) await wc.send(text, files);
       }}
       blockingContent={
-        wc.activeConversationId && !activeIsDraft && (gitLoading || !gitPreflight.ready || gitError) ? (
+        wc.activeConversationId &&
+        !activeIsDraft &&
+        (gitLoading || !gitPreflight.ready || gitError) ? (
           <GitAccessBlocker
             loading={gitLoading}
             requirements={gitPreflight.requirements}

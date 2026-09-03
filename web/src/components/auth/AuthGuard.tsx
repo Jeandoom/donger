@@ -11,9 +11,7 @@ export function AuthGuard() {
 
   if (!ready) {
     return (
-      <div className="flex h-screen items-center justify-center text-muted-foreground">
-        加载中…
-      </div>
+      <div className="flex h-screen items-center justify-center text-muted-foreground">加载中…</div>
     );
   }
 

@@ -44,9 +44,7 @@ describe("Agent schema", () => {
   });
 
   it("追加默认 Skill slash 指令", () => {
-    expect(appendDefaultSkill("查询订单", "aliyun:sls-query")).toBe(
-      "查询订单\n/aliyun:sls-query",
-    );
+    expect(appendDefaultSkill("查询订单", "aliyun:sls-query")).toBe("查询订单\n/aliyun:sls-query");
     expect(appendDefaultSkill("查询订单")).toBe("查询订单");
   });
 });

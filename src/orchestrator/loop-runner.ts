@@ -126,7 +126,7 @@ export class LoopRunner {
   }
 
   async testTrigger(triggerId: string): Promise<TestTriggerResult> {
-    const { triggerStore, logger } = this.deps;
+    const { triggerStore } = this.deps;
     const t: Trigger | undefined = await triggerStore.get(triggerId);
     if (!t) return { sourceOutput: "", matched: false, error: "trigger 不存在" };
     if (t.type === "hook") {

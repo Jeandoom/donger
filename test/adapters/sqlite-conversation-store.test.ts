@@ -30,7 +30,7 @@ describe("SqliteConversationStore", () => {
   });
 
   it("getLatest", async () => {
-    const c1 = await store.create("u1", "dingtalk", "钉钉1");
+    const _c1 = await store.create("u1", "dingtalk", "钉钉1");
     await new Promise((r) => setTimeout(r, 10));
     const c2 = await store.create("u1", "dingtalk", "钉钉2");
     const latest = await store.getLatest("u1", "dingtalk");

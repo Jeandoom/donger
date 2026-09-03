@@ -60,7 +60,8 @@ function mockUserStore(): UserStore {
     async getOrCreateByIdentity(provider, externalId, name) {
       const key = `${provider}:${externalId}`;
       const existingId = identities.get(key);
-      if (existingId) return users.get(existingId)!;
+      const existing = existingId ? users.get(existingId) : undefined;
+      if (existing) return existing;
       const id = `u-${externalId}`;
       const u: User = {
         id,
@@ -143,15 +144,18 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+  const credentialStore = new SqliteCredentialStore(
+    db,
+    loadOrGenerateAppSecret(db, "skill_secret_key"),
+  );
   credentialStore.migrate();
   const fakeInstaller: SkillInstaller = {
-    installFromGit: async () => ({} as SkillPack),
-    installFromUpload: async () => ({} as SkillPack),
-    installFromPaste: async () => ({} as SkillPack),
-    installBuiltin: async () => ({} as SkillPack),
+    installFromGit: async () => ({}) as SkillPack,
+    installFromUpload: async () => ({}) as SkillPack,
+    installFromPaste: async () => ({}) as SkillPack,
+    installBuiltin: async () => ({}) as SkillPack,
     uninstall: async () => {},
-    update: async () => ({} as SkillPack),
+    update: async () => ({}) as SkillPack,
   };
   const mgr = new RuntimeManager({
     transcriptStore: mockTranscriptStore(),
@@ -278,7 +282,8 @@ describe("Orchestrator", () => {
       },
     };
     const conversationStore2 = mockConversationStore();
-    const { mgr: runtimeMgr2, credentialStore: credentialStore2 } = makeRuntimeMgr(conversationStore2);
+    const { mgr: runtimeMgr2, credentialStore: credentialStore2 } =
+      makeRuntimeMgr(conversationStore2);
     const orch2 = new Orchestrator({
       store: store2,
       userStore: mockUserStore(),

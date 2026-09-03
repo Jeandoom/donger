@@ -28,7 +28,15 @@ describe("workspace util", () => {
     const root = tmp();
     const userWs = join(root, "u1");
     initUserWorkspace(userWs);
-    for (const d of [".skills", ".agents", ".workflows", "sessions", "skill_root", "agent_root", "workflow_root"]) {
+    for (const d of [
+      ".skills",
+      ".agents",
+      ".workflows",
+      "sessions",
+      "skill_root",
+      "agent_root",
+      "workflow_root",
+    ]) {
       expect(existsSync(join(userWs, d))).toBe(true);
     }
     for (const d of ["user", "skills", "agents", "workflows", "knowledges"]) {

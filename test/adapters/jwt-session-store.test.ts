@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 
 describe("JwtSessionStore", () => {

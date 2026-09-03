@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { apiFetch } from "../lib/auth";
 import { Button } from "../components/ui/button";
+import { apiFetch } from "../lib/auth";
 
 type MatcherKind =
   | "always"

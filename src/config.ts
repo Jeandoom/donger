@@ -173,7 +173,7 @@ function parseAdminExternalIds(
     .map((s) => s.trim())
     .filter(Boolean);
   // 向后兼容：ADMIN_STAFF_IDS 仍可生效
-  if (legacyAdminStaffIds && legacyAdminStaffIds.trim()) {
+  if (legacyAdminStaffIds?.trim()) {
     process.emitWarning("ADMIN_STAFF_IDS 已废弃，请改用 ADMIN_EXTERNAL_IDS（值改为外部平台 ID）", {
       code: "DEPRECATED_ADMIN_STAFF_IDS",
     });
@@ -192,7 +192,7 @@ function parseAdminExternalIds(
  * 优先 SECRET_KEY；缺省从 JWT_SECRET 派生（并告警）；两者皆空返回空串。
  */
 function resolveSecretSeed(secretKey: string | undefined, jwtSecret: string): string {
-  if (secretKey && secretKey.trim()) return secretKey.trim();
+  if (secretKey?.trim()) return secretKey.trim();
   if (jwtSecret) {
     process.emitWarning("SECRET_KEY 未配置，从 JWT_SECRET 派生 agent 密钥主密钥", {
       code: "SECRET_KEY_DERIVED",

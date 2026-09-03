@@ -66,7 +66,10 @@ describe("SqliteSkillPackStore", () => {
   it("upsertSkills + listSkills", async () => {
     await store.upsertPack(pack());
     await store.upsertSkills("u1", "p1", [skill(), skill({ id: "s2", name: "beta" })]);
-    expect((await store.listSkills("u1", "p1")).map((s) => s.name).sort()).toEqual(["alpha", "beta"]);
+    expect((await store.listSkills("u1", "p1")).map((s) => s.name).sort()).toEqual([
+      "alpha",
+      "beta",
+    ]);
   });
 
   it("setPackEnabled / setSkillEnabled", async () => {
@@ -80,7 +83,10 @@ describe("SqliteSkillPackStore", () => {
 
   it("listEnabledSkillsWithPack：仅启用 pack+skill", async () => {
     await store.upsertPack(pack());
-    await store.upsertSkills("u1", "p1", [skill(), skill({ id: "s2", name: "beta", enabled: false })]);
+    await store.upsertSkills("u1", "p1", [
+      skill(),
+      skill({ id: "s2", name: "beta", enabled: false }),
+    ]);
     const active = await store.listEnabledSkillsWithPack("u1");
     expect(active.map((a) => a.skill.name)).toEqual(["alpha"]);
     expect(active[0]?.pack.name).toBe("demo");

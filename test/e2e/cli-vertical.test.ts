@@ -100,15 +100,18 @@ function setup(script: FakeScript) {
   const db = new Database(":memory:");
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const credentialStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+  const credentialStore = new SqliteCredentialStore(
+    db,
+    loadOrGenerateAppSecret(db, "skill_secret_key"),
+  );
   credentialStore.migrate();
   const fakeInstaller: SkillInstaller = {
-    installFromGit: async () => ({} as SkillPack),
-    installFromUpload: async () => ({} as SkillPack),
-    installFromPaste: async () => ({} as SkillPack),
-    installBuiltin: async () => ({} as SkillPack),
+    installFromGit: async () => ({}) as SkillPack,
+    installFromUpload: async () => ({}) as SkillPack,
+    installFromPaste: async () => ({}) as SkillPack,
+    installBuiltin: async () => ({}) as SkillPack,
     uninstall: async () => {},
-    update: async () => ({} as SkillPack),
+    update: async () => ({}) as SkillPack,
   };
   const runtimeMgr = new RuntimeManager({
     transcriptStore: {

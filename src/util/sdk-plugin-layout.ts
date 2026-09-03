@@ -27,7 +27,9 @@ export function ensureSdkPluginLayout(packDir: string, pluginName: string): stri
   } catch {
     return packDir;
   }
-  const directLayout = scanned.skills.every((skill) => /^skills\/[^/]+\/SKILL\.md$/.test(skill.relativePath));
+  const directLayout = scanned.skills.every((skill) =>
+    /^skills\/[^/]+\/SKILL\.md$/.test(skill.relativePath),
+  );
   if (directLayout || scanned.skills.length === 0) return packDir;
 
   const generatedDir = join(packDir, ".donger-sdk-plugin");

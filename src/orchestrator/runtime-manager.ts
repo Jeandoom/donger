@@ -22,10 +22,7 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
 import { seedBuiltinPacksIfAbsent } from "../util/builtin-skills.js";
-import {
-  ensureSdkPluginLayout,
-  materializeSharedSkillPlugin,
-} from "../util/sdk-plugin-layout.js";
+import { ensureSdkPluginLayout, materializeSharedSkillPlugin } from "../util/sdk-plugin-layout.js";
 import { ensureRuntimeDir } from "../util/workspace.js";
 
 export interface RuntimeManagerConfig {
@@ -270,9 +267,10 @@ export class RuntimeManager {
 
   /** 解析 pack 绝对路径：预装/绝对路径原样，用户 pack 拼 homeDir。 */
   private resolvePackPath(user: User, pack: SkillPack): string {
-    const packPath = pack.builtin || isAbsolute(pack.installedPath)
-      ? pack.installedPath
-      : join(user.homeDir, pack.installedPath);
+    const packPath =
+      pack.builtin || isAbsolute(pack.installedPath)
+        ? pack.installedPath
+        : join(user.homeDir, pack.installedPath);
     return ensureSdkPluginLayout(packPath, pack.name);
   }
 
@@ -284,10 +282,7 @@ export class RuntimeManager {
   ): Promise<string[]> {
     if (agent.ownerId === user.id) return [];
     const selected = new Map<string, Set<string>>();
-    for (const skillId of [
-      ...agent.skills,
-      ...(agent.defaultSkill ? [agent.defaultSkill] : []),
-    ]) {
+    for (const skillId of [...agent.skills, ...(agent.defaultSkill ? [agent.defaultSkill] : [])]) {
       const separator = skillId.indexOf(":");
       if (separator <= 0 || separator === skillId.length - 1) continue;
       const packName = skillId.slice(0, separator);
@@ -340,7 +335,7 @@ export class RuntimeManager {
   /** 读取会话 transcript（回溯/重放用）。无 sdkSessionId 返回 null。 */
   async getTranscript(conversationId: string) {
     const conv = await this.deps.conversationStore.get(conversationId);
-    if (!conv || !conv.sdkSessionId) return null;
+    if (!conv?.sdkSessionId) return null;
     return this.deps.transcriptStore.load({
       projectKey: conv.userId,
       sessionId: conv.sdkSessionId,

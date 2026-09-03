@@ -37,7 +37,9 @@ export class JwtSessionStore implements SessionStore {
       // 检查过期
       if (payload.exp && (payload.exp as number) * 1000 < Date.now()) return null;
       // 检查黑名单
-      const revoked = this.db.prepare("SELECT 1 FROM revoked_tokens WHERE jti = ?").get(payload.jti);
+      const revoked = this.db
+        .prepare("SELECT 1 FROM revoked_tokens WHERE jti = ?")
+        .get(payload.jti);
       if (revoked) return null;
       return payload.sub as string;
     } catch {
@@ -47,9 +49,7 @@ export class JwtSessionStore implements SessionStore {
 
   async revoke(jti: string): Promise<void> {
     this.db
-      .prepare(
-        "INSERT OR IGNORE INTO revoked_tokens (jti, userId, revokedAt) VALUES (?, ?, ?)",
-      )
+      .prepare("INSERT OR IGNORE INTO revoked_tokens (jti, userId, revokedAt) VALUES (?, ?, ?)")
       .run(jti, "", new Date().toISOString());
   }
 
@@ -71,11 +71,12 @@ export class JwtSessionStore implements SessionStore {
   private decodeJwt(token: string): Record<string, unknown> | null {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
-    const [headerB64, payloadB64, sigB64] = parts;
+    // length 已验证为 3，默认值仅为满足类型（不会触发）
+    const [headerB64 = "", payloadB64 = "", sigB64 = ""] = parts;
     const expectedSig = createHmac("sha256", this.secret)
-      .update(`${headerB64!}.${payloadB64!}`)
+      .update(`${headerB64}.${payloadB64}`)
       .digest("base64url");
     if (sigB64 !== expectedSig) return null;
-    return JSON.parse(Buffer.from(payloadB64!, "base64url").toString());
+    return JSON.parse(Buffer.from(payloadB64, "base64url").toString());
   }
 }

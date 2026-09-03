@@ -27,12 +27,24 @@ function seedOld() {
 describe("workspace migration", () => {
   it("migrationNeeded：旧存在且无 sentinel → true", () => {
     seedOld();
-    expect(migrationNeeded({ oldDataDir: oldData, newDbPath: newDb, newWorkspaceDir: newWs, sentinelPath: sentinel })).toBe(true);
+    expect(
+      migrationNeeded({
+        oldDataDir: oldData,
+        newDbPath: newDb,
+        newWorkspaceDir: newWs,
+        sentinelPath: sentinel,
+      }),
+    ).toBe(true);
   });
 
   it("migrateWorkspace：只写 sentinel，旧数据不再迁移", () => {
     seedOld();
-    const done = migrateWorkspace({ oldDataDir: oldData, newDbPath: newDb, newWorkspaceDir: newWs, sentinelPath: sentinel });
+    const done = migrateWorkspace({
+      oldDataDir: oldData,
+      newDbPath: newDb,
+      newWorkspaceDir: newWs,
+      sentinelPath: sentinel,
+    });
     expect(done).toBe(true);
     // 旧数据不再迁移
     expect(existsSync(newDb)).toBe(false);
@@ -43,7 +55,19 @@ describe("workspace migration", () => {
 
   it("幂等：sentinel 存在 → 不再迁", () => {
     seedOld();
-    migrateWorkspace({ oldDataDir: oldData, newDbPath: newDb, newWorkspaceDir: newWs, sentinelPath: sentinel });
-    expect(migrationNeeded({ oldDataDir: oldData, newDbPath: newDb, newWorkspaceDir: newWs, sentinelPath: sentinel })).toBe(false);
+    migrateWorkspace({
+      oldDataDir: oldData,
+      newDbPath: newDb,
+      newWorkspaceDir: newWs,
+      sentinelPath: sentinel,
+    });
+    expect(
+      migrationNeeded({
+        oldDataDir: oldData,
+        newDbPath: newDb,
+        newWorkspaceDir: newWs,
+        sentinelPath: sentinel,
+      }),
+    ).toBe(false);
   });
 });

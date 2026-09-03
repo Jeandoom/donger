@@ -3,8 +3,8 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "no
 import { basename, join } from "node:path";
 import { IGNORED_NAMES, resolveWithinRoots, scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
-import type { ConversationStore } from "../ports/conversation-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
+import type { ConversationStore } from "../ports/conversation-store.js";
 import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
 import type {
   FileBrowser,

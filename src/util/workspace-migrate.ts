@@ -1,8 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export interface MigrateOptions {
@@ -15,9 +11,7 @@ export interface MigrateOptions {
 export function migrationNeeded(opts: MigrateOptions): boolean {
   const oldDb = join(opts.oldDataDir, "donger.db");
   const oldUsers = join(opts.oldDataDir, "users");
-  return (
-    (existsSync(oldDb) || existsSync(oldUsers)) && !existsSync(opts.sentinelPath)
-  );
+  return (existsSync(oldDb) || existsSync(oldUsers)) && !existsSync(opts.sentinelPath);
 }
 
 /**

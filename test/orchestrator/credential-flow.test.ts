@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeCredentialResolver } from "../../src/orchestrator/credential-flow.js";
-import type { CredentialRequest, Channel } from "../../src/ports/channel.js";
+import type { Channel, CredentialRequest } from "../../src/ports/channel.js";
 import type { TaskStore } from "../../src/ports/task-store.js";
 
 function fakeStore() {
@@ -37,7 +37,7 @@ describe("makeCredentialResolver", () => {
     const store = fakeStore();
     const resolver = makeCredentialResolver(
       store,
-      fakeChannel(async (r) => ({ [r.items[0]!.key]: "v" })),
+      fakeChannel(async (r) => ({ [r.items[0]?.key ?? ""]: "v" })),
       "t1",
     );
     const out = await resolver(req);

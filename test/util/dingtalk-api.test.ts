@@ -96,7 +96,10 @@ describe("getUserInfoByCode", () => {
         const body = JSON.stringify({ access_token: "corp-tok", expires_in: 7200 });
         return { ok: true, json: async () => JSON.parse(body), text: async () => body };
       }
-      const body = JSON.stringify({ errcode: 0, user_info: { userid: "staff123", name: "张三", avatar: "https://avatar.com/1" } });
+      const body = JSON.stringify({
+        errcode: 0,
+        user_info: { userid: "staff123", name: "张三", avatar: "https://avatar.com/1" },
+      });
       return { ok: true, json: async () => JSON.parse(body), text: async () => body };
     });
     vi.stubGlobal("fetch", fn);
@@ -153,7 +156,11 @@ describe("getUserAccessToken", () => {
 
 describe("getUserInfoByOAuth", () => {
   it("成功返回用户信息（新版 contact/users/me 格式）", async () => {
-    const body = JSON.stringify({ unionId: "staff456", nick: "李四", avatarUrl: "https://avatar.com/2" });
+    const body = JSON.stringify({
+      unionId: "staff456",
+      nick: "李四",
+      avatarUrl: "https://avatar.com/2",
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => ({
@@ -169,7 +176,10 @@ describe("getUserInfoByOAuth", () => {
   });
 
   it("失败抛错", async () => {
-    const body = JSON.stringify({ errCode: "Forbidden.AccessDenied.AccessTokenPermissionDenied", errMsg: "没有权限" });
+    const body = JSON.stringify({
+      errCode: "Forbidden.AccessDenied.AccessTokenPermissionDenied",
+      errMsg: "没有权限",
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => ({

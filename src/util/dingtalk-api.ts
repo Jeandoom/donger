@@ -44,7 +44,10 @@ export async function getUserInfoByCode(
 ): Promise<{ userId: string; name: string; avatar?: string }> {
   const corpToken = await getAccessToken(appKey, appSecret);
   const urlStr = `https://oapi.dingtalk.com/sns/getuserinfo_bycode?access_token=${encodeURIComponent(corpToken)}`;
-  console.log("[dingtalk-api] getUserInfoByCode 请求 URL:", urlStr.replace(/access_token=[^&]+/, "access_token=***"));
+  console.log(
+    "[dingtalk-api] getUserInfoByCode 请求 URL:",
+    urlStr.replace(/access_token=[^&]+/, "access_token=***"),
+  );
   const res = await fetch(urlStr, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -100,7 +103,12 @@ export async function getUserAccessToken(
     code,
     grantType: "authorization_code",
   };
-  console.log("[dingtalk-api] getUserAccessToken POST 到:", urlStr, "body:", JSON.stringify({ ...body, clientSecret: "***" }));
+  console.log(
+    "[dingtalk-api] getUserAccessToken POST 到:",
+    urlStr,
+    "body:",
+    JSON.stringify({ ...body, clientSecret: "***" }),
+  );
   const res = await fetch(urlStr, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -113,10 +121,17 @@ export async function getUserAccessToken(
     data = JSON.parse(bodyText) as Record<string, unknown>;
   } catch {
     console.error("[dingtalk-api] getUserAccessToken 响应非 JSON:", bodyText.slice(0, 300));
-    throw new Error(`钉钉 OAuth token 获取失败: HTTP ${res.status}, 响应: ${bodyText.slice(0, 200)}`);
+    throw new Error(
+      `钉钉 OAuth token 获取失败: HTTP ${res.status}, 响应: ${bodyText.slice(0, 200)}`,
+    );
   }
   if (!data.accessToken) {
-    const detail = JSON.stringify({ httpStatus: res.status, errCode: data.errCode ?? data.errcode, errMsg: data.errMsg ?? data.errmsg, raw: data });
+    const detail = JSON.stringify({
+      httpStatus: res.status,
+      errCode: data.errCode ?? data.errcode,
+      errMsg: data.errMsg ?? data.errmsg,
+      raw: data,
+    });
     console.error("[dingtalk-api] getUserAccessToken 失败:", detail);
     throw new Error(`钉钉 OAuth token 获取失败: ${detail}`);
   }
@@ -159,7 +174,12 @@ export async function getUserInfoByOAuth(
   }
   // 新版接口返回 nick / unionId / avatarUrl
   if (data.errCode || data.errMsg) {
-    const detail = JSON.stringify({ httpStatus: res.status, errCode: data.errCode, errMsg: data.errMsg, raw: data });
+    const detail = JSON.stringify({
+      httpStatus: res.status,
+      errCode: data.errCode,
+      errMsg: data.errMsg,
+      raw: data,
+    });
     console.error("[dingtalk-api] getUserInfoByOAuth 失败:", detail);
     throw new Error(`钉钉用户信息获取失败: ${detail}`);
   }

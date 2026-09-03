@@ -40,7 +40,12 @@ export interface Channel {
   /** 推送完成通知（SSE 版本） */
   pushResult?(conversationId: string, subtype: "success" | "error", text: string): void;
   /** 推送审批卡片（SSE 版本） */
-  pushApprovalCard?(conversationId: string, gateId: string, title: string, summary: string): Promise<void>;
+  pushApprovalCard?(
+    conversationId: string,
+    gateId: string,
+    title: string,
+    summary: string,
+  ): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
   /** 收集缺失凭证（WebChannel 实现；钉钉不实现 → 凭证门降级为失败提示）。 */
   requestCredentials?(threadId: string, req: CredentialRequest): Promise<Record<string, string>>;

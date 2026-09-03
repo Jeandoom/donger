@@ -197,43 +197,46 @@ export function useWebChat() {
   useEffect(() => () => messagesRequestRef.current?.abort(), []);
 
   /** 切换会话（先清空本地消息，再异步加载历史消息） */
-  const switchConversation = useCallback((conversationId: string | null) => {
-    messagesRequestRef.current?.abort();
-    dispatch({ type: "clear_error", key: "messages" });
-    dispatch({ type: "switch_conversation", conversationId });
-    const conversation = state.conversations.find((item) => item.id === conversationId);
-    if (!conversationId || isDraftConversation(conversation)) return;
-    const controller = new AbortController();
-    messagesRequestRef.current = controller;
-    const token = getToken();
-    fetch(`/api/conversations/${conversationId}/messages`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      signal: controller.signal,
-    })
-      .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<ChatMessage[]>;
+  const switchConversation = useCallback(
+    (conversationId: string | null) => {
+      messagesRequestRef.current?.abort();
+      dispatch({ type: "clear_error", key: "messages" });
+      dispatch({ type: "switch_conversation", conversationId });
+      const conversation = state.conversations.find((item) => item.id === conversationId);
+      if (!conversationId || isDraftConversation(conversation)) return;
+      const controller = new AbortController();
+      messagesRequestRef.current = controller;
+      const token = getToken();
+      fetch(`/api/conversations/${conversationId}/messages`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: controller.signal,
       })
-      .then((messages) => {
-        if (messagesRequestRef.current === controller) {
-          dispatch({ type: "set_messages", messages });
-        }
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        if (messagesRequestRef.current === controller) {
-          dispatch({
-            type: "set_error",
-            key: "messages",
-            message: errorText(error, "历史消息加载失败"),
-          });
-          dispatch({ type: "set_messages", messages: [] });
-        }
-      })
-      .finally(() => {
-        if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
-      });
-  }, [state.conversations]);
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json() as Promise<ChatMessage[]>;
+        })
+        .then((messages) => {
+          if (messagesRequestRef.current === controller) {
+            dispatch({ type: "set_messages", messages });
+          }
+        })
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          if (messagesRequestRef.current === controller) {
+            dispatch({
+              type: "set_error",
+              key: "messages",
+              message: errorText(error, "历史消息加载失败"),
+            });
+            dispatch({ type: "set_messages", messages: [] });
+          }
+        })
+        .finally(() => {
+          if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
+        });
+    },
+    [state.conversations],
+  );
 
   const persistDraftConversation = useCallback(
     async (draft: ConversationSummary): Promise<string | null> => {
@@ -381,23 +384,26 @@ export function useWebChat() {
   );
 
   /** 删除会话（软删除，归档） */
-  const deleteConversation = useCallback(async (id: string) => {
-    if (window.confirm("确认删除该会话？")) {
-      try {
-        const conversation = state.conversations.find((item) => item.id === id);
-        if (!isDraftConversation(conversation)) {
-          const token = getToken();
-          await fetch(`/api/conversations/${id}`, {
-            method: "DELETE",
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      if (window.confirm("确认删除该会话？")) {
+        try {
+          const conversation = state.conversations.find((item) => item.id === id);
+          if (!isDraftConversation(conversation)) {
+            const token = getToken();
+            await fetch(`/api/conversations/${id}`, {
+              method: "DELETE",
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+          }
+          dispatch({ type: "remove_conversation", conversationId: id });
+        } catch {
+          /* 忽略 */
         }
-        dispatch({ type: "remove_conversation", conversationId: id });
-      } catch {
-        /* 忽略 */
       }
-    }
-  }, [state.conversations]);
+    },
+    [state.conversations],
+  );
 
   return {
     ...state,

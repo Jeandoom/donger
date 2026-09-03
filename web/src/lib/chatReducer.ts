@@ -123,42 +123,38 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ],
         loadingConversations: false,
       };
-    case "switch_conversation":
-      {
-        const conversation = state.conversations.find(
-          (item) => item.id === action.conversationId,
-        );
-        const isDraft = isDraftConversation(conversation);
+    case "switch_conversation": {
+      const conversation = state.conversations.find((item) => item.id === action.conversationId);
+      const isDraft = isDraftConversation(conversation);
+      return {
+        ...state,
+        activeConversationId: action.conversationId,
+        messages: [],
+        isGenerating: false,
+        loadingMessages: !isDraft && action.conversationId !== null,
+      };
+    }
+    case "new_conversation": {
+      const existingDraft = state.conversations.find((item) => item.isDraft);
+      if (existingDraft) {
         return {
           ...state,
-          activeConversationId: action.conversationId,
-          messages: [],
+          activeConversationId: existingDraft.id,
+          messages: state.activeConversationId === existingDraft.id ? state.messages : [],
           isGenerating: false,
-          loadingMessages: !isDraft && action.conversationId !== null,
-        };
-      }
-    case "new_conversation":
-      {
-        const existingDraft = state.conversations.find((item) => item.isDraft);
-        if (existingDraft) {
-          return {
-            ...state,
-            activeConversationId: existingDraft.id,
-            messages: state.activeConversationId === existingDraft.id ? state.messages : [],
-            isGenerating: false,
-            loadingMessages: false,
-          };
-        }
-        return {
-          ...state,
-          conversations: [action.conversation, ...state.conversations],
-          activeConversationId: action.conversation.id,
-          messages: [],
-          isGenerating: false,
-          loadingConversations: false,
           loadingMessages: false,
         };
       }
+      return {
+        ...state,
+        conversations: [action.conversation, ...state.conversations],
+        activeConversationId: action.conversation.id,
+        messages: [],
+        isGenerating: false,
+        loadingConversations: false,
+        loadingMessages: false,
+      };
+    }
     case "persist_conversation":
       return {
         ...state,

@@ -171,7 +171,7 @@ export class SqliteUserStore implements UserStore {
     return this.get(row.userId);
   }
 
-  async addIdentity(userId: string, identity: UserIdentity): Promise<void> {
+  async addIdentity(_userId: string, identity: UserIdentity): Promise<void> {
     this.db
       .prepare(
         "INSERT INTO user_identities (id, userId, provider, externalId, unionId, name, avatar, rawProfile, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",

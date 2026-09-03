@@ -31,7 +31,7 @@ export class HookRegistry {
   async handle(req: HookRequest): Promise<HookHandleResult> {
     const path = extractPath(req.url);
     const t = await this.deps.triggerStore.findByHookPath(path);
-    if (!t || !t.hook) return { status: 404, body: "not found" };
+    if (!t?.hook) return { status: 404, body: "not found" };
 
     const matchResult = evaluateMatcher(t.hook.matcher, { body: req.body, headers: req.headers });
     const response: HookHandleResult = {

@@ -131,13 +131,17 @@ describe("ClaudeAgentRunner", () => {
     const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
 
     expect(captured?.includePartialMessages).toBe(true);
-    expect(events.filter((event) => event.type !== "llm_input" && event.type !== "llm_output")).toEqual([
+    expect(
+      events.filter((event) => event.type !== "llm_input" && event.type !== "llm_output"),
+    ).toEqual([
       { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "Hi" },
       { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "!" },
       { type: "text", taskId: "t1", text: "Hi!" },
       { type: "result", taskId: "t1", subtype: "success", result: "Hi!", usage: undefined },
     ]);
-    expect(events.find((event) => event.type === "llm_input")?.input).toContain('"prompt": "做某事"');
+    expect(events.find((event) => event.type === "llm_input")?.input).toContain(
+      '"prompt": "做某事"',
+    );
     const outputs = events.filter((event) => event.type === "llm_output");
     expect(outputs).toHaveLength(1);
     expect(outputs[0]?.output).toContain('"assistant"');
@@ -163,13 +167,9 @@ describe("ClaudeAgentRunner", () => {
     ]);
     const runner = new ClaudeAgentRunner(new GateRouter());
     const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
-    expect(events.map((e) => e.type).filter((type) => type !== "llm_input" && type !== "llm_output")).toEqual([
-      "session_init",
-      "text",
-      "tool_use",
-      "tool_result",
-      "result",
-    ]);
+    expect(
+      events.map((e) => e.type).filter((type) => type !== "llm_input" && type !== "llm_output"),
+    ).toEqual(["session_init", "text", "tool_use", "tool_result", "result"]);
     const outputs = events.filter((event) => event.type === "llm_output");
     expect(outputs).toHaveLength(2);
     expect(outputs[1]?.output).toContain('"tool_use"');

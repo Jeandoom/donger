@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { appendDefaultSkill, type Agent } from "../domain/agent.js";
+import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { GateRouter } from "../domain/gate-router.js";
@@ -107,14 +107,6 @@ export class Orchestrator {
     return this.latestConvCache?.get(`${userId}:${channelId}`) ?? null;
   }
 
-  /** 更新最新会话缓存 */
-  private updateLatestConvCache(userId: string, channelId: string, conversationId: string): void {
-    if (!this.latestConvCache) {
-      this.latestConvCache = new Map();
-    }
-    this.latestConvCache.set(`${userId}:${channelId}`, conversationId);
-  }
-
   private latestConvCache?: Map<string, string>;
 
   /**
@@ -211,7 +203,7 @@ export class Orchestrator {
     this.abortControllers.set(conversation.id, runController);
 
     let task: Task | undefined;
-    const capturedConversationId = conversation.id;
+    const _capturedConversationId = conversation.id;
     try {
       let memory: MemoryStore | undefined;
       try {

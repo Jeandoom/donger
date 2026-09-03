@@ -1,5 +1,5 @@
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { CredentialRequest, Channel } from "../ports/channel.js";
+import type { Channel, CredentialRequest } from "../ports/channel.js";
 import type { TaskStore } from "../ports/task-store.js";
 import { CredentialRequiredError } from "../util/errors.js";
 
@@ -25,7 +25,10 @@ export function makeCredentialResolver(
       );
     }
     const values = await channel.requestCredentials(threadId, req);
-    await store.updateStatus(req.taskId, nextStatus("awaiting_credentials", "credentials_provided"));
+    await store.updateStatus(
+      req.taskId,
+      nextStatus("awaiting_credentials", "credentials_provided"),
+    );
     return values;
   };
 }

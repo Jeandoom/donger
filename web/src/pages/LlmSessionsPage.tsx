@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { fetchAgentMeta } from "../lib/agents";
 import {
   type AuditConversationListItem,
   type AuditDetail,
@@ -7,7 +8,6 @@ import {
   fetchAuditConversations,
   fetchAuditDetail,
 } from "../lib/audit";
-import { fetchAgentMeta } from "../lib/agents";
 
 export function LlmSessionsPage() {
   const [list, setList] = useState<AuditConversationListItem[]>([]);
@@ -182,9 +182,7 @@ export function LlmSessionsPage() {
 }
 
 function selectLlmEvents(events: AuditEventDTO[]): AuditEventDTO[] {
-  return events.filter(
-    (event) => event.type === "llm_input" || isCompleteLlmOutput(event),
-  );
+  return events.filter((event) => event.type === "llm_input" || isCompleteLlmOutput(event));
 }
 
 function isCompleteLlmOutput(event: AuditEventDTO): boolean {

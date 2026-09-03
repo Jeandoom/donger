@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiFetch } from "../lib/auth";
 import { Button } from "../components/ui/button";
+import { apiFetch } from "../lib/auth";
 
 interface Trigger {
   id: string;

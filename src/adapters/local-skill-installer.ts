@@ -107,7 +107,15 @@ export class LocalSkillInstaller implements SkillInstaller {
       (await this.deps.packStore.listSkills(userId, packId)).map((s) => [s.name, s]),
     );
     const skillRoot = this.resolveSkillRoot(dir, pack.source);
-    return this.persistScanned(userId, pack.slug, dir, pack.source, pack.builtin, before, skillRoot);
+    return this.persistScanned(
+      userId,
+      pack.slug,
+      dir,
+      pack.source,
+      pack.builtin,
+      before,
+      skillRoot,
+    );
   }
 
   // ---- 内部 ----
@@ -237,8 +245,15 @@ export class LocalSkillInstaller implements SkillInstaller {
   private resolveSkillRoot(packDir: string, source: SkillPackSource): string {
     if (source.kind !== "git" || !source.subPath) return packDir;
     const skillRoot = resolve(packDir, source.subPath);
-    if (!isInside(skillRoot, packDir) || !existsSync(skillRoot) || !statSync(skillRoot).isDirectory()) {
-      throw new SkillInstallError("GIT_SKILL_PATH_INVALID", `技能目录不存在或非法: ${source.subPath}`);
+    if (
+      !isInside(skillRoot, packDir) ||
+      !existsSync(skillRoot) ||
+      !statSync(skillRoot).isDirectory()
+    ) {
+      throw new SkillInstallError(
+        "GIT_SKILL_PATH_INVALID",
+        `技能目录不存在或非法: ${source.subPath}`,
+      );
     }
     return skillRoot;
   }

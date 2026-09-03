@@ -22,9 +22,9 @@ export async function bridgeEvents(
     } else if (e.type === "text") {
       // 先持久化 bot 消息到数据库，再推送到前端
       if (messageStore && conversationId) {
-        await messageStore.add(conversationId, "bot", e.text).catch((err) =>
-          console.error("[bridgeEvents] 保存 bot 消息失败", err),
-        );
+        await messageStore
+          .add(conversationId, "bot", e.text)
+          .catch((err) => console.error("[bridgeEvents] 保存 bot 消息失败", err));
       }
       // 通过 SSE 推送（优先 pushText，降级到 send）
       if (channel.pushTextDelta && streamedMessageId) {

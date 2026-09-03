@@ -46,8 +46,7 @@ export class DongerAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const formData = new FormData();
     formData.append("file", attachment.file);
-    const threadId =
-      (await this.ensureThreadId?.()) ?? this.threadId ?? `web-${Date.now()}`;
+    const threadId = (await this.ensureThreadId?.()) ?? this.threadId ?? `web-${Date.now()}`;
     const response = await apiFetch(`/api/upload?threadId=${encodeURIComponent(threadId)}`, {
       method: "POST",
       body: formData,

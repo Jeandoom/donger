@@ -9,7 +9,9 @@ export function ChatPage() {
     <ChatWorkspace
       conversations={conversations}
       activeConversationId={wc.activeConversationId}
-      activeConversationIsDraft={wc.conversations.find((item) => item.id === wc.activeConversationId)?.isDraft}
+      activeConversationIsDraft={
+        wc.conversations.find((item) => item.id === wc.activeConversationId)?.isDraft
+      }
       onSelectConversation={wc.switchConversation}
       onDeleteConversation={wc.deleteConversation}
       onNewConversation={() => void wc.newConversation()}

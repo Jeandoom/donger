@@ -192,7 +192,6 @@ export class WebChannel implements Channel {
   private readonly sseClients = new Map<string, Set<SSEClient>>();
   /** 审批 ID → SSE 客户端（审批请求推送） */
   private readonly approvalStreams = new Map<string, SSEClient>();
-  private nextId = 0;
   private readonly webRoot: string;
   private readonly workspaceDir: string;
   private readonly messageStore?: MessageStore;
@@ -283,7 +282,7 @@ export class WebChannel implements Channel {
 
   /** 等待审批响应（通过 HTTP POST /api/approvals/:id/respond） */
   async requestApproval(
-    threadId: string,
+    _threadId: string,
     card: ApprovalCard,
   ): Promise<{ approved: boolean; reason?: string }> {
     // 通过 SSE 广播审批请求，客户端通过 HTTP POST 响应
@@ -536,7 +535,7 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: "invalid stream url" }));
       return;
     }
-    const conversationId = match[1]!;
+    const conversationId = match[1] ?? "";
 
     // 认证
     if (this.sessionStore) {
@@ -647,7 +646,7 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: "invalid approval url" }));
       return;
     }
-    const approvalId = match[1]!;
+    const approvalId = match[1] ?? "";
 
     const body = JSON.parse(await this.readBody(req)) as {
       approved: boolean;
@@ -678,7 +677,7 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: "invalid credential url" }));
       return;
     }
-    const reqId = match[1]!;
+    const reqId = match[1] ?? "";
     const body = JSON.parse(await this.readBody(req)) as { values?: Record<string, string> };
     const resolve = this.pendingCredentialResolves.get(reqId);
     if (resolve) {
@@ -702,7 +701,7 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: "invalid conversation url" }));
       return;
     }
-    const conversationId = match[1]!;
+    const conversationId = match[1] ?? "";
 
     // 认证
     if (this.sessionStore) {
@@ -1102,7 +1101,7 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
-      const auth = req.headers["authorization"];
+      const auth = req.headers.authorization;
       if (auth?.startsWith("Bearer ")) {
         const token = auth.slice(7);
         const payload = this.decodeJwtPayload(token);
@@ -1382,14 +1381,19 @@ export class WebChannel implements Channel {
         ...mine.map((a) => ({ ...this.agentToDTO(a, true), id: a.id, _mine: true })),
         ...shared.map((a) => ({ ...this.agentToDTO(a, true), id: a.id, _mine: false })),
       ];
-      const deduped = out.filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)));
+      const deduped = out.filter((a) => {
+        if (seen.has(a.id)) return false;
+        seen.add(a.id);
+        return true;
+      });
       return this.json(res, deduped);
     }
     if (url === "/api/agents" && req.method === "POST") {
       const me = this.requireUserId(req);
       const body = JSON.parse(await this.readBody(req));
       const input = parseAgentInput({ ...body, ownerId: me });
-      const created = await this.agentStore!.create(input);
+      const created = await this.agentStore?.create(input);
+      if (!created) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(res, this.agentToDTO(created, true), 201);
     }
     if (url === "/api/agents/meta/options" && req.method === "GET") {
@@ -1408,7 +1412,7 @@ export class WebChannel implements Channel {
       !url.includes("/accept-share") &&
       !url.includes("/by-share")
     ) {
-      const id = agentMatch[1]!;
+      const id = agentMatch[1] ?? "";
       const me = this.requireUserId(req);
       const a = await this.agentStore?.get(id);
       if (!a) return this.json(res, { error: "not found" }, 404);
@@ -1423,12 +1427,13 @@ export class WebChannel implements Channel {
       if (req.method === "PATCH") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
         const patch = JSON.parse(await this.readBody(req)) as Partial<Agent>;
-        const updated = await this.agentStore!.update(id, this.mergeMaskedMcp(a, patch));
+        const updated = await this.agentStore?.update(id, this.mergeMaskedMcp(a, patch));
+        if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
         return this.json(res, this.agentToDTO(updated, true));
       }
       if (req.method === "DELETE") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
-        await this.agentStore!.delete(id);
+        await this.agentStore?.delete(id);
         res.writeHead(204);
         res.end();
         return;
@@ -1436,7 +1441,7 @@ export class WebChannel implements Channel {
     }
     const agentConvMatch = url.match(/^\/api\/agents\/([\w-]+)\/conversation$/);
     if (agentConvMatch && req.method === "GET") {
-      const id = agentConvMatch[1]!;
+      const id = agentConvMatch[1] ?? "";
       const me = this.requireUserId(req);
       const a = await this.agentStore?.get(id);
       if (!a) return this.json(res, { error: "not found" }, 404);
@@ -1454,7 +1459,7 @@ export class WebChannel implements Channel {
     // === 分享路由 ===
     const shareMatch = url.match(/^\/api\/agents\/([\w-]+)\/share$/);
     if (shareMatch) {
-      const sid = shareMatch[1]!;
+      const sid = shareMatch[1] ?? "";
       const me = this.requireUserId(req);
       const a = await this.agentStore?.get(sid);
       if (!a) return this.json(res, { error: "not found" }, 404);
@@ -1474,31 +1479,32 @@ export class WebChannel implements Channel {
       if (req.method === "POST") {
         const { enabled } = JSON.parse(await this.readBody(req)) as { enabled: boolean };
         if (enabled) {
-          const s = await this.agentShareStore!.enableShare(sid);
+          const s = await this.agentShareStore?.enableShare(sid);
+          if (!s) return this.json(res, { error: "share store unavailable" }, 500);
           return this.json(res, { enabled: true, token: s.token, url: `/share/${s.token}` });
         }
-        await this.agentShareStore!.disableShare(sid);
+        await this.agentShareStore?.disableShare(sid);
         return this.json(res, { enabled: false, token: null, url: null });
       }
     }
     const removeGrantMatch = url.match(/^\/api\/agents\/([\w-]+)\/share\/grants\/([\w-]+)$/);
     if (removeGrantMatch && req.method === "DELETE") {
-      const sid = removeGrantMatch[1]!;
-      const grantUserId = removeGrantMatch[2]!;
+      const sid = removeGrantMatch[1] ?? "";
+      const grantUserId = removeGrantMatch[2] ?? "";
       const me = this.requireUserId(req);
       const a = await this.agentStore?.get(sid);
       if (!a) return this.json(res, { error: "not found" }, 404);
       const meUser = await this.deps.userStore?.get(me);
       const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
       if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
-      await this.agentShareStore!.removeGrant(sid, grantUserId);
+      await this.agentShareStore?.removeGrant(sid, grantUserId);
       return this.json(res, { ok: true });
     }
     // 公开：by-share（不泄配置）
     const byShareMatch = url.match(/^\/api\/agents\/by-share\/([\w-]+)$/);
     if (byShareMatch && req.method === "GET") {
-      const ref = await this.agentShareStore?.findByToken(byShareMatch[1]!);
-      if (!ref || !ref.enabled) return this.json(res, { error: "not found" }, 404);
+      const ref = await this.agentShareStore?.findByToken(byShareMatch[1] ?? "");
+      if (!ref?.enabled) return this.json(res, { error: "not found" }, 404);
       const a = await this.agentStore?.get(ref.agentId);
       if (!a) return this.json(res, { error: "not found" }, 404);
       return this.json(res, {
@@ -1511,14 +1517,14 @@ export class WebChannel implements Channel {
     // 已登录：accept-share → 幂等 addGrant + get-or-create 会话
     const acceptMatch = url.match(/^\/api\/agents\/([\w-]+)\/accept-share$/);
     if (acceptMatch && req.method === "POST") {
-      const sid = acceptMatch[1]!;
+      const sid = acceptMatch[1] ?? "";
       const me = this.requireUserId(req);
       const { token } = JSON.parse(await this.readBody(req)) as { token: string };
       const ref = await this.agentShareStore?.findByToken(token);
-      if (!ref || !ref.enabled || ref.agentId !== sid) {
+      if (!ref?.enabled || ref.agentId !== sid) {
         return this.json(res, { error: "invalid token" }, 403);
       }
-      await this.agentShareStore!.addGrant(sid, me);
+      await this.agentShareStore?.addGrant(sid, me);
       const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
       const existing = list.find((c) => c.agentId === sid);
       const a = await this.agentStore?.get(sid);
@@ -1556,7 +1562,7 @@ export class WebChannel implements Channel {
 
   /** 工作流模块资源所有权校验：不存在或不属于该用户均抛 NotFoundError（避免存在性泄露）。 */
   private async requireOwnedTrigger(id: string, uid: string): Promise<Trigger> {
-    const t = await this.deps.triggerStore!.get(id);
+    const t = await this.deps.triggerStore?.get(id);
     if (!t?.ownerId || t.ownerId !== uid) {
       throw new NotFoundError("NOT_FOUND", "trigger 不存在");
     }
@@ -1564,7 +1570,7 @@ export class WebChannel implements Channel {
   }
 
   private async requireOwnedWorkflow(id: string, uid: string): Promise<Workflow> {
-    const w = await this.deps.workflowStore!.get(id);
+    const w = await this.deps.workflowStore?.get(id);
     if (!w?.ownerId || w.ownerId !== uid) {
       throw new NotFoundError("NOT_FOUND", "workflow 不存在");
     }
@@ -1572,7 +1578,7 @@ export class WebChannel implements Channel {
   }
 
   private async requireOwnedLoop(id: string, uid: string): Promise<Loop> {
-    const l = await this.deps.loopStore!.get(id);
+    const l = await this.deps.loopStore?.get(id);
     if (!l?.ownerId || l.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "loop 不存在");
     return l;
   }
@@ -1632,118 +1638,118 @@ export class WebChannel implements Channel {
 
     // ===== Triggers =====
     if (pathname === "/api/triggers" && req.method === "GET") {
-      this.json(res, { triggers: await ts!.listByOwner(uid) });
+      this.json(res, { triggers: await ts?.listByOwner(uid) });
       return true;
     }
     if (pathname === "/api/triggers" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req));
-      const created = await ts!.create(parseTriggerInput({ ...body, ownerId: uid }));
+      const created = await ts?.create(parseTriggerInput({ ...body, ownerId: uid }));
       this.json(res, created, 201);
       return true;
     }
     let m = pathname.match(/^\/api\/triggers\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      this.json(res, await this.requireOwnedTrigger(m[1]!, uid));
+      this.json(res, await this.requireOwnedTrigger(m[1] ?? "", uid));
       return true;
     }
     if (m && req.method === "PUT") {
       // PUT = 全量替换：parseTriggerInput 要求完整对象（name/type/scheduler|hook 等），缺字段返回 400。
       // store.update 签名虽为 Partial<>，但 HTTP 层强制客户端发全量；如需部分更新请新增 PATCH 路由。
-      await this.requireOwnedTrigger(m[1]!, uid);
+      await this.requireOwnedTrigger(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
-      const updated = await ts!.update(m[1]!, parseTriggerInput({ ...body, ownerId: uid }));
+      const updated = await ts?.update(m[1] ?? "", parseTriggerInput({ ...body, ownerId: uid }));
       // ponytail: trigger cron 可能变更，刷新所有引用此 trigger 的 enabled loops
-      await this.deps.scheduler?.refreshByTrigger(m[1]!);
+      await this.deps.scheduler?.refreshByTrigger(m[1] ?? "");
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
-      await this.requireOwnedTrigger(m[1]!, uid);
-      const count = await ts!.countWorkflowsReferencing(m[1]!);
+      await this.requireOwnedTrigger(m[1] ?? "", uid);
+      const count = (await ts?.countWorkflowsReferencing(m[1] ?? "")) ?? 0;
       if (count > 0) {
         this.json(res, { error: `被 ${count} 个 workflow 引用，无法删除` }, 409);
         return true;
       }
-      await ts!.delete(m[1]!);
+      await ts?.delete(m[1] ?? "");
       this.json(res, { ok: true });
       return true;
     }
     m = pathname.match(/^\/api\/triggers\/([\w-]+)\/test$/);
     if (m && req.method === "POST" && this.deps.loopRunner) {
-      await this.requireOwnedTrigger(m[1]!, uid);
-      const result = await this.deps.loopRunner.testTrigger(m[1]!);
+      await this.requireOwnedTrigger(m[1] ?? "", uid);
+      const result = await this.deps.loopRunner.testTrigger(m[1] ?? "");
       this.json(res, result);
       return true;
     }
 
     // ===== Workflows =====
     if (pathname === "/api/workflows" && req.method === "GET") {
-      this.json(res, { workflows: await ws!.listByOwner(uid) });
+      this.json(res, { workflows: await ws?.listByOwner(uid) });
       return true;
     }
     if (pathname === "/api/workflows" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req));
-      const created = await ws!.create(parseWorkflowInput({ ...body, ownerId: uid }));
+      const created = await ws?.create(parseWorkflowInput({ ...body, ownerId: uid }));
       this.json(res, created, 201);
       return true;
     }
     m = pathname.match(/^\/api\/workflows\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      this.json(res, await this.requireOwnedWorkflow(m[1]!, uid));
+      this.json(res, await this.requireOwnedWorkflow(m[1] ?? "", uid));
       return true;
     }
     if (m && req.method === "PUT") {
       // PUT = 全量替换：parseWorkflowInput 要求完整对象（name/triggerId/agentId 等）。
-      await this.requireOwnedWorkflow(m[1]!, uid);
+      await this.requireOwnedWorkflow(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
-      const updated = await ws!.update(m[1]!, parseWorkflowInput({ ...body, ownerId: uid }));
+      const updated = await ws?.update(m[1] ?? "", parseWorkflowInput({ ...body, ownerId: uid }));
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
-      await this.requireOwnedWorkflow(m[1]!, uid);
-      await ws!.delete(m[1]!);
+      await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      await ws?.delete(m[1] ?? "");
       this.json(res, { ok: true });
       return true;
     }
 
     // ===== Loops =====
     if (pathname === "/api/loops" && req.method === "GET") {
-      this.json(res, { loops: await ls!.listByOwner(uid) });
+      this.json(res, { loops: await ls?.listByOwner(uid) });
       return true;
     }
     if (pathname === "/api/loops" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req));
-      const created = await ls!.create(parseLoopInput({ ...body, ownerId: uid }));
+      const created = await ls?.create(parseLoopInput({ ...body, ownerId: uid }));
       this.json(res, created, 201);
       return true;
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      this.json(res, await this.requireOwnedLoop(m[1]!, uid));
+      this.json(res, await this.requireOwnedLoop(m[1] ?? "", uid));
       return true;
     }
     if (m && req.method === "PUT") {
       // PUT = 全量替换：parseLoopInput 要求完整对象（name/workflowId 等）。
-      await this.requireOwnedLoop(m[1]!, uid);
+      await this.requireOwnedLoop(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
-      const updated = await ls!.update(m[1]!, parseLoopInput({ ...body, ownerId: uid }));
+      const updated = await ls?.update(m[1] ?? "", parseLoopInput({ ...body, ownerId: uid }));
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
-      await this.requireOwnedLoop(m[1]!, uid);
-      await ls!.delete(m[1]!);
+      await this.requireOwnedLoop(m[1] ?? "", uid);
+      await ls?.delete(m[1] ?? "");
       this.json(res, { ok: true });
       return true;
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/(enable|disable)$/);
     if (m && req.method === "POST") {
-      await this.requireOwnedLoop(m[1]!, uid);
+      await this.requireOwnedLoop(m[1] ?? "", uid);
       const enabled = m[2] === "enable";
-      const loop = await ls!.setEnabled(m[1]!, enabled);
+      const loop = await ls?.setEnabled(m[1] ?? "", enabled);
       // 启停时同步调度器
-      if (this.deps.scheduler) {
+      if (this.deps.scheduler && loop) {
         if (enabled) await this.deps.scheduler.register(loop);
         else this.deps.scheduler.unregister(loop.id);
       }
@@ -1753,8 +1759,8 @@ export class WebChannel implements Channel {
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/run$/);
     if (m && req.method === "POST" && this.deps.loopRunner) {
       // 手动触发：取 workflow 关联的 trigger 一次性测试+fire
-      const loop = await this.requireOwnedLoop(m[1]!, uid);
-      const wf = loop.workflowId ? await ws!.get(loop.workflowId) : undefined;
+      const loop = await this.requireOwnedLoop(m[1] ?? "", uid);
+      const wf = loop.workflowId ? await ws?.get(loop.workflowId) : undefined;
       if (!wf?.triggerId) {
         throw new ValidationError("WORKFLOW_NO_TRIGGER", "workflow 未配置 trigger");
       }
@@ -1765,8 +1771,8 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/runs$/);
     if (m && req.method === "GET") {
-      await this.requireOwnedLoop(m[1]!, uid);
-      const runs = await ls!.listRuns(m[1]!, { limit: 50 });
+      await this.requireOwnedLoop(m[1] ?? "", uid);
+      const runs = await ls?.listRuns(m[1] ?? "", { limit: 50 });
       this.json(res, { runs });
       return true;
     }
@@ -1835,11 +1841,11 @@ export class WebChannel implements Channel {
     const credMatch = match(/^\/api\/credentials\/([^/]+)$/);
     if (credMatch && req.method === "PUT") {
       const b = JSON.parse(await this.readBody(req)) as { value: string; label?: string };
-      send(await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1]!), ...b }, deps));
+      send(await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1] ?? ""), ...b }, deps));
       return true;
     }
     if (credMatch && req.method === "DELETE") {
-      send(await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1]!) }, deps));
+      send(await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1] ?? "") }, deps));
       return true;
     }
     return false;
@@ -1938,7 +1944,7 @@ export class WebChannel implements Channel {
   /** Auth 中间件：优先 Authorization 头；SSE 的 EventSource 无法设置自定义头，回退读 ?token= */
   private async authMiddleware(req: HttpRequest): Promise<string | null> {
     if (!this.sessionStore) return null;
-    const auth = req.headers["authorization"];
+    const auth = req.headers.authorization;
     const token = auth?.startsWith("Bearer ")
       ? auth.slice(7)
       : this.extractQuery(req.url ?? "", "token");
@@ -1950,7 +1956,7 @@ export class WebChannel implements Channel {
     try {
       const parts = token.split(".");
       if (parts.length !== 3) return null;
-      return JSON.parse(Buffer.from(parts[1]!, "base64url").toString());
+      return JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString());
     } catch {
       return null;
     }
