@@ -4,9 +4,9 @@ import type { Agent } from "../../src/domain/agent.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 import type { RunnerEvent, Task } from "../../src/domain/types.js";
 import type { User } from "../../src/domain/user.js";
-import type { AgentRunner, RunOptions } from "../../src/ports/agent-runner.js";
 import { buildDispatcherAgent, dispatchTask } from "../../src/orchestrator/dispatch-flow.js";
 import type { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
+import type { AgentRunner, RunOptions } from "../../src/ports/agent-runner.js";
 
 const KB_DIR = "/tmp/ws/kb";
 

@@ -20,9 +20,10 @@ import type { RepositoryMaterializeItem } from "../ports/repository-materializer
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
-import { ForbiddenError, NotFoundError } from "../util/errors.js";
+import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { makeCredentialResolver } from "./credential-flow.js";
+import { dispatchTask } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import type { RuntimeManager } from "./runtime-manager.js";
@@ -46,6 +47,8 @@ export interface OrchestratorDeps {
   /** 智能体分享/授权存储 */
   agentShareStore?: AgentShareStore;
   gitAccessGate?: GitAccessGate;
+  /** 任务管理知识库根目录；未装配则任务分发关闭（行为与 P1 之前一致） */
+  kbDir?: string;
 }
 
 export class Orchestrator {
@@ -130,8 +133,50 @@ export class Orchestrator {
     return userStore.getOrCreateByIdentity("internal", msg.requesterId, msg.requesterId);
   }
 
+  /**
+   * 解析「将被使用」的 agent：存在性 + 使用权限（owner/admin/分享授权）+ Git 仓库就绪检查。
+   * 权限不足直接抛；Git 未就绪不抛，返回 gitBlocked 由调用方决定 UX（显式选择发提示，路由落任务失败）。
+   */
+  private async resolveAgentForUse(
+    agentId: string,
+    user: User,
+  ): Promise<{
+    agent: Agent;
+    sharedAgentSkillOwner?: User;
+    gitMaterializeItems?: RepositoryMaterializeItem[];
+    gitBlocked?: string;
+  }> {
+    if (!this.deps.agentStore) {
+      throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
+    }
+    const agent = await this.deps.agentStore.get(agentId);
+    if (!agent) {
+      throw new NotFoundError("AGENT_NOT_FOUND", `智能体不存在: ${agentId}`);
+    }
+    const granted = this.deps.agentShareStore
+      ? await this.deps.agentShareStore.isGranted(agent.id, user.id)
+      : false;
+    if (!canUseAgent(agent, user, granted)) {
+      throw new ForbiddenError("AGENT_FORBIDDEN", "无权使用该智能体");
+    }
+    const sharedAgentSkillOwner =
+      agent.ownerId !== user.id ? await this.deps.userStore.get(agent.ownerId) : undefined;
+    if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
+      const gitAccess = await this.deps.gitAccessGate.check(user, agent);
+      if (!gitAccess.ready) {
+        return {
+          agent,
+          sharedAgentSkillOwner,
+          gitBlocked: "请先完成智能体所需 Git 仓库授权后再对话。",
+        };
+      }
+      return { agent, sharedAgentSkillOwner, gitMaterializeItems: gitAccess.materializeItems };
+    }
+    return { agent, sharedAgentSkillOwner };
+  }
+
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
-    const { store, userStore, conversationStore, gates, runner, channel } = this.deps;
+    const { store, conversationStore, gates, runner, channel } = this.deps;
 
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
     const user = await this.resolveUser(msg);
@@ -151,35 +196,17 @@ export class Orchestrator {
         (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30))))
       : await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30));
 
-    // 显式 agent 解析（M13）：会话绑了 agentId 时旁路 Planner，校验使用权限
+    // 显式 agent 解析（M13）：会话绑了 agentId 时旁路 Planner 与 dispatcher
     let agent: Agent | undefined;
     let sharedAgentSkillOwner: User | undefined;
     let gitMaterializeItems: RepositoryMaterializeItem[] | undefined;
     if (conversation.agentId) {
-      if (!this.deps.agentStore) {
-        throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
+      const r = await this.resolveAgentForUse(conversation.agentId, user);
+      if (r.gitBlocked) {
+        await channel.send(msg.threadId, { text: r.gitBlocked });
+        return;
       }
-      agent = await this.deps.agentStore.get(conversation.agentId);
-      if (!agent) {
-        throw new NotFoundError("AGENT_NOT_FOUND", `智能体不存在: ${conversation.agentId}`);
-      }
-      const granted = this.deps.agentShareStore
-        ? await this.deps.agentShareStore.isGranted(agent.id, user.id)
-        : false;
-      if (!canUseAgent(agent, user, granted)) {
-        throw new ForbiddenError("AGENT_FORBIDDEN", "无权使用该智能体");
-      }
-      if (agent.ownerId !== user.id) {
-        sharedAgentSkillOwner = await userStore.get(agent.ownerId);
-      }
-      if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
-        const gitAccess = await this.deps.gitAccessGate.check(user, agent);
-        if (!gitAccess.ready) {
-          await channel.send(msg.threadId, { text: "请先完成智能体所需 Git 仓库授权后再对话。" });
-          return;
-        }
-        gitMaterializeItems = gitAccess.materializeItems;
-      }
+      ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
     }
 
     // 并发控制：
@@ -226,7 +253,30 @@ export class Orchestrator {
       };
       await store.create(task);
 
-      await store.updateStatus(task.id, nextStatus("created", "plan"));
+      // 任务分发（P1）：会话未绑定 agent 且装配了 kbDir → 经 dispatcher 路由
+      if (!conversation.agentId && this.deps.kbDir) {
+        const routing = await dispatchTask({
+          runner,
+          runtimeMgr: this.deps.runtimeMgr,
+          user,
+          conversation,
+          prompt: task.prompt,
+          kbDir: this.deps.kbDir,
+          abortSignal: runController.signal,
+        });
+        const r = await this.resolveAgentForUse(routing.agentId, user);
+        if (r.gitBlocked) {
+          throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
+        }
+        ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
+        await store.updateStatus(task.id, "planning", {
+          agentId: routing.agentId,
+          requiresDesign: routing.requiresDesign,
+          routingRationale: routing.rationale,
+        });
+      } else {
+        await store.updateStatus(task.id, nextStatus("created", "plan"));
+      }
 
       // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并
       let memoryAppend: string | undefined;

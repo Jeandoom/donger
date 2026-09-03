@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { type Agent, parseAgent } from "../domain/agent.js";
+import type { Conversation } from "../domain/conversation.js";
 import { parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
-import type { Conversation, Task } from "../domain/types.js";
+import type { Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { RunnerError } from "../util/errors.js";
