@@ -2,13 +2,14 @@ import { join } from "node:path";
 import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
+import type { Conversation } from "../domain/conversation.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { appendMessageFiles } from "../domain/message-files.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import type { AgentRunner } from "../ports/agent-runner.js";
+import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
@@ -175,8 +176,210 @@ export class Orchestrator {
     return { agent, sharedAgentSkillOwner };
   }
 
+  /**
+   * 单轮执行：prepare（含凭证 env / skills 覆盖）→ session 过期重试 → 事件桥 → 用量统计 → sessionId 回写。
+   * 不做状态流转与收尾通知（调用方负责），供单轮路径与三段式阶段循环复用。
+   */
+  private async runTurn(p: {
+    task: Task;
+    user: User;
+    conversation: Conversation;
+    threadId: string;
+    channelId: string;
+    memoryAppend?: string;
+    /** 覆盖 prepare 得到的 skills（阶段循环按 phase 指定）；缺省用 prepare 结果 */
+    skills?: string[];
+    agent?: Agent;
+    sharedAgentSkillOwner?: User;
+    gitMaterializeItems?: RepositoryMaterializeItem[];
+    runController: AbortController;
+  }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
+    const { channel, gates } = this.deps;
+    const prepareOnce = async (): Promise<RunOptions> => {
+      const { runOptions } = await this.deps.runtimeMgr.prepare(p.user, p.conversation, {
+        systemPromptAppend: p.memoryAppend,
+        abortSignal: p.runController.signal,
+        agent: p.agent,
+        sharedAgentSkillOwner: p.sharedAgentSkillOwner,
+        gitMaterializeItems: p.gitMaterializeItems,
+      });
+      return p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+    };
+    const opts = await prepareOnce();
+
+    const resolver = makeApprovalResolver(this.deps.store, channel, p.threadId, gates);
+
+    // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
+    let capturedSessionId: string | undefined;
+    let rawEvents: AsyncIterable<RunnerEvent>;
+
+    // 尝试运行，如果 SDK session 过期则清空重试一次
+    const SESSION_EXPIRED_RE = /No conversation found with session ID/i;
+    let attemptOpts = opts;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      rawEvents = this.deps.runner.run({ ...p.task, status: "running" }, attemptOpts, resolver);
+      // 预读第一个实际 SDK 事件判断是否 session 过期；llm_input 是审计事件，不能遮住 result 错误。
+      const iterator = rawEvents[Symbol.asyncIterator]();
+      const prefetched: RunnerEvent[] = [];
+      let first = await iterator.next();
+      while (
+        !first.done &&
+        (first.value.type === "llm_input" || first.value.type === "llm_output")
+      ) {
+        prefetched.push(first.value);
+        first = await iterator.next();
+      }
+      if (first.done) {
+        rawEvents = (async function* () {
+          yield* prefetched;
+        })();
+        break;
+      }
+      if (
+        attempt === 0 &&
+        first.value &&
+        first.value.type === "result" &&
+        first.value.subtype === "error" &&
+        first.value.error &&
+        SESSION_EXPIRED_RE.test(first.value.error)
+      ) {
+        // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）
+        await this.deps.runtimeMgr.clearResume(p.conversation.id);
+        p.conversation.sdkSessionId = "";
+        attemptOpts = await prepareOnce();
+        continue;
+      }
+      // 构造包含已读第一项的流
+      rawEvents = (async function* () {
+        yield* prefetched;
+        yield first.value as RunnerEvent;
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done) return;
+          yield next.value;
+        }
+      })();
+      break;
+    }
+    const turnStartMs = Date.now();
+    const taskId = p.task.id;
+    const taskPrompt = p.task.prompt;
+    let seq = 0;
+    const toolStartMs = new Map<string, number>();
+    const wrappedEvents = async function* (this: Orchestrator) {
+      // 流首：user_message（仅审计，不入流）
+      try {
+        await this.deps.auditStore.record(
+          userMessageAudit(taskPrompt, {
+            conversationId: p.conversation.id,
+            userId: p.user.id,
+            taskId,
+            seq,
+            recordedAt: new Date().toISOString(),
+          }),
+        );
+      } catch (e) {
+        console.error("[orchestrator] 审计记录失败", e);
+      }
+      seq++;
+
+      for await (const e of rawEvents) {
+        if (e.type === "session_init") capturedSessionId = e.sessionId;
+        yield e; // 先推流（保证审计失败不阻塞推送）
+        if (e.type === "text_delta") continue;
+        const extra: { durationMs?: number; model?: string } = {};
+        if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
+        if (e.type === "tool_result") {
+          const start = toolStartMs.get(e.toolUseId);
+          if (start !== undefined) extra.durationMs = Date.now() - start;
+        }
+        if (e.type === "result") {
+          extra.durationMs = Date.now() - turnStartMs;
+          extra.model = opts.llm.model;
+        }
+        try {
+          await this.deps.auditStore.record(
+            toAuditEvent(
+              e,
+              {
+                conversationId: p.conversation.id,
+                userId: p.user.id,
+                taskId: taskId,
+                seq,
+                recordedAt: new Date().toISOString(),
+              },
+              extra,
+            ),
+          );
+        } catch (err) {
+          console.error("[orchestrator] 审计记录失败", err);
+        }
+        seq++;
+      }
+    }.call(this);
+
+    const last = await bridgeEvents(
+      channel,
+      p.conversation.id,
+      wrappedEvents,
+      this.deps.messageStore,
+    );
+
+    if (p.runController.signal.aborted) {
+      return { aborted: true, ok: false, resultText: "" };
+    }
+
+    const ok = last?.type === "result" && last.subtype === "success";
+    const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
+
+    // 用量统计：result 带 usage 就落一条（错误运行也落，subtype 无关）；失败仅日志
+    if (last?.type === "result" && last.usage) {
+      const u = last.usage;
+      try {
+        await this.deps.usageStore.record({
+          taskId: p.task.id,
+          userId: p.user.id,
+          channelId: p.channelId,
+          model: opts.llm.model,
+          inputTokens: u.inputTokens,
+          outputTokens: u.outputTokens,
+          cacheCreationInputTokens: u.cacheCreationInputTokens,
+          cacheReadInputTokens: u.cacheReadInputTokens,
+        });
+      } catch (e) {
+        console.error("[orchestrator] 用量记录失败", e);
+      }
+    }
+
+    // 回写 sdkSessionId（经 RuntimeManager.commit）；title 仅首轮设置
+    if (capturedSessionId && capturedSessionId !== p.conversation.sdkSessionId) {
+      const wasFirstTurn = !p.conversation.sdkSessionId;
+      await this.deps.runtimeMgr.commit(p.conversation.id, { sdkSessionId: capturedSessionId });
+      p.conversation.sdkSessionId = capturedSessionId;
+      if (wasFirstTurn) {
+        await this.deps.conversationStore.update(p.conversation.id, {
+          title: p.task.prompt.slice(0, 30),
+        });
+      }
+    }
+
+    const resultText =
+      last?.type === "result" ? (last.result ?? last.error ?? "(无结果)") : "(无结果)";
+    return { aborted: false, ok, error, resultText };
+  }
+
+  /** abort 收尾：任务落 canceled 并通知前端（单轮与阶段循环复用）。 */
+  private async finishCanceled(
+    task: Task,
+    conversation: Conversation,
+  ): Promise<string | undefined> {
+    await this.deps.store.updateStatus(task.id, "canceled").catch(() => {});
+    this.deps.channel.pushResult?.(conversation.id, "error", "已停止生成");
+    return conversation.id;
+  }
+
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
-    const { store, conversationStore, gates, runner, channel } = this.deps;
+    const { store, conversationStore, runner, channel } = this.deps;
 
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
     const user = await this.resolveUser(msg);
@@ -302,15 +505,7 @@ export class Orchestrator {
         }
       }
 
-      let { runOptions: opts } = await this.deps.runtimeMgr.prepare(user, conversation, {
-        systemPromptAppend: memoryAppend,
-        abortSignal: runController.signal,
-        agent,
-        sharedAgentSkillOwner,
-        gitMaterializeItems,
-      });
-
-      // 凭证门：缺失必需凭证 → 经对话收集到用户保险柜 → 重 prepare 拿最新 credentialsEnv
+      // 凭证门：缺失必需凭证 → 经对话收集到用户保险柜（runTurn 内 prepare 会带入最新 credentialsEnv）
       const missingItems = await this.deps.runtimeMgr.missingCredentialItems(user.id);
       if (missingItems.length > 0) {
         const credResolver = makeCredentialResolver(store, channel, msg.threadId);
@@ -322,196 +517,40 @@ export class Orchestrator {
         for (const [k, v] of Object.entries(provided)) {
           if (v) await this.deps.credentialStore.setValue(user.id, k, v);
         }
-        opts = (
-          await this.deps.runtimeMgr.prepare(user, conversation, {
-            systemPromptAppend: memoryAppend,
-            abortSignal: runController.signal,
-            agent,
-            sharedAgentSkillOwner,
-            gitMaterializeItems,
-          })
-        ).runOptions;
       }
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));
-      const resolver = makeApprovalResolver(store, channel, msg.threadId, gates);
+      const r = await this.runTurn({
+        task,
+        user,
+        conversation,
+        threadId: msg.threadId,
+        channelId: msg.channelId,
+        memoryAppend,
+        agent,
+        sharedAgentSkillOwner,
+        gitMaterializeItems,
+        runController,
+      });
 
-      // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
-      let capturedSessionId: string | undefined;
-      let rawEvents: AsyncIterable<RunnerEvent>;
+      if (r.aborted) return await this.finishCanceled(task, conversation);
 
-      // 尝试运行，如果 SDK session 过期则清空重试一次
-      const SESSION_EXPIRED_RE = /No conversation found with session ID/i;
-      let attemptOpts = opts;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        rawEvents = runner.run({ ...task, status: "running" }, attemptOpts, resolver);
-        // 预读第一个实际 SDK 事件判断是否 session 过期；llm_input 是审计事件，不能遮住 result 错误。
-        const iterator = rawEvents[Symbol.asyncIterator]();
-        const prefetched: RunnerEvent[] = [];
-        let first = await iterator.next();
-        while (
-          !first.done &&
-          (first.value.type === "llm_input" || first.value.type === "llm_output")
-        ) {
-          prefetched.push(first.value);
-          first = await iterator.next();
-        }
-        if (first.done) {
-          rawEvents = (async function* () {
-            yield* prefetched;
-          })();
-          break;
-        }
-        if (
-          attempt === 0 &&
-          first.value &&
-          first.value.type === "result" &&
-          first.value.subtype === "error" &&
-          first.value.error &&
-          SESSION_EXPIRED_RE.test(first.value.error)
-        ) {
-          // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）
-          await this.deps.runtimeMgr.clearResume(conversation.id);
-          const refreshed = await this.deps.runtimeMgr.prepare(user, conversation, {
-            systemPromptAppend: memoryAppend,
-            abortSignal: runController.signal,
-            agent,
-            sharedAgentSkillOwner,
-            gitMaterializeItems,
-          });
-          attemptOpts = refreshed.runOptions;
-          continue;
-        }
-        // 构造包含已读第一项的流
-        rawEvents = (async function* () {
-          yield* prefetched;
-          yield first.value as RunnerEvent;
-          for (;;) {
-            const next = await iterator.next();
-            if (next.done) return;
-            yield next.value;
-          }
-        })();
-        break;
-      }
-      const turnStartMs = Date.now();
-      const taskId = task.id;
-      const taskPrompt = task.prompt;
-      let seq = 0;
-      const toolStartMs = new Map<string, number>();
-      const wrappedEvents = async function* (this: Orchestrator) {
-        // 流首：user_message（仅审计，不入流）
-        try {
-          await this.deps.auditStore.record(
-            userMessageAudit(taskPrompt, {
-              conversationId: conversation.id,
-              userId: user.id,
-              taskId,
-              seq,
-              recordedAt: new Date().toISOString(),
-            }),
-          );
-        } catch (e) {
-          console.error("[orchestrator] 审计记录失败", e);
-        }
-        seq++;
-
-        for await (const e of rawEvents) {
-          if (e.type === "session_init") capturedSessionId = e.sessionId;
-          yield e; // 先推流（保证审计失败不阻塞推送）
-          if (e.type === "text_delta") continue;
-          const extra: { durationMs?: number; model?: string } = {};
-          if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
-          if (e.type === "tool_result") {
-            const start = toolStartMs.get(e.toolUseId);
-            if (start !== undefined) extra.durationMs = Date.now() - start;
-          }
-          if (e.type === "result") {
-            extra.durationMs = Date.now() - turnStartMs;
-            extra.model = opts.llm.model;
-          }
-          try {
-            await this.deps.auditStore.record(
-              toAuditEvent(
-                e,
-                {
-                  conversationId: conversation.id,
-                  userId: user.id,
-                  taskId: taskId,
-                  seq,
-                  recordedAt: new Date().toISOString(),
-                },
-                extra,
-              ),
-            );
-          } catch (err) {
-            console.error("[orchestrator] 审计记录失败", err);
-          }
-          seq++;
-        }
-      }.call(this);
-
-      const last = await bridgeEvents(
-        channel,
-        conversation.id,
-        wrappedEvents,
-        this.deps.messageStore,
-      );
-
-      if (runController.signal.aborted) {
-        await store.updateStatus(task.id, "canceled");
-        channel.pushResult?.(conversation.id, "error", "已停止生成");
-        return;
-      }
-
-      const ok = last?.type === "result" && last.subtype === "success";
-      const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
       await store.updateStatus(
         task.id,
-        ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
-        { error },
+        r.ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
+        { error: r.error },
       );
 
-      // 用量统计：result 带 usage 就落一条（错误运行也落，subtype 无关）；失败仅日志
-      if (last?.type === "result" && last.usage) {
-        const u = last.usage;
-        try {
-          await this.deps.usageStore.record({
-            taskId: task.id,
-            userId: user.id,
-            channelId: msg.channelId,
-            model: opts.llm.model,
-            inputTokens: u.inputTokens,
-            outputTokens: u.outputTokens,
-            cacheCreationInputTokens: u.cacheCreationInputTokens,
-            cacheReadInputTokens: u.cacheReadInputTokens,
-          });
-        } catch (e) {
-          console.error("[orchestrator] 用量记录失败", e);
-        }
-      }
-
-      // 回写 sdkSessionId（经 RuntimeManager.commit）
-      if (capturedSessionId && capturedSessionId !== conversation.sdkSessionId) {
-        await this.deps.runtimeMgr.commit(conversation.id, { sdkSessionId: capturedSessionId });
-        // title 更新仍走 conversationStore（RuntimeManager M1 不接管 title）
-        if (!conversation.sdkSessionId) {
-          await conversationStore.update(conversation.id, { title: task.prompt.slice(0, 30) });
-        }
-      }
-
       // 非流式渠道：成功后回复完成标记
-      if (!channel.streaming && ok) {
+      if (!channel.streaming && r.ok) {
         await channel.send(msg.threadId, { text: "✅" });
       }
 
       // 记忆沉淀
       if (memory) {
-        const resultText =
-          last?.type === "result" ? (last.result ?? last.error ?? "(无结果)") : "(无结果)";
         memory.append({
           summary: task.prompt.slice(0, 40),
-          detail: `prompt: ${task.prompt}\n结果: ${ok ? "成功" : "失败"}\n${resultText}`,
+          detail: `prompt: ${task.prompt}\n结果: ${r.ok ? "成功" : "失败"}\n${r.resultText}`,
         });
       }
 
@@ -524,10 +563,7 @@ export class Orchestrator {
       return conversation.id;
     } catch (err) {
       if (runController.signal.aborted) {
-        if (task) {
-          await this.deps.store.updateStatus(task.id, "canceled").catch(() => {});
-        }
-        this.deps.channel.pushResult?.(conversation.id, "error", "已停止生成");
+        if (task) return await this.finishCanceled(task, conversation);
         return;
       }
       const errMsg = err instanceof Error ? err.message : String(err);
