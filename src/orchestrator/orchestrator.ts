@@ -27,6 +27,14 @@ import { makeCredentialResolver } from "./credential-flow.js";
 import { dispatchTask } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
+import {
+  acceptAsk,
+  designFirstAsk,
+  designRejected,
+  executeAfterDesign,
+  executeRejected,
+  resolvePhases,
+} from "./phase-flow.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 
 export interface OrchestratorDeps {
@@ -378,6 +386,156 @@ export class Orchestrator {
     return conversation.id;
   }
 
+  /**
+   * agent 绑定任务的三段式生命周期（spec §5）：
+   * design（可选）→ 方案门 → execute → accept（可选）→ 验收门 → done。
+   * 门在阶段边界直调 channel.requestApproval；驳回用同 task 续跑（resume 链经 runTurn 逐轮回写）。
+   */
+  private async runPhases(p: {
+    task: Task;
+    user: User;
+    conversation: Conversation;
+    threadId: string;
+    channelId: string;
+    memoryAppend?: string;
+    memory?: MemoryStore;
+    agent: Agent;
+    sharedAgentSkillOwner?: User;
+    gitMaterializeItems?: RepositoryMaterializeItem[];
+    requiresDesign: boolean;
+    runController: AbortController;
+  }): Promise<string | undefined> {
+    const { store, channel, gates } = this.deps;
+    const plan = resolvePhases(p.agent.skills, p.requiresDesign);
+    const hasDesign = plan.steps[0]?.phase === "design";
+    const execStep = plan.steps.find((s) => s.phase === "execute");
+    const acceptStep = plan.steps.find((s) => s.phase === "accept");
+    if (!execStep) {
+      // 契约上 resolvePhases 恒有 execute；防御性兜底
+      await store.updateStatus(p.task.id, "failed", { error: "阶段解析缺失 execute" });
+      return p.conversation.id;
+    }
+    const turn = (prompt: string, skills: string[]) =>
+      this.runTurn({
+        task: { ...p.task, prompt },
+        user: p.user,
+        conversation: p.conversation,
+        threadId: p.threadId,
+        channelId: p.channelId,
+        memoryAppend: p.memoryAppend,
+        skills,
+        agent: p.agent,
+        sharedAgentSkillOwner: p.sharedAgentSkillOwner,
+        gitMaterializeItems: p.gitMaterializeItems,
+        runController: p.runController,
+      });
+    const finishTask = async (ok: boolean, error?: string, resultText = "") => {
+      await store.updateStatus(
+        p.task.id,
+        ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
+        { error },
+      );
+      if (!channel.streaming && ok) await channel.send(p.threadId, { text: "✅" });
+      if (p.memory) {
+        p.memory.append({
+          summary: p.task.prompt.slice(0, 40),
+          detail: `prompt: ${p.task.prompt}\n结果: ${ok ? "成功" : "失败"}\n${resultText}`,
+        });
+      }
+      if ("finalizeCard" in channel && typeof channel.finalizeCard === "function") {
+        await (channel as { finalizeCard: (id: string) => Promise<void> })
+          .finalizeCard(p.threadId)
+          .catch(() => {});
+      }
+      return p.conversation.id;
+    };
+
+    // —— 方案设计 + 方案门（requiresDesign=true）——
+    if (hasDesign) {
+      await store.updateStatus(p.task.id, "planning", { phase: "design" });
+      let prompt = designFirstAsk(p.task.prompt);
+      for (;;) {
+        const r = await turn(prompt, plan.steps[0]?.skills ?? []);
+        if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
+        if (!r.ok) {
+          await store.updateStatus(p.task.id, "failed", { error: r.error });
+          return p.conversation.id;
+        }
+        await store.updateStatus(p.task.id, nextStatus("planning", "request_approval"), {
+          phase: "design",
+        });
+        const decision = await channel.requestApproval(p.threadId, {
+          gateId: "design",
+          title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
+          summary: r.resultText,
+        });
+        if (decision.approved) {
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"));
+          break;
+        }
+        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "redesign"), {
+          phase: "design",
+        });
+        prompt = designRejected(decision.reason ?? "未提供原因");
+      }
+    }
+
+    // —— 执行 + 自验 + 验收门（驳回重跑循环）——
+    let rejectionCount = p.task.rejectionCount ?? 0;
+    let lastRejectionReason: string | undefined;
+    for (let round = 0; ; round++) {
+      if (round === 0 && !hasDesign) {
+        await store.updateStatus(p.task.id, nextStatus("planning", "start"));
+      }
+      await store.updateStatus(p.task.id, "running", { phase: "execute" });
+      const execPrompt =
+        round === 0
+          ? hasDesign
+            ? executeAfterDesign()
+            : p.task.prompt
+          : executeRejected(lastRejectionReason ?? "未提供原因");
+      const re = await turn(execPrompt, execStep.skills);
+      if (re.aborted) return await this.finishCanceled(p.task, p.conversation);
+      if (!re.ok) {
+        await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: re.error });
+        return p.conversation.id;
+      }
+
+      let summary = re.resultText;
+      if (acceptStep) {
+        await store.updateStatus(p.task.id, "running", { phase: "accept" });
+        const ra = await turn(acceptAsk(), acceptStep.skills);
+        if (ra.aborted) return await this.finishCanceled(p.task, p.conversation);
+        if (!ra.ok) {
+          await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: ra.error });
+          return p.conversation.id;
+        }
+        summary = ra.resultText;
+      }
+
+      if (!plan.acceptanceGate) {
+        return await finishTask(true, undefined, summary);
+      }
+      await store.updateStatus(p.task.id, nextStatus("running", "request_approval"), {
+        phase: "accept",
+      });
+      const decision = await channel.requestApproval(p.threadId, {
+        gateId: "acceptance",
+        title: `审批门：${gates.getGate("acceptance")?.description ?? "验收确认"}`,
+        summary,
+      });
+      if (decision.approved) {
+        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"));
+        return await finishTask(true, undefined, summary);
+      }
+      rejectionCount += 1;
+      lastRejectionReason = decision.reason ?? "";
+      await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
+        rejectionCount,
+      });
+    }
+  }
+
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
     const { store, conversationStore, runner, channel } = this.deps;
 
@@ -461,6 +619,7 @@ export class Orchestrator {
       await store.create(task);
 
       // 任务分发（P1）：会话未绑定 agent 且装配了 kbDir → 经 dispatcher 路由
+      let requiresDesign = false;
       if (!conversation.agentId && this.deps.kbDir) {
         const routing = await dispatchTask({
           runner,
@@ -486,6 +645,7 @@ export class Orchestrator {
           throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
         }
         ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
+        requiresDesign = routing.requiresDesign;
         await store.updateStatus(task.id, "planning", {
           agentId: routing.agentId,
           requiresDesign: routing.requiresDesign,
@@ -517,6 +677,24 @@ export class Orchestrator {
         for (const [k, v] of Object.entries(provided)) {
           if (v) await this.deps.credentialStore.setValue(user.id, k, v);
         }
+      }
+
+      // agent 绑定任务（显式选择或 dispatcher 路由）→ 三段式生命周期
+      if (agent) {
+        return await this.runPhases({
+          task,
+          user,
+          conversation,
+          threadId: msg.threadId,
+          channelId: msg.channelId,
+          memoryAppend,
+          memory,
+          agent,
+          sharedAgentSkillOwner,
+          gitMaterializeItems,
+          requiresDesign,
+          runController,
+        });
       }
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));

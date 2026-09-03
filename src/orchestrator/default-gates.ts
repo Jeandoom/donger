@@ -9,5 +9,8 @@ export function createDefaultGates(): GateRouter {
     toolName: "Bash",
     commandPattern: /\b(deploy|publish|release|git\s+push)\b/i,
   });
+  // 阶段门（P2 三段式）：仅元数据，无工具规则——由编排层在阶段边界直调 channel.requestApproval
+  gates.describe({ id: "design", description: "方案设计确认" });
+  gates.describe({ id: "acceptance", description: "验收确认" });
   return gates;
 }
