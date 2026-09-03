@@ -32,14 +32,22 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     body?: unknown,
     expectStatus?: number,
   ): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      // Node fetch 把 TLS/DNS 等真实原因藏在 cause 里，剥出来给终端
+      const cause = (e as { cause?: unknown })?.cause;
+      const detail = cause instanceof Error ? `（${cause.message}）` : "";
+      throw new Error(`无法连接 ${baseUrl}${detail}`);
+    }
     if (expectStatus && res.status === expectStatus) {
       return undefined as T;
     }
