@@ -62,6 +62,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let pendingResolve: ((line: string) => void) | null = null;
   let eof = false;
   let forceExit = false;
+  // 本输出突发内提示行是否已清除：流式增量只清一次，否则每片都会擦掉上一片的半行
+  let lineCleared = false;
 
   function stopSpinner(): void {
     if (spinnerTimer) {
@@ -74,16 +76,22 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
   }
 
-  function emit(s: string): void {
+  function clearPromptLine(): void {
     stopSpinner();
-    if (isTTY) {
+    if (isTTY && !lineCleared) {
       cursorTo(out, 0);
       clearLine(out, 0);
+      lineCleared = true;
     }
+  }
+
+  function emit(s: string): void {
+    clearPromptLine();
     write(s);
     if (askPending && isTTY) {
       rl.setPrompt(currentPrompt);
       rl.prompt(true);
+      lineCleared = false;
     }
   }
 
@@ -108,6 +116,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     if (secret && isTTY) return askSecret(prompt);
     currentPrompt = prompt;
     askPending = true;
+    lineCleared = false;
     rl.setPrompt(prompt);
     rl.prompt();
     return new Promise<string>((resolve) => {
