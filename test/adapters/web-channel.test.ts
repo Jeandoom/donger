@@ -183,7 +183,7 @@ describe("WebChannel auth", () => {
     db?.close();
   });
 
-  async function createAuthChannel(): Promise<number> {
+  async function createAuthChannel(cliToken?: string): Promise<number> {
     db = new Database(":memory:");
     const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
     const sessionStore = new JwtSessionStore(db, "test-secret");
@@ -197,7 +197,7 @@ describe("WebChannel auth", () => {
     userStore.migrate();
 
     const tmp = mkdtempSync(join(tmpdir(), "web-auth-"));
-    web = new WebChannel({ port: 0, workspaceDir: tmp, sessionStore, userStore });
+    web = new WebChannel({ port: 0, workspaceDir: tmp, sessionStore, userStore, cliToken });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
@@ -275,6 +275,44 @@ describe("WebChannel auth", () => {
     } catch {
       /* ignore */
     }
+  });
+
+  it("POST /api/auth/exchange 未配置 CLI_TOKEN → 403", async () => {
+    const port = await createAuthChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/auth/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "whatever" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /api/auth/exchange 密钥错误 → 403", async () => {
+    const port = await createAuthChannel("right-secret");
+    const res = await fetch(`http://127.0.0.1:${port}/api/auth/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "wrong-secret" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /api/auth/exchange 密钥正确 → 签发可用的 JWT", async () => {
+    const port = await createAuthChannel("right-secret");
+    const res = await fetch(`http://127.0.0.1:${port}/api/auth/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "right-secret" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string; user: { id: string; name: string } };
+    expect(body.token).toBeTruthy();
+    expect(body.user.name).toBe("cli-admin");
+    // 换来的 JWT 能访问认证路由
+    const me = await fetch(`http://127.0.0.1:${port}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${body.token}` },
+    });
+    expect(me.status).toBe(200);
   });
 });
 

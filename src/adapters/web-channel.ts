@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
@@ -142,6 +143,8 @@ export interface WebChannelDeps {
   usageStore?: UsageStore;
   auditStore?: AuditStore;
   sessionStore?: SessionStore;
+  /** CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange） */
+  cliToken?: string;
   fileBrowser?: FileBrowser;
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
@@ -807,6 +810,7 @@ export class WebChannel implements Channel {
     const publicRoutes = [
       "/api/auth/qrcode-url",
       "/api/auth/dingtalk/callback",
+      "/api/auth/exchange",
       "/api/agents/by-share",
       "/api/settings/git/oauth/",
       "/api/health",
@@ -921,6 +925,32 @@ export class WebChannel implements Channel {
     }
 
     // === Auth 路由 ===
+
+    // POST /api/auth/exchange —— CLI 共享密钥换 JWT（CLI_TOKEN 未配置时端点关闭）
+    if (url === "/api/auth/exchange" && req.method === "POST") {
+      if (!this.deps.cliToken || !this.deps.userStore || !this.sessionStore) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "CLI_TOKEN 未配置，交换端点未启用" }));
+        return;
+      }
+      const body = JSON.parse(await this.readBody(req)) as { token?: string };
+      const provided = Buffer.from(body.token ?? "");
+      const expected = Buffer.from(this.deps.cliToken);
+      // 恒定时间比较，避免时序侧信道
+      if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "token 无效" }));
+        return;
+      }
+      const user = await this.deps.userStore.getOrCreateByIdentity(
+        "internal",
+        "cli-admin",
+        "cli-admin",
+      );
+      const { token } = await this.sessionStore.create(user.id);
+      this.json(res, { token, user });
+      return;
+    }
 
     // GET /api/auth/qrcode-url
     if (url === "/api/auth/qrcode-url" && req.method === "GET") {

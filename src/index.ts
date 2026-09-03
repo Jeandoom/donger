@@ -222,6 +222,7 @@ async function main(): Promise<void> {
     usageStore,
     auditStore,
     sessionStore,
+    cliToken: cfg.cliToken || undefined,
     dingtalkConfig: cfg.dingtalk
       ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret }
       : undefined,

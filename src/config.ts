@@ -33,6 +33,8 @@ const EnvSchema = z.object({
   DINGTALK_CARD_TEMPLATE_ID: z.string().optional(),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  // CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange 换 JWT；空=关闭该端点）
+  CLI_TOKEN: z.string().optional().default(""),
   // Agent MCP 密钥主密钥 seed；缺省从 JWT_SECRET 派生（见 resolveSecretSeed）
   SECRET_KEY: z.string().optional(),
   // Agent 可选 LLM 预置模型，格式 name|model|baseUrl，多条用 ; 分隔
@@ -86,6 +88,8 @@ export interface AppConfig {
   dingtalk?: DingTalkConfig;
   /** JWT 签名密钥（空字符串表示未配置，由 index.ts 处理） */
   jwtSecret: string;
+  /** CLI 前端登录共享密钥（空=未启用 POST /api/auth/exchange） */
+  cliToken: string;
   /** JWT 过期天数 */
   jwtTtlDays: number;
   /** Agent 密钥主密钥 seed（SECRET_KEY，缺省派生自 JWT_SECRET） */
@@ -122,6 +126,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     builtinSkillsDir: e.BUILTIN_SKILLS_DIR || join(e.REPO_ROOT, "skills"),
     adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
     jwtSecret: e.JWT_SECRET ?? "",
+    cliToken: e.CLI_TOKEN,
     jwtTtlDays: e.JWT_TTL_DAYS,
     secretKeySeed: resolveSecretSeed(e.SECRET_KEY, e.JWT_SECRET ?? ""),
     agentLlmPresets: parseLlmPresets(e.AGENT_LLM_PRESETS),
