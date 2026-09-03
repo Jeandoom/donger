@@ -185,6 +185,7 @@ export class Orchestrator {
     if (msg.text.trim().toLowerCase() === "/new") {
       await conversationStore.create(user.id, msg.channelId, "新对话");
       await channel.send(msg.threadId, { text: "✨ 已开启新对话" });
+      channel.pushResult?.(msg.threadId, "success", "已开启新对话");
       return;
     }
 
@@ -204,6 +205,7 @@ export class Orchestrator {
       const r = await this.resolveAgentForUse(conversation.agentId, user);
       if (r.gitBlocked) {
         await channel.send(msg.threadId, { text: r.gitBlocked });
+        channel.pushResult?.(conversation.id, "error", r.gitBlocked);
         return;
       }
       ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
@@ -213,13 +215,15 @@ export class Orchestrator {
     //  同一会话：串行排队（后到的排队等前序完成）
     //  同一用户：最多 MAX_CONCURRENT_PER_USER 并行（超限提示）
     if (this.isConversationBusy(conversation.id)) {
-      await channel.send(msg.threadId, { text: "⏳ 该会话正在处理上一条消息，请稍候…" });
+      const text = "⏳ 该会话正在处理上一条消息，请稍候…";
+      await channel.send(msg.threadId, { text });
+      channel.pushResult?.(conversation.id, "error", text);
       return;
     }
     if (!this.checkUserLimit(user.id)) {
-      await channel.send(msg.threadId, {
-        text: "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。",
-      });
+      const text = "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。";
+      await channel.send(msg.threadId, { text });
+      channel.pushResult?.(conversation.id, "error", text);
       return;
     }
 
@@ -269,9 +273,9 @@ export class Orchestrator {
           await store.updateStatus(task.id, "failed", {
             error: `未找到匹配的执行智能体：${routing.rationale}`,
           });
-          await channel.send(msg.threadId, {
-            text: `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试。`,
-          });
+          const text = `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试。`;
+          await channel.send(msg.threadId, { text });
+          channel.pushResult?.(conversation.id, "error", text);
           return conversation.id;
         }
         const r = await this.resolveAgentForUse(routing.agentId, user);
@@ -537,6 +541,7 @@ export class Orchestrator {
       }
       try {
         await this.deps.channel.send(msg.threadId, { text: `❌ 处理出错：${errMsg}` });
+        this.deps.channel.pushResult?.(conversation.id, "error", `❌ 处理出错：${errMsg}`);
       } catch {
         // ignore
       }
