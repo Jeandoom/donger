@@ -177,6 +177,8 @@ async function main(): Promise<void> {
       agentShareStore,
       gitAccessGate,
       kbDir,
+      installer: skillInstaller,
+      skillPackStore,
     });
   }
 

@@ -18,6 +18,8 @@ import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
+import type { SkillInstaller } from "../ports/skill-installer.js";
+import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
@@ -28,6 +30,7 @@ import { makeCredentialResolver } from "./credential-flow.js";
 import { dispatchTask } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
+import { createPlatformToolsServer } from "./platform-tools.js";
 import {
   acceptAsk,
   designFirstAsk,
@@ -59,6 +62,10 @@ export interface OrchestratorDeps {
   gitAccessGate?: GitAccessGate;
   /** 任务管理知识库根目录；未装配则任务分发关闭（行为与 P1 之前一致） */
   kbDir?: string;
+  /** AI 生成子模块：技能安装器（assist 会话写技能用） */
+  installer?: SkillInstaller;
+  /** AI 生成子模块：技能 pack 存储（assist 会话列技能用） */
+  skillPackStore?: SkillPackStore;
 }
 
 export class Orchestrator {
@@ -214,7 +221,24 @@ export class Orchestrator {
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
         gitMaterializeItems: p.gitMaterializeItems,
       });
-      return p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+      const base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+      if (p.agent?.id !== BUILTIN_ASSIST_AGENT_ID) return base;
+      if (!this.deps.agentStore || !this.deps.installer || !this.deps.skillPackStore) {
+        throw new ForbiddenError(
+          "PLATFORM_TOOLS_MISSING",
+          "平台工具未装配（agentStore/installer/skillPackStore）",
+        );
+      }
+      return {
+        ...base,
+        platformTools: createPlatformToolsServer({
+          user: p.user,
+          agentStore: this.deps.agentStore,
+          installer: this.deps.installer,
+          packStore: this.deps.skillPackStore,
+          kbDir: this.deps.kbDir,
+        }),
+      };
     };
     const opts = await prepareOnce();
 
@@ -638,7 +662,7 @@ export class Orchestrator {
           await store.updateStatus(task.id, "failed", {
             error: `未找到匹配的执行智能体：${routing.rationale}`,
           });
-          const text = `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试。`;
+          const text = `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试，或点击「让 AI 协助创建」由 AI 助手帮你生成。`;
           await channel.send(msg.threadId, { text });
           channel.pushResult?.(conversation.id, "error", text);
           return conversation.id;

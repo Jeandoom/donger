@@ -48,14 +48,18 @@ class ScriptedRunner implements AgentRunner {
   }
 }
 
-/** 审批决议序列通道：按序消费 approvals；记录卡片 */
+/** 审批决议序列通道：按序消费 approvals；记录卡片与发送文本 */
 function seqChannel(approvals: Array<{ approved: boolean; reason?: string }>) {
   const cards: ApprovalCard[] = [];
-  const channel: Channel & { cards: ApprovalCard[] } = {
+  const texts: string[] = [];
+  const channel: Channel & { cards: ApprovalCard[]; texts: string[] } = {
     id: "test",
     cards,
+    texts,
     onMessage: () => {},
-    send: async () => {},
+    send: async (_t, m) => {
+      texts.push(m.text);
+    },
     requestApproval: async (_t, c) => {
       cards.push(c);
       return approvals.shift() ?? { approved: true };
@@ -150,6 +154,8 @@ function mockTranscriptStore(): TranscriptStore {
 function makeRuntimeMgr(conversationStore: ConversationStore): {
   mgr: RuntimeManager;
   credentialStore: SqliteCredentialStore;
+  packStore: SqliteSkillPackStore;
+  installer: SkillInstaller;
 } {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
@@ -181,7 +187,7 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
     installer: fakeInstaller,
     builtinSkillsDir: "",
   });
-  return { mgr, credentialStore };
+  return { mgr, credentialStore, packStore, installer: fakeInstaller };
 }
 
 const ROUTING_JSON =
@@ -213,7 +219,7 @@ function build(
     update: async () => agent,
     delete: async () => {},
   } as unknown as import("../../src/ports/agent-store.js").AgentStore;
-  const { mgr: runtimeMgr, credentialStore } = makeRuntimeMgr(convStore);
+  const { mgr: runtimeMgr, credentialStore, packStore, installer } = makeRuntimeMgr(convStore);
   const kbDir = mkdtempSync(join(tmpdir(), "donger-kb-"));
   ensureDispatcherKb(kbDir);
   const orch = new Orchestrator({
@@ -228,6 +234,8 @@ function build(
     runtimeMgr,
     credentialStore,
     agentStore,
+    installer,
+    skillPackStore: packStore,
     kbDir,
   });
   return { orch, store };
@@ -334,5 +342,27 @@ describe("三段式生命周期", () => {
     expect(await store.listByStatus("done")).toHaveLength(1);
     expect(runner.optsList[0]?.systemPromptAppend).toContain("创作助手");
     expect(channel.cards).toHaveLength(0); // 无三段 skill → 无审批卡
+  });
+
+  it("assist 会话注入 platformTools（in-process MCP server）", async () => {
+    const runner = new ScriptedRunner([{ result: "完成" }]);
+    const channel = seqChannel([]);
+    const { orch, store } = build(runner, channel, statefulConvStore("builtin-assist"));
+
+    await orch.handleMessage(MSG);
+
+    expect(await store.listByStatus("done")).toHaveLength(1);
+    expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
+    expect(runner.optsList[0]?.platformTools?.type).toBe("sdk");
+  });
+
+  it("dispatch none 回复含「让 AI 协助创建」引导", async () => {
+    const runner = new ScriptedRunner([
+      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+    ]);
+    const channel = seqChannel([]);
+    const { orch } = build(runner, channel, statefulConvStore(""));
+    await orch.handleMessage(MSG);
+    expect(channel.texts.join("\n")).toContain("让 AI 协助创建");
   });
 });
