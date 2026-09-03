@@ -1,4 +1,4 @@
-import type { SessionStore } from "@anthropic-ai/claude-agent-sdk";
+import type { McpSdkServerConfigWithInstance, SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { ApprovalDecision, ApprovalRequest, RunnerEvent, Task } from "../domain/types.js";
@@ -32,6 +32,8 @@ export interface RunOptions {
   allowedTools?: string[];
   /** 透传 SDK mcpServers（已解密） */
   mcpServers?: McpServerConfig[];
+  /** in-process 平台工具 MCP server（assist 会话注入；instance 不可序列化，仅运行时使用） */
+  platformTools?: McpSdkServerConfigWithInstance;
 }
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */

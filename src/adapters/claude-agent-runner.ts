@@ -18,6 +18,11 @@ export class ClaudeAgentRunner implements AgentRunner {
     const ac = new AbortController();
     opts.abortSignal?.addEventListener("abort", () => ac.abort(), { once: true });
 
+    const mcpServersSdk: Record<string, SdkMcpServerConfig> = {
+      ...(opts.mcpServers?.length ? mcpServersToSdk(opts.mcpServers) : {}),
+      ...(opts.platformTools ? { "donger-platform": opts.platformTools } : {}),
+    };
+
     const stream = query({
       prompt: task.prompt,
       options: {
@@ -32,7 +37,7 @@ export class ClaudeAgentRunner implements AgentRunner {
         },
         includePartialMessages: true,
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
-        ...(opts.mcpServers?.length ? { mcpServers: mcpServersToSdk(opts.mcpServers) } : {}),
+        ...(Object.keys(mcpServersSdk).length ? { mcpServers: mcpServersSdk } : {}),
         ...(opts.additionalDirectories?.length
           ? { additionalDirectories: opts.additionalDirectories }
           : {}),
@@ -135,6 +140,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           includePartialMessages: true,
           allowedTools: opts.allowedTools,
           mcpServers: opts.mcpServers,
+          platformTools: opts.platformTools ? "donger-platform" : undefined,
           additionalDirectories: opts.additionalDirectories,
           settingSources: ["project"],
           sandbox: {
