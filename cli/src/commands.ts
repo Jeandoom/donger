@@ -392,6 +392,167 @@ export function buildProgram(): Command {
       }),
     );
 
+  // ── workflows / triggers / loops（只读 + 快捷操作，CRUD 留 web/AI 生成）──
+  const workflows = program.command("workflows").description("工作流");
+  workflows
+    .command("list")
+    .description("工作流列表")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const body = (await api.call("GET", "/api/workflows")) as { workflows?: unknown[] };
+        const list = asArr(body.workflows);
+        if (globals(cmd).json) return printJson(list);
+        for (const w of list) console.log(`${id8(w.id)}  ${s(w.name)}  trigger=${id8(w.triggerId)} agent=${id8(w.agentId)}`);
+        console.error(pc.dim(`共 ${list.length} 条`));
+      }),
+    );
+  workflows
+    .command("show <id>")
+    .description("工作流详情")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        printJson(await api.call("GET", `/api/workflows/${id}`));
+      }),
+    );
+
+  const triggers = program.command("triggers").description("触发器");
+  triggers
+    .command("list")
+    .description("触发器列表")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const body = (await api.call("GET", "/api/triggers")) as { triggers?: unknown[] };
+        const list = asArr(body.triggers);
+        if (globals(cmd).json) return printJson(list);
+        for (const t of list) console.log(`${id8(t.id)}  ${s(t.type).padEnd(9)}  ${s(t.name)}${t.enabled === false ? pc.red(" (off)") : ""}`);
+        console.error(pc.dim(`共 ${list.length} 条`));
+      }),
+    );
+  triggers
+    .command("test <id>")
+    .description("测试触发器（拉取源并匹配，不触发任务）")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        printJson(await api.call("POST", `/api/triggers/${id}/test`));
+      }),
+    );
+
+  const loops = program.command("loops").description("定时循环");
+  loops
+    .command("list")
+    .description("循环列表（含下次触发时间）")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const body = (await api.call("GET", "/api/loops")) as { loops?: unknown[] };
+        const list = asArr(body.loops);
+        if (globals(cmd).json) return printJson(list);
+        for (const l of list) {
+          const flag = l.enabled ? pc.green("on ") : pc.red("off");
+          const err = l.lastError ? pc.red(` ⚠ ${truncate(s(l.lastError), 40)}`) : "";
+          console.log(`${id8(l.id)}  ${flag}  ${s(l.name)}  next=${fmtDate(l.nextRunAt) || "-"}${err}`);
+        }
+        console.error(pc.dim(`共 ${list.length} 条`));
+      }),
+    );
+  for (const [verb, enabled] of [
+    ["enable", true],
+    ["disable", false],
+  ] as const) {
+    loops
+      .command(`${verb} <id>`)
+      .description(`${enabled ? "启用（注册调度器）" : "停用"}循环`)
+      .action((id: string, _opts: object, cmd: Command) =>
+        run(async () => {
+          const { api } = requireApi(cmd);
+          printJson(await api.call("POST", `/api/loops/${id}/${enabled ? "enable" : "disable"}`));
+        }),
+      );
+  }
+  loops
+    .command("run <id>")
+    .description("手动触发一次")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        printJson(await api.call("POST", `/api/loops/${id}/run`));
+      }),
+    );
+  loops
+    .command("runs <id>")
+    .description("最近 50 次运行记录")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const body = (await api.call("GET", `/api/loops/${id}/runs`)) as { runs?: unknown[] };
+        const list = asArr(body.runs);
+        if (globals(cmd).json) return printJson(list);
+        for (const r of list) {
+          const icon =
+            r.status === "success" ? pc.green("✔") : r.status === "failed" ? pc.red("✘") : pc.yellow("…");
+          console.log(`${icon} ${id8(r.id)}  ${s(r.status).padEnd(8)}  ${fmtDate(r.startedAt)}${r.error ? pc.red(` ${truncate(s(r.error), 50)}`) : ""}`);
+        }
+        console.error(pc.dim(`共 ${list.length} 次`));
+      }),
+    );
+
+  // ── conversations / agents 轻命令 ──
+  const convs = program.command("conversations").alias("conv").description("会话管理");
+  convs
+    .command("list")
+    .description("我的会话列表")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const uid = (await api.me()).user.id;
+        const list = await api.listConversations(uid);
+        if (globals(cmd).json) return printJson(list);
+        for (const c of list) {
+          console.log(`${c.id.slice(0, 8)}  ${fmtDate(c.updatedAt)}  agent=${c.agentId ? c.agentId.slice(0, 8) : "-"}  ${c.title || "（无标题）"}`);
+        }
+        console.error(pc.dim(`共 ${list.length} 条`));
+      }),
+    );
+  convs
+    .command("delete <id>")
+    .description("删除会话（软删除）")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        await api.call("DELETE", `/api/conversations/${id}`);
+        console.log("ok");
+      }),
+    );
+
+  const agents = program.command("agents").description("智能体查看");
+  agents
+    .command("list")
+    .description("我的 + 共享的智能体")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const list = await api.listAgents();
+        if (globals(cmd).json) return printJson(list);
+        for (const a of list) {
+          console.log(`${a.id.slice(0, 8)}  ${a._mine ? pc.dim("mine  ") : pc.cyan("shared")}  ${a.name}${a.description ? pc.dim(` - ${truncate(a.description, 40)}`) : ""}`);
+        }
+        console.error(pc.dim(`共 ${list.length} 个`));
+      }),
+    );
+  agents
+    .command("show <id>")
+    .description("智能体详情（skills/tools/llm/mcp）")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        printJson(await api.call("GET", `/api/agents/${id}`));
+      }),
+    );
+
   // ── usage / users / files ──
   program
     .command("usage")
