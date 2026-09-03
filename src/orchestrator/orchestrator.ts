@@ -22,6 +22,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { makeCredentialResolver } from "./credential-flow.js";
 import { dispatchTask } from "./dispatch-flow.js";
@@ -155,6 +156,8 @@ export class Orchestrator {
     gitMaterializeItems?: RepositoryMaterializeItem[];
     gitBlocked?: string;
   }> {
+    // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
+    if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
     if (!this.deps.agentStore) {
       throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
     }

@@ -323,4 +323,16 @@ describe("三段式生命周期", () => {
     expect(channel.cards).toHaveLength(0);
     expect(runner.prompts).toHaveLength(1);
   });
+
+  it("builtin-assist 会话：短路解析内置智能体，单轮执行且系统提示注入", async () => {
+    const runner = new ScriptedRunner([{ result: "已创建 agent" }]);
+    const channel = seqChannel([]);
+    const { orch, store } = build(runner, channel, statefulConvStore("builtin-assist"));
+
+    await orch.handleMessage(MSG);
+
+    expect(await store.listByStatus("done")).toHaveLength(1);
+    expect(runner.optsList[0]?.systemPromptAppend).toContain("创作助手");
+    expect(channel.cards).toHaveLength(0); // 无三段 skill → 无审批卡
+  });
 });
