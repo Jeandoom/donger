@@ -317,7 +317,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     });
     const ans = (await ask(`选择 agent [1-${agents.length}]，回车用默认会话: `)).trim();
     const n = Number.parseInt(ans, 10);
-    return Number.isInteger(n) && n >= 1 && n <= agents.length ? agents[n - 1]! : null;
+    if (Number.isInteger(n) && n >= 1 && n <= agents.length) return agents[n - 1]!;
+    if (ans) write(pc.yellow(`无效编号"${ans}"，已选默认会话（/agent 可重新选择）\n`));
+    return null;
   }
 
   // ── 启动横幅（I8）──
