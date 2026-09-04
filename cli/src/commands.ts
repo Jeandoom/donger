@@ -218,7 +218,28 @@ export function buildProgram(): Command {
             (usage?.totalTokens ? `${usage.totalTokens} tok` : "");
           console.log(`${head}  ${detail}`);
         }
-        console.error(pc.dim(`共 ${list.length} 条事件`));
+        // 观测汇总行：工具计数 / token 总量 / 执行耗时
+        const toolCounts = new Map<string, number>();
+        let totalTokens = 0;
+        let totalMs = 0;
+        for (const e of list) {
+          if (s(e.type) === "tool_use") {
+            const n = s(e.toolName) || "?";
+            toolCounts.set(n, (toolCounts.get(n) ?? 0) + 1);
+          }
+          const u = e.usage as { totalTokens?: number } | undefined;
+          if (u?.totalTokens) totalTokens += u.totalTokens;
+          if (s(e.type) === "result") totalMs += Number(e.durationMs ?? 0);
+        }
+        const tools = [...toolCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([n, c]) => `${n}×${c}`)
+          .join("、");
+        console.error(
+          pc.dim(
+            `汇总：工具 ${tools || "无"} · tokens ${totalTokens} · 执行耗时 ${(totalMs / 1000).toFixed(1)}s`,
+          ),
+        );
       }),
     );
   tasks

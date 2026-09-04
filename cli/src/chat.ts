@@ -491,8 +491,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       continue;
     }
     if (t === "/status") {
+      const gate = session?.pendingGate;
       emit(
-        `后端   ${baseUrl}\n用户   ${meUser.name}（${meUser.role}）\n会话   ${conversationId ? conversationId.slice(0, 8) : "（未创建，发消息时建立）"}\n智能体 ${currentAgent?.name ?? "默认会话"}\n连接   ${session ? connState : "-"}\n`,
+        `后端   ${baseUrl}\n用户   ${meUser.name}（${meUser.role}）\n会话   ${conversationId ? conversationId.slice(0, 8) : "（未创建，发消息时建立）"}\n智能体 ${currentAgent?.name ?? "默认会话"}\n连接   ${session ? connState : "-"}${gate ? `\n挂起   ${gate}（等待人工响应）` : ""}\n`,
       );
       continue;
     }

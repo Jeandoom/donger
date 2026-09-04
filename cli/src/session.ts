@@ -70,6 +70,7 @@ export class Session {
   private stopped = false;
   private connStatus: ConnStatus = "offline";
   private connWaiters: Array<() => void> = [];
+  private gateName: string | null = null;
 
   private constructor(
     private readonly api: DongerApi,
@@ -107,6 +108,11 @@ export class Session {
   /** 是否有回合在等待中（Ctrl+C 判断中断 vs 退出用） */
   get busy(): boolean {
     return this.roundWaiter !== null;
+  }
+
+  /** 当前挂起的人工门（审批/凭证），/status 展示用 */
+  get pendingGate(): string | null {
+    return this.gateName;
   }
 
   stop(): void {
@@ -195,6 +201,7 @@ export class Session {
         this.events.onPrint(action.text);
         break;
       case "round_end": {
+        this.gateName = null;
         this.events.onRoundEnd(action.ok, action.text);
         const waiter = this.roundWaiter;
         this.roundWaiter = null;
@@ -202,17 +209,21 @@ export class Session {
         break;
       }
       case "approval": {
+        this.gateName = `审批门：${action.title}`;
         const resp =
           (await this.events.onApproval?.(action.gateId, action.title, action.summary)) ??
           autoApprovalResponse();
+        this.gateName = null;
         await this.api
           .respondApproval(action.gateId, resp.approved, resp.reason)
           .catch((e: Error) => this.events.onPrint(`⚠️ 审批提交失败：${e.message}`));
         break;
       }
       case "credential": {
+        this.gateName = "凭证输入";
         const values =
           (await this.events.onCredential?.(action.items)) ?? emptyCredentialValues(action.items);
+        this.gateName = null;
         await this.api
           .submitCredential(action.reqId, values)
           .catch((e: Error) => this.events.onPrint(`⚠️ 凭证提交失败：${e.message}`));
