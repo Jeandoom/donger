@@ -694,7 +694,22 @@ export class Orchestrator {
           return conversation.id;
         }
         if (routing.agentId !== "none") {
-          const r = await this.resolveAgentForUse(routing.agentId, user);
+          let r: Awaited<ReturnType<typeof this.resolveAgentForUse>>;
+          try {
+            r = await this.resolveAgentForUse(routing.agentId, user);
+          } catch (e) {
+            // dispatcher 偶发输出无效 id（名称/技能名）：转译为可行动的失败提示而非裸 404
+            if ((e as { code?: string })?.code === "AGENT_NOT_FOUND") {
+              await store.updateStatus(task.id, "failed", {
+                error: `分发异常：dispatcher 选择了未登记的 id "${routing.agentId}"，请重试；多次失败请检查 kb/dispatcher/agents.md`,
+              });
+              const text = `⚠️ 分发异常：dispatcher 选择了一个不存在的智能体（${routing.agentId}），请重发任务重试；多次出现请检查登记表。`;
+              await channel.send(msg.threadId, { text });
+              channel.pushResult?.(conversation.id, "error", text);
+              return conversation.id;
+            }
+            throw e;
+          }
           if (r.gitBlocked) {
             throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
           }
