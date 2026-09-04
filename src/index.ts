@@ -77,6 +77,9 @@ async function main(): Promise<void> {
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
   store.migrate();
+  // 僵尸清扫：上次进程遗留的 running 任务标记为中断（任务并发视图不被污染）
+  const stale = await store.failStaleRunning("服务重启中断");
+  if (stale > 0) log.warn({ count: stale }, "已将遗留 running 任务标记为中断");
   const usersDir = join(cfg.workspaceDir, "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {

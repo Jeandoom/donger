@@ -23,4 +23,12 @@ export class InMemoryTaskStore implements TaskStore {
   async listByStatus(status: TaskStatus): Promise<Task[]> {
     return [...this.byId.values()].filter((t) => t.status === status);
   }
+
+  async failStaleRunning(reason: string): Promise<number> {
+    const stale = await this.listByStatus("running");
+    for (const t of stale) {
+      await this.updateStatus(t.id, "failed", { error: reason });
+    }
+    return stale.length;
+  }
 }

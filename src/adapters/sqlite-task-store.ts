@@ -47,4 +47,12 @@ export class SqliteTaskStore implements TaskStore {
       .all(status) as { data: string }[];
     return rows.map((r) => JSON.parse(r.data) as Task);
   }
+
+  async failStaleRunning(reason: string): Promise<number> {
+    const stale = await this.listByStatus("running");
+    for (const t of stale) {
+      await this.updateStatus(t.id, "failed", { error: reason });
+    }
+    return stale.length;
+  }
 }
