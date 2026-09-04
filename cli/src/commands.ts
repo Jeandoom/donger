@@ -268,6 +268,47 @@ export function buildProgram(): Command {
       }),
     );
   tasks
+    .command("files <id> [path]")
+    .description("任务产物：无 path 列产物树，有 path 读文件内容（PM 评审：产物可达）")
+    .action((id: string, path: string | undefined, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api, baseUrl, token } = requireApi(cmd);
+        const events = asArr(await api.call("GET", `/api/tasks/${id}/events`));
+        const conversationId = s(events[0]?.conversationId);
+        if (!conversationId) throw new Error("该任务没有执行记录，无产物");
+        const qs = new URLSearchParams({ scope: "runtime", conversationId });
+        if (path) {
+          // content 接口的 path 相对 runtime 根（含会话目录前缀，与 tree 返回的 path 一致）
+          qs.set("path", `${conversationId}/${path.replace(/^\/+/, "")}`);
+          const res = await fetch(`${baseUrl}/api/files/content?${qs.toString()}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) throw new Error(`读文件失败：${res.status}`);
+          process.stdout.write(await res.text());
+          return;
+        }
+        const body = (await api.call("GET", `/api/files/tree?${qs.toString()}`)) as {
+          nodes?: unknown[];
+        };
+        // 树根是会话目录本身，直接从其 children 展示
+        const roots = asArr(asArr(body.nodes)[0]?.children);
+        if (roots.length === 0) {
+          console.log("（该会话暂无产物文件）");
+          return;
+        }
+        const walk = (nodes: unknown[], depth: number): void => {
+          for (const n of asArr(nodes)) {
+            console.log(
+              `${"  ".repeat(depth)}${n.isDir ? "📁" : "📄"} ${s(n.name)}${n.isDir ? "" : pc.dim(` (${Number(n.size ?? 0)}B)`)}`,
+            );
+            walk(asArr(n.children), depth + 1);
+          }
+        };
+        if (globals(cmd).json) return printJson(roots);
+        walk(roots, 0);
+      }),
+    );
+  tasks
     .command("optimize <id>")
     .description("触发 task-optimize：聚合审计+评论，进入 AI 生成助手会话确认修订提案")
     .action((id: string, _opts: object, cmd: Command) =>
@@ -753,14 +794,14 @@ export function buildProgram(): Command {
   const files = program.command("files").description("工作区文件查看");
   files
     .command("tree <scope>")
-    .description("文件树（scope: user/runtime/extension）")
-    .action((scope: string, _opts: object, cmd: Command) =>
+    .description("文件树（scope: user/runtime/extension；runtime 配合 --conversation）")
+    .option("-c, --conversation <id>", "会话级 runtime 目录")
+    .action((scope: string, opts: { conversation?: string }, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const body = (await api.call(
-          "GET",
-          `/api/files/tree?scope=${encodeURIComponent(scope)}`,
-        )) as {
+        const qs = new URLSearchParams({ scope });
+        if (opts.conversation) qs.set("conversationId", opts.conversation);
+        const body = (await api.call("GET", `/api/files/tree?${qs.toString()}`)) as {
           nodes?: unknown[];
         };
         const walk = (nodes: unknown[], depth: number): void => {
@@ -778,13 +819,15 @@ export function buildProgram(): Command {
   files
     .command("read <scope> <path>")
     .description("读文件内容")
-    .action((scope: string, path: string, _opts: object, cmd: Command) =>
+    .option("-c, --conversation <id>", "会话级 runtime 目录")
+    .action((scope: string, path: string, opts: { conversation?: string }, cmd: Command) =>
       run(async () => {
         const { baseUrl, token } = requireApi(cmd);
-        const res = await fetch(
-          `${baseUrl}/api/files/content?scope=${encodeURIComponent(scope)}&path=${encodeURIComponent(path)}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
+        const qs = new URLSearchParams({ scope, path });
+        if (opts.conversation) qs.set("conversationId", opts.conversation);
+        const res = await fetch(`${baseUrl}/api/files/content?${qs.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
         if (!res.ok) throw new Error(`读文件失败：${res.status}`);
         process.stdout.write(await res.text());
       }),
