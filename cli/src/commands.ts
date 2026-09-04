@@ -205,7 +205,12 @@ export function buildProgram(): Command {
       run(async () => {
         const { api } = requireApi(cmd);
         const render = async (): Promise<number> => {
-          const list = asArr(await api.call("GET", "/api/tasks?status=running"));
+          // 进行中 = created（分发/排队）+ running；awaiting_* 是等人工，单列不混入
+          const [created, running] = await Promise.all([
+            api.call("GET", "/api/tasks?status=created"),
+            api.call("GET", "/api/tasks?status=running"),
+          ]);
+          const list = [...asArr(created), ...asArr(running)];
           const now = Date.now();
           process.stdout.write("\x1b[2J\x1b[H");
           console.log(

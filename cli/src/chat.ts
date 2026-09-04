@@ -37,6 +37,20 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
+/** 活动行按工具类型着色（PM 评审 C：类型分区） */
+function activityLine(text: string): string {
+  if (text.startsWith("⚠️")) return pc.red(`· ${text}`);
+  const m = /^🔧\s*(\S+)/.exec(text);
+  const tool = m?.[1] ?? "";
+  let icon = "🔧";
+  if (/write|edit|save|skill/i.test(tool)) icon = "✏️";
+  else if (/read/i.test(tool)) icon = "📖";
+  else if (/bash|execute/i.test(tool)) icon = "⚡";
+  else if (/grep|glob|search/i.test(tool)) icon = "🔍";
+  const rest = m ? text.slice(m[0].length).trim() : text;
+  return pc.dim(`· ${icon} ${m ? `${tool} ${rest}`.trim() : rest}`);
+}
+
 const asArr = (v: unknown): Record<string, unknown>[] =>
   Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
 const s = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -193,12 +207,21 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     });
   }
 
+  // 消息排队（P0）：任务运行中的输入入队，回合结束后逐条自动发送
+  const pendingSends: string[] = [];
+  let roundActive = false;
+
   rl.on("line", (l: string) => {
     const r = pendingResolve;
     if (r) {
       pendingResolve = null;
       askPending = false;
       r(l);
+      return;
+    }
+    if (roundActive) {
+      pendingSends.push(l);
+      emit(pc.dim(`(已排队，当前任务完成后自动发送 · 共 ${pendingSends.length} 条)\n`));
     }
   });
   rl.on("close", () => {
@@ -223,17 +246,21 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   // 实时流式（增量直出）；markdown 渲染仅用于完整 text 消息（流式内容保真优先）
   let lastPrinted = ""; // 最近的 print 正文：result(error) 常重复同文本，避免双份输出
   let atLineStart = true; // 活动行拼接用：流式文本未换行时先补换行
+  let lastTaskId = ""; // 最近一次分派的任务短 id（产物入口衔接用）
 
   const events: SessionEvents = {
     onDelta: (t) => {
       emit(t);
     },
     onActivity: (t) => {
-      emit(`${atLineStart ? "" : "\n"}${pc.dim(`· ${t}`)}\n`);
+      emit(`${atLineStart ? "" : "\n"}${activityLine(t)}\n`);
     },
     onPrint: (t) => {
       emit(`\n${renderMarkdown(t, isTTY)}\n`);
       lastPrinted = t;
+      // 📨 分派反馈携带任务短 id → 任务完成后衔接产物入口（PM 评审 F）
+      const dispatched = /📨.*\(([0-9a-f]{8})\)/.exec(t);
+      if (dispatched) lastTaskId = dispatched[1]!;
       // 冷启动引导（PM 评审#5）：无可用智能体时指一条 CLI 侧出路
       if (t.startsWith("🤷")) {
         emit(
@@ -268,9 +295,11 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       if (!ok && text && text === lastPrinted) {
         // 失败正文已随 print 展示（后端 send+pushResult 双通道），只补结束标记
         emit(pc.red("\n❌ 任务失败\n"));
-        return;
+      } else {
+        emit(ok ? pc.green("\n✅ 完成\n") : pc.red(`\n❌ ${text}\n`));
       }
-      emit(ok ? pc.green("\n✅ 完成\n") : pc.red(`\n❌ ${text}\n`));
+      // 产物入口衔接（PM 评审 F）：分派过的任务提示产物查看命令
+      if (ok && lastTaskId) emit(pc.dim(`💡 tasks files ${lastTaskId} 查看任务产物\n`));
     },
     onStatus: (st, attempt) => {
       connState = st;
@@ -446,6 +475,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   // ── 主循环 ──
   let multiBuf: string[] | null = null;
   async function sendText(t: string): Promise<void> {
+    roundActive = true;
     try {
       await ensureConversation(forceNewOnce);
       forceNewOnce = false;
@@ -459,6 +489,19 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     } catch (e) {
       stopSpinner();
       emit(formatError(e));
+    } finally {
+      roundActive = false;
+    }
+  }
+
+  /** 回合结束后放行排队消息（P0）：斜杠命令不入队，此处只会收到普通消息 */
+  async function drainQueue(): Promise<void> {
+    while (pendingSends.length > 0 && !forceExit && !eof) {
+      const line = (pendingSends.shift() ?? "").trim();
+      if (!line) continue;
+      // 后端 result 事件先于 orchestrator 收尾到达，稍候再发避免 busy 拒绝
+      await new Promise((r) => setTimeout(r, 800));
+      await sendText(line);
     }
   }
 
@@ -697,6 +740,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
 
     await sendText(t);
+    await drainQueue();
   }
   session?.stop();
   rl.close();
