@@ -238,15 +238,26 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       flushStream();
       lastPrinted = t;
       emit(`\n${renderMarkdown(t, isTTY)}\n`);
+      // 冷启动引导（PM 评审#5）：无可用智能体时指一条 CLI 侧出路
+      if (t.startsWith("🤷")) {
+        emit(
+          pc.dim(
+            "💡 可运行 /agent-new 让 AI 生成助手基于该任务创建智能体（把任务再描述一遍即可）\n",
+          ),
+        );
+      }
     },
     onApproval: async (gateId, title, summary) => {
       flushStream();
       emit(pc.yellow(`\n🔔 审批门：${title}\n${summary}\n`));
-      emit(pc.dim("（60 秒内未响应，后端将取消本次审批）\n"));
-      void gateId;
+      const lifeCycleGate = gateId === "design" || gateId === "acceptance";
+      emit(pc.dim(`（${lifeCycleGate ? "10 分钟" : "60 秒"}内未响应，后端将取消本次审批）\n`));
       const ans = (await ask(pc.yellow("通过? [y/N]: "))).trim();
       const approved = /^y/i.test(ans);
-      return { approved, reason: approved ? undefined : "CLI 驳回" };
+      if (approved) return { approved: true };
+      // 驳回带原因：驱动重设计/重执行的关键输入（PM 评审#2）
+      const why = (await ask(pc.yellow("驳回原因（回车跳过）: "))).trim();
+      return { approved: false, reason: why || "CLI 驳回" };
     },
     onCredential: async (items) => {
       flushStream();

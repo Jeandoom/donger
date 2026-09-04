@@ -180,7 +180,9 @@ export function buildProgram(): Command {
       run(async () => {
         const { api } = requireApi(cmd);
         const qs = opts.status ? `?status=${encodeURIComponent(opts.status)}` : "";
-        const list = asArr(await api.call("GET", `/api/tasks${qs}`));
+        const list = asArr(await api.call("GET", `/api/tasks${qs}`)).sort((a, b) =>
+          s(b.createdAt).localeCompare(s(a.createdAt)),
+        );
         if (globals(cmd).json) return printJson(list);
         for (const t of list) {
           console.log(
@@ -251,7 +253,9 @@ export function buildProgram(): Command {
       run(async () => {
         const { api, baseUrl, token } = requireApi(cmd);
         const { conversationId } = await api.optimizeTask(id);
-        console.log(`已发起优化分析，进入优化会话 ${conversationId.slice(0, 8)}（提案落盘会弹审批卡）：`);
+        console.log(
+          `已发起优化分析，进入优化会话 ${conversationId.slice(0, 8)}（提案落盘会弹审批卡）：`,
+        );
         await runChat({ api, baseUrl, token, conversationId });
       }),
     );

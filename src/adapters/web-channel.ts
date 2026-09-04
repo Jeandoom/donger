@@ -299,11 +299,14 @@ export class WebChannel implements Channel {
         close: () => {},
       });
 
-      // 设置超时：60 秒未响应则取消
+      // 超时分型（PM 评审）：生命周期门（方案/验收）是人工评审动作，放宽到 10 分钟；
+      // 工具高危门保持 60 秒（安全语义：执行前的确认应即时）。
+      const lifeCycleGate = card.gateId === "design" || card.gateId === "acceptance";
+      const timeoutMs = lifeCycleGate ? 600_000 : 60_000;
       const timeout = setTimeout(() => {
         this.approvalStreams.delete(card.gateId);
-        reject(new Error("审批超时（60秒）"));
-      }, 60_000);
+        reject(new Error(`审批超时（${lifeCycleGate ? "10分钟" : "60秒"}）：${card.title}`));
+      }, timeoutMs);
 
       // 注意：实际的审批响应通过 HTTP POST /api/approvals/:id/respond 处理
       // 这里返回一个占位 Promise，实际响应由 HTTP 处理器调用 resolve
