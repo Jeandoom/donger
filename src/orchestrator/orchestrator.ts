@@ -670,8 +670,9 @@ export class Orchestrator {
         if (routing.agentId === "none") {
           await store.updateStatus(task.id, "failed", {
             error: `未找到匹配的执行智能体：${routing.rationale}`,
+            routingRationale: routing.rationale,
           });
-          const text = `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试，或点击「让 AI 协助创建」由 AI 助手帮你生成。`;
+          const text = `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试；也可让 AI 生成助手协助创建对应智能体。`;
           await channel.send(msg.threadId, { text });
           channel.pushResult?.(conversation.id, "error", text);
           return conversation.id;

@@ -213,9 +213,12 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let forceNewOnce = false;
   // TTY 下缓冲流式增量，回合结束统一渲染 markdown（增量无法渲染；非 TTY 保持实时流式原文）
   let streamBuf: string[] | null = null;
+  let lastPrinted = ""; // 最近的 print 正文：result(error) 常重复同文本，避免双份输出
   function flushStream(): void {
     if (streamBuf !== null && streamBuf.length > 0) {
-      emit(`\n${renderMarkdown(streamBuf.join(""), isTTY)}\n`);
+      const body = renderMarkdown(streamBuf.join(""), isTTY);
+      lastPrinted = streamBuf.join("");
+      emit(`\n${body}\n`);
     }
     streamBuf = null;
   }
@@ -231,6 +234,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     },
     onPrint: (t) => {
       flushStream();
+      lastPrinted = t;
       emit(`\n${renderMarkdown(t, isTTY)}\n`);
     },
     onApproval: async (gateId, title, summary) => {
@@ -255,6 +259,11 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     },
     onRoundEnd: (ok, text) => {
       flushStream();
+      if (!ok && text && text === lastPrinted) {
+        // 失败正文已随 print 展示（后端 send+pushResult 双通道），只补结束标记
+        emit(pc.red("\n❌ 任务失败\n"));
+        return;
+      }
       emit(ok ? pc.green("\n✅ 完成\n") : pc.red(`\n❌ ${text}\n`));
     },
     onStatus: (st, attempt) => {
