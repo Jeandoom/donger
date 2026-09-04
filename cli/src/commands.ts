@@ -244,6 +244,17 @@ export function buildProgram(): Command {
         printJson(await api.call("POST", `/api/tasks/${id}/comments`, { text: text.join(" ") }));
       }),
     );
+  tasks
+    .command("optimize <id>")
+    .description("触发 task-optimize：聚合审计+评论，进入 AI 生成助手会话确认修订提案")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api, baseUrl, token } = requireApi(cmd);
+        const { conversationId } = await api.optimizeTask(id);
+        console.log(`已发起优化分析，进入优化会话 ${conversationId.slice(0, 8)}（提案落盘会弹审批卡）：`);
+        await runChat({ api, baseUrl, token, conversationId });
+      }),
+    );
 
   // ── audit ──
   const audit = program.command("audit").description("审计查看");

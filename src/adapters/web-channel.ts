@@ -35,6 +35,7 @@ import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/a
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
+import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
@@ -1240,6 +1241,60 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify(comment));
         return;
       }
+    }
+
+    // POST /api/tasks/:id/optimize —— 触发 task-optimize（T17.4 反馈闭环）
+    // 聚合该任务审计事件+评论为材料，投递到调用者的内置 assist 会话（写盘经 authoring 审批卡确认）。
+    const taskOptimizeMatch = url.match(/^\/api\/tasks\/([\w-]+)\/optimize$/);
+    if (taskOptimizeMatch && req.method === "POST") {
+      const taskId = taskOptimizeMatch[1] ?? "";
+      const uid = this.requireRequestUser(req);
+      const task = await this.deps.taskStore?.get(taskId);
+      if (!task) return this.json(res, { error: "task not found" }, 404);
+      if (task.requesterId !== uid) return this.json(res, { error: "forbidden" }, 403);
+      if (!this.handler) return this.json(res, { error: "消息处理未就绪" }, 503);
+
+      const events = (await this.deps.auditStore?.listByTask(taskId)) ?? [];
+      const comments = (await this.deps.commentStore?.listByTask(taskId)) ?? [];
+      const agent = task.agentId
+        ? ((await this.agentStore?.get(task.agentId)) ?? undefined)
+        : undefined;
+      const skillsDir = agent ? join(this.deps.workspaceDir, "users", uid, "skills") : undefined;
+      const kbDir = agent ? join(this.deps.workspaceDir, "kb", agent.id) : undefined;
+      const brief = buildOptimizeBrief({
+        task,
+        events,
+        comments,
+        agent,
+        agentSkillsDir: agent ? skillsDir : undefined,
+        agentKbDir: agent ? kbDir : undefined,
+      });
+
+      // builtin-assist 会话 get-or-create（与 agentConvMatch 的内置分支一致）
+      const list = (await this.deps.conversationStore?.listByUser(uid)) ?? [];
+      let conv = list.find((c) => c.agentId === BUILTIN_ASSIST_AGENT_ID);
+      if (!conv) {
+        conv = await this.deps.conversationStore?.createWithAgent(
+          uid,
+          "web",
+          BUILTIN_ASSIST_AGENT.name,
+          BUILTIN_ASSIST_AGENT_ID,
+        );
+      }
+      if (!conv) return this.json(res, { error: "会话存储不可用" }, 500);
+
+      // 用户消息落库 + 投递 orchestrator（builtin 短路，不走 git/附件检查）
+      await this.deps.messageStore
+        ?.add(conv.id, "user", brief)
+        .catch((e) => console.error("[optimize] 保存消息失败", e));
+      this.handler({
+        channelId: "web",
+        threadId: conv.id,
+        requesterId: uid,
+        text: brief,
+        conversationId: conv.id,
+      });
+      return this.json(res, { conversationId: conv.id }, 201);
     }
 
     // GET /api/users

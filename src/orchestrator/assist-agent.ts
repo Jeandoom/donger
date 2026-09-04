@@ -26,7 +26,7 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   name: "AI 生成助手",
   description: "对话式创建与维护 agent / skill，并登记路由表",
   systemPrompt: ASSIST_SYSTEM_PROMPT,
-  skills: [],
+  skills: ["task-optimize"],
   tools: { mode: "whitelist", whitelist: ["mcp__donger-platform"] },
   mcpServers: [],
   gitRepositories: [],

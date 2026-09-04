@@ -43,6 +43,8 @@ export interface DongerApi {
   /** 上传附件（图片/md，≤2MB），返回 {path,name,type} 供 sendMessage 携带 */
   upload(conversationId: string, filePath: string): Promise<AttachmentFile>;
   cancel(conversationId: string): Promise<void>;
+  /** 触发 task-optimize：返回 assist 优化会话 id（提案经审批卡确认落盘） */
+  optimizeTask(taskId: string): Promise<{ conversationId: string }>;
   respondApproval(gateId: string, approved: boolean, reason?: string): Promise<void>;
   submitCredential(reqId: string, values: Record<string, string>): Promise<void>;
   /** 管理命令通用调用：返回解析后的 JSON（无类型约束，命令层自行取字段） */
@@ -183,6 +185,8 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     },
     cancel: (conversationId) =>
       request("POST", `/api/conversations/${conversationId}/cancel`, {}, 200),
+    optimizeTask: (taskId) =>
+      request("POST", `/api/tasks/${taskId}/optimize`, {}),
     respondApproval: (gateId, approved, reason) =>
       request("POST", `/api/approvals/${gateId}/respond`, { approved, reason }),
     submitCredential: (reqId, values) =>

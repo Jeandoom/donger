@@ -13,6 +13,8 @@ export interface ChatOptions {
   token: string;
   /** 直接指定 agent（id 或 name）；缺省交互选择 */
   agent?: string;
+  /** 直连既有会话（如 tasks optimize 的优化会话），跳过 agent 选择 */
+  conversationId?: string;
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
 }
@@ -363,8 +365,16 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   // ── 启动横幅（I8）──
   write(`${pc.bold("donger CLI")} ${pc.dim(`v${CLI_VERSION}`)} → ${baseUrl}\n`);
   write(pc.dim(`用户 ${meUser.name}（${meUser.role}）\n`));
-  // boot 不强制选 agent：直接默认会话起步（惰性创建），需要时 /agent 切换
-  if (opts.agent === "builtin-assist") {
+  // 直连既有会话（tasks optimize 的优化会话等）：跳过 agent 选择，直接 attach
+  if (opts.conversationId) {
+    const list = await api.listConversations(meUser.id).catch(() => []);
+    const conv = list.find((c) => c.id === opts.conversationId);
+    currentAgent =
+      conv?.agentId === "builtin-assist"
+        ? { id: "builtin-assist", name: "AI 生成助手", _mine: true }
+        : null;
+    await switchTo({ conversationId: opts.conversationId, agent: currentAgent });
+  } else if (opts.agent === "builtin-assist") {
     // 内置 assist 智能体（不入库，后端短路解析）：AI 生成入口
     currentAgent = { id: opts.agent, name: "AI 生成助手", _mine: true };
   } else if (opts.agent) {
@@ -381,7 +391,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       write(pc.dim(`已有 ${agents.length} 个 agent，/agent 查看（不选则用默认会话）\n`));
     }
   }
-  write(pc.dim(`就绪（agent：${currentAgent?.name ?? "默认会话"}），发送首条消息时创建会话\n`));
+  if (!opts.conversationId) {
+    write(pc.dim(`就绪（agent：${currentAgent?.name ?? "默认会话"}），发送首条消息时创建会话\n`));
+  }
   write(pc.dim("/help 查看命令 · Ctrl+C 中断任务，连续两次退出\n"));
 
   function formatError(e: unknown): string {
