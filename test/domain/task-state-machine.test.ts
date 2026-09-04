@@ -56,4 +56,18 @@ describe("TaskStateMachine", () => {
     expect(canTransition("created", "start")).toBe(false);
     expect(canTransition("running", "finish")).toBe(true);
   });
+
+  it("planning --request_approval--> awaiting_approval（方案门）", () => {
+    expect(nextStatus("planning", "request_approval")).toBe("awaiting_approval");
+  });
+
+  it("awaiting_approval --redesign--> planning（方案驳回重设计）", () => {
+    expect(nextStatus("awaiting_approval", "redesign")).toBe("planning");
+  });
+
+  it("canTransition 反映新转换", () => {
+    expect(canTransition("planning", "request_approval")).toBe(true);
+    expect(canTransition("awaiting_approval", "redesign")).toBe(true);
+    expect(canTransition("running", "redesign")).toBe(false);
+  });
 });

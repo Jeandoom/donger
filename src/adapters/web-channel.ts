@@ -366,10 +366,13 @@ export class WebChannel implements Channel {
   // Channel 接口实现
   // ---------------------------------------------------------------------------
 
-  async send(threadId: string, _msg: OutgoingMessage): Promise<void> {
-    // SSE 版本：send 由 pushText/pushResult 替代
-    void threadId;
-    void _msg;
+  async send(threadId: string, msg: OutgoingMessage): Promise<void> {
+    // SSE 模式下 threadId 即 conversationId：广播给该会话的 SSE 客户端并持久化，
+    // 否则 busy/并发上限/分发 none 等系统通知在 Web 端会静默丢失。
+    await this.deps.messageStore
+      ?.add(threadId, "bot", msg.text)
+      .catch((err) => console.error("[web-channel] send 持久化失败", err));
+    this.broadcastToConversation(threadId, { type: "text", text: msg.text });
   }
 
   // ---------------------------------------------------------------------------
@@ -1871,11 +1874,15 @@ export class WebChannel implements Channel {
     const credMatch = match(/^\/api\/credentials\/([^/]+)$/);
     if (credMatch && req.method === "PUT") {
       const b = JSON.parse(await this.readBody(req)) as { value: string; label?: string };
-      send(await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1] ?? ""), ...b }, deps));
+      send(
+        await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1] ?? ""), ...b }, deps),
+      );
       return true;
     }
     if (credMatch && req.method === "DELETE") {
-      send(await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1] ?? "") }, deps));
+      send(
+        await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1] ?? "") }, deps),
+      );
       return true;
     }
     return false;

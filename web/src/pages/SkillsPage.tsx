@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   credentialStatus,
   fetchPacks,
@@ -10,9 +11,11 @@ import {
   uninstallPack,
   updatePack,
 } from "../lib/skills";
+import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { cn } from "../lib/utils";
 
 export function SkillsPage() {
+  const navigate = useNavigate();
   const [packs, setPacks] = useState<SkillPackDTO[]>([]);
   const [installOpen, setInstallOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,13 +50,22 @@ export function SkillsPage() {
     <div className="h-full overflow-y-auto p-4">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-lg font-semibold">技能管理</h1>
-        <button
-          type="button"
-          onClick={() => setInstallOpen(true)}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
-        >
-          + 安装技能
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+          >
+            ✨ AI 生成
+          </button>
+          <button
+            type="button"
+            onClick={() => setInstallOpen(true)}
+            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
+          >
+            + 安装技能
+          </button>
+        </div>
       </div>
       {error && (
         <div className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
