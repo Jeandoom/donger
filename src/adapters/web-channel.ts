@@ -1185,8 +1185,8 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/tasks
-    if (url === "/api/tasks" && req.method === "GET") {
+    // GET /api/tasks（兼容 ?status= 查询串）
+    if (url.split("?")[0] === "/api/tasks" && req.method === "GET") {
       const status = this.extractQuery(url, "status");
       const tasks = status
         ? ((await this.deps.taskStore?.listByStatus(status as never)) ?? [])

@@ -171,10 +171,10 @@ export function buildProgram(): Command {
     );
 
   // ── tasks ──
-  const tasks = program.command("tasks").description("任务查看");
+  const tasks = program.command("tasks").description("任务查看与管理");
   tasks
     .command("list")
-    .description("任务列表（默认全部状态聚合）")
+    .description("任务列表（创建时间倒序，含 phase/agent）")
     .option("-s, --status <status>", "按状态过滤：created/running/done/failed")
     .action((opts: { status?: string }, cmd: Command) =>
       run(async () => {
@@ -186,10 +186,102 @@ export function buildProgram(): Command {
         if (globals(cmd).json) return printJson(list);
         for (const t of list) {
           console.log(
-            `${id8(t.id)}  ${s(t.status).padEnd(9)}  ${fmtDate(t.createdAt)}  ${truncate(s(t.text) || s(t.skill), 40)}`,
+            `${id8(t.id)}  ${s(t.status).padEnd(9)}  ${(s(t.phase) || "-").padEnd(8)}  ${id8(t.agentId) || "-"}  ${fmtDate(t.createdAt)}  ${truncate(s(t.prompt) || s(t.text) || s(t.skill), 40)}`,
           );
         }
         console.error(pc.dim(`共 ${list.length} 条`));
+      }),
+    );
+  tasks
+    .command("running")
+    .description("运行中任务实时状态（支持 --watch 持续刷新）")
+    .option("-w, --watch", "持续刷新直到无运行中任务（Ctrl+C 退出）")
+    .option("--interval <sec>", "刷新间隔秒数（默认 3）", (v: string): number => {
+      const n = Number.parseInt(v, 10);
+      if (!Number.isInteger(n) || n <= 0) throw new InvalidArgumentError("需为正整数");
+      return n;
+    })
+    .action((opts: { watch?: boolean; interval?: number }, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const render = async (): Promise<number> => {
+          const list = asArr(await api.call("GET", "/api/tasks?status=running"));
+          const now = Date.now();
+          process.stdout.write("\x1b[2J\x1b[H");
+          console.log(
+            pc.bold(`运行中任务 ${list.length} 个`) +
+              pc.dim(`  ${new Date().toLocaleTimeString()}（Ctrl+C 退出）`),
+          );
+          for (const t of list) {
+            const elapsed = Math.max(0, now - new Date(s(t.createdAt) || now).getTime());
+            const mins = Math.floor(elapsed / 60000);
+            const secs = Math.floor((elapsed % 60000) / 1000);
+            console.log(
+              `${id8(t.id)}  ${pc.yellow((s(t.phase) || "running").padEnd(8))}  ${id8(t.agentId) || "-"}  ${pc.dim(`${mins}m${String(secs).padStart(2, "0")}s`)}  ${truncate(s(t.prompt), 46)}`,
+            );
+          }
+          return list.length;
+        };
+        if (!opts.watch) {
+          const n = await render();
+          if (n === 0) console.log("（当前无运行中任务）");
+          return;
+        }
+        for (;;) {
+          const n = await render();
+          if (n === 0) {
+            console.log("无运行中任务，监控退出");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, (opts.interval ?? 3) * 1000));
+        }
+      }),
+    );
+  tasks
+    .command("cancel <id>")
+    .description("取消运行中的任务")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const task = (await api.call("GET", `/api/tasks/${id}`)) as { threadId?: string };
+        if (!task.threadId || task.threadId === "dispatch") {
+          throw new Error("该任务没有可取消的会话（可能已完成或为分发内部任务）");
+        }
+        try {
+          await api.cancel(task.threadId);
+        } catch (e) {
+          if ((e as ApiError).status === 409)
+            throw new Error("任务未在运行中（可能已完成或已超时）");
+          throw e;
+        }
+        console.log("已发送取消请求");
+      }),
+    );
+  tasks
+    .command("result <id>")
+    .description("查看任务最终输出（后台任务 / 错过推送时回看）")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const task = (await api.call("GET", `/api/tasks/${id}`)) as {
+          threadId?: string;
+          status?: string;
+          error?: string;
+        };
+        if (task.status === "failed") {
+          console.error(pc.red(`任务失败：${s(task.error) || "未知原因"}`));
+          return;
+        }
+        if (!task.threadId || task.threadId === "dispatch") {
+          throw new Error("该任务没有关联会话，无法回看输出");
+        }
+        const msgs = asArr(await api.history(task.threadId)).filter((m) => s(m.role) === "bot");
+        const last = msgs.at(-1);
+        if (!last) {
+          console.log("（尚无 bot 输出）");
+          return;
+        }
+        console.log(last.text);
       }),
     );
   tasks
