@@ -22,6 +22,8 @@ export interface ChatOptions {
 const COMMANDS = [
   "/help",
   "/status",
+  "/tasks",
+  "/result",
   "/resume",
   "/agent",
   "/new",
@@ -34,6 +36,10 @@ const COMMANDS = [
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
+
+const asArr = (v: unknown): Record<string, unknown>[] =>
+  Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
+const s = (v: unknown): string => (typeof v === "string" ? v : "");
 
 const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "md"]);
 
@@ -360,6 +366,14 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
   }
 
+  /** 短 id 前缀 → 完整任务（按创建时间倒序取首个前缀匹配） */
+  async function resolveTaskId(prefix: string): Promise<Record<string, unknown> | undefined> {
+    const list = asArr(await api.call("GET", "/api/tasks")).sort((a, b) =>
+      s(b.createdAt).localeCompare(s(a.createdAt)),
+    );
+    return list.find((task) => s(task.id).startsWith(prefix));
+  }
+
   // ── 启动横幅（I8）──
   write(`${pc.bold("donger CLI")} ${pc.dim(`v${CLI_VERSION}`)} → ${baseUrl}\n`);
   write(pc.dim(`用户 ${meUser.name}（${meUser.role}）\n`));
@@ -472,7 +486,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     if (t === "/help") {
       emit(
         pc.dim(
-          `${COMMANDS.join("  ")}\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /cancel 中断  /exit 退出\n`,
+          `${COMMANDS.join("  ")}\n  /tasks [id前缀] 任务列表/详情与最终输出  /result <id前缀> 只看任务结果  /cancel [id前缀] 中断当前或指定任务\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /exit 退出\n`,
         ),
       );
       continue;
@@ -559,13 +573,121 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       );
       continue;
     }
-    if (t === "/cancel") {
-      if (!conversationId) {
-        emit(pc.dim("尚无进行中的会话，无需中断\n"));
+    if (t.startsWith("/cancel")) {
+      const targetId = t.slice(7).trim();
+      if (!targetId) {
+        if (!conversationId) {
+          emit(pc.dim("尚无进行中的会话，无需中断\n"));
+          continue;
+        }
+        await api.cancel(conversationId).catch(() => {});
+        emit(pc.dim("(已发送中断请求)\n"));
         continue;
       }
-      await api.cancel(conversationId).catch(() => {});
-      emit(pc.dim("(已发送中断请求)\n"));
+      // /cancel <任务id前缀>：取消任意运行中任务
+      try {
+        const task = (await resolveTaskId(targetId)) as { threadId?: string } | undefined;
+        if (!task?.threadId) throw new Error("任务不存在或无关联会话");
+        await api.cancel(task.threadId);
+        emit(pc.dim(`(已向任务 ${targetId} 发送取消请求)\n`));
+      } catch (e) {
+        emit(formatError(e));
+      }
+      continue;
+    }
+    if (t === "/tasks" || t.startsWith("/tasks ")) {
+      const idPrefix = t.slice(6).trim();
+      try {
+        if (idPrefix) {
+          const task = (await resolveTaskId(idPrefix)) as
+            | {
+                id: string;
+                status: string;
+                phase?: string;
+                agentId?: string;
+                prompt?: string;
+                error?: string;
+                threadId?: string;
+              }
+            | undefined;
+          if (!task) throw new Error(`未找到任务 "${idPrefix}"`);
+          emit(
+            pc.dim(
+              `任务 ${task.id.slice(0, 8)}  ${task.status}${task.phase ? `/${task.phase}` : ""}${task.agentId ? `  agent ${task.agentId.slice(0, 8)}` : ""}\n`,
+            ),
+          );
+          if (task.error) emit(pc.yellow(`失败原因：${task.error}\n`));
+          if (task.threadId) {
+            const msgs = (await api.history(task.threadId).catch(() => [])).filter(
+              (m) => m.role === "bot" && m.text.trim(),
+            );
+            const last = msgs.at(-1);
+            if (last) emit(`\n${renderMarkdown(last.text, isTTY)}\n`);
+          }
+        } else {
+          const [created, running, done, failed] = await Promise.all([
+            api.call("GET", "/api/tasks?status=created"),
+            api.call("GET", "/api/tasks?status=running"),
+            api.call("GET", "/api/tasks?status=done"),
+            api.call("GET", "/api/tasks?status=failed"),
+          ]);
+          const all = [...asArr(running), ...asArr(created), ...asArr(failed), ...asArr(done)]
+            .sort((a, b) => s(b.createdAt).localeCompare(s(a.createdAt)))
+            .slice(0, 8);
+          if (all.length === 0) {
+            emit(pc.dim("（暂无任务）\n"));
+            continue;
+          }
+          for (const task of all) {
+            const st =
+              s(task.status) === "running"
+                ? pc.yellow("running ")
+                : s(task.status) === "failed"
+                  ? pc.red("failed  ")
+                  : s(task.status) === "created"
+                    ? pc.cyan("created ")
+                    : pc.dim("done    ");
+            emit(
+              `${st} ${(s(task.phase) || "-").padEnd(8)} ${truncate(s(task.prompt), 36)}  ${pc.dim(s(task.id).slice(0, 8))}\n`,
+            );
+          }
+          emit(
+            pc.dim(
+              "（/tasks <id前缀> 看详情与最终输出；/result <id前缀> 只看结果；/cancel <id前缀> 取消）\n",
+            ),
+          );
+        }
+      } catch (e) {
+        emit(formatError(e));
+      }
+      continue;
+    }
+    if (t.startsWith("/result ")) {
+      try {
+        const task = (await resolveTaskId(t.slice(8).trim())) as
+          | { threadId?: string; status?: string; error?: string }
+          | undefined;
+        if (!task) throw new Error("任务不存在");
+        if (task.status === "failed") {
+          emit(pc.red(`任务失败：${s(task.error) || "未知原因"}\n`));
+          continue;
+        }
+        const msgs = (await api.history(task.threadId ?? "").catch(() => [])).filter(
+          (m) => m.role === "bot" && m.text.trim(),
+        );
+        const last = msgs.at(-1);
+        if (!last) {
+          emit(pc.dim("（尚无 bot 输出）\n"));
+          continue;
+        }
+        emit(`\n${renderMarkdown(last.text, isTTY)}\n`);
+      } catch (e) {
+        emit(formatError(e));
+      }
+      continue;
+    }
+    if (t === "/result") {
+      emit(pc.dim("用法 /result <任务id前缀>（/tasks 列表可复制）\n"));
       continue;
     }
     if (t === "/multi") {
