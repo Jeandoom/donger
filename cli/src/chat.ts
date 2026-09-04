@@ -33,6 +33,26 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
+const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "md"]);
+
+/**
+ * 解析 /file 参数：「<路径> [提问]」一行直达。
+ * 路径含空格时无法与提问区分——仅当首个空格前的 token 以附件扩展名结尾才切分；
+ * 其余情况整段视为路径（支持首尾引号）。
+ */
+export function parseFileArgs(rest: string): { path: string; question: string } {
+  const space = rest.indexOf(" ");
+  if (space > 0) {
+    const head = rest.slice(0, space);
+    const ext = head.split(".").pop()?.toLowerCase() ?? "";
+    if (ATTACH_EXTS.has(ext)) {
+      return { path: head, question: rest.slice(space + 1).trim() };
+    }
+  }
+  const path = rest.replace(/^"(.*)"$/, "$1");
+  return { path, question: "" };
+}
+
 /**
  * chat REPL（交互式）：TTY 下启用行编辑/补全/草稿保留；
  * 输出走 emit()——先清提示行再输出，回合结束后重绘提示（I1/I2）。
@@ -306,7 +326,10 @@ export async function runChat(opts: ChatOptions): Promise<void> {
 
   async function selectAgent(): Promise<AgentSummary | null> {
     const agents = await api.listAgents().catch(() => []);
-    if (agents.length === 0) return null;
+    if (agents.length === 0) {
+      write(pc.dim("尚无 agent，直接使用默认会话（可在 web 或经 AI 生成创建）\n"));
+      return null;
+    }
     if (agents.length === 1) return agents[0]!;
     agents.forEach((a, i) => {
       write(
@@ -315,29 +338,38 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         ),
       );
     });
-    const ans = (await ask(`选择 agent [1-${agents.length}]，回车用默认会话: `)).trim();
-    const n = Number.parseInt(ans, 10);
-    if (Number.isInteger(n) && n >= 1 && n <= agents.length) return agents[n - 1]!;
-    if (ans) write(pc.yellow(`无效编号"${ans}"，已选默认会话（/agent 可重新选择）\n`));
-    return null;
+    for (;;) {
+      const ans = (await ask(`选择 agent [1-${agents.length}]，回车用默认会话: `)).trim();
+      const n = Number.parseInt(ans, 10);
+      if (Number.isInteger(n) && n >= 1 && n <= agents.length) return agents[n - 1]!;
+      if (!ans) return null;
+      if (ans.startsWith("/")) {
+        write(pc.dim("先选择编号或直接回车取消，进入会话后再使用斜杠命令\n"));
+        continue;
+      }
+      write(pc.yellow(`无效编号"${ans}"，请输入 1-${agents.length} 或回车取消\n`));
+    }
   }
 
   // ── 启动横幅（I8）──
   write(`${pc.bold("donger CLI")} ${pc.dim(`v${CLI_VERSION}`)} → ${baseUrl}\n`);
   write(pc.dim(`用户 ${meUser.name}（${meUser.role}）\n`));
-  let agent = await (async (): Promise<AgentSummary | null> => {
-    if (opts.agent) {
-      const agents = await api.listAgents().catch(() => []);
-      const hit = agents.find((a) => a.id === opts.agent || a.name === opts.agent);
-      if (hit) return hit;
-      write(pc.yellow(`⚠️ 未找到 agent "${opts.agent}"\n`));
-      return null;
+  // boot 不强制选 agent：直接默认会话起步（惰性创建），需要时 /agent 切换
+  if (opts.agent) {
+    const agents = await api.listAgents().catch(() => []);
+    const hit = agents.find((a) => a.id === opts.agent || a.name === opts.agent);
+    if (hit) {
+      currentAgent = hit;
+    } else {
+      write(pc.yellow(`⚠️ 未找到 agent "${opts.agent}"，使用默认会话\n`));
     }
-    return selectAgent();
-  })();
-  // 同步到会话状态：ensureConversation/promptText 读的是 currentAgent（此前只在 switchTo 里赋值）
-  currentAgent = agent;
-  write(pc.dim(`就绪（agent：${agent?.name ?? "默认会话"}），发送首条消息时创建会话\n`));
+  } else {
+    const agents = await api.listAgents().catch(() => []);
+    if (agents.length > 0) {
+      write(pc.dim(`已有 ${agents.length} 个 agent，/agent 查看（不选则用默认会话）\n`));
+    }
+  }
+  write(pc.dim(`就绪（agent：${currentAgent?.name ?? "默认会话"}），发送首条消息时创建会话\n`));
   write(pc.dim("/help 查看命令 · Ctrl+C 中断任务，连续两次退出\n"));
 
   function formatError(e: unknown): string {
@@ -430,7 +462,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       continue;
     }
     if (t === "/agent") {
-      agent = await selectAgent();
+      const picked = await selectAgent();
+      if (picked === null && currentAgent === null) continue; // 无 agent 可选，保持原状
+      currentAgent = picked;
       resetConversation();
       continue;
     }
@@ -462,7 +496,10 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       const hit =
         Number.isInteger(pick) && pick >= 1 && pick <= sorted.length ? sorted[pick - 1] : undefined;
       if (hit) {
-        const targetAgent = hit.agentId ? agent : null;
+        // 按会话归属反查 agent（而非「当前选中」），提示行/后续会话才能正确显示
+        const targetAgent = hit.agentId
+          ? ((await api.listAgents().catch(() => [])).find((a) => a.id === hit.agentId) ?? null)
+          : null;
         await switchTo({ conversationId: hit.id, agent: targetAgent });
       } else {
         emit(pc.yellow("编号无效，已取消恢复（再次 /resume 可重选）\n"));
@@ -474,11 +511,16 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         emit(pc.yellow("最多 5 个附件\n"));
         continue;
       }
+      const { path: filePath, question } = parseFileArgs(t.slice(6).trim());
       try {
         await ensureConversation();
-        const f = await api.upload(conversationId, t.slice(6).trim());
+        const f = await api.upload(conversationId, filePath);
         pendingFiles.push(f);
         emit(pc.dim(`📎 已附加 ${f.name}（${pendingFiles.length}/5）\n`));
+        if (question) {
+          // 一行直达：/file <路径> <提问> —— 附件随这条消息发送
+          await sendText(question);
+        }
       } catch (e) {
         emit(formatError(e));
       }

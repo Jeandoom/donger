@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest";
+import { parseFileArgs } from "../src/chat.js";
 import { renderMarkdown } from "../src/render.js";
+
+describe("parseFileArgs", () => {
+  it("仅路径", () => {
+    expect(parseFileArgs("D:\\a\\x.jpg")).toEqual({ path: "D:\\a\\x.jpg", question: "" });
+  });
+
+  it("路径 + 提问一行直达", () => {
+    expect(parseFileArgs("D:\\a\\x.jpg 这图里是什么")).toEqual({
+      path: "D:\\a\\x.jpg",
+      question: "这图里是什么",
+    });
+  });
+
+  it("路径含空格且无提问：整段视为路径", () => {
+    expect(parseFileArgs("D:\\My Files\\a b.png")).toEqual({
+      path: "D:\\My Files\\a b.png",
+      question: "",
+    });
+  });
+
+  it("非附件扩展名的首 token 不切分", () => {
+    expect(parseFileArgs("D:\\a.b\\x.txt 看看")).toEqual({
+      path: "D:\\a.b\\x.txt 看看",
+      question: "",
+    });
+  });
+
+  it("去掉首尾引号", () => {
+    expect(parseFileArgs('"D:\\My Files\\a.jpg"')).toEqual({
+      path: "D:\\My Files\\a.jpg",
+      question: "",
+    });
+  });
+});
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const strip = (s: string): string => s.replace(ANSI, "");

@@ -55,7 +55,13 @@ export interface AttachmentFile {
   type: "image" | "markdown";
 }
 
-const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
+const IMAGE_MIME: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+};
 const UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 
 export function createApi(baseUrl: string, token: string): DongerApi {
@@ -124,9 +130,13 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     upload: async (conversationId, filePath) => {
       const name = basename(filePath);
       const ext = name.split(".").pop()?.toLowerCase() ?? "";
-      const type = IMAGE_EXTS.has(ext) ? "image" : ext === "md" ? "markdown" : null;
+      const type = ext in IMAGE_MIME ? "image" : ext === "md" ? "markdown" : null;
       if (!type)
-        throw new ApiError("client", 0, "仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)");
+        throw new ApiError(
+          "client",
+          0,
+          `仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)，但"${name}"的扩展名是"${ext}"`,
+        );
       let buf: Buffer;
       try {
         buf = readFileSync(filePath);
@@ -137,7 +147,10 @@ export function createApi(baseUrl: string, token: string): DongerApi {
         throw new ApiError("client", 0, `文件超过 2MB 上限（${Math.round(buf.length / 1024)}KB）`);
       }
       const fd = new FormData();
-      fd.append("file", new Blob([new Uint8Array(buf)]), name);
+      // 后端按 mimeType 判定图片类型，Blob 必须带 type（md 仅看扩展名，也一并补上）
+      const mime =
+        type === "image" ? (IMAGE_MIME[ext] ?? "application/octet-stream") : "text/markdown";
+      fd.append("file", new Blob([new Uint8Array(buf)], { type: mime }), name);
       let res: Response;
       try {
         res = await fetch(`${baseUrl}/api/upload?threadId=${encodeURIComponent(conversationId)}`, {
