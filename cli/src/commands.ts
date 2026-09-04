@@ -38,7 +38,9 @@ function globals(cmd: Command): Globals {
 /** 所有命令共用的前置：读 profile → 建 api。未登录抛错由 run 统一呈现。 */
 function requireApi(cmd: Command): { api: DongerApi; baseUrl: string; token: string } {
   const profile = loadProfile();
-  if (!profile?.token) throw new Error("未登录。先运行: donger login <CLI_TOKEN>");
+  if (!profile?.token) {
+    throw new Error("未登录。先在后端 .env 配置 CLI_TOKEN，再运行 donger login <CLI_TOKEN>");
+  }
   const baseUrl = resolveBaseUrl(globals(cmd).url, profile);
   return { api: createApi(baseUrl, profile.token), baseUrl, token: profile.token };
 }
@@ -94,7 +96,13 @@ async function runLogin(baseUrl: string, secret?: string): Promise<void> {
     rl.close();
   }
   if (!token) throw new Error("未提供 CLI_TOKEN（后端 .env 配置 CLI_TOKEN 后可用）");
-  const { token: jwt, user } = await createApi(baseUrl, "").exchange(token);
+  const { token: jwt, user } = await createApi(baseUrl, "").exchange(token).catch((e: unknown) => {
+    // login 场景的 auth 失败是「密钥不对」而非「登录过期」，避免「运行 donger login」死循环提示
+    if ((e as ApiError)?.kind === "auth") {
+      throw new Error("CLI_TOKEN 无效：请核对后端 .env 中的 CLI_TOKEN 后重试");
+    }
+    throw e as Error;
+  });
   saveProfile({ baseUrl, token: jwt });
   console.log(`已登录：${user.name}（${user.role}）→ ${profilePath()}`);
 }
@@ -125,8 +133,13 @@ export function buildProgram(): Command {
     .command("chat", { isDefault: true })
     .description("交互式对话（默认命令）")
     .option("-a, --agent <id|名称>", "直接选择智能体")
-    .action((opts: { agent?: string }, cmd: Command) =>
+    // isDefault 使未知词落入 chat；捕获后显式报「未知命令」而非 commander 的莫名多参错误
+    .argument("[extra...]", "", [])
+    .action((extra: string[], opts: { agent?: string }, cmd: Command) =>
       run(async () => {
+        if (extra.length > 0) {
+          throw new Error(`未知命令 "${extra[0]}"，运行 donger --help 查看全部命令`);
+        }
         const { api, baseUrl, token } = requireApi(cmd);
         await runChat({ api, baseUrl, token, agent: opts.agent });
       }),
@@ -537,8 +550,9 @@ export function buildProgram(): Command {
         const list = await api.listConversations(uid);
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
+          const title = (c.title || "（无标题）").replace(/\s+/g, " ");
           console.log(
-            `${c.id.slice(0, 8)}  ${fmtDate(c.updatedAt)}  agent=${c.agentId ? c.agentId.slice(0, 8) : "-"}  ${c.title || "（无标题）"}`,
+            `${c.id.slice(0, 8)}  ${fmtDate(c.updatedAt)}  agent=${c.agentId ? c.agentId.slice(0, 8) : "-"}  ${truncate(title, 60)}`,
           );
         }
         console.error(pc.dim(`共 ${list.length} 条`));

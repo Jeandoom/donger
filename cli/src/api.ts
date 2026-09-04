@@ -79,7 +79,8 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       // Node fetch 把 TLS/DNS 等真实原因藏在 cause 里，剥出来给终端
       const cause = (e as { cause?: unknown })?.cause;
       const detail = cause instanceof Error ? `（${cause.message}）` : "";
-      throw new ApiError("network", 0, `无法连接 ${baseUrl}${detail}`);
+      const hint = token ? "" : "。若后端非默认地址，用 --url <url> 或 DONGER_URL 指定";
+      throw new ApiError("network", 0, `无法连接 ${baseUrl}${detail}${hint}`);
     }
     if (expectStatus && res.status === expectStatus) {
       return undefined as T;
@@ -126,7 +127,12 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       const type = IMAGE_EXTS.has(ext) ? "image" : ext === "md" ? "markdown" : null;
       if (!type)
         throw new ApiError("client", 0, "仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)");
-      const buf = readFileSync(filePath);
+      let buf: Buffer;
+      try {
+        buf = readFileSync(filePath);
+      } catch {
+        throw new ApiError("client", 0, `无法读取文件：${filePath}（不存在或不可访问）`);
+      }
       if (buf.length > UPLOAD_MAX_BYTES) {
         throw new ApiError("client", 0, `文件超过 2MB 上限（${Math.round(buf.length / 1024)}KB）`);
       }

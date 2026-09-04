@@ -424,9 +424,10 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         continue;
       }
       sorted.forEach((c, i) => {
+        const title = (c.title || "（无标题）").replace(/\s+/g, " ");
         write(
           pc.dim(
-            `  [${i + 1}] ${c.title || "（无标题）"} ${c.updatedAt.replace("T", " ").slice(0, 16)} ${c.id.slice(0, 8)}\n`,
+            `  [${i + 1}] ${truncate(title, 40)} ${c.updatedAt.replace("T", " ").slice(0, 16)} ${c.id.slice(0, 8)}\n`,
           ),
         );
       });
@@ -436,6 +437,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       if (hit) {
         const targetAgent = hit.agentId ? agent : null;
         await switchTo({ conversationId: hit.id, agent: targetAgent });
+      } else {
+        emit(pc.yellow("编号无效，已取消恢复（再次 /resume 可重选）\n"));
       }
       continue;
     }
@@ -465,7 +468,12 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       continue;
     }
     if (t === "/cancel") {
+      if (!conversationId) {
+        emit(pc.dim("尚无进行中的会话，无需中断\n"));
+        continue;
+      }
       await api.cancel(conversationId).catch(() => {});
+      emit(pc.dim("(已发送中断请求)\n"));
       continue;
     }
     if (t === "/multi") {
