@@ -355,7 +355,10 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   write(`${pc.bold("donger CLI")} ${pc.dim(`v${CLI_VERSION}`)} → ${baseUrl}\n`);
   write(pc.dim(`用户 ${meUser.name}（${meUser.role}）\n`));
   // boot 不强制选 agent：直接默认会话起步（惰性创建），需要时 /agent 切换
-  if (opts.agent) {
+  if (opts.agent === "builtin-assist") {
+    // 内置 assist 智能体（不入库，后端短路解析）：AI 生成入口
+    currentAgent = { id: opts.agent, name: "AI 生成助手", _mine: true };
+  } else if (opts.agent) {
     const agents = await api.listAgents().catch(() => []);
     const hit = agents.find((a) => a.id === opts.agent || a.name === opts.agent);
     if (hit) {

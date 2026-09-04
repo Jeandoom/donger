@@ -20,6 +20,7 @@ import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
+import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
 import { SqliteGitConnectionStore } from "./adapters/sqlite-git-connection-store.js";
@@ -89,6 +90,8 @@ async function main(): Promise<void> {
   usageStore.migrate();
   const auditStore = new SqliteAuditStore(db);
   auditStore.migrate();
+  const commentStore = new SqliteCommentStore(db);
+  commentStore.migrate();
   const messageStore = new SqliteMessageStore(db);
   messageStore.migrate();
   const transcriptStore = new SqliteTranscriptStore(db);
@@ -168,6 +171,7 @@ async function main(): Promise<void> {
       messageStore,
       usageStore,
       auditStore,
+      commentStore,
       gates: createDefaultGates(),
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,
@@ -229,6 +233,7 @@ async function main(): Promise<void> {
     messageStore,
     usageStore,
     auditStore,
+    commentStore,
     sessionStore,
     cliToken: cfg.cliToken || undefined,
     dingtalkConfig: cfg.dingtalk

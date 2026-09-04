@@ -17,6 +17,12 @@ export class InMemoryAuditStore implements AuditStore {
       .sort((a, b) => a.recordedAt.localeCompare(b.recordedAt) || a.seq - b.seq);
   }
 
+  async listByTask(taskId: string): Promise<AuditEvent[]> {
+    return [...this.byId.values()]
+      .filter((e) => e.taskId === taskId)
+      .sort((a, b) => a.recordedAt.localeCompare(b.recordedAt) || a.seq - b.seq);
+  }
+
   async listConversationSummaries(): Promise<AuditConversationSummary[]> {
     const byConv = new Map<string, AuditEvent[]>();
     for (const e of this.byId.values()) {

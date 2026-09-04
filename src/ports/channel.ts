@@ -6,6 +6,8 @@ export interface ApprovalResult {
   reason?: string;
   /** 实际点击审批的用户标识（多用户场景用，M10） */
   responderId?: string;
+  /** 审批附带的评论（T17.3：验收门评论随决议落 task_comments） */
+  comment?: string;
 }
 
 /** 凭证门单项：要求用户提供的一个凭证 */

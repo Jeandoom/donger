@@ -38,6 +38,7 @@ import type { SchedulerService } from "../orchestrator/scheduler.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
+import type { CommentStore } from "../ports/comment-store.js";
 import type { Channel, CredentialRequest, CredentialRequestItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
@@ -142,6 +143,7 @@ export interface WebChannelDeps {
   messageStore?: MessageStore;
   usageStore?: UsageStore;
   auditStore?: AuditStore;
+  commentStore?: CommentStore;
   sessionStore?: SessionStore;
   /** CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange） */
   cliToken?: string;
@@ -314,7 +316,12 @@ export class WebChannel implements Channel {
   /** 存储审批响应的 resolve 函数 */
   private readonly pendingApprovalResolves = new Map<
     string,
-    (result: { approved: boolean; reason?: string }) => void
+    (result: {
+      approved: boolean;
+      reason?: string;
+      comment?: string;
+      responderId?: string;
+    }) => void
   >();
 
   /** 存储凭证提交的 resolve 函数（key = credential reqId） */
@@ -657,12 +664,20 @@ export class WebChannel implements Channel {
     const body = JSON.parse(await this.readBody(req)) as {
       approved: boolean;
       reason?: string;
+      comment?: string;
     };
 
     const resolve = this.pendingApprovalResolves.get(approvalId);
     if (resolve) {
       this.pendingApprovalResolves.delete(approvalId);
-      resolve({ approved: body.approved, reason: body.reason });
+      // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
+      const responderId = (req as HttpRequest & { userId?: string }).userId;
+      resolve({
+        approved: body.approved,
+        reason: body.reason,
+        comment: body.comment?.trim() || undefined,
+        responderId,
+      });
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true }));
     } else {
@@ -1172,6 +1187,46 @@ export class WebChannel implements Channel {
       res.writeHead(task ? 200 : 404);
       res.end(JSON.stringify(task ?? { error: "not found" }));
       return;
+    }
+
+    // GET /api/tasks/:id/events —— 该任务全量审计事件（T17.3 观测数据源）
+    const taskEventsMatch = url.match(/^\/api\/tasks\/([\w-]+)\/events$/);
+    if (taskEventsMatch && req.method === "GET") {
+      const events = (await this.deps.auditStore?.listByTask(taskEventsMatch[1] ?? "")) ?? [];
+      res.writeHead(200);
+      res.end(JSON.stringify(events));
+      return;
+    }
+
+    // GET/POST /api/tasks/:id/comments —— 任务评论（T17.3 观测/反馈闭环）
+    const taskCommentsMatch = url.match(/^\/api\/tasks\/([\w-]+)\/comments$/);
+    if (taskCommentsMatch) {
+      const taskId = taskCommentsMatch[1] ?? "";
+      if (req.method === "GET") {
+        const comments = (await this.deps.commentStore?.listByTask(taskId)) ?? [];
+        res.writeHead(200);
+        res.end(JSON.stringify(comments));
+        return;
+      }
+      if (req.method === "POST") {
+        if (!this.deps.commentStore) {
+          res.writeHead(503);
+          res.end(JSON.stringify({ error: "评论服务未启用" }));
+          return;
+        }
+        const uid = this.requireRequestUser(req);
+        const body = JSON.parse(await this.readBody(req)) as { text?: string };
+        const text = body.text?.trim();
+        if (!text) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "text 为必填" }));
+          return;
+        }
+        const comment = await this.deps.commentStore.add(taskId, uid, text);
+        res.writeHead(201);
+        res.end(JSON.stringify(comment));
+        return;
+      }
     }
 
     // GET /api/users

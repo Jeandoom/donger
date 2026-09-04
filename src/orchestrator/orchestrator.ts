@@ -14,6 +14,7 @@ import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
+import type { CommentStore } from "../ports/comment-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
 import type { MessageStore } from "../ports/message-store.js";
@@ -66,6 +67,8 @@ export interface OrchestratorDeps {
   installer?: SkillInstaller;
   /** AI 生成子模块：技能 pack 存储（assist 会话列技能用） */
   skillPackStore?: SkillPackStore;
+  /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
+  commentStore?: CommentStore;
 }
 
 export class Orchestrator {
@@ -242,7 +245,13 @@ export class Orchestrator {
     };
     const opts = await prepareOnce();
 
-    const resolver = makeApprovalResolver(this.deps.store, channel, p.threadId, gates);
+    const resolver = makeApprovalResolver(
+      this.deps.store,
+      channel,
+      p.threadId,
+      gates,
+      this.deps.commentStore,
+    );
 
     // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
     let capturedSessionId: string | undefined;

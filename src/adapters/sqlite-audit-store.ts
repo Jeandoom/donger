@@ -86,6 +86,13 @@ export class SqliteAuditStore implements AuditStore {
     return rows.map((r) => this.rowToEv(r));
   }
 
+  async listByTask(taskId: string): Promise<AuditEvent[]> {
+    const rows = this.db
+      .prepare("SELECT * FROM audit_events WHERE taskId = ? ORDER BY recordedAt ASC, seq ASC")
+      .all(taskId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToEv(r));
+  }
+
   async listConversationSummaries(): Promise<AuditConversationSummary[]> {
     const rows = this.db
       .prepare(

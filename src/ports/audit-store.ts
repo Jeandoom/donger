@@ -17,5 +17,7 @@ export interface AuditConversationSummary {
 export interface AuditStore {
   record(e: Omit<AuditEvent, "id">): Promise<AuditEvent>;
   listByConversation(conversationId: string): Promise<AuditEvent[]>;
+  /** 按任务查全量审计事件（T17.3 观测面板数据源） */
+  listByTask(taskId: string): Promise<AuditEvent[]>;
   listConversationSummaries(): Promise<AuditConversationSummary[]>;
 }

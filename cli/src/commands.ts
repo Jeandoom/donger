@@ -159,6 +159,17 @@ export function buildProgram(): Command {
       });
     });
 
+  program
+    .command("agent-new")
+    .description("AI 生成助手：对话式创建 agent / skill（写操作经审批卡确认后落库）")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api, baseUrl, token } = requireApi(cmd);
+        // 内置 assist 智能体（builtin-assist，不入库）：后端短路解析，写操作过 authoring 门
+        await runChat({ api, baseUrl, token, agent: "builtin-assist" });
+      }),
+    );
+
   // ── tasks ──
   const tasks = program.command("tasks").description("任务查看");
   tasks
@@ -186,6 +197,51 @@ export function buildProgram(): Command {
       run(async () => {
         const { api } = requireApi(cmd);
         printJson(await api.call("GET", `/api/tasks/${id}`));
+      }),
+    );
+  tasks
+    .command("events <id>")
+    .description("任务全量审计事件（T17.3 观测：llm/tool/结果流水）")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const list = asArr(await api.call("GET", `/api/tasks/${id}/events`));
+        if (globals(cmd).json) return printJson(list);
+        for (const e of list) {
+          const head = `${s(e.recordedAt).slice(11, 19)}  ${s(e.type).padEnd(11)}`;
+          const usage = e.usage as { totalTokens?: number } | undefined;
+          const detail =
+            s(e.toolName) ||
+            truncate(s(e.text).replace(/\s+/g, " "), 60) ||
+            (usage?.totalTokens ? `${usage.totalTokens} tok` : "");
+          console.log(`${head}  ${detail}`);
+        }
+        console.error(pc.dim(`共 ${list.length} 条事件`));
+      }),
+    );
+  tasks
+    .command("comments <id>")
+    .description("任务评论列表")
+    .action((id: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const list = asArr(await api.call("GET", `/api/tasks/${id}/comments`));
+        if (globals(cmd).json) return printJson(list);
+        for (const c of list) {
+          console.log(
+            `${pc.dim(s(c.createdAt).slice(5, 16))}  ${pc.cyan(s(c.userId).slice(0, 8))}  ${s(c.text)}`,
+          );
+        }
+        console.error(pc.dim(`共 ${list.length} 条`));
+      }),
+    );
+  tasks
+    .command("comment <id> <text...>")
+    .description("给任务添加评论")
+    .action((id: string, text: string[], _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        printJson(await api.call("POST", `/api/tasks/${id}/comments`, { text: text.join(" ") }));
       }),
     );
 
