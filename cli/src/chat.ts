@@ -333,6 +333,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
     return selectAgent();
   })();
+  // 同步到会话状态：ensureConversation/promptText 读的是 currentAgent（此前只在 switchTo 里赋值）
+  currentAgent = agent;
   write(pc.dim(`就绪（agent：${agent?.name ?? "默认会话"}），发送首条消息时创建会话\n`));
   write(pc.dim("/help 查看命令 · Ctrl+C 中断任务，连续两次退出\n"));
 
