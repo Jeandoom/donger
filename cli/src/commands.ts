@@ -96,13 +96,15 @@ async function runLogin(baseUrl: string, secret?: string): Promise<void> {
     rl.close();
   }
   if (!token) throw new Error("未提供 CLI_TOKEN（后端 .env 配置 CLI_TOKEN 后可用）");
-  const { token: jwt, user } = await createApi(baseUrl, "").exchange(token).catch((e: unknown) => {
-    // login 场景的 auth 失败是「密钥不对」而非「登录过期」，避免「运行 donger login」死循环提示
-    if ((e as ApiError)?.kind === "auth") {
-      throw new Error("CLI_TOKEN 无效：请核对后端 .env 中的 CLI_TOKEN 后重试");
-    }
-    throw e as Error;
-  });
+  const { token: jwt, user } = await createApi(baseUrl, "")
+    .exchange(token)
+    .catch((e: unknown) => {
+      // login 场景的 auth 失败是「密钥不对」而非「登录过期」，避免「运行 donger login」死循环提示
+      if ((e as ApiError)?.kind === "auth") {
+        throw new Error("CLI_TOKEN 无效：请核对后端 .env 中的 CLI_TOKEN 后重试");
+      }
+      throw e as Error;
+    });
   saveProfile({ baseUrl, token: jwt });
   console.log(`已登录：${user.name}（${user.role}）→ ${profilePath()}`);
 }
