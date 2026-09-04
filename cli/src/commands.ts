@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import pc from "picocolors";
 import { type ApiError, createApi, type DongerApi } from "./api.js";
 import { CLI_VERSION, runAsk, runChat } from "./chat.js";
@@ -625,7 +625,13 @@ export function buildProgram(): Command {
     .description("用量记录")
     .option("--since <iso>", "起始时间")
     .option("--until <iso>", "结束时间")
-    .option("--limit <n>", "条数", Number.parseInt)
+    .option("--limit <n>", "条数（正整数）", (v: string): number => {
+      const n = Number.parseInt(v, 10);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new InvalidArgumentError("需为正整数");
+      }
+      return n;
+    })
     .action((opts: { since?: string; until?: string; limit?: number }, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
@@ -691,6 +697,15 @@ export function buildProgram(): Command {
         process.stdout.write(await res.text());
       }),
     );
+
+  // exitOverride 需递归到每个子命令，解析错误才统一走 index.ts 的中文错误层；
+  // 同时静音 commander 自己的 stderr 打印（英文 error 行），避免与中文层重复
+  const applyExitOverride = (c: Command): void => {
+    c.exitOverride();
+    c.configureOutput({ writeErr: () => {} });
+    for (const sub of c.commands) applyExitOverride(sub);
+  };
+  applyExitOverride(program);
 
   return program;
 }

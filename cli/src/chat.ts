@@ -191,11 +191,30 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let reconnecting = false;
   let lastSigintAt = 0;
   let forceNewOnce = false;
+  // TTY 下缓冲流式增量，回合结束统一渲染 markdown（增量无法渲染；非 TTY 保持实时流式原文）
+  let streamBuf: string[] | null = null;
+  function flushStream(): void {
+    if (streamBuf !== null && streamBuf.length > 0) {
+      emit(`\n${renderMarkdown(streamBuf.join(""), isTTY)}\n`);
+    }
+    streamBuf = null;
+  }
 
   const events: SessionEvents = {
-    onDelta: (t) => emit(t),
-    onPrint: (t) => emit(`\n${renderMarkdown(t, isTTY)}\n`),
+    onDelta: (t) => {
+      if (isTTY) {
+        streamBuf ??= [];
+        streamBuf.push(t);
+      } else {
+        emit(t);
+      }
+    },
+    onPrint: (t) => {
+      flushStream();
+      emit(`\n${renderMarkdown(t, isTTY)}\n`);
+    },
     onApproval: async (gateId, title, summary) => {
+      flushStream();
       emit(pc.yellow(`\n🔔 审批门：${title}\n${summary}\n`));
       emit(pc.dim("（60 秒内未响应，后端将取消本次审批）\n"));
       void gateId;
@@ -204,6 +223,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       return { approved, reason: approved ? undefined : "CLI 驳回" };
     },
     onCredential: async (items) => {
+      flushStream();
       emit(pc.yellow("\n🔑 需要补充凭证：\n"));
       const values: Record<string, string> = {};
       for (const item of items) {
@@ -213,7 +233,10 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
       return values;
     },
-    onRoundEnd: (ok, text) => emit(ok ? pc.green("\n✅ 完成\n") : pc.red(`\n❌ ${text}\n`)),
+    onRoundEnd: (ok, text) => {
+      flushStream();
+      emit(ok ? pc.green("\n✅ 完成\n") : pc.red(`\n❌ ${text}\n`));
+    },
     onStatus: (st, attempt) => {
       connState = st;
       if (st === "reconnecting") {
@@ -504,13 +527,27 @@ export async function runAsk(opts: ChatOptions, text: string): Promise<number> {
 
   const out = opts.output ?? process.stdout;
   const tty = process.stdout.isTTY === true;
+  // 断言初值：赋值发生在闭包里，字面量 null 会被 TS 收窄成 never
+  let buf = null as string[] | null; // TTY 下缓冲增量，结束后统一渲染
   const session = Session.start(api, opts.baseUrl, opts.token, conversationId, {
-    onDelta: (t) => out.write(t),
-    onPrint: (t) => out.write(`\n${renderMarkdown(t, tty)}\n`),
+    onDelta: (t) => {
+      if (tty) (buf ??= []).push(t);
+      else out.write(t);
+    },
+    onPrint: (t) => {
+      if (buf !== null && buf.length > 0) {
+        out.write(`\n${renderMarkdown(buf.join(""), tty)}\n`);
+        buf = null;
+      }
+      out.write(`\n${renderMarkdown(t, tty)}\n`);
+    },
     onRoundEnd: () => {},
   });
   const ok = await session.send(text);
   session.stop();
+  if (buf !== null && buf.length > 0) {
+    out.write(`\n${renderMarkdown(buf.join(""), tty)}\n`);
+  }
   if (createdDefault) {
     // 一次性问答会话用后即归档，避免空壳堆积
     await api.call("DELETE", `/api/conversations/${conversationId}`).catch(() => {});
