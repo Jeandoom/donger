@@ -671,8 +671,8 @@ export class Orchestrator {
           kbDir: this.deps.kbDir,
           abortSignal: runController.signal,
         });
-        // "none" = 登记表无匹配智能体（能力缺口）：告知用户，不执行
-        if (routing.agentId === "none") {
+        // "none" = 登记表无匹配智能体：任务类输入告知缺口；chat 类输入走闲聊兜底（普通对话直答）
+        if (routing.agentId === "none" && routing.taskType !== "chat") {
           await store.updateStatus(task.id, "failed", {
             error: `未找到匹配的执行智能体：${routing.rationale}`,
             routingRationale: routing.rationale,
@@ -682,21 +682,26 @@ export class Orchestrator {
           channel.pushResult?.(conversation.id, "error", text);
           return conversation.id;
         }
-        const r = await this.resolveAgentForUse(routing.agentId, user);
-        if (r.gitBlocked) {
-          throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
+        if (routing.agentId !== "none") {
+          const r = await this.resolveAgentForUse(routing.agentId, user);
+          if (r.gitBlocked) {
+            throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
+          }
+          ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
+          requiresDesign = routing.requiresDesign;
+          await store.updateStatus(task.id, "planning", {
+            agentId: routing.agentId,
+            requiresDesign: routing.requiresDesign,
+            routingRationale: routing.rationale,
+          });
+          // 路由反馈（V9）：dispatch 静默 30s+，明确告知任务被谁接了
+          await channel.send(msg.threadId, {
+            text: `📨 已分派给「${agent.name}」：${routing.rationale}`,
+          });
+        } else {
+          // 闲聊兜底：不绑 agent，按普通对话直答
+          await store.updateStatus(task.id, nextStatus("created", "plan"));
         }
-        ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
-        requiresDesign = routing.requiresDesign;
-        await store.updateStatus(task.id, "planning", {
-          agentId: routing.agentId,
-          requiresDesign: routing.requiresDesign,
-          routingRationale: routing.rationale,
-        });
-        // 路由反馈（V9）：dispatch 静默 30s+，明确告知任务被谁接了
-        await channel.send(msg.threadId, {
-          text: `📨 已分派给「${agent.name}」：${routing.rationale}`,
-        });
       } else {
         await store.updateStatus(task.id, nextStatus("created", "plan"));
       }

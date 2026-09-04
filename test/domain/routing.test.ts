@@ -30,4 +30,16 @@ describe("parseRoutingDecision", () => {
   it("无 JSON 时抛错", () => {
     expect(() => parseRoutingDecision("无法路由，登记表为空")).toThrow(/路由决策/);
   });
+
+  it("JSON 字符串值内裸换行自动修复", () => {
+    const raw = '{"agentId":"a1","requiresDesign":false,"taskType":"chat",\n  "rationale":"第一行\n第二行"}';
+    const r = parseRoutingDecision(raw);
+    expect(r.agentId).toBe("a1");
+    expect(r.rationale).toBe("第一行\n第二行");
+  });
+
+  it("代码块 JSON 尾随解释文字可解析", () => {
+    const raw = '结论如下：\n```json\n{"agentId":"a1","requiresDesign":true,"taskType":"dev","rationale":"匹配"}\n```\n以上。';
+    expect(parseRoutingDecision(raw).requiresDesign).toBe(true);
+  });
 });

@@ -11,7 +11,8 @@ export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
 
 /**
  * 从 dispatcher 最终输出解析路由决策。
- * 依次尝试：```json 代码块 → 文本中第一个平衡的 {...}；全部失败抛普通 Error（domain 保持纯）。
+ * 依次尝试：```json 代码块 → 文本中第一个平衡的 {...} → 各候选的字符串内裸换行修复版；
+ * 全部失败抛普通 Error（domain 保持纯）。
  */
 export function parseRoutingDecision(text: string): RoutingDecision {
   const candidates: string[] = [];
@@ -31,7 +32,9 @@ export function parseRoutingDecision(text: string): RoutingDecision {
       }
     }
   }
-  for (const c of candidates) {
+  // GLM 偶发在 JSON 字符串值里输出裸换行（非法 JSON）：修复后重试
+  const repaired = candidates.map((c) => escapeNewlinesInStrings(c));
+  for (const c of [...candidates, ...repaired]) {
     try {
       return RoutingDecisionSchema.parse(JSON.parse(c));
     } catch {
@@ -39,4 +42,40 @@ export function parseRoutingDecision(text: string): RoutingDecision {
     }
   }
   throw new Error(`无法从 dispatcher 输出解析路由决策: ${text.slice(0, 200)}`);
+}
+
+/** 仅转义 JSON 字符串内部的裸换行/回车，保留结构性空白 */
+function escapeNewlinesInStrings(json: string): string {
+  let out = "";
+  let inStr = false;
+  let escaped = false;
+  for (const ch of json) {
+    if (!inStr) {
+      if (ch === '"') inStr = true;
+      out += ch;
+      continue;
+    }
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = false;
+      out += ch;
+      continue;
+    }
+    if (ch === "\n") {
+      out += "\\n";
+      continue;
+    }
+    if (ch === "\r") continue;
+    out += ch;
+  }
+  return out;
 }
