@@ -5,12 +5,15 @@ import type { MessageStore } from "../ports/message-store.js";
 /** 把 RunnerEvent 流翻译成 Channel 消息。
  *  text → 通过 SSE pushText 推送，同时持久化到 MessageStore。
  *  result success → 推送完成通知。
- *  result error → 推送失败通知。 */
+ *  result error → 推送失败通知。
+ *  quietResult=true（多阶段任务的非末轮）→ 成功 result 不推送（回合不提前结束）；
+ *  失败照常推送（回合必须能以错误结束）。 */
 export async function bridgeEvents(
   channel: Channel,
   conversationId: string,
   events: AsyncIterable<RunnerEvent>,
   messageStore?: MessageStore,
+  quietResult = false,
 ): Promise<RunnerEvent | undefined> {
   let last: RunnerEvent | undefined;
   let streamedMessageId: string | null = null;
@@ -43,6 +46,8 @@ export async function bridgeEvents(
           await channel.send(conversationId, { text: errorText });
         }
         channel.pushResult?.(conversationId, "error", errorText);
+      } else if (quietResult) {
+        // 非末轮成功：静默（后续阶段还有门/轮次）
       } else {
         // success: 推送完成通知
         if (channel.pushResult && conversationId) {

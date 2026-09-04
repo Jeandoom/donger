@@ -356,13 +356,13 @@ describe("三段式生命周期", () => {
     expect(runner.optsList[0]?.platformTools?.type).toBe("sdk");
   });
 
-  it("dispatch none 回复含「让 AI 协助创建」引导", async () => {
+  it("dispatch none 回复含「AI 生成助手」引导", async () => {
     const runner = new ScriptedRunner([
       { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
     ]);
     const channel = seqChannel([]);
     const { orch } = build(runner, channel, statefulConvStore(""));
     await orch.handleMessage(MSG);
-    expect(channel.texts.join("\n")).toContain("让 AI 协助创建");
+    expect(channel.texts.join("\n")).toContain("AI 生成助手");
   });
 });

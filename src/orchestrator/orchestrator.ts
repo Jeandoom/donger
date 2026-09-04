@@ -214,6 +214,8 @@ export class Orchestrator {
     sharedAgentSkillOwner?: User;
     gitMaterializeItems?: RepositoryMaterializeItem[];
     runController: AbortController;
+    /** 多阶段任务的非末轮置 true：不向渠道推 result 事件（CLI/web 的回合不提前结束） */
+    quietResult?: boolean;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
     const prepareOnce = async (): Promise<RunOptions> => {
@@ -367,6 +369,7 @@ export class Orchestrator {
       p.conversation.id,
       wrappedEvents,
       this.deps.messageStore,
+      p.quietResult === true,
     );
 
     if (p.runController.signal.aborted) {
@@ -451,7 +454,7 @@ export class Orchestrator {
       await store.updateStatus(p.task.id, "failed", { error: "阶段解析缺失 execute" });
       return p.conversation.id;
     }
-    const turn = (prompt: string, skills: string[]) =>
+    const turn = (prompt: string, skills: string[], quietTurn = false) =>
       this.runTurn({
         task: { ...p.task, prompt },
         user: p.user,
@@ -464,6 +467,7 @@ export class Orchestrator {
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
         gitMaterializeItems: p.gitMaterializeItems,
         runController: p.runController,
+        quietResult: quietTurn,
       });
     const finishTask = async (ok: boolean, error?: string, resultText = "") => {
       await store.updateStatus(
@@ -491,7 +495,8 @@ export class Orchestrator {
       await store.updateStatus(p.task.id, "planning", { phase: "design" });
       let prompt = designFirstAsk(p.task.prompt);
       for (;;) {
-        const r = await turn(prompt, plan.steps[0]?.skills ?? []);
+        // 方案轮非末轮：静默 result（后续还有 execute/accept）
+        const r = await turn(prompt, plan.steps[0]?.skills ?? [], true);
         if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
         if (!r.ok) {
           await store.updateStatus(p.task.id, "failed", { error: r.error });
@@ -530,7 +535,7 @@ export class Orchestrator {
             ? executeAfterDesign()
             : p.task.prompt
           : executeRejected(lastRejectionReason ?? "未提供原因");
-      const re = await turn(execPrompt, execStep.skills);
+      const re = await turn(execPrompt, execStep.skills, acceptStep !== undefined);
       if (re.aborted) return await this.finishCanceled(p.task, p.conversation);
       if (!re.ok) {
         await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: re.error });
@@ -687,6 +692,10 @@ export class Orchestrator {
           agentId: routing.agentId,
           requiresDesign: routing.requiresDesign,
           routingRationale: routing.rationale,
+        });
+        // 路由反馈（V9）：dispatch 静默 30s+，明确告知任务被谁接了
+        await channel.send(msg.threadId, {
+          text: `📨 已分派给「${agent.name}」：${routing.rationale}`,
         });
       } else {
         await store.updateStatus(task.id, nextStatus("created", "plan"));

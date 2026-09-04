@@ -31,6 +31,7 @@ import {
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
@@ -38,8 +39,8 @@ import type { SchedulerService } from "../orchestrator/scheduler.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
-import type { CommentStore } from "../ports/comment-store.js";
 import type { Channel, CredentialRequest, CredentialRequestItem } from "../ports/channel.js";
+import type { CommentStore } from "../ports/comment-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialStore } from "../ports/credential-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
@@ -316,12 +317,7 @@ export class WebChannel implements Channel {
   /** 存储审批响应的 resolve 函数 */
   private readonly pendingApprovalResolves = new Map<
     string,
-    (result: {
-      approved: boolean;
-      reason?: string;
-      comment?: string;
-      responderId?: string;
-    }) => void
+    (result: { approved: boolean; reason?: string; comment?: string; responderId?: string }) => void
   >();
 
   /** 存储凭证提交的 resolve 函数（key = credential reqId） */
@@ -442,27 +438,44 @@ export class WebChannel implements Channel {
         await this.handleApprovalStream(req, res);
         return;
       }
-      // 审批响应
-      if (url.startsWith("/api/approvals/") && req.method === "POST" && url.endsWith("/respond")) {
-        await this.handleApprovalRespond(req, res);
-        return;
-      }
-      // 凭证门提交
-      if (url.startsWith("/api/credentials/") && req.method === "POST" && url.endsWith("/submit")) {
-        await this.handleCredentialSubmit(url, req, res);
-        return;
-      }
-      // 发送消息
-      const sendMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
-      if (sendMatch && req.method === "POST") {
-        await this.handleSendMessage(req, res);
-        return;
-      }
-      const cancelMatch = url.match(/^\/api\/conversations\/([\w-]+)\/cancel$/);
-      if (cancelMatch && req.method === "POST") {
-        const conversationId = cancelMatch[1];
-        if (!conversationId) return this.json(res, { error: "invalid conversation url" }, 400);
-        await this.handleCancel(req, res, conversationId);
+      // 审批/凭证/消息/取消：任何异常都以 500 响应，绝不逃逸打崩进程
+      try {
+        // 审批响应
+        if (
+          url.startsWith("/api/approvals/") &&
+          req.method === "POST" &&
+          url.endsWith("/respond")
+        ) {
+          await this.handleApprovalRespond(req, res);
+          return;
+        }
+        // 凭证门提交
+        if (
+          url.startsWith("/api/credentials/") &&
+          req.method === "POST" &&
+          url.endsWith("/submit")
+        ) {
+          await this.handleCredentialSubmit(url, req, res);
+          return;
+        }
+        // 发送消息
+        const sendMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
+        if (sendMatch && req.method === "POST") {
+          await this.handleSendMessage(req, res);
+          return;
+        }
+        const cancelMatch = url.match(/^\/api\/conversations\/([\w-]+)\/cancel$/);
+        if (cancelMatch && req.method === "POST") {
+          const conversationId = cancelMatch[1];
+          if (!conversationId) return this.json(res, { error: "invalid conversation url" }, 400);
+          await this.handleCancel(req, res, conversationId);
+          return;
+        }
+      } catch (e) {
+        console.error("[web] 消息类路由异常:", e);
+        if (!res.headersSent) {
+          this.json(res, { error: e instanceof Error ? e.message : "internal error" }, 500);
+        }
         return;
       }
       // 其他 API
@@ -1531,6 +1544,20 @@ export class WebChannel implements Channel {
     if (agentConvMatch && req.method === "GET") {
       const id = agentConvMatch[1] ?? "";
       const me = this.requireUserId(req);
+      // 内置 assist 智能体：代码常量不入库，直接 get-or-create 其会话
+      if (id === BUILTIN_ASSIST_AGENT_ID) {
+        const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
+        const existing = list.find((c) => c.agentId === id);
+        const conv =
+          existing ??
+          (await this.deps.conversationStore?.createWithAgent(
+            me,
+            "cli",
+            BUILTIN_ASSIST_AGENT.name,
+            id,
+          ));
+        return this.json(res, conv);
+      }
       const a = await this.agentStore?.get(id);
       if (!a) return this.json(res, { error: "not found" }, 404);
       const meUser = await this.deps.userStore?.get(me);
@@ -2377,6 +2404,8 @@ export class WebChannel implements Channel {
       throw new ForbiddenError("CONVERSATION_FORBIDDEN", "会话不存在或不属于当前用户");
     }
     if (!conversation.agentId) return undefined;
+    // 内置 assist 智能体不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
+    if (conversation.agentId === BUILTIN_ASSIST_AGENT_ID) return undefined;
     const user = await this.deps.userStore?.get(userId);
     const agent = await this.deps.agentStore?.get(conversation.agentId);
     if (!user || !agent) throw new NotFoundError("AGENT_NOT_FOUND", "智能体不存在");
