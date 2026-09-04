@@ -531,8 +531,12 @@ export async function runAsk(opts: ChatOptions, text: string): Promise<number> {
   let buf = null as string[] | null; // TTY 下缓冲增量，结束后统一渲染
   const session = Session.start(api, opts.baseUrl, opts.token, conversationId, {
     onDelta: (t) => {
-      if (tty) (buf ??= []).push(t);
-      else out.write(t);
+      if (tty) {
+        if (buf === null) buf = [];
+        buf.push(t);
+      } else {
+        out.write(t);
+      }
     },
     onPrint: (t) => {
       if (buf !== null && buf.length > 0) {
