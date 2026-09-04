@@ -5,6 +5,7 @@
 export type SSEEvent =
   | { type: "text"; text: string }
   | { type: "text_delta"; messageId: string; text: string }
+  | { type: "activity"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
       type: "credential_card";

@@ -4,6 +4,7 @@ import type { MessageStore } from "../ports/message-store.js";
 
 /** 把 RunnerEvent 流翻译成 Channel 消息。
  *  text → 通过 SSE pushText 推送，同时持久化到 MessageStore。
+ *  tool_use / tool_result 失败 → pushActivity 中间过程行（观测可视）。
  *  result success → 推送完成通知。
  *  result error → 推送失败通知。
  *  quietResult=true（多阶段任务的非末轮）→ 成功 result 不推送（回合不提前结束）；
@@ -17,11 +18,23 @@ export async function bridgeEvents(
 ): Promise<RunnerEvent | undefined> {
   let last: RunnerEvent | undefined;
   let streamedMessageId: string | null = null;
+  const toolByUseId = new Map<string, string>();
   for await (const e of events) {
     last = e;
     if (e.type === "text_delta") {
       streamedMessageId = e.messageId;
       channel.pushTextDelta?.(conversationId, e.messageId, e.text);
+    } else if (e.type === "tool_use") {
+      toolByUseId.set(e.toolUseId, e.tool);
+      channel.pushActivity?.(
+        conversationId,
+        `🔧 ${e.tool} ${clipInput(JSON.stringify(e.input ?? {}))}`,
+      );
+    } else if (e.type === "tool_result") {
+      if (e.isError) {
+        const name = toolByUseId.get(e.toolUseId) ?? "工具";
+        channel.pushActivity?.(conversationId, `⚠️ ${name} 失败：${clipInput(e.content, 80)}`);
+      }
     } else if (e.type === "text") {
       // 先持久化 bot 消息到数据库，再推送到前端
       if (messageStore && conversationId) {
@@ -57,4 +70,10 @@ export async function bridgeEvents(
     }
   }
   return last;
+}
+
+function clipInput(text: string | undefined, max = 100): string {
+  const t = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!t || t === "{}" || t === '""') return "";
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }

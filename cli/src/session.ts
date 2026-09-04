@@ -20,6 +20,8 @@ export interface ApprovalResponse {
 export interface SessionEvents {
   onDelta(text: string): void;
   onPrint(text: string): void;
+  /** 中间过程行（工具调用/失败等） */
+  onActivity?(text: string): void;
   /** 审批决策（缺省 = 非交互安全默认：自动驳回） */
   onApproval?(gateId: string, title: string, summary: string): Promise<ApprovalResponse>;
   /** 凭证收集（缺省 = 提交空值，任务将以缺凭证失败） */
@@ -196,6 +198,9 @@ export class Session {
     switch (action.kind) {
       case "delta":
         this.events.onDelta(action.text);
+        break;
+      case "activity":
+        this.events.onActivity?.(action.text);
         break;
       case "print":
         this.events.onPrint(action.text);

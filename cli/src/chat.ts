@@ -110,6 +110,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   function emit(s: string): void {
     clearPromptLine();
     write(s);
+    atLineStart = s.endsWith("\n");
     if (askPending && isTTY) {
       rl.setPrompt(currentPrompt);
       rl.prompt(true);
@@ -213,31 +214,20 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let reconnecting = false;
   let lastSigintAt = 0;
   let forceNewOnce = false;
-  // TTY 下缓冲流式增量，回合结束统一渲染 markdown（增量无法渲染；非 TTY 保持实时流式原文）
-  let streamBuf: string[] | null = null;
+  // 实时流式（增量直出）；markdown 渲染仅用于完整 text 消息（流式内容保真优先）
   let lastPrinted = ""; // 最近的 print 正文：result(error) 常重复同文本，避免双份输出
-  function flushStream(): void {
-    if (streamBuf !== null && streamBuf.length > 0) {
-      const body = renderMarkdown(streamBuf.join(""), isTTY);
-      lastPrinted = streamBuf.join("");
-      emit(`\n${body}\n`);
-    }
-    streamBuf = null;
-  }
+  let atLineStart = true; // 活动行拼接用：流式文本未换行时先补换行
 
   const events: SessionEvents = {
     onDelta: (t) => {
-      if (isTTY) {
-        streamBuf ??= [];
-        streamBuf.push(t);
-      } else {
-        emit(t);
-      }
+      emit(t);
+    },
+    onActivity: (t) => {
+      emit(`${atLineStart ? "" : "\n"}${pc.dim(`· ${t}`)}\n`);
     },
     onPrint: (t) => {
-      flushStream();
-      lastPrinted = t;
       emit(`\n${renderMarkdown(t, isTTY)}\n`);
+      lastPrinted = t;
       // 冷启动引导（PM 评审#5）：无可用智能体时指一条 CLI 侧出路
       if (t.startsWith("🤷")) {
         emit(
@@ -248,7 +238,6 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
     },
     onApproval: async (gateId, title, summary) => {
-      flushStream();
       emit(pc.yellow(`\n🔔 审批门：${title}\n${summary}\n`));
       const lifeCycleGate = gateId === "design" || gateId === "acceptance";
       emit(pc.dim(`（${lifeCycleGate ? "10 分钟" : "60 秒"}内未响应，后端将取消本次审批）\n`));
@@ -260,7 +249,6 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       return { approved: false, reason: why || "CLI 驳回" };
     },
     onCredential: async (items) => {
-      flushStream();
       emit(pc.yellow("\n🔑 需要补充凭证：\n"));
       const values: Record<string, string> = {};
       for (const item of items) {
@@ -271,7 +259,6 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       return values;
     },
     onRoundEnd: (ok, text) => {
-      flushStream();
       if (!ok && text && text === lastPrinted) {
         // 失败正文已随 print 展示（后端 send+pushResult 双通道），只补结束标记
         emit(pc.red("\n❌ 任务失败\n"));

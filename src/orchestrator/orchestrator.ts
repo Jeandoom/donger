@@ -493,7 +493,9 @@ export class Orchestrator {
     // —— 方案设计 + 方案门（requiresDesign=true）——
     if (hasDesign) {
       await store.updateStatus(p.task.id, "planning", { phase: "design" });
-      await channel.send(p.threadId, { text: "📋 方案设计阶段" });
+      await channel.send(p.threadId, {
+        text: `📋 方案设计阶段（skills: ${plan.steps[0]?.skills.join("、") || "无，按系统提示出方案"}）`,
+      });
       let prompt = designFirstAsk(p.task.prompt);
       for (;;) {
         // 方案轮非末轮：静默 result（后续还有 execute/accept）
@@ -530,7 +532,11 @@ export class Orchestrator {
         await store.updateStatus(p.task.id, nextStatus("planning", "start"));
       }
       await store.updateStatus(p.task.id, "running", { phase: "execute" });
-      if (round === 0) await channel.send(p.threadId, { text: "🔨 执行阶段" });
+      if (round === 0) {
+        await channel.send(p.threadId, {
+          text: `🔨 执行阶段（skills: ${execStep.skills.join("、") || "默认"}）`,
+        });
+      }
       const execPrompt =
         round === 0
           ? hasDesign
@@ -547,7 +553,9 @@ export class Orchestrator {
       let summary = re.resultText;
       if (acceptStep) {
         await store.updateStatus(p.task.id, "running", { phase: "accept" });
-        await channel.send(p.threadId, { text: "🔍 验收阶段" });
+        await channel.send(p.threadId, {
+          text: `🔍 验收阶段（skills: ${acceptStep.skills.join("、") || "默认"}）`,
+        });
         const ra = await turn(acceptAsk(), acceptStep.skills);
         if (ra.aborted) return await this.finishCanceled(p.task, p.conversation);
         if (!ra.ok) {

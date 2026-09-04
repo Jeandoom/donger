@@ -115,6 +115,7 @@ function contentType(absPath: string): string {
 type SSEEvent =
   | { type: "text"; text: string }
   | { type: "text_delta"; messageId: string; text: string }
+  | { type: "activity"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
       type: "credential_card";
@@ -266,6 +267,11 @@ export class WebChannel implements Channel {
   }
 
   /** 向会话的 SSE 客户端推送助手文本增量 */
+  /** 中间过程行（工具调用等）：广播 activity 事件，不落库 */
+  pushActivity(conversationId: string, text: string): void {
+    this.broadcastToConversation(conversationId, { type: "activity", text });
+  }
+
   pushTextDelta(conversationId: string, messageId: string, text: string): void {
     this.broadcastToConversation(conversationId, { type: "text_delta", messageId, text });
   }
