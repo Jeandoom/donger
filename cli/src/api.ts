@@ -185,8 +185,7 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     },
     cancel: (conversationId) =>
       request("POST", `/api/conversations/${conversationId}/cancel`, {}, 200),
-    optimizeTask: (taskId) =>
-      request("POST", `/api/tasks/${taskId}/optimize`, {}),
+    optimizeTask: (taskId) => request("POST", `/api/tasks/${taskId}/optimize`, {}),
     respondApproval: (gateId, approved, reason) =>
       request("POST", `/api/approvals/${gateId}/respond`, { approved, reason }),
     submitCredential: (reqId, values) =>
