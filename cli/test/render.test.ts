@@ -63,8 +63,14 @@ describe("renderMarkdown", () => {
     expect(r).toContain("▌ 引用句");
   });
 
-  it("表格与列表保持原样", () => {
-    const src = "| a | b |\n|---|---|\n| 1 | 2 |\n- 项目";
-    expect(renderMarkdown(src, true)).toBe(src);
+  it("表格渲染为对齐表格；列表保持原样", () => {
+    const r = renderMarkdown("| 模块 | 状态 |\n|---|---|\n| runner | ✅ |\n- 项目", true);
+    expect(r).toContain("模块"); // 表头进 cli-table3
+    expect(r).toContain("runner");
+    expect(r).toContain("├"); // 表格有分隔框线
+    expect(r).toContain("- 项目");
+    // 非 TTY 表格原样
+    const src = "| a | b |\n|---|---|\n| 1 | 2 |";
+    expect(renderMarkdown(src, false)).toBe(src);
   });
 });

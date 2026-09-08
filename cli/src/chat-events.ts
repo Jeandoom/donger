@@ -4,6 +4,7 @@ import type { SSEEvent } from "./types.js";
 export type EventAction =
   | { kind: "print"; text: string }
   | { kind: "delta"; text: string }
+  | { kind: "thinking"; text: string }
   | { kind: "activity"; text: string }
   | { kind: "round_end"; ok: boolean; text: string }
   | { kind: "approval"; gateId: string; title: string; summary: string }
@@ -24,6 +25,8 @@ export function classifyEvent(e: SSEEvent, streaming: { messageId: string | null
     case "text_delta":
       streaming.messageId = e.messageId;
       return { kind: "delta", text: e.text };
+    case "thinking_delta":
+      return { kind: "thinking", text: e.text };
     case "activity":
       return { kind: "activity", text: e.text };
     case "text": {

@@ -1,16 +1,25 @@
+import Table from "cli-table3";
 import pc from "picocolors";
 
 /**
- * markdown-lite 终端渲染（I5）：代码块盒装、标题加粗、粗体、引用缩进。
- * 表格/列表等保持原样（管道可读）。color=false（非 TTY）时原文直通。
+ * markdown-lite 终端渲染（I5）：代码块盒装、标题加粗、粗体、引用缩进、表格对齐（V18）。
+ * color=false（非 TTY）时原文直通。
  */
 export function renderMarkdown(src: string, color: boolean): string {
   if (!color) return src;
   const out: string[] = [];
   let inCode = false;
   let codeBuf: string[] = [];
+  let tableBuf: string[] = [];
+  const flushTable = (): void => {
+    if (tableBuf.length > 0) {
+      out.push(renderTable(tableBuf, true));
+      tableBuf = [];
+    }
+  };
   for (const line of src.split("\n")) {
     if (line.trimStart().startsWith("```")) {
+      flushTable();
       if (!inCode) {
         inCode = true;
         codeBuf = [];
@@ -24,9 +33,15 @@ export function renderMarkdown(src: string, color: boolean): string {
       codeBuf.push(line);
       continue;
     }
+    if (line.trimStart().startsWith("|")) {
+      tableBuf.push(line);
+      continue;
+    }
+    flushTable();
     out.push(renderLine(line));
   }
   if (inCode) out.push(...boxCode(codeBuf)); // 未闭合代码块兜底
+  flushTable();
   return out.join("\n");
 }
 
@@ -36,6 +51,35 @@ function renderLine(line: string): string {
   const q = line.match(/^>\s?(.*)$/);
   if (q) return pc.dim(`▌ ${q[1] ?? ""}`);
   return line.replace(/\*\*([^*]+)\*\*/g, (_m, inner: string) => pc.bold(inner));
+}
+
+/** 代码块盒装：按最长行撑宽度 */
+export function renderCodeBlock(lines: string[], color: boolean): string {
+  if (!color) return ["```", ...lines, "```"].join("\n");
+  return boxCode(lines).join("\n");
+}
+
+/** markdown 表格 → 终端对齐表格（cli-table3）。非 TTY / 不含表头分隔行时原样返回。 */
+export function renderTable(lines: string[], color: boolean): string {
+  if (!color) return lines.join("\n");
+  const rows = lines.map((l) =>
+    l
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|\s*$/, "")
+      .split("|")
+      .map((c) => c.trim()),
+  );
+  const sep = rows[1];
+  const hasHeader = Array.isArray(sep) && sep.length > 0 && sep.every((c) => /^:?-+:?$/.test(c));
+  if (!hasHeader || rows[0] === undefined) return lines.join("\n");
+  const head = rows[0];
+  const table = new Table({ head });
+  for (const row of rows.slice(2)) {
+    if (row.length === 0) continue;
+    table.push([...row, ...Array<string>(Math.max(0, head.length - row.length)).fill("")]);
+  }
+  return table.toString();
 }
 
 /** 代码块盒装：按最长行撑宽度 */

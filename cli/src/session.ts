@@ -20,6 +20,8 @@ export interface ApprovalResponse {
 export interface SessionEvents {
   onDelta(text: string): void;
   onPrint(text: string): void;
+  /** 思考流增量（暗淡实时显示；与 onDelta/onPrint 交替时由消费方负责收行） */
+  onThinking?(text: string): void;
   /** 中间过程行（工具调用/失败等） */
   onActivity?(text: string): void;
   /** 审批决策（缺省 = 非交互安全默认：自动驳回） */
@@ -199,6 +201,9 @@ export class Session {
       case "delta":
         this.events.onDelta(action.text);
         break;
+      case "thinking":
+        this.events.onThinking?.(action.text);
+        break;
       case "activity":
         this.events.onActivity?.(action.text);
         break;
@@ -214,7 +219,7 @@ export class Session {
         break;
       }
       case "approval": {
-        this.gateName = `审批门：${action.title}`;
+        this.gateName = action.title; // title 已含「审批门：」前缀
         const resp =
           (await this.events.onApproval?.(action.gateId, action.title, action.summary)) ??
           autoApprovalResponse();

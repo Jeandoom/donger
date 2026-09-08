@@ -88,7 +88,11 @@ export function createApi(baseUrl: string, token: string): DongerApi {
       const cause = (e as { cause?: unknown })?.cause;
       const detail = cause instanceof Error ? `（${cause.message}）` : "";
       const hint = token ? "" : "。若后端非默认地址，用 --url <url> 或 DONGER_URL 指定";
-      throw new ApiError("network", 0, `无法连接 ${baseUrl}${detail}${hint}`);
+      const tlsHint =
+        cause instanceof Error && /certificate|self-signed|TLS/i.test(cause.message)
+          ? "；自签/内网证书可设环境变量 DONGER_INSECURE_TLS=1 跳过校验"
+          : "";
+      throw new ApiError("network", 0, `无法连接 ${baseUrl}${detail}${hint}${tlsHint}`);
     }
     if (expectStatus && res.status === expectStatus) {
       return undefined as T;

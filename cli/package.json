@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
     "picocolors": "^1.1.1"
   },

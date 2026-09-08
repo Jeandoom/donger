@@ -10,6 +10,41 @@ const id8 = (v: unknown): string => s(v).slice(0, 8);
 const asArr = (v: unknown): Record<string, unknown>[] =>
   Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
 
+/** 全量任务列表：默认合集缺 canceled，按 id 解析前需补齐（短前缀才有可能命中取消任务） */
+export async function fetchAllTasks(api: DongerApi): Promise<Record<string, unknown>[]> {
+  const [base, canceled] = await Promise.all([
+    api.call("GET", "/api/tasks"),
+    api.call("GET", "/api/tasks?status=canceled"),
+  ]);
+  return [...asArr(base), ...asArr(canceled)];
+}
+
+/**
+ * 短 id 前缀 → 完整 id（统一根因修复）：列表展示截为 8 位，而按 id 查询的 API 需完整 UUID。
+ * 完整 id 直通；唯一命中返回完整 id；零/多命中抛出可行动的错误（列出候选）。
+ */
+export async function resolveId(
+  input: string,
+  fetchAll: () => Promise<unknown[]>,
+  kind: string,
+  listHint: string,
+): Promise<string> {
+  if (input.length >= 36) return input;
+  const all = (await fetchAll())
+    .map((v) => v as Record<string, unknown>)
+    .sort((a, b) => s(b.createdAt).localeCompare(s(a.createdAt)));
+  const hits = all.filter((t) => s(t.id).startsWith(input));
+  if (hits.length === 1) return s(hits[0]?.id);
+  if (hits.length === 0) {
+    throw new Error(`未找到匹配的${kind}："${input}"（先用 ${listHint} 查看完整 id）`);
+  }
+  const preview = hits
+    .slice(0, 5)
+    .map((h) => `  ${s(h.id)}  ${truncate(s(h.prompt) || s(h.title), 36)}`)
+    .join("\n");
+  throw new Error(`${kind}前缀 "${input}" 匹配 ${hits.length} 条，请加长：\n${preview}`);
+}
+
 function printJson(v: unknown): void {
   console.log(JSON.stringify(v, null, 2));
 }
@@ -170,12 +205,23 @@ export function buildProgram(): Command {
       }),
     );
 
+  program
+    .command("agent-builder")
+    .description("Agent Builder：描述想要的业务能力，对话式补建 skills + agent 并登记路由表")
+    .action((_opts: object, cmd: Command) =>
+      run(async () => {
+        const { api, baseUrl, token } = requireApi(cmd);
+        // 内置 builder 智能体（agent-builder，不入库）：分发无匹配时的兜底，也可主动进入
+        await runChat({ api, baseUrl, token, agent: "agent-builder" });
+      }),
+    );
+
   // ── tasks ──
   const tasks = program.command("tasks").description("任务查看与管理");
   tasks
     .command("list")
     .description("任务列表（创建时间倒序，含 phase/agent）")
-    .option("-s, --status <status>", "按状态过滤：created/running/done/failed")
+    .option("-s, --status <status>", "按状态过滤：created/running/done/failed/canceled")
     .action((opts: { status?: string }, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
@@ -244,11 +290,12 @@ export function buildProgram(): Command {
     );
   tasks
     .command("cancel <id>")
-    .description("取消运行中的任务")
+    .description("取消运行中的任务（支持 tasks list 输出的 8 位短 id 前缀）")
     .action((id: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const task = (await api.call("GET", `/api/tasks/${id}`)) as { threadId?: string };
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        const task = (await api.call("GET", `/api/tasks/${taskId}`)) as { threadId?: string };
         if (!task.threadId || task.threadId === "dispatch") {
           throw new Error("该任务没有可取消的会话（可能已完成或为分发内部任务）");
         }
@@ -264,11 +311,12 @@ export function buildProgram(): Command {
     );
   tasks
     .command("result <id>")
-    .description("查看任务最终输出（后台任务 / 错过推送时回看）")
+    .description("查看任务最终输出（后台任务 / 错过推送时回看；支持短 id 前缀）")
     .action((id: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const task = (await api.call("GET", `/api/tasks/${id}`)) as {
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        const task = (await api.call("GET", `/api/tasks/${taskId}`)) as {
           threadId?: string;
           status?: string;
           error?: string;
@@ -291,20 +339,36 @@ export function buildProgram(): Command {
     );
   tasks
     .command("show <id>")
-    .description("任务详情")
+    .description("任务详情（支持短 id 前缀）")
     .action((id: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        printJson(await api.call("GET", `/api/tasks/${id}`));
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        printJson(await api.call("GET", `/api/tasks/${taskId}`));
       }),
     );
   tasks
     .command("events <id>")
-    .description("任务全量审计事件（T17.3 观测：llm/tool/结果流水）")
+    .description("任务全量审计事件（观测：steps 流水线 + llm/tool/结果流水；支持短 id 前缀）")
     .action((id: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const list = asArr(await api.call("GET", `/api/tasks/${id}/events`));
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        // Task Flow 步骤链概览（dispatcher→builder/chat/agent 的处理流水线）
+        const task = (await api.call("GET", `/api/tasks/${taskId}`)) as {
+          steps?: Array<{ role: string; status: string; agentId: string; summary?: string }>;
+          builderFromTaskId?: string;
+        };
+        if (task.steps?.length && !globals(cmd).json) {
+          const chain = task.steps
+            .map((st) => `${st.role}[${id8(st.agentId) || st.agentId}]${st.status}`)
+            .join(pc.dim(" → "));
+          console.log(`${pc.bold("流水线")}  ${chain}`);
+          if (task.builderFromTaskId) {
+            console.log(pc.dim(`（builder 自动重派，原任务 ${id8(task.builderFromTaskId)}）`));
+          }
+        }
+        const list = asArr(await api.call("GET", `/api/tasks/${taskId}/events`));
         if (globals(cmd).json) return printJson(list);
         for (const e of list) {
           const head = `${s(e.recordedAt).slice(11, 19)}  ${s(e.type).padEnd(11)}`;
@@ -341,11 +405,12 @@ export function buildProgram(): Command {
     );
   tasks
     .command("comments <id>")
-    .description("任务评论列表")
+    .description("任务评论列表（支持短 id 前缀）")
     .action((id: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const list = asArr(await api.call("GET", `/api/tasks/${id}/comments`));
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        const list = asArr(await api.call("GET", `/api/tasks/${taskId}/comments`));
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
           console.log(
@@ -357,20 +422,26 @@ export function buildProgram(): Command {
     );
   tasks
     .command("comment <id> <text...>")
-    .description("给任务添加评论")
+    .description("给任务添加评论（支持短 id 前缀）")
     .action((id: string, text: string[], _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        printJson(await api.call("POST", `/api/tasks/${id}/comments`, { text: text.join(" ") }));
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        printJson(
+          await api.call("POST", `/api/tasks/${taskId}/comments`, { text: text.join(" ") }),
+        );
       }),
     );
   tasks
     .command("files <id> [path]")
-    .description("任务产物：无 path 列产物树，有 path 读文件内容（PM 评审：产物可达）")
+    .description(
+      "任务产物：无 path 列产物树，有 path 读文件内容（PM 评审：产物可达；支持短 id 前缀）",
+    )
     .action((id: string, path: string | undefined, _opts: object, cmd: Command) =>
       run(async () => {
         const { api, baseUrl, token } = requireApi(cmd);
-        const events = asArr(await api.call("GET", `/api/tasks/${id}/events`));
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        const events = asArr(await api.call("GET", `/api/tasks/${taskId}/events`));
         const conversationId = s(events[0]?.conversationId);
         if (!conversationId) throw new Error("该任务没有执行记录，无产物");
         const qs = new URLSearchParams({ scope: "runtime", conversationId });
@@ -407,11 +478,14 @@ export function buildProgram(): Command {
     );
   tasks
     .command("optimize <id>")
-    .description("触发 task-optimize：聚合审计+评论，进入 AI 生成助手会话确认修订提案")
+    .description(
+      "触发 task-optimize：聚合审计+评论，进入 AI 生成助手会话确认修订提案（支持短 id 前缀）",
+    )
     .action((id: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api, baseUrl, token } = requireApi(cmd);
-        const { conversationId } = await api.optimizeTask(id);
+        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
+        const { conversationId } = await api.optimizeTask(taskId);
         console.log(
           `已发起优化分析，进入优化会话 ${conversationId.slice(0, 8)}（提案落盘会弹审批卡）：`,
         );
@@ -439,11 +513,18 @@ export function buildProgram(): Command {
     );
   audit
     .command("show <conversationId>")
-    .description("会话审计详情（按 task 分 turns，含 usage）")
+    .description("会话审计详情（按 task 分 turns，含 usage；支持短 id 前缀）")
     .action((cid: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        printJson(await api.call("GET", `/api/audit/conversations/${cid}`));
+        const me = await api.me();
+        const conversationId = await resolveId(
+          cid,
+          () => api.listConversations(me.user.id),
+          "会话",
+          "audit list",
+        );
+        printJson(await api.call("GET", `/api/audit/conversations/${conversationId}`));
       }),
     );
 
