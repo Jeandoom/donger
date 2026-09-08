@@ -19,6 +19,10 @@ export interface AgentGitRepositoryDTO {
   required: boolean;
   shallow: boolean;
   syncMode: "cloneOnce" | "fastForward";
+  /** 引用凭证模板 code（私有仓库认证；保存时自动并入 credentials） */
+  credentialCode?: string;
+  /** 浅克隆历史窗口（git --shallow-since，仅 shallow 时生效） */
+  shallowSince?: string;
 }
 
 export interface AgentExtensionDirectoryDTO {
@@ -42,6 +46,8 @@ export interface AgentDTO {
   credentials?: string[];
   gitRepositories: AgentGitRepositoryDTO[];
   extensionDirectories: AgentExtensionDirectoryDTO[];
+  /** 所属场景：code-dev / kb-qa / research / ops；缺省 = 不做场景校验 */
+  scenario?: "code-dev" | "kb-qa" | "research" | "ops";
   llm: { presetId?: string };
   createdAt: string;
   updatedAt: string;

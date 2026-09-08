@@ -29,6 +29,10 @@ function mockAgentStore(): AgentStore & { rows: Map<string, Agent> } {
     rows,
     async create(input: AgentInput) {
       const a = {
+        credentials: [],
+        gitRepositories: [],
+        extensionDirectories: [],
+        version: 1,
         ...input,
         id: `id-${rows.size + 1}`,
         createdAt: "t",
@@ -315,12 +319,12 @@ describe("平台工具", () => {
       name: "A",
       duty: "测试",
       skills: ["a-execute"],
-      taskTypes: "测试类",
+      taskTypes: "code-dev",
     };
     const r = await findTool(deps, "update_kb_registry").handler(args);
     expect(r.isError).toBeUndefined();
     const md = readFileSync(join(KB_DIR, "dispatcher", "agents.md"), "utf8");
-    expect(md).toContain(`| ${created.id} | A | 测试 | a-execute | 测试类 | 无 |`);
+    expect(md).toContain(`| ${created.id} | A | 测试 | a-execute | code-dev | 无 |`);
     const dup = await findTool(deps, "update_kb_registry").handler(args);
     expect(dup.isError).toBe(true);
   });
@@ -349,7 +353,7 @@ describe("平台工具", () => {
       name: "A",
       duty: "测试",
       skills: [],
-      taskTypes: "测试类",
+      taskTypes: "code-dev",
     });
     expect(r.isError).toBeUndefined();
     expect(dryRunCalls).toBe(1);
@@ -375,7 +379,7 @@ describe("平台工具", () => {
       name: "A",
       duty: "d",
       skills: [],
-      taskTypes: "t",
+      taskTypes: "ops",
     });
     expect(none.isError).toBeUndefined();
     expect(none.content[0]?.text).toContain("仍路由到 none");
@@ -388,7 +392,7 @@ describe("平台工具", () => {
       name: "A",
       duty: "d",
       skills: [],
-      taskTypes: "t",
+      taskTypes: "ops",
     });
     expect(other.content[0]?.text).toContain("其他智能体");
   });
@@ -415,7 +419,7 @@ describe("平台工具", () => {
       name: "A",
       duty: "d",
       skills: [],
-      taskTypes: "t",
+      taskTypes: "ops",
     });
     expect(r.isError).toBeUndefined();
     expect(r.content[0]?.text).toContain("登记本身已生效");
@@ -442,7 +446,7 @@ describe("平台工具", () => {
       name: "A",
       duty: "d",
       skills: [],
-      taskTypes: "t",
+      taskTypes: "ops",
     });
     expect(ghost.isError).toBe(true);
     expect(ghost.content[0]?.text).toContain("智能体不存在");
@@ -459,7 +463,7 @@ describe("平台工具", () => {
       name: "Foreign",
       duty: "d",
       skills: [],
-      taskTypes: "t",
+      taskTypes: "ops",
     });
     expect(foreign.isError).toBe(true);
     expect(foreign.content[0]?.text).toContain("只能登记");
@@ -503,9 +507,103 @@ describe("平台工具", () => {
       name: "A",
       duty: "d",
       skills: [],
-      taskTypes: "t",
+      taskTypes: "ops",
     });
     expect(r.isError).toBe(true);
     expect(r.content[0]?.text).toContain("kbDir");
+  });
+
+  it("create_agent：gitRepositories 的 credentialCode 归一化并入 credentials，缺值给装备提示", async () => {
+    const store = mockAgentStore();
+    const credentialSets = {
+      getFilledValues: async (_uid: string, codes: string[]) =>
+        codes
+          .filter((c) => c !== "jihulab-pat")
+          .map((code) => ({
+            userId: _uid,
+            code,
+            values: { token: "x" },
+            createdAt: "t",
+            updatedAt: "t",
+          })),
+    };
+    const deps: Deps = { ...baseDeps(store, KB_DIR), credentialSets: credentialSets as never };
+    const r = await findTool(deps, "create_agent").handler({
+      name: "aix",
+      scenario: "code-dev",
+      credentials: ["jihulab-pat"],
+      gitRepositories: [
+        {
+          id: "r1",
+          name: "aix-py",
+          provider: "jihulab",
+          url: "https://jihulab.com/your-org/your-project.git",
+          required: true,
+          shallow: true,
+          syncMode: "fastForward",
+          credentialCode: "jihulab-pat",
+        },
+      ],
+    });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]?.text).toContain("装备提示");
+    expect(r.content[0]?.text).toContain("jihulab-pat");
+    const saved = [...store.rows.values()][0];
+    expect(saved?.credentials).toEqual(["jihulab-pat"]);
+    expect(saved?.gitRepositories[0]?.name).toBe("aix-py");
+  });
+
+  it("create_agent：scenario=code-dev 且无仓库给出 preset 警示", async () => {
+    const store = mockAgentStore();
+    const deps = baseDeps(store, KB_DIR);
+    const r = await findTool(deps, "create_agent").handler({ name: "dev", scenario: "code-dev" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]?.text).toContain("至少绑定一个 git 仓库");
+  });
+
+  it("update_kb_registry：taskTypes 非法值报错并列出合法词表", async () => {
+    const store = mockAgentStore();
+    const created = await store.create({
+      ownerId: USER.id,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const deps = baseDeps(store, KB_DIR);
+    const r = await findTool(deps, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "A",
+      duty: "d",
+      skills: [],
+      taskTypes: "测试类",
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toContain("code-dev");
+    expect(r.content[0]?.text).toContain("测试类");
+  });
+
+  it("update_kb_registry：agent.scenario 与 taskTypes 不一致时提示", async () => {
+    const store = mockAgentStore();
+    const created = await store.create({
+      ownerId: USER.id,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+      scenario: "kb-qa",
+    });
+    const deps = baseDeps(store, freshKbDir());
+    const r = await findTool(deps, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "A",
+      duty: "d",
+      skills: [],
+      taskTypes: "code-dev",
+    });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]?.text).toContain("不在登记的 taskTypes 中");
   });
 });

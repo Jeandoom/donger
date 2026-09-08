@@ -66,8 +66,6 @@ export interface OrchestratorDeps {
   /** 智能体分享/授权存储 */
   agentShareStore?: AgentShareStore;
   gitAccessGate?: GitAccessGate;
-  /** 任务管理知识库根目录；未装配则任务分发关闭（行为与 P1 之前一致） */
-  kbDir?: string;
   /** AI 生成子模块：技能安装器（assist 会话写技能用） */
   installer?: SkillInstaller;
   /** AI 生成子模块：技能 pack 存储（assist 会话列技能用） */
@@ -256,7 +254,7 @@ export class Orchestrator {
       if (p.noResume) {
         return { ...base, resume: undefined, sessionStore: undefined };
       }
-      // 内置创作/构建智能体注入平台工具（write_skill / create_agent / update_kb_registry 等）
+      // 内置创作/构建智能体注入平台工具（write_skill / create_agent / finish_builder 等）
       const isBuiltinAuthor =
         p.agent?.id === BUILTIN_ASSIST_AGENT_ID || p.agent?.id === AGENT_BUILDER_ID;
       if (!isBuiltinAuthor) return base;
@@ -266,21 +264,6 @@ export class Orchestrator {
           "平台工具未装配（agentStore/installer/skillPackStore）",
         );
       }
-      // builder 专属：登记后干跑验证——用触发补建的原任务跑一次 dispatcher 确认可路由
-      let dispatchDryRun: (() => Promise<{ agentId: string; rationale: string }>) | undefined;
-      if (p.agent?.id === AGENT_BUILDER_ID && this.deps.kbDir) {
-        const originalPrompt = this.builderOriginalPrompts.get(p.conversation.id) ?? p.task.prompt;
-        dispatchDryRun = async () => {
-          const routing = await this.runDispatcherTurn({
-            task: p.task,
-            user: p.user,
-            conversation: p.conversation,
-            prompt: originalPrompt,
-            runController: p.runController,
-          });
-          return { agentId: routing.agentId, rationale: routing.rationale };
-        };
-      }
       return {
         ...base,
         platformTools: createPlatformToolsServer({
@@ -288,10 +271,9 @@ export class Orchestrator {
           agentStore: this.deps.agentStore,
           installer: this.deps.installer,
           packStore: this.deps.skillPackStore,
-          kbDir: this.deps.kbDir,
+          credentialSets: this.deps.credentialSets,
           conversationStore: this.deps.conversationStore,
           conversationId: p.conversation.id,
-          dispatchDryRun,
           onBuilderFinish: () => this.builderFinished.add(p.conversation.id),
         }),
       };
@@ -508,6 +490,27 @@ export class Orchestrator {
    * 事件静默落审计/usage，不推送渠道不持久化；不 resume、不回写 sdkSessionId。
    * 返回结构化路由决策；失败抛 RunnerError("DISPATCH_FAILED")。
    */
+  /**
+   * 当前用户可分发的 agent 集合（登记表事实源 = agents 表，读时渲染）。
+   * 口径与 resolveAgentForUse 的 canUseAgent 一致：自有 ∪ 被分享 ∪ admin 全量。
+   */
+  private async listDispatchableAgents(user: User): Promise<Agent[]> {
+    const store = this.deps.agentStore;
+    if (!store) return [];
+    const mine = await store.listByOwner(user.id);
+    const shared = await store.listSharedWith(user.id);
+    const all = user.role === "admin" ? await store.listAll() : [];
+    const seen = new Set<string>();
+    const out: Agent[] = [];
+    for (const a of [...mine, ...shared, ...all]) {
+      if (!seen.has(a.id)) {
+        seen.add(a.id);
+        out.push(a);
+      }
+    }
+    return out;
+  }
+
   private async runDispatcherTurn(p: {
     task: Task;
     user: User;
@@ -515,10 +518,10 @@ export class Orchestrator {
     prompt: string;
     runController: AbortController;
   }): Promise<RoutingDecision> {
-    if (!this.deps.kbDir) {
-      throw new RunnerError("DISPATCH_FAILED", "任务分发未装配（kbDir 缺失）");
+    if (!this.deps.agentStore) {
+      throw new RunnerError("DISPATCH_FAILED", "任务分发未装配（agentStore 缺失）");
     }
-    const dispatcher = buildDispatcherAgent(this.deps.kbDir);
+    const dispatcher = buildDispatcherAgent(await this.listDispatchableAgents(p.user));
     const r = await this.runTurn({
       task: { ...p.task, prompt: p.prompt },
       user: p.user,
@@ -924,11 +927,11 @@ export class Orchestrator {
       };
       await store.create(task);
 
-      // 任务分发（P1）：会话未绑定 agent 且装配了 kbDir → 经 dispatcher 路由（Task Flow 第一步）
+      // 任务分发（P1）：会话未绑定 agent 且装配了 agentStore → 经 dispatcher 路由（Task Flow 第一步）
       let requiresDesign = false;
       let firstTurnPrompt: string | undefined;
       let steps: FlowStep[] = task.steps ?? [];
-      if (!conversation.agentId && this.deps.kbDir) {
+      if (!conversation.agentId && this.deps.agentStore) {
         steps = beginStep(steps, {
           role: "dispatcher",
           agentId: this.deps.agentChain?.dispatcherAgentId ?? "builtin-dispatcher",
@@ -980,10 +983,10 @@ export class Orchestrator {
             // dispatcher 偶发输出无效 id（名称/技能名）：转译为可行动的失败提示而非裸 404
             if (code === "AGENT_NOT_FOUND") {
               await store.updateStatus(task.id, "failed", {
-                error: `分发异常：dispatcher 选择了未登记的 id "${routing.agentId}"，请重试；多次失败请检查 kb/dispatcher/agents.md`,
-                steps: completeStep(steps, { status: "failed", summary: "路由到未登记 id" }),
+                error: `分发异常：dispatcher 选择了不存在的智能体 id "${routing.agentId}"，请重试`,
+                steps: completeStep(steps, { status: "failed", summary: "路由到不存在 id" }),
               });
-              const text = `⚠️ 分发异常：dispatcher 选择了一个不存在的智能体（${routing.agentId}），请重发任务重试；多次出现请检查登记表。`;
+              const text = `⚠️ 分发异常：dispatcher 选择了一个不存在的智能体（${routing.agentId}），请重发任务重试。`;
               await channel.send(msg.threadId, { text });
               channel.pushResult?.(conversation.id, "error", text);
               return conversation.id;

@@ -37,7 +37,7 @@ import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
-import { ensureDispatcherKb } from "./orchestrator/dispatch-kb.js";
+
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { HookRegistry } from "./orchestrator/hook-registry.js";
 import { LoopRunner } from "./orchestrator/loop-runner.js";
@@ -193,7 +193,6 @@ async function main(): Promise<void> {
       agentStore,
       agentShareStore,
       gitAccessGate,
-      kbDir,
       installer: skillInstaller,
       skillPackStore,
       agentChain: cfg.agentChain,
@@ -209,10 +208,6 @@ async function main(): Promise<void> {
     packStore: skillPackStore,
     getHomeDir: (uid) => join(usersDir, uid),
   });
-
-  // 任务管理知识库（P1 任务分发）：幂等 seed dispatcher 目录
-  const kbDir = join(cfg.workspaceDir, "kb");
-  ensureDispatcherKb(kbDir);
 
   // agent 链配置校验（D2）：自定义 dispatcher/builder/chat agent 须已登记，缺失仅告警（运行时兜底内置）
   for (const [env, id] of [

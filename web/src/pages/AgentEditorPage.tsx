@@ -33,6 +33,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   credentials: [],
   gitRepositories: [],
   extensionDirectories: [],
+  scenario: undefined,
   llm: {},
 };
 
@@ -74,6 +75,7 @@ export function AgentEditorPage() {
             credentials: a.credentials ?? [],
             gitRepositories: a.gitRepositories ?? [],
             extensionDirectories: a.extensionDirectories ?? [],
+            scenario: a.scenario,
             llm: a.llm,
           });
         })
@@ -185,6 +187,29 @@ export function AgentEditorPage() {
           value={form.credentials ?? []}
           onChange={(credentials) => setForm({ ...form, credentials })}
         />
+
+        <Field label="场景">
+          <select
+            className="w-full rounded border px-2 py-1"
+            value={form.scenario ?? ""}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                scenario:
+                  (event.target.value || undefined) as typeof form.scenario,
+              })
+            }
+          >
+            <option value="">不设置</option>
+            <option value="code-dev">code-dev（代码项目开发运维）</option>
+            <option value="kb-qa">kb-qa（知识库问答，只读）</option>
+            <option value="research">research（调研分析，可写知识库）</option>
+            <option value="ops">ops（运维操作）</option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            场景决定装配校验：code-dev 需绑定 git 仓库；kb-qa 要求只读白名单；research 需含 kb_write。
+          </p>
+        </Field>
 
         <Field label="默认 Skill（可选）">
           <select
@@ -406,6 +431,38 @@ export function AgentEditorPage() {
                   >
                     删除
                   </button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    className="rounded border px-2 py-1 text-sm"
+                    placeholder="凭证模板 code（私有仓库必配，如 jihulab-pat）"
+                    value={repository.credentialCode ?? ""}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, credentialCode: event.target.value || undefined }
+                            : item,
+                        ),
+                      })
+                    }
+                  />
+                  <input
+                    className="rounded border px-2 py-1 text-sm"
+                    placeholder="浅克隆历史窗口（如 1 year ago，仅浅克隆生效）"
+                    value={repository.shallowSince ?? ""}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, shallowSince: event.target.value || undefined }
+                            : item,
+                        ),
+                      })
+                    }
+                  />
                 </div>
               </div>
             ))}

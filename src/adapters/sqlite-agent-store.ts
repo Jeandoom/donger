@@ -1,6 +1,6 @@
 import type { Database } from "better-sqlite3";
 import type { Agent, AgentInput, AgentVersionSummary, McpServerConfig } from "../domain/agent.js";
-import { parseAgent } from "../domain/agent.js";
+import { normalizeAgentCredentialRefs, parseAgent } from "../domain/agent.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { SecretCipher } from "../util/secret-cipher.js";
 
@@ -66,7 +66,8 @@ export class SqliteAgentStore implements AgentStore {
 
   async create(input: AgentInput): Promise<Agent> {
     const now = new Date().toISOString();
-    const agent: Agent = {
+    // credentialCode 归一化并入 credentials（store 层收口，REST/builder/rollback 各入口共用）
+    const agent: Agent = normalizeAgentCredentialRefs({
       ...input,
       gitRepositories: input.gitRepositories ?? [],
       extensionDirectories: input.extensionDirectories ?? [],
@@ -75,7 +76,7 @@ export class SqliteAgentStore implements AgentStore {
       version: 1,
       createdAt: now,
       updatedAt: now,
-    };
+    });
     const data = this.marshal(agent);
     this.db.transaction(() => {
       this.db
@@ -117,10 +118,17 @@ export class SqliteAgentStore implements AgentStore {
     return rows.map((r) => this.unmarshal(r.data));
   }
 
+  async listAll(): Promise<Agent[]> {
+    const rows = this.db
+      .prepare("SELECT data FROM agents ORDER BY updatedAt DESC")
+      .all() as { data: string }[];
+    return rows.map((r) => this.unmarshal(r.data));
+  }
+
   async update(id: string, patch: Partial<Agent>): Promise<Agent> {
     const cur = await this.get(id);
     if (!cur) throw new Error(`agent 不存在: ${id}`);
-    const next: Agent = {
+    const next: Agent = normalizeAgentCredentialRefs({
       ...cur,
       ...patch,
       id: cur.id,
@@ -129,7 +137,7 @@ export class SqliteAgentStore implements AgentStore {
       // version 由 store 独占管理：每次 update 自增（patch 无法注入），rollback 亦计入
       version: cur.version + 1,
       updatedAt: new Date().toISOString(),
-    };
+    });
     const data = this.marshal(next);
     this.db.transaction(() => {
       this.db

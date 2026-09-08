@@ -10,8 +10,7 @@ const ASSIST_SYSTEM_PROMPT = `你是 donger 平台的智能体/技能创作助�
 2. 起草：给出将创建的 agent / skill 清单（name、description、职责），与用户确认后再调用工具。
 3. 落盘（每次写操作会弹出审批卡，用户确认后才生效）：
    - 先 write_skill 写技能（SKILL.md 含 frontmatter：name/description）
-   - 再 create_agent 创建智能体（skills 引用刚写的技能名）
-   - 最后 update_kb_registry 登记路由表（agentId 用 create_agent 返回的真实 id）
+   - 再 create_agent 创建智能体（skills 引用刚写的技能名）；创建后即自动进入任务分发路由表，无需登记
 4. 汇报：落盘完成后汇总创建了什么、如何使用、如何验证。
 
 约束：
@@ -24,7 +23,7 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   id: BUILTIN_ASSIST_AGENT_ID,
   ownerId: "",
   name: "AI 生成助手",
-  description: "对话式创建与维护 agent / skill，并登记路由表",
+  description: "对话式创建与维护 agent / skill",
   systemPrompt: ASSIST_SYSTEM_PROMPT,
   skills: ["task-optimize"],
   tools: { mode: "whitelist", whitelist: ["mcp__donger-platform"] },

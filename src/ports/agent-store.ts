@@ -5,6 +5,8 @@ export interface AgentStore {
   get(id: string): Promise<Agent | undefined>;
   listByOwner(ownerId: string): Promise<Agent[]>;
   listSharedWith(userId: string): Promise<Agent[]>;
+  /** 全量列表（dispatcher 登记表 admin 可见性用；与 canUseAgent 的 admin 全通口径对齐） */
+  listAll(): Promise<Agent[]>;
   update(id: string, patch: Partial<Agent>): Promise<Agent>;
   delete(id: string): Promise<void>;
   /** 版本历史（新→旧）；update 每次生成新版本，rollback 也计入 */
