@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AgentExtensionDirectoriesSchema } from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
+import { SCENARIO_KEYS } from "./scenario-preset.js";
 
 export const McpServerConfigSchema = z.object({
   name: z.string().min(1),
@@ -36,6 +37,8 @@ export const AgentSchema = z.object({
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,
   extensionDirectories: AgentExtensionDirectoriesSchema,
+  /** 所属场景（builder 创建时选定；缺省 = 不做场景校验） */
+  scenario: z.enum(SCENARIO_KEYS).optional(),
   llm: AgentLLMSchema,
   /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */
   version: z.number().int().positive().default(1),
@@ -82,4 +85,17 @@ export function parseAgentInput(raw: unknown): AgentInput {
 /** 将智能体配置的默认 Skill 作为 slash 指令追加到用户输入。 */
 export function appendDefaultSkill(prompt: string, defaultSkill?: string): string {
   return defaultSkill ? `${prompt}\n/${defaultSkill}` : prompt;
+}
+
+/**
+ * 归一化凭证引用：gitRepositories 里声明的 credentialCode 自动并入 agent.credentials（去重）。
+ * 保证缺失问询/按访问者注入走同一条链路；无新增时原样返回（引用相等，便于调用方省一次写）。
+ */
+export function normalizeAgentCredentialRefs(agent: Agent): Agent {
+  const codes = new Set(agent.credentials);
+  for (const repo of agent.gitRepositories) {
+    if (repo.credentialCode) codes.add(repo.credentialCode);
+  }
+  if (codes.size === agent.credentials.length) return agent;
+  return { ...agent, credentials: [...codes] };
 }

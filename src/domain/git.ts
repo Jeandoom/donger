@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CREDENTIAL_CODE_PATTERN } from "./credential.js";
 
 export const GitProviderSchema = z.enum(["github", "gitee", "jihulab"]);
 export type GitProvider = z.infer<typeof GitProviderSchema>;
@@ -22,6 +23,10 @@ export const AgentGitRepositorySchema = z
     required: z.boolean().default(true),
     shallow: z.boolean().default(true),
     syncMode: z.enum(["cloneOnce", "fastForward"]).default("fastForward"),
+    /** 引用凭证模板（私有仓库认证用；保存时自动并入 agent.credentials） */
+    credentialCode: z.string().regex(CREDENTIAL_CODE_PATTERN).optional(),
+    /** 浅克隆起始时间窗（git --shallow-since，如 "2026-08-01"/"1 year ago"；仅 shallow=true 时生效） */
+    shallowSince: z.string().min(1).max(64).optional(),
   })
   .superRefine((repository, ctx) => {
     const parsed = parseRepositoryUrl(repository.url);

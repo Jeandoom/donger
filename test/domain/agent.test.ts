@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AgentSchema, appendDefaultSkill, parseAgent } from "../../src/domain/agent.js";
+import {
+  AgentSchema,
+  appendDefaultSkill,
+  normalizeAgentCredentialRefs,
+  parseAgent,
+} from "../../src/domain/agent.js";
 
 const valid = {
   id: "a1",
@@ -46,5 +51,36 @@ describe("Agent schema", () => {
   it("追加默认 Skill slash 指令", () => {
     expect(appendDefaultSkill("查询订单", "aliyun:sls-query")).toBe("查询订单\n/aliyun:sls-query");
     expect(appendDefaultSkill("查询订单")).toBe("查询订单");
+  });
+});
+
+describe("场景与凭证归一化", () => {
+  it("scenario 合法值通过、非法值报错", () => {
+    expect(() => AgentSchema.parse({ ...valid, scenario: "code-dev" })).not.toThrow();
+    expect(() => AgentSchema.parse({ ...valid, scenario: "代码开发" })).toThrow();
+  });
+
+  it("credentialCode 自动并入 credentials 并去重", () => {
+    const repo = {
+      id: "r1",
+      name: "aix-py",
+      provider: "jihulab" as const,
+      url: "https://jihulab.com/your-org/your-project.git",
+      required: true,
+      shallow: true,
+      syncMode: "fastForward" as const,
+      credentialCode: "jihulab-pat",
+    };
+    const agent = parseAgent({
+      ...valid,
+      credentials: ["jihulab-pat", "sls-ak"],
+      gitRepositories: [repo],
+    });
+    expect(normalizeAgentCredentialRefs(agent).credentials).toEqual(["jihulab-pat", "sls-ak"]);
+  });
+
+  it("无 credentialCode 时原样返回（引用相等）", () => {
+    const agent = parseAgent({ ...valid, credentials: ["sls-ak"] });
+    expect(normalizeAgentCredentialRefs(agent)).toBe(agent);
   });
 });

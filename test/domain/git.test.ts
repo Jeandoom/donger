@@ -52,4 +52,37 @@ describe("Agent Git repository", () => {
       ]),
     ).toThrow();
   });
+
+  it("接受合法 credentialCode 与 shallowSince", () => {
+    const parsed = AgentGitRepositoriesSchema.parse([
+      {
+        ...repository,
+        credentialCode: "jihulab-pat",
+        shallowSince: "1 year ago",
+      },
+    ]);
+    expect(parsed[0]?.credentialCode).toBe("jihulab-pat");
+    expect(parsed[0]?.shallowSince).toBe("1 year ago");
+  });
+
+  it.each(["Bad Code", "-bad", "UPPER", "x".repeat(65)])("拒绝非法 credentialCode：%s", (code) => {
+    expect(() =>
+      AgentGitRepositoriesSchema.parse([
+        { ...repository, url: "https://github.com/acme/o.git", id: "o", credentialCode: code },
+      ]),
+    ).toThrow();
+  });
+
+  it("shallowSince 长度超限报错", () => {
+    expect(() =>
+      AgentGitRepositoriesSchema.parse([
+        {
+          ...repository,
+          url: "https://github.com/acme/o.git",
+          id: "o",
+          shallowSince: "x".repeat(65),
+        },
+      ]),
+    ).toThrow();
+  });
 });
