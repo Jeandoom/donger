@@ -4,9 +4,11 @@ import {
   type GitAccessFailureReason,
   type GitAccessRequirement,
   type GitConnection,
+  type GitProvider,
   gitRepositoryFingerprint,
 } from "../domain/git.js";
 import type { User } from "../domain/user.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { GitConnectionStore } from "../ports/git-connection-store.js";
 import type {
   GitProcessCredential,
@@ -27,6 +29,7 @@ export class GitAccessGate {
   constructor(
     private readonly connections: GitConnectionStore,
     private readonly materializer: RepositoryMaterializer,
+    private readonly credentialSets?: CredentialSetStore,
     private readonly cacheTtlMs = 600_000,
   ) {}
 
@@ -41,6 +44,14 @@ export class GitAccessGate {
       const fingerprint = gitRepositoryFingerprint(repository);
       if (await this.isPublic(repository, fingerprint, signal)) {
         materializeItems.push({ repository });
+        continue;
+      }
+      if (repository.credentialCode) {
+        const authorized = await this.checkWithCredential(repository, user, signal);
+        if ("reason" in authorized)
+          failures.push({ repository, fingerprint, reason: authorized.reason });
+        else if ("pendingCredential" in authorized) materializeItems.push({ repository });
+        else materializeItems.push({ repository, credential: authorized.credential });
         continue;
       }
       const authorized = await this.checkPrivate(user, agent, repository, fingerprint, signal);
@@ -96,6 +107,43 @@ export class GitAccessGate {
     return isPublic;
   }
 
+  /**
+   * 凭证集 PAT 桥：credentialCode 指定时的私有仓库校验。
+   * 用户未填该模板值时返回 pendingCredential——不在 Gate 硬阻断（否则会抢在凭证缺失
+   * 三选问询之前），credentialCode 已并入 agent.credentials，由 Orchestrator 预检挂起问询。
+   */
+  private async checkWithCredential(
+    repository: AgentGitRepository,
+    user: User,
+    signal?: AbortSignal,
+  ): Promise<
+    | { credential: GitProcessCredential }
+    | { pendingCredential: true }
+    | { reason: GitAccessFailureReason }
+  > {
+    const credential = await this.credentialFromTemplate(user.id, repository);
+    if (!credential) return { pendingCredential: true };
+    const access = await this.materializer.checkRead(repository, credential, signal);
+    if (!access.ok) return { reason: access.reason };
+    return { credential };
+  }
+
+  private async credentialFromTemplate(
+    userId: string,
+    repository: AgentGitRepository,
+  ): Promise<GitProcessCredential | undefined> {
+    if (!this.credentialSets) return undefined;
+    const [filled] = await this.credentialSets.getFilledValues(userId, [
+      repository.credentialCode as string,
+    ]);
+    const token = filled?.values.token;
+    if (!token) return undefined;
+    return {
+      username: filled.values.username || defaultGitUsername(repository.provider),
+      accessToken: token,
+    };
+  }
+
   private async checkPrivate(
     user: User,
     agent: Agent,
@@ -130,6 +178,18 @@ export class GitAccessGate {
 
 function isExpired(connection: GitConnection): boolean {
   return Boolean(connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now());
+}
+
+/** 凭证模板未提供 username 键时的平台默认 HTTP 认证用户名 */
+export function defaultGitUsername(provider: GitProvider): string {
+  switch (provider) {
+    case "github":
+      return "x-access-token";
+    case "jihulab":
+      return "oauth2";
+    case "gitee":
+      return "x-token";
+  }
 }
 
 function credentialFor(connection: GitConnection, accessToken: string): GitProcessCredential {

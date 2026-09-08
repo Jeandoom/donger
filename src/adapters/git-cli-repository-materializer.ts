@@ -26,6 +26,18 @@ interface GitCommandResult {
   timedOut: boolean;
 }
 
+/** clone 参数组装（纯函数，便于单测）：shallow 时可选 shallowSince 收窄历史窗口 */
+export function buildCloneArgs(repository: AgentGitRepository, destination: string): string[] {
+  const args = ["clone", "--no-recurse-submodules"];
+  if (repository.shallow) {
+    args.push("--depth", "1");
+    if (repository.shallowSince) args.push("--shallow-since", repository.shallowSince);
+  }
+  if (repository.ref) args.push("--branch", repository.ref);
+  args.push(repository.url, destination);
+  return args;
+}
+
 export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
   constructor(private readonly timeoutMs = 120_000) {}
 
@@ -79,10 +91,7 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
     signal?: AbortSignal,
   ): Promise<void> {
     const temporary = `${target}.clone-${crypto.randomUUID()}`;
-    const args = ["clone", "--no-recurse-submodules"];
-    if (item.repository.shallow) args.push("--depth", "1");
-    if (item.repository.ref) args.push("--branch", item.repository.ref);
-    args.push(item.repository.url, temporary);
+    const args = buildCloneArgs(item.repository, temporary);
     try {
       const result = await this.runGit(args, item.credential, signal);
       if (result.code !== 0) throw new Error(result.stderr || "git clone 失败");

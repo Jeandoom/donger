@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { GitCliRepositoryMaterializer } from "../../src/adapters/git-cli-repository-materializer.js";
+import {
+  buildCloneArgs,
+  GitCliRepositoryMaterializer,
+} from "../../src/adapters/git-cli-repository-materializer.js";
 import type { AgentGitRepository } from "../../src/domain/git.js";
 
 const roots: string[] = [];
@@ -66,5 +69,52 @@ describe("GitCliRepositoryMaterializer", () => {
 
     expect(results[0]?.status).toBe("warning");
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("changed");
+  });
+});
+
+describe("buildCloneArgs", () => {
+  const base = {
+    id: "r1",
+    name: "sample",
+    provider: "jihulab" as const,
+    url: "https://jihulab.com/acme/sample.git",
+    required: true,
+    shallow: true,
+    syncMode: "fastForward" as const,
+  };
+
+  it("浅克隆默认 depth 1", () => {
+    expect(buildCloneArgs(base, "/tmp/d")).toEqual([
+      "clone",
+      "--no-recurse-submodules",
+      "--depth",
+      "1",
+      base.url,
+      "/tmp/d",
+    ]);
+  });
+
+  it("shallowSince 追加 --shallow-since", () => {
+    const args = buildCloneArgs({ ...base, shallowSince: "1 year ago" }, "/tmp/d");
+    expect(args).toContain("--shallow-since");
+    expect(args[args.indexOf("--shallow-since") + 1]).toBe("1 year ago");
+  });
+
+  it("非浅克隆不附带 depth/shallow-since", () => {
+    const args = buildCloneArgs({ ...base, shallow: false, shallowSince: "1 year ago" }, "/tmp/d");
+    expect(args).not.toContain("--depth");
+    expect(args).not.toContain("--shallow-since");
+  });
+
+  it("ref 映射为 --branch", () => {
+    const args = buildCloneArgs({ ...base, ref: "main", shallow: false }, "/tmp/d");
+    expect(args).toEqual([
+      "clone",
+      "--no-recurse-submodules",
+      "--branch",
+      "main",
+      base.url,
+      "/tmp/d",
+    ]);
   });
 });

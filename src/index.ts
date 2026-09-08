@@ -116,9 +116,16 @@ async function main(): Promise<void> {
   gitConnectionStore.migrate();
   const repositoryMaterializer = new GitCliRepositoryMaterializer(cfg.gitCloneTimeoutMs);
   const extensionDirectoryResolver = new LocalExtensionDirectoryResolver();
+  // 凭证集 store（Gate 的 PAT 桥与 RuntimeManager 注入共享同一实例）；须先于 GitAccessGate 构造
+  const credentialSets = new SqliteCredentialSetStore(
+    db,
+    loadOrGenerateAppSecret(db, "skill_secret_key"),
+  );
+  credentialSets.migrate();
   const gitAccessGate = new GitAccessGate(
     gitConnectionStore,
     repositoryMaterializer,
+    credentialSets,
     cfg.gitAuthCacheTtlMs,
   );
   const gitAuthProviders = {
@@ -196,11 +203,6 @@ async function main(): Promise<void> {
   // 技能 store/installer（WebChannel 与 Orchestrator 共享同一实例）
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const credentialSets = new SqliteCredentialSetStore(
-    db,
-    loadOrGenerateAppSecret(db, "skill_secret_key"),
-  );
-  credentialSets.migrate();
   const modelConfigStore = new SqliteModelConfigStore(db, secretCipher);
   modelConfigStore.migrate();
   const skillInstaller = new LocalSkillInstaller({
