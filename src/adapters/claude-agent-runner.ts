@@ -50,6 +50,16 @@ export class ClaudeAgentRunner implements AgentRunner {
         },
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
+          // 工具白名单强制：allowedTools 之外的工具一律 deny。
+          // SDK 的 allowedTools 只约束自动允许集合，未列出的工具会落到本回调——
+          // 不在此处拦截的话，白名单形同虚设（曾导致只读 dispatcher 放行 Bash）。
+          if (opts.allowedTools && !opts.allowedTools.includes(toolName)) {
+            return {
+              behavior: "deny" as const,
+              message: `工具 ${toolName} 不在该智能体的允许列表内（allowedTools）`,
+              toolUseID: ctx.toolUseID,
+            };
+          }
           const writeRoots = [
             ...(opts.workspaceRoot ? [resolve(opts.workspaceRoot)] : []),
             ...(opts.allowedWriteRoots ?? []).map((root) => resolve(root)),
@@ -178,6 +188,17 @@ export class ClaudeAgentRunner implements AgentRunner {
             messageId: streamingMessageId,
             text: m.event.delta.text,
           };
+        } else if (m.event.type === "content_block_delta" && streamingMessageId) {
+          // GLM/Claude 思考流：thinking_delta（signature_delta 等其余变体忽略）
+          const delta = m.event.delta as { type?: string; thinking?: string };
+          if (delta.type === "thinking_delta" && delta.thinking) {
+            yield {
+              type: "thinking_delta",
+              taskId: task.id,
+              messageId: streamingMessageId,
+              text: delta.thinking,
+            };
+          }
         } else if (m.event.type === "message_stop") {
           streamingMessageId = null;
         }
@@ -233,6 +254,7 @@ export class ClaudeAgentRunner implements AgentRunner {
               cache_creation_input_tokens?: number;
               cache_read_input_tokens?: number;
             };
+            errors?: string[];
           }
         ).usage;
         const usage: TokenUsage | undefined = raw
@@ -243,15 +265,29 @@ export class ClaudeAgentRunner implements AgentRunner {
               cacheReadInputTokens: raw.cache_read_input_tokens ?? 0,
             }
           : undefined;
-        yield m.subtype === "success"
-          ? {
-              type: "result",
-              taskId: task.id,
-              subtype: "success",
-              result: typeof m.result === "string" ? m.result : undefined,
-              usage,
-            }
-          : { type: "result", taskId: task.id, subtype: "error", error: "agent 执行出错", usage };
+        if (m.subtype === "success") {
+          yield {
+            type: "result",
+            taskId: task.id,
+            subtype: "success",
+            result: typeof m.result === "string" ? m.result : undefined,
+            usage,
+          };
+        } else {
+          // 透传 SDK 原始错误（errors[]，如 "No conversation found with session ID"）：
+          // 上层 session 过期重试靠该文本匹配触发；包装文案会让自愈机制失效且不可诊断
+          const sdkMsg = (m as { errors?: string[] }).errors;
+          const detail = Array.isArray(sdkMsg)
+            ? sdkMsg.filter((e) => typeof e === "string" && e).join("; ")
+            : "";
+          yield {
+            type: "result",
+            taskId: task.id,
+            subtype: "error",
+            error: detail || "agent 执行出错",
+            usage,
+          };
+        }
       }
     }
   }

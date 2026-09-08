@@ -1,5 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type { Agent, AgentInput, McpServerConfig } from "../domain/agent.js";
+import type { Agent, AgentInput, AgentVersionSummary, McpServerConfig } from "../domain/agent.js";
 import { parseAgent } from "../domain/agent.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { SecretCipher } from "../util/secret-cipher.js";
@@ -39,6 +39,29 @@ export class SqliteAgentStore implements AgentStore {
         grantedAt TEXT NOT NULL, PRIMARY KEY (agentId, userId)
       )
     `);
+    this.migrateVersions();
+  }
+
+  /** 版本表 + 存量回填（无版本记录的 agent 建立基线 v1，幂等） */
+  private migrateVersions(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_versions (
+        agentId TEXT NOT NULL, version INTEGER NOT NULL,
+        data TEXT NOT NULL, createdAt TEXT NOT NULL,
+        PRIMARY KEY (agentId, version)
+      )
+    `);
+    const rows = this.db
+      .prepare(
+        `SELECT a.id, a.data, a.createdAt FROM agents a
+         LEFT JOIN agent_versions v ON v.agentId = a.id AND v.version = 1
+         WHERE v.agentId IS NULL`,
+      )
+      .all() as Array<{ id: string; data: string; createdAt: string }>;
+    const insert = this.db.prepare(
+      "INSERT INTO agent_versions (agentId, version, data, createdAt) VALUES (?, 1, ?, ?)",
+    );
+    for (const r of rows) insert.run(r.id, r.data, r.createdAt);
   }
 
   async create(input: AgentInput): Promise<Agent> {
@@ -48,13 +71,21 @@ export class SqliteAgentStore implements AgentStore {
       gitRepositories: input.gitRepositories ?? [],
       extensionDirectories: input.extensionDirectories ?? [],
       id: crypto.randomUUID(),
+      version: 1,
       createdAt: now,
       updatedAt: now,
     };
     const data = this.marshal(agent);
-    this.db
-      .prepare("INSERT INTO agents (id, ownerId, data, createdAt, updatedAt) VALUES (?,?,?,?,?)")
-      .run(agent.id, agent.ownerId, data, agent.createdAt, agent.updatedAt);
+    this.db.transaction(() => {
+      this.db
+        .prepare("INSERT INTO agents (id, ownerId, data, createdAt, updatedAt) VALUES (?,?,?,?,?)")
+        .run(agent.id, agent.ownerId, data, agent.createdAt, agent.updatedAt);
+      this.db
+        .prepare(
+          "INSERT INTO agent_versions (agentId, version, data, createdAt) VALUES (?, 1, ?, ?)",
+        )
+        .run(agent.id, data, agent.createdAt);
+    })();
     return agent;
   }
 
@@ -94,12 +125,67 @@ export class SqliteAgentStore implements AgentStore {
       id: cur.id,
       ownerId: cur.ownerId,
       createdAt: cur.createdAt,
+      // version 由 store 独占管理：每次 update 自增（patch 无法注入），rollback 亦计入
+      version: cur.version + 1,
       updatedAt: new Date().toISOString(),
     };
-    this.db
-      .prepare("UPDATE agents SET data = ?, updatedAt = ? WHERE id = ?")
-      .run(this.marshal(next), next.updatedAt, id);
+    const data = this.marshal(next);
+    this.db.transaction(() => {
+      this.db
+        .prepare("UPDATE agents SET data = ?, updatedAt = ? WHERE id = ?")
+        .run(data, next.updatedAt, id);
+      this.db
+        .prepare(
+          "INSERT INTO agent_versions (agentId, version, data, createdAt) VALUES (?, ?, ?, ?)",
+        )
+        .run(id, next.version, data, next.updatedAt);
+    })();
     return next;
+  }
+
+  async listVersions(agentId: string): Promise<AgentVersionSummary[]> {
+    const rows = this.db
+      .prepare(
+        "SELECT version, data, createdAt FROM agent_versions WHERE agentId = ? ORDER BY version DESC",
+      )
+      .all(agentId) as Array<{ version: number; data: string; createdAt: string }>;
+    return rows.map((r) => {
+      // data 为持久化形态（mcpServers env/headers 是密文），摘要只取明文字段，不解密不外泄
+      const raw = JSON.parse(r.data) as {
+        name?: string;
+        description?: string;
+        skills?: string[];
+      };
+      return {
+        agentId,
+        version: r.version,
+        name: raw.name ?? "",
+        description: raw.description,
+        skills: raw.skills ?? [],
+        createdAt: r.createdAt,
+      };
+    });
+  }
+
+  async rollback(id: string, version: number): Promise<Agent> {
+    const row = this.db
+      .prepare("SELECT data FROM agent_versions WHERE agentId = ? AND version = ?")
+      .get(id, version) as { data: string } | undefined;
+    if (!row) throw new Error(`版本不存在: agent ${id} v${version}`);
+    const snap = this.unmarshal(row.data);
+    // 以快照内容做一次普通 update：生成新版本，历史链不被改写
+    return this.update(id, {
+      name: snap.name,
+      description: snap.description,
+      systemPrompt: snap.systemPrompt,
+      skills: snap.skills,
+      defaultSkill: snap.defaultSkill,
+      tools: snap.tools,
+      mcpServers: snap.mcpServers,
+      gitRepositories: snap.gitRepositories,
+      extensionDirectories: snap.extensionDirectories,
+      llm: snap.llm,
+    });
   }
 
   async delete(id: string): Promise<void> {

@@ -9,6 +9,8 @@ export interface FakeGate {
 }
 
 export interface FakeScript {
+  /** 触发门前发的思考增量（模拟 GLM/Claude thinking 流） */
+  thinking?: string;
   /** 触发门前发的文本 */
   intro?: string;
   /** 命中的审批门（不设则不触发） */
@@ -42,6 +44,14 @@ export class FakeAgentRunner implements AgentRunner {
     _opts: RunOptions,
     approvalResolver: ApprovalResolver,
   ): AsyncIterable<RunnerEvent> {
+    if (this.script.thinking) {
+      yield {
+        type: "thinking_delta",
+        taskId: task.id,
+        messageId: "msg-think",
+        text: this.script.thinking,
+      };
+    }
     if (this.script.intro) {
       yield { type: "text", taskId: task.id, text: this.script.intro };
     }

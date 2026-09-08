@@ -32,6 +32,7 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   gitRepositories: [],
   extensionDirectories: [],
   llm: {},
+  version: 1,
   createdAt: "",
   updatedAt: "",
 };

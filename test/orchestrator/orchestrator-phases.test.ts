@@ -68,8 +68,8 @@ function seqChannel(approvals: Array<{ approved: boolean; reason?: string }>) {
   return channel;
 }
 
-/** 有状态会话存储：sdkSessionId 经 update 持久化（验证阶段间 resume 链） */
-function statefulConvStore(agentId: string): ConversationStore {
+/** 有状态会话存储：sdkSessionId/agentId 经 update 持久化（验证阶段间 resume 链与 builder 绑定）；conv 供断言 */
+function statefulConvStore(agentId: string): ConversationStore & { conv: Conversation } {
   const conv: Conversation = {
     id: "conv-agent",
     userId: "u-webu",
@@ -82,6 +82,7 @@ function statefulConvStore(agentId: string): ConversationStore {
     archived: false,
   };
   return {
+    conv,
     async create() {
       return conv;
     },
@@ -198,6 +199,7 @@ function build(
   channel: Channel,
   convStore: ConversationStore,
   skills: string[] = ["x-design", "x-execute", "x-accept"],
+  agentOverrides: Partial<Agent> = {},
 ): { orch: Orchestrator; store: InMemoryTaskStore } {
   const store = new InMemoryTaskStore();
   const agent: Agent = {
@@ -208,11 +210,13 @@ function build(
     tools: { mode: "all", whitelist: [] },
     mcpServers: [],
     llm: {},
+    version: 1,
     createdAt: "",
     updatedAt: "",
+    ...agentOverrides,
   };
   const agentStore = {
-    get: async () => agent,
+    get: async () => ({ ...agent, ...agentOverrides }),
     listByOwner: async () => [],
     listSharedWith: async () => [],
     create: async () => agent,
@@ -261,6 +265,9 @@ describe("三段式生命周期", () => {
     expect(done[0]?.requiresDesign).toBe(true);
     expect(done[0]?.agentId).toBe("a1");
     expect(channel.cards.map((c) => c.gateId)).toEqual(["design", "acceptance"]);
+    // dispatcher 轮走统一管道但不接续会话（noResume）
+    expect(runner.optsList[0]?.resume).toBeUndefined();
+    expect(runner.optsList[0]?.sessionStore).toBeUndefined();
     // 阶段 prompt 关键词
     expect(runner.prompts[1]).toContain("实施方案");
     expect(runner.prompts[2]).toContain("方案已确认");
@@ -359,10 +366,95 @@ describe("三段式生命周期", () => {
   it("dispatch none 回复含「AI 生成助手」引导", async () => {
     const runner = new ScriptedRunner([
       { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: "已补建" }, // agent-builder 首轮
     ]);
     const channel = seqChannel([]);
     const { orch } = build(runner, channel, statefulConvStore(""));
     await orch.handleMessage(MSG);
-    expect(channel.texts.join("\n")).toContain("AI 生成助手");
+    expect(channel.texts.join("\n")).toContain("Agent Builder");
+  });
+
+  it("dispatch none → 转入 agent-builder 兜底（不失败、绑定会话、注入缺口与平台工具）", async () => {
+    const runner = new ScriptedRunner([
+      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: "已补建" },
+    ]);
+    const channel = seqChannel([]);
+    const convStore = statefulConvStore("");
+    const { orch, store } = build(runner, channel, convStore);
+
+    await orch.handleMessage(MSG);
+
+    // 任务不失败，绑定 agent-builder 正常走完
+    expect(await store.listByStatus("failed")).toHaveLength(0);
+    const done = await store.listByStatus("done");
+    expect(done).toHaveLength(1);
+    expect(done[0]?.agentId).toBe("agent-builder");
+    expect(done[0]?.routingRationale).toBe("缺能力");
+    // 任务记录保持用户原文（引导词只注入执行轮，不回写任务）
+    expect(done[0]?.prompt).toBe(MSG.text);
+    // 会话绑定持久化（真实 SqliteConversationStore 行为），标题不被引导词污染
+    expect(convStore.conv.agentId).toBe("agent-builder");
+    expect(convStore.conv.title).toBe(MSG.text.slice(0, 30));
+    // 首轮 prompt 含缺口分析 + 原始任务
+    expect(runner.prompts[1]).toContain("缺能力");
+    expect(runner.prompts[1]).toContain("修复导出乱码");
+    // 平台工具注入（write_skill / create_agent / update_kb_registry / finish_builder 可用）
+    expect(runner.optsList[1]?.platformTools?.name).toBe("donger-platform");
+    // 转入提示
+    expect(channel.texts.join("\n")).toContain("Agent Builder");
+  });
+
+  it("agent-builder 会话绑定后续消息直连（不再过 dispatcher）", async () => {
+    const runner = new ScriptedRunner([
+      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: "已补建" },
+      { result: "补充说明" }, // 同会话第二条消息
+    ]);
+    const channel = seqChannel([]);
+    const { orch, store } = build(runner, channel, statefulConvStore(""));
+
+    await orch.handleMessage(MSG);
+    await orch.handleMessage({ ...MSG, text: "顺便加个验收 skill" });
+
+    // 轮次：dispatcher → builder 首轮 → builder 第二轮（无第二次 dispatch）
+    expect(runner.prompts).toHaveLength(3);
+    expect(runner.prompts[2]).toContain("顺便加个验收 skill");
+    expect(await store.listByStatus("done")).toHaveLength(2);
+  });
+
+  it("agent-builder 会话：短路解析内置智能体且注入 platformTools", async () => {
+    const runner = new ScriptedRunner([{ result: "已补建" }]);
+    const channel = seqChannel([]);
+    const { orch, store } = build(runner, channel, statefulConvStore("agent-builder"));
+
+    await orch.handleMessage(MSG);
+
+    expect(await store.listByStatus("done")).toHaveLength(1);
+    expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
+    expect(runner.optsList[0]?.systemPromptAppend).toContain("构建助手");
+  });
+});
+
+describe("dispatch 权限降级", () => {
+  it("路由命中但当前用户无权使用 → 可行动提示 + task failed（不硬抛裸错误）", async () => {
+    const runner = new ScriptedRunner([{ result: ROUTING_JSON }]);
+    const channel = seqChannel([{ approved: true }]);
+    const { orch, store } = build(
+      runner,
+      channel,
+      statefulConvStore(""),
+      ["x-execute"],
+      { ownerId: "someone-else" }, // dispatcher 命中 a1，但 a1 属他人且未分享
+    );
+
+    await orch.handleMessage(MSG);
+
+    const failed = await store.listByStatus("failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.error).toContain("无权");
+    expect(channel.texts.some((t) => t.includes("无权使用它"))).toBe(true);
+    // 失败后不再进入执行轮（runner 只消费了 dispatcher 路由这一条）
+    expect(runner.prompts).toEqual([MSG.text]);
   });
 });

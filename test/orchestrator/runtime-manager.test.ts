@@ -328,6 +328,34 @@ describe("RuntimeManager agent 分支", () => {
     expect(runOptions.systemPromptAppend).toContain("EXTRA");
   });
 
+  it("cwd：agent 任务共享 agents/<agentId>/workspace（产物跨会话延续），无 agent 保持会话级", async () => {
+    const user = baseUser(join(ws, "users", "u1"));
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([baseConv()]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+    });
+    const agent = {
+      id: "a1",
+      ownerId: "u1",
+      name: "A",
+      skills: [],
+      tools: { mode: "all" as const, whitelist: [] },
+      mcpServers: [],
+      llm: {},
+      createdAt: "",
+      updatedAt: "",
+    };
+    const withAgent1 = await m.prepare(user, baseConv(), { agent });
+    const withAgent2 = await m.prepare(user, baseConv({ id: "conv-2" }), { agent });
+    // 同 agent 不同会话 → 同一工作区（跨会话产物延续）
+    expect(withAgent1.runOptions.cwd).toBe(withAgent2.runOptions.cwd);
+    expect(withAgent1.runOptions.cwd).toContain(join("agents", "a1", "workspace"));
+    const noAgent = await m.prepare(user, baseConv(), {});
+    expect(noAgent.runOptions.cwd).toContain(join("sessions", "c1", "workspace"));
+  });
+
   it("共享 agent 将创建者选中的 skill 复制到访问者会话目录", async () => {
     const ownerPackDir = mkdtempSync(join(tmpdir(), "shared-agent-pack-"));
     mkdirSync(join(ownerPackDir, ".claude-plugin"), { recursive: true });

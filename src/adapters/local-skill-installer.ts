@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
@@ -26,13 +26,21 @@ export class LocalSkillInstaller implements SkillInstaller {
   async installFromGit(userId: string, req: InstallGitReq): Promise<SkillPack> {
     const slug = await this.deriveSlug(userId, req.slug ?? repoSlugFromUrl(req.url));
     const dir = this.userPackDir(userId, slug);
-    const branch = req.ref ? `--branch ${shellQuote(req.ref)} ` : "";
     try {
-      execSync(
-        `git -c ${GIT_LONG_PATH_CONFIG} clone --depth 1 ${branch}${shellQuote(req.url)} ${shellQuote(dir)}`,
-        {
-          stdio: "pipe",
-        },
+      // 参数数组直传 git，不经 shell（url/ref 来自外部输入，杜绝注入面）
+      execFileSync(
+        "git",
+        [
+          "-c",
+          GIT_LONG_PATH_CONFIG,
+          "clone",
+          "--depth",
+          "1",
+          ...(req.ref ? ["--branch", req.ref] : []),
+          req.url,
+          dir,
+        ],
+        { stdio: "pipe" },
       );
       this.ensurePluginManifest(dir, slug);
       const subPath = normalizeSubPath(req.subPath);
@@ -96,7 +104,7 @@ export class LocalSkillInstaller implements SkillInstaller {
     }
     const dir = this.resolvePackDir(userId, pack);
     try {
-      execSync(`git -c ${GIT_LONG_PATH_CONFIG} -C ${shellQuote(dir)} pull --ff-only`, {
+      execFileSync("git", ["-c", GIT_LONG_PATH_CONFIG, "-C", dir, "pull", "--ff-only"], {
         stdio: "pipe",
       });
     } catch (e) {
@@ -282,9 +290,6 @@ function normalizeSubPath(value?: string): string | undefined {
   return normalized || undefined;
 }
 
-function shellQuote(s: string): string {
-  return `"${s.replace(/(["$`\\])/g, "\\$1")}"`;
-}
 function isInside(child: string, parent: string): boolean {
   const pathFromParent = relative(parent, child);
   return (

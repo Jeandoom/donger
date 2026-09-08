@@ -54,6 +54,54 @@ describe("SqliteTaskStore", () => {
     expect(await s.listByStatus("failed")).toEqual([]);
   });
 
+  it("failStaleAwaiting：两种挂起态都转 failed 且清 pendingGate/pendingCredentials", async () => {
+    const s = newStore();
+    await s.create({
+      ...base,
+      id: "gate",
+      status: "awaiting_approval",
+      pendingGate: { gateId: "acceptance", title: "验收确认", requestedAt: "t0" },
+    });
+    await s.create({
+      ...base,
+      id: "cred",
+      status: "awaiting_credentials",
+      pendingCredentials: { requestedAt: "t0" },
+    });
+    await s.create({ ...base, id: "run", status: "running" });
+    await s.create({ ...base, id: "ok", status: "done" });
+
+    const n = await s.failStaleAwaiting("服务重启中断（审批/凭证挂起态随进程丢失）");
+    expect(n).toBe(2);
+
+    const gate = await s.get("gate");
+    expect(gate?.status).toBe("failed");
+    expect(gate?.pendingGate).toBeUndefined();
+    const cred = await s.get("cred");
+    expect(cred?.status).toBe("failed");
+    expect(cred?.pendingCredentials).toBeUndefined();
+    // running 与 done 不受影响
+    expect((await s.get("run"))?.status).toBe("running");
+    expect((await s.get("ok"))?.status).toBe("done");
+  });
+
+  it("终态保护：done/failed 后拒绝状态回写（幂等忽略）", async () => {
+    const s = newStore();
+    await s.create({ ...base, id: "done1", status: "done", error: undefined });
+    // done → failed 的覆盖被拒绝（并发/重启窗口防旧上下文覆盖结局）
+    await s.updateStatus("done1", "failed", { error: "迟到的失败" });
+    const t = await s.get("done1");
+    expect(t?.status).toBe("done");
+    expect(t?.error).toBeUndefined();
+    // 同态重复写也被忽略
+    await s.updateStatus("done1", "done", { error: "x" });
+    expect((await s.get("done1"))?.error).toBeUndefined();
+    // 非终态正常流转不受影响
+    await s.create({ ...base, id: "run1", status: "running" });
+    await s.updateStatus("run1", "failed", { error: "e" });
+    expect((await s.get("run1"))?.status).toBe("failed");
+  });
+
   it("持久化：重新打开同一 DB 文件数据仍在", async () => {
     // :memory: 无法跨连接复用，用临时文件验证
     // eslint-disable-next-line

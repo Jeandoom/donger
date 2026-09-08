@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoutingDecision } from "../../src/domain/routing.js";
+import { isChatTaskType, parseRoutingDecision } from "../../src/domain/routing.js";
 
 const VALID = {
   agentId: "agent-ops",
@@ -32,14 +32,39 @@ describe("parseRoutingDecision", () => {
   });
 
   it("JSON 字符串值内裸换行自动修复", () => {
-    const raw = '{"agentId":"a1","requiresDesign":false,"taskType":"chat",\n  "rationale":"第一行\n第二行"}';
+    const raw =
+      '{"agentId":"a1","requiresDesign":false,"taskType":"chat",\n  "rationale":"第一行\n第二行"}';
     const r = parseRoutingDecision(raw);
     expect(r.agentId).toBe("a1");
     expect(r.rationale).toBe("第一行\n第二行");
   });
 
   it("代码块 JSON 尾随解释文字可解析", () => {
-    const raw = '结论如下：\n```json\n{"agentId":"a1","requiresDesign":true,"taskType":"dev","rationale":"匹配"}\n```\n以上。';
+    const raw =
+      '结论如下：\n```json\n{"agentId":"a1","requiresDesign":true,"taskType":"dev","rationale":"匹配"}\n```\n以上。';
     expect(parseRoutingDecision(raw).requiresDesign).toBe(true);
+  });
+});
+
+describe("isChatTaskType", () => {
+  it("chat 类标签（含变体与中文）判为闲聊", () => {
+    for (const t of [
+      "chat",
+      "Chat",
+      "chitchat",
+      "chat-greeting",
+      "闲聊",
+      "打招呼",
+      "问候语",
+      " chat ",
+    ]) {
+      expect(isChatTaskType(t), t).toBe(true);
+    }
+  });
+
+  it("任务类标签不误判为闲聊", () => {
+    for (const t of ["dev-bugfix", "ops-inspect", "doc", "修复导出乱码"]) {
+      expect(isChatTaskType(t), t).toBe(false);
+    }
   });
 });

@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Agent, AgentInput } from "../../src/domain/agent.js";
+import type { Conversation } from "../../src/domain/conversation.js";
 import type { SkillPack } from "../../src/domain/skill-pack.js";
 import type { User } from "../../src/domain/user.js";
 import { ensureDispatcherKb } from "../../src/orchestrator/dispatch-kb.js";
 import { platformToolDefinitions } from "../../src/orchestrator/platform-tools.js";
 import type { AgentStore } from "../../src/ports/agent-store.js";
+import type { ConversationStore } from "../../src/ports/conversation-store.js";
 import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { SkillPackStore } from "../../src/ports/skill-pack-store.js";
 
@@ -143,6 +145,13 @@ const PACK_STORE: SkillPackStore = {
 const KB_DIR = mkdtempSync(join(tmpdir(), "donger-kb-"));
 ensureDispatcherKb(KB_DIR);
 
+/** 每个登记用例独立 KB 目录（避免同文件内共享 agents.md 互相撞「已登记」） */
+function freshKbDir(): string {
+  const d = mkdtempSync(join(tmpdir(), "donger-kb2-"));
+  ensureDispatcherKb(d);
+  return d;
+}
+
 type Deps = Parameters<typeof platformToolDefinitions>[0];
 
 function findTool(deps: Deps, name: string) {
@@ -158,6 +167,42 @@ const baseDeps = (agentStore: ReturnType<typeof mockAgentStore>, kbDir?: string)
   packStore: PACK_STORE,
   ...(kbDir ? { kbDir } : {}),
 });
+
+/** 内存会话存储：可变 agentId，供 finish_builder 断言解绑效果 */
+function mockConvStore(agentId: string): ConversationStore & { conv: Conversation } {
+  const conv: Conversation = {
+    id: "conv-1",
+    userId: USER.id,
+    sdkSessionId: "",
+    title: "t",
+    channelId: "cli",
+    agentId,
+    createdAt: "t",
+    updatedAt: "t",
+    archived: false,
+  };
+  return {
+    conv,
+    async create() {
+      return conv;
+    },
+    async createWithAgent() {
+      return conv;
+    },
+    async get() {
+      return conv;
+    },
+    async getLatest() {
+      return conv;
+    },
+    async listByUser() {
+      return [conv];
+    },
+    async update(_id, patch) {
+      Object.assign(conv, patch);
+    },
+  };
+}
 
 describe("平台工具", () => {
   it("list_agents / list_skills 返回 JSON 摘要", async () => {
@@ -187,6 +232,25 @@ describe("平台工具", () => {
     const dup = await findTool(deps, "create_agent").handler({ name: "A" });
     expect(dup.isError).toBe(true);
     expect(dup.content[0]?.text).toContain("同名智能体已存在");
+  });
+
+  it("create_agent：引用不存在/未启用的技能名报错并提示核对", async () => {
+    const store = mockAgentStore();
+    const deps = baseDeps(store, KB_DIR);
+    const r = await findTool(deps, "create_agent").handler({
+      name: "A",
+      skills: ["nope-execute"],
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toContain("nope-execute");
+    expect(r.content[0]?.text).toContain("list_skills");
+    expect(store.rows.size).toBe(0);
+    const ok = await findTool(deps, "create_agent").handler({
+      name: "B",
+      skills: ["gitlab-execute"],
+    });
+    expect(ok.isError).toBeUndefined();
+    expect(store.rows.size).toBe(1);
   });
 
   it("update_agent：owner 可改；非 owner 报错", async () => {
@@ -261,11 +325,181 @@ describe("平台工具", () => {
     expect(dup.isError).toBe(true);
   });
 
+  it("update_kb_registry：干跑验证命中本智能体", async () => {
+    const store = mockAgentStore();
+    const created = await store.create({
+      ownerId: USER.id,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    let dryRunCalls = 0;
+    const kbDir = freshKbDir();
+    const deps: Deps = {
+      ...baseDeps(store, kbDir),
+      dispatchDryRun: async () => {
+        dryRunCalls += 1;
+        return { agentId: created.id, rationale: "匹配" };
+      },
+    };
+    const r = await findTool(deps, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "A",
+      duty: "测试",
+      skills: [],
+      taskTypes: "测试类",
+    });
+    expect(r.isError).toBeUndefined();
+    expect(dryRunCalls).toBe(1);
+    expect(r.content[0]?.text).toContain("干跑验证通过");
+  });
+
+  it("update_kb_registry：干跑仍为 none / 路由他处时给出修订指引", async () => {
+    const store = mockAgentStore();
+    const created = await store.create({
+      ownerId: USER.id,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const noneRun: Deps = {
+      ...baseDeps(store, freshKbDir()),
+      dispatchDryRun: async () => ({ agentId: "none", rationale: "描述不清晰" }),
+    };
+    const none = await findTool(noneRun, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "A",
+      duty: "d",
+      skills: [],
+      taskTypes: "t",
+    });
+    expect(none.isError).toBeUndefined();
+    expect(none.content[0]?.text).toContain("仍路由到 none");
+    const otherRun: Deps = {
+      ...baseDeps(store, freshKbDir()),
+      dispatchDryRun: async () => ({ agentId: "other-agent", rationale: "重叠" }),
+    };
+    const other = await findTool(otherRun, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "A",
+      duty: "d",
+      skills: [],
+      taskTypes: "t",
+    });
+    expect(other.content[0]?.text).toContain("其他智能体");
+  });
+
+  it("update_kb_registry：干跑抛错不影响登记生效", async () => {
+    const store = mockAgentStore();
+    const created = await store.create({
+      ownerId: USER.id,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const kbDir = freshKbDir();
+    const deps: Deps = {
+      ...baseDeps(store, kbDir),
+      dispatchDryRun: async () => {
+        throw new Error("dispatcher 超时");
+      },
+    };
+    const r = await findTool(deps, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "A",
+      duty: "d",
+      skills: [],
+      taskTypes: "t",
+    });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]?.text).toContain("登记本身已生效");
+    expect(readFileSync(join(kbDir, "dispatcher", "agents.md"), "utf8")).toContain(created.id);
+  });
+
+  it("create_agent：tools 参数落库并回显；缺省 all", async () => {
+    const store = mockAgentStore();
+    const deps = baseDeps(store, KB_DIR);
+    const r = await findTool(deps, "create_agent").handler({
+      name: "RO",
+      tools: { mode: "whitelist", whitelist: ["Read", "Glob", "Grep"] },
+    });
+    expect(r.content[0]?.text).toContain("工具白名单：Read、Glob、Grep");
+    const all = await findTool(deps, "create_agent").handler({ name: "ALL" });
+    expect(all.content[0]?.text).toContain("工具全开");
+  });
+
+  it("update_kb_registry：agentId 不存在或非本人智能体拒绝登记", async () => {
+    const store = mockAgentStore();
+    const deps = baseDeps(store, KB_DIR);
+    const ghost = await findTool(deps, "update_kb_registry").handler({
+      agentId: "ghost-id",
+      name: "A",
+      duty: "d",
+      skills: [],
+      taskTypes: "t",
+    });
+    expect(ghost.isError).toBe(true);
+    expect(ghost.content[0]?.text).toContain("智能体不存在");
+    const created = await store.create({
+      ownerId: "someone-else",
+      name: "Foreign",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const foreign = await findTool(deps, "update_kb_registry").handler({
+      agentId: created.id,
+      name: "Foreign",
+      duty: "d",
+      skills: [],
+      taskTypes: "t",
+    });
+    expect(foreign.isError).toBe(true);
+    expect(foreign.content[0]?.text).toContain("只能登记");
+  });
+
+  it("finish_builder：解绑 builder 会话；未绑定时拒绝", async () => {
+    const store = mockAgentStore();
+    const bound = mockConvStore("agent-builder");
+    const boundDeps: Deps = {
+      ...baseDeps(store),
+      conversationStore: bound,
+      conversationId: bound.conv.id,
+    };
+    const ok = await findTool(boundDeps, "finish_builder").handler({});
+    expect(ok.isError).toBeUndefined();
+    expect(bound.conv.agentId).toBe("");
+    const unbound = mockConvStore("");
+    const unboundDeps: Deps = {
+      ...baseDeps(store),
+      conversationStore: unbound,
+      conversationId: unbound.conv.id,
+    };
+    const refuse = await findTool(unboundDeps, "finish_builder").handler({});
+    expect(refuse.isError).toBe(true);
+    expect(refuse.content[0]?.text).toContain("未绑定");
+  });
+
   it("kbDir 缺省时 update_kb_registry 报错", async () => {
     const store = mockAgentStore();
+    const created = await store.create({
+      ownerId: USER.id,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
     const deps = baseDeps(store);
     const r = await findTool(deps, "update_kb_registry").handler({
-      agentId: "x",
+      agentId: created.id,
       name: "A",
       duty: "d",
       skills: [],

@@ -20,14 +20,21 @@ export function makeApprovalResolver(
   commentStore?: CommentStore,
 ): ApprovalResolver {
   return async (req) => {
-    await store.updateStatus(req.taskId, nextStatus("running", "request_approval"));
-
     const gate = gates.getGate(req.gateId);
     const card: ApprovalCard = {
       gateId: req.gateId,
       title: `审批门：${gate?.description ?? req.gateId}`,
       summary: req.summary,
     };
+    // pendingGate 落库：重启清扫（failStaleAwaiting）与观测面板据此识别卡在人工门的任务
+    await store.updateStatus(req.taskId, nextStatus("running", "request_approval"), {
+      pendingGate: {
+        gateId: req.gateId,
+        title: card.title,
+        requestedAt: new Date().toISOString(),
+      },
+    });
+
     const result = await channel.requestApproval(threadId, card);
 
     if (result.comment && commentStore) {
@@ -36,7 +43,9 @@ export function makeApprovalResolver(
         .catch(() => {});
     }
 
-    await store.updateStatus(req.taskId, nextStatus("awaiting_approval", "resume"));
+    await store.updateStatus(req.taskId, nextStatus("awaiting_approval", "resume"), {
+      pendingGate: undefined,
+    });
     return { approved: result.approved, reason: result.reason };
   };
 }

@@ -8,27 +8,40 @@ import type { MessageStore } from "../ports/message-store.js";
  *  result success → 推送完成通知。
  *  result error → 推送失败通知。
  *  quietResult=true（多阶段任务的非末轮）→ 成功 result 不推送（回合不提前结束）；
- *  失败照常推送（回合必须能以错误结束）。 */
+ *  失败照常推送（回合必须能以错误结束）。
+ *  silent=true（内部轮，如 dispatcher 路由）→ 全部只走审计不推送不持久化，仅返回末事件。 */
 export async function bridgeEvents(
   channel: Channel,
   conversationId: string,
   events: AsyncIterable<RunnerEvent>,
   messageStore?: MessageStore,
   quietResult = false,
+  silent = false,
 ): Promise<RunnerEvent | undefined> {
   let last: RunnerEvent | undefined;
   let streamedMessageId: string | null = null;
   const toolByUseId = new Map<string, string>();
   for await (const e of events) {
     last = e;
+    if (silent) continue;
+    if (e.type === "thinking_delta") {
+      // 思考流：仅实时透出（不持久化为聊天消息；完整内容已随 llm_output 落审计）
+      channel.pushThinkingDelta?.(conversationId, e.messageId, e.text);
+      continue;
+    }
     if (e.type === "text_delta") {
       streamedMessageId = e.messageId;
       channel.pushTextDelta?.(conversationId, e.messageId, e.text);
     } else if (e.type === "tool_use") {
       toolByUseId.set(e.toolUseId, e.tool);
+      // 写入类工具附行数标注（CC/Codex 式规模感知）
+      let scale = "";
+      const input = (e.input ?? {}) as Record<string, unknown>;
+      const content = input.content ?? input.new_string ?? input.patch;
+      if (typeof content === "string") scale = `（+${content.split("\n").length} 行）`;
       channel.pushActivity?.(
         conversationId,
-        `🔧 ${e.tool} ${clipInput(JSON.stringify(e.input ?? {}))}`,
+        `🔧 ${e.tool} ${clipInput(JSON.stringify(e.input ?? {}))}${scale}`,
       );
     } else if (e.type === "tool_result") {
       if (e.isError) {

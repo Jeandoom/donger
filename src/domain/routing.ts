@@ -9,6 +9,11 @@ export const RoutingDecisionSchema = z.object({
 });
 export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
 
+/** chat 类标签归一判定：taskType 是 LLM 自由文本，判定闲聊兜底需容错（chat/Chat/chitchat/闲聊/打招呼…） */
+export function isChatTaskType(taskType: string): boolean {
+  return /^(chat|chitchat|闲聊|寒暄|打招呼|问候)/i.test(taskType.trim());
+}
+
 /**
  * 从 dispatcher 最终输出解析路由决策。
  * 依次尝试：```json 代码块 → 文本中第一个平衡的 {...} → 各候选的字符串内裸换行修复版；

@@ -128,8 +128,13 @@ export class RuntimeManager {
       }
     }
 
-    // —— RuntimeDirResolver：懒创建运行时目录 homeDir/sessions/<convId>/workspace/ ——
-    const runtimeDir = ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
+    // —— RuntimeDirResolver：运行时目录懒创建 ——
+    // agent 绑定任务：cwd 按 agent 共享（agents/<agentId>/workspace），产物跨会话延续；
+    // 闲聊/无 agent：保持会话级隔离（sessions/<convId>/workspace）。
+    // 注意同 agent 并发任务会写同一目录——语义上 agent 应串行干活，后续可加忙互斥。
+    const runtimeDir = opts.agent
+      ? ensureRuntimeDir(user.homeDir, "agents", opts.agent.id, "workspace")
+      : ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
     const pluginPaths = [
       ...resolved.pluginPaths,
       ...(opts.agent && opts.sharedAgentSkillOwner

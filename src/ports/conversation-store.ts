@@ -16,6 +16,6 @@ export interface ConversationStore {
   listByUser(userId: string): Promise<Conversation[]>;
   /** 取用户最新未归档会话 */
   getLatest(userId: string, channelId: string): Promise<Conversation | undefined>;
-  /** 更新（回写 sdkSessionId / title / archived） */
+  /** 更新（回写 sdkSessionId / title / agentId / archived；agentId 置空串=解除绑定） */
   update(id: string, patch: Partial<Conversation>): Promise<void>;
 }

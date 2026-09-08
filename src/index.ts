@@ -80,6 +80,9 @@ async function main(): Promise<void> {
   // 僵尸清扫：上次进程遗留的 running 任务标记为中断（任务并发视图不被污染）
   const stale = await store.failStaleRunning("服务重启中断");
   if (stale > 0) log.warn({ count: stale }, "已将遗留 running 任务标记为中断");
+  // 挂起门清扫：审批/凭证的 resolve 通道在进程内存，重启后 awaiting_* 必然无人应答 → 标记失败
+  const staleAwaiting = await store.failStaleAwaiting("服务重启中断（审批/凭证挂起态随进程丢失）");
+  if (staleAwaiting > 0) log.warn({ count: staleAwaiting }, "已将遗留挂起门任务标记为失败");
   const usersDir = join(cfg.workspaceDir, "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {
@@ -186,6 +189,7 @@ async function main(): Promise<void> {
       kbDir,
       installer: skillInstaller,
       skillPackStore,
+      agentChain: cfg.agentChain,
     });
   }
 
@@ -207,6 +211,17 @@ async function main(): Promise<void> {
   // 任务管理知识库（P1 任务分发）：幂等 seed dispatcher 目录
   const kbDir = join(cfg.workspaceDir, "kb");
   ensureDispatcherKb(kbDir);
+
+  // agent 链配置校验（D2）：自定义 dispatcher/builder/chat agent 须已登记，缺失仅告警（运行时兜底内置）
+  for (const [env, id] of [
+    ["DISPATCHER_AGENT_ID", cfg.agentChain.dispatcherAgentId],
+    ["BUILDER_AGENT_ID", cfg.agentChain.builderAgentId],
+    ["CHAT_AGENT_ID", cfg.agentChain.chatAgentId],
+  ] as const) {
+    if (id && !(await agentStore.get(id))) {
+      log.warn({ env, agentId: id }, "agentChain 配置的智能体不存在，运行时将回退系统内置");
+    }
+  }
 
   // 工作流模块 stores（trigger / workflow / loop）
   const triggerStore = new SqliteTriggerStore(db);

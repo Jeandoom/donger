@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type RuntimeRoot = "sessions" | "skill_root" | "agent_root" | "workflow_root";
+export type RuntimeRoot = "sessions" | "agents" | "skill_root" | "agent_root" | "workflow_root";
 
 /** 工作区根默认值：~/.donger/workspace */
 export function defaultWorkspaceDir(): string {

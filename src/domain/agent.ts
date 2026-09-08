@@ -35,18 +35,31 @@ export const AgentSchema = z.object({
   gitRepositories: AgentGitRepositoriesSchema,
   extensionDirectories: AgentExtensionDirectoriesSchema,
   llm: AgentLLMSchema,
+  /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */
+  version: z.number().int().positive().default(1),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type Agent = z.infer<typeof AgentSchema>;
 
-/** 入参用：不带 id/时间戳（由 store 填充） */
+/** 版本历史摘要（不含 mcpServers 等敏感/大字段，可安全展示） */
+export interface AgentVersionSummary {
+  agentId: string;
+  version: number;
+  name: string;
+  description?: string;
+  skills: string[];
+  createdAt: string;
+}
+
+/** 入参用：不带 id/时间戳/版本号（由 store 填充） */
 export type AgentInput = Omit<
   Agent,
-  "id" | "createdAt" | "updatedAt" | "gitRepositories" | "extensionDirectories"
+  "id" | "createdAt" | "updatedAt" | "version" | "gitRepositories" | "extensionDirectories"
 > & {
   gitRepositories?: Agent["gitRepositories"];
   extensionDirectories?: Agent["extensionDirectories"];
+  version?: number;
 };
 export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true });
 

@@ -45,6 +45,14 @@ describe("SqliteConversationStore", () => {
     expect(updated?.title).toBe("新标题");
   });
 
+  it("update 持久化 agentId（置空串=解除绑定）", async () => {
+    const c = await store.createWithAgent("u", "web", "t", "agent-builder");
+    await store.update(c.id, { agentId: "" });
+    expect((await store.get(c.id))?.agentId).toBe("");
+    await store.update(c.id, { agentId: "a1" });
+    expect((await store.get(c.id))?.agentId).toBe("a1");
+  });
+
   it("update archived → listByUser 排除", async () => {
     const c = await store.create("u1", "web", "待归档");
     await store.update(c.id, { archived: true });

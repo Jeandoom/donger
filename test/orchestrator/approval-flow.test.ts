@@ -58,6 +58,39 @@ describe("makeApprovalResolver", () => {
     expect(ch.state.card?.summary).toBe("方案A");
   });
 
+  it("pendingGate：挂起时写入 task，决议后清除", async () => {
+    const store = new InMemoryTaskStore();
+    await store.create({ ...baseTask, status: "running" });
+    const ch = fakeChannel({ approved: true });
+    const resolver = makeApprovalResolver(store, ch, "th", new GateRouter());
+
+    // requestApproval 内部暂停期间 task 应带 pendingGate（用受控 promise 观察）
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    ch.requestApproval = async (_t, c) => {
+      ch.state.card = c;
+      await gate;
+      return { approved: true };
+    };
+    const pending = resolver({
+      taskId: "t1",
+      gateId: "deploy",
+      tool: "Bash",
+      toolUseId: "tu",
+      input: {},
+      summary: "部署",
+    });
+    await Promise.resolve(); // 让 resolver 推进到挂起点
+    await store.get("t1").then((t) => {
+      expect(t?.status).toBe("awaiting_approval");
+      expect(t?.pendingGate?.gateId).toBe("deploy");
+      expect(t?.pendingGate?.requestedAt).toBeTruthy();
+    });
+    release();
+    await pending;
+    expect((await store.get("t1"))?.pendingGate).toBeUndefined();
+  });
+
   it("denied：返回 approved=false + reason", async () => {
     const store = new InMemoryTaskStore();
     await store.create({ ...baseTask, status: "running" });

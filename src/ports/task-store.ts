@@ -8,4 +8,6 @@ export interface TaskStore {
   listByStatus(status: TaskStatus): Promise<Task[]>;
   /** 服务启动时清理：把遗留 running 任务标记为中断（僵尸清扫，防止污染运行视图） */
   failStaleRunning(reason: string): Promise<number>;
+  /** 服务启动时清理：挂起在审批门/凭证门的任务随进程失去 resolve 通道，重启后必然无法恢复 → 标记失败 */
+  failStaleAwaiting(reason: string): Promise<number>;
 }

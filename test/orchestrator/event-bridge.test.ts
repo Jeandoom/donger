@@ -22,12 +22,14 @@ function fakeChannel(): Channel & { sent: OutgoingMessage[] } {
 
 function fakeStreamingChannel() {
   const deltas: Array<{ messageId: string; text: string }> = [];
+  const thinking: Array<{ messageId: string; text: string }> = [];
   const texts: string[] = [];
   const results: Array<{ subtype: "success" | "error"; text: string }> = [];
   return {
     id: "web",
     streaming: true,
     deltas,
+    thinking,
     texts,
     results,
     onMessage: () => {},
@@ -35,6 +37,8 @@ function fakeStreamingChannel() {
     pushText: (_conversationId: string, text: string) => texts.push(text),
     pushTextDelta: (_conversationId: string, messageId: string, text: string) =>
       deltas.push({ messageId, text }),
+    pushThinkingDelta: (_conversationId: string, messageId: string, text: string) =>
+      thinking.push({ messageId, text }),
     pushResult: (_conversationId: string, subtype: "success" | "error", text: string) =>
       results.push({ subtype, text }),
     requestApproval: async () => ({ approved: true }),
@@ -61,6 +65,25 @@ describe("bridgeEvents", () => {
     ]);
     expect(ch.texts).toEqual([]);
     expect(ch.results).toEqual([{ subtype: "success", text: "Hi!" }]);
+  });
+
+  it("thinking_delta → pushThinkingDelta 透出，不入消息流", async () => {
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        { type: "thinking_delta", taskId: "t", messageId: "msg-1", text: "先分析…" },
+        { type: "thinking_delta", taskId: "t", messageId: "msg-1", text: "再动手" },
+        { type: "text_delta", taskId: "t", messageId: "msg-1", text: "答案" },
+      ]),
+    );
+    expect(ch.thinking).toEqual([
+      { messageId: "msg-1", text: "先分析…" },
+      { messageId: "msg-1", text: "再动手" },
+    ]);
+    expect(ch.deltas).toEqual([{ messageId: "msg-1", text: "答案" }]);
+    expect(ch.texts).toEqual([]);
   });
 
   it("text → 发文本", async () => {

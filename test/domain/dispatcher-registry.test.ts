@@ -44,4 +44,18 @@ describe("appendDispatcherAgentRow", () => {
   it("无表格分隔行报错", () => {
     expect(() => appendDispatcherAgentRow("# 无表格\n正文", ROW)).toThrow("格式不符");
   });
+
+  it("单元格消毒：竖线/换行不破坏表格行结构", () => {
+    const out = appendDispatcherAgentRow(seedMarkdown(), {
+      ...ROW,
+      agentId: "a3",
+      duty: "巡检 | 部署\n含换行",
+      taskTypes: "变更|巡检",
+    });
+    const rowLine = out.split("\n").find((l) => l.startsWith("| a3 |"));
+    expect(rowLine).toBeDefined();
+    // 行内竖线数量固定为 7（6 列表格），消毒后不新增分隔符
+    expect((rowLine ?? "").match(/\|/g)).toHaveLength(7);
+    expect(rowLine).toContain("巡检 ／ 部署 含换行");
+  });
 });

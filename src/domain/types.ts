@@ -1,6 +1,7 @@
 // 领域数据形状（纯数据，不含行为/接口）。后续所有任务共享的词汇表。
 // IO 边界（持久化、外部输入）用 Zod 做运行时校验；内部传递类型用纯 TS。
 import { z } from "zod";
+import { FlowStepSchema } from "./task-flow.js";
 
 // === Task ===
 export const TaskStatusEnum = z.enum([
@@ -38,6 +39,17 @@ export const TaskSchema = z.object({
   rejectionCount: z.number().int().nonnegative().optional(),
   /** dispatcher 路由理由（观测/优化用） */
   routingRationale: z.string().optional(),
+  // —— 人工门挂起态（观测 + 重启清扫依据；决议/提交后清除）——
+  /** 任务正卡在审批门（lifecycle 门或工具门）时写入 */
+  pendingGate: z
+    .object({ gateId: z.string(), title: z.string(), requestedAt: z.string() })
+    .optional(),
+  /** 任务正卡在凭证收集门时写入 */
+  pendingCredentials: z.object({ requestedAt: z.string() }).optional(),
+  /** Task Flow 流水线：dispatcher/builder/chat/agent 步骤链（请求级，方案 A 挂用户当前会话） */
+  steps: z.array(FlowStepSchema).optional(),
+  /** builder 完成自动重派产生本 task 时，指回触发补建的原 task */
+  builderFromTaskId: z.string().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -72,6 +84,7 @@ export type RunnerEvent =
   | { type: "llm_input"; taskId: string; input: string }
   | { type: "llm_output"; taskId: string; output: string }
   | { type: "text_delta"; taskId: string; messageId: string; text: string }
+  | { type: "thinking_delta"; taskId: string; messageId: string; text: string }
   | { type: "text"; taskId: string; text: string }
   | {
       type: "tool_use";
@@ -146,6 +159,8 @@ export const IncomingMessageSchema = z.object({
   text: z.string(),
   conversationId: z.string().optional(),
   files: z.array(MessageFileSchema).optional(),
+  /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
+  builderFromTaskId: z.string().optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

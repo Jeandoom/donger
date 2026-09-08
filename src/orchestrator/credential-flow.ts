@@ -16,9 +16,14 @@ export function makeCredentialResolver(
   threadId: string,
 ): (req: CredentialRequest) => Promise<Record<string, string>> {
   return async (req) => {
-    await store.updateStatus(req.taskId, nextStatus("planning", "request_credentials"));
+    // pendingCredentials 落库：重启清扫（failStaleAwaiting）与观测据此识别卡在凭证门的任务
+    await store.updateStatus(req.taskId, nextStatus("planning", "request_credentials"), {
+      pendingCredentials: { requestedAt: new Date().toISOString() },
+    });
     if (!channel.requestCredentials) {
-      await store.updateStatus(req.taskId, nextStatus("awaiting_credentials", "fail"));
+      await store.updateStatus(req.taskId, nextStatus("awaiting_credentials", "fail"), {
+        pendingCredentials: undefined,
+      });
       throw new CredentialRequiredError(
         "CREDENTIAL_REQUIRED",
         "请到 Web 控制台凭证页配置所需凭证后重试",
@@ -28,6 +33,7 @@ export function makeCredentialResolver(
     await store.updateStatus(
       req.taskId,
       nextStatus("awaiting_credentials", "credentials_provided"),
+      { pendingCredentials: undefined },
     );
     return values;
   };

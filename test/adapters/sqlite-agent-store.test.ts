@@ -65,4 +65,51 @@ describe("SqliteAgentStore", () => {
     await store.delete(a.id);
     expect(await store.get(a.id)).toBeUndefined();
   });
+
+  it("版本化：create 建 v1，update 自增版本，listVersions 新→旧", async () => {
+    const store = new SqliteAgentStore(db, cipher);
+    store.migrate();
+    const a = await store.create(input);
+    expect(a.version).toBe(1);
+
+    await store.update(a.id, { name: "A2" });
+    const v3 = await store.update(a.id, { skills: ["s:2"] });
+    expect(v3.version).toBe(3);
+
+    const versions = await store.listVersions(a.id);
+    expect(versions.map((v) => v.version)).toEqual([3, 2, 1]);
+    expect(versions[0]?.skills).toEqual(["s:2"]);
+    expect(versions[2]?.name).toBe("A");
+  });
+
+  it("rollback：恢复快照内容并生成新版本（历史不改写），密钥字段一并恢复", async () => {
+    const store = new SqliteAgentStore(db, cipher);
+    store.migrate();
+    const a = await store.create(input); // v1：headers SECRET=top
+    await store.update(a.id, { name: "A2", skills: ["s:9"] }); // v2
+
+    const rolled = await store.rollback(a.id, 1);
+    expect(rolled.version).toBe(3); // v3 = 回滚产生的新版本
+    expect(rolled.name).toBe("A");
+    expect(rolled.skills).toEqual(["s:1"]);
+    expect(rolled.mcpServers[0]?.headers).toEqual({ SECRET: "top" });
+
+    // 历史仍在：v1/v2 可继续追溯
+    expect((await store.listVersions(a.id)).map((v) => v.version)).toEqual([3, 2, 1]);
+    // 回滚不存在的版本报错
+    await expect(store.rollback(a.id, 99)).rejects.toThrow();
+  });
+
+  it("存量回填：无版本记录的旧 agent 在 migrate 后获得 v1 基线", async () => {
+    const store = new SqliteAgentStore(db, cipher);
+    store.migrate();
+    const a = await store.create(input);
+    // 模拟存量数据：删除版本记录（旧版本库无版本表内容）
+    db.prepare("DELETE FROM agent_versions WHERE agentId = ?").run(a.id);
+    // 重新 migrate（幂等回填）
+    store.migrate();
+    const versions = await store.listVersions(a.id);
+    expect(versions.map((v) => v.version)).toEqual([1]);
+    expect(versions[0]?.name).toBe("A");
+  });
 });

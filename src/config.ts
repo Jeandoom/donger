@@ -39,6 +39,9 @@ const EnvSchema = z.object({
   SECRET_KEY: z.string().optional(),
   // Agent 可选 LLM 预置模型，格式 name|model|baseUrl，多条用 ; 分隔
   AGENT_LLM_PRESETS: z.string().optional().default(""),
+  DISPATCHER_AGENT_ID: z.string().optional(),
+  BUILDER_AGENT_ID: z.string().optional(),
+  CHAT_AGENT_ID: z.string().optional(),
   PUBLIC_BASE_URL: z.string().optional().default(""),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
@@ -65,6 +68,13 @@ export interface LlmPreset {
   name: string;
   model: string;
   baseUrl: string;
+}
+
+/** task-flow agent 链可配置项：各环节替换为用户自建 agent id（缺省系统内置常量） */
+export interface AgentChainEnvConfig {
+  dispatcherAgentId?: string;
+  builderAgentId?: string;
+  chatAgentId?: string;
 }
 
 export interface AppConfig {
@@ -96,6 +106,8 @@ export interface AppConfig {
   secretKeySeed: string;
   /** Agent 可选 LLM 预置列表 */
   agentLlmPresets: LlmPreset[];
+  /** task-flow agent 链（DISPATCHER_AGENT_ID/BUILDER_AGENT_ID/CHAT_AGENT_ID，均可选） */
+  agentChain: AgentChainEnvConfig;
   publicBaseUrl: string;
   gitOAuth: Record<"github" | "gitee" | "jihulab", { clientId?: string; clientSecret?: string }>;
   gitCloneTimeoutMs: number;
@@ -130,6 +142,11 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     jwtTtlDays: e.JWT_TTL_DAYS,
     secretKeySeed: resolveSecretSeed(e.SECRET_KEY, e.JWT_SECRET ?? ""),
     agentLlmPresets: parseLlmPresets(e.AGENT_LLM_PRESETS),
+    agentChain: {
+      dispatcherAgentId: e.DISPATCHER_AGENT_ID || undefined,
+      builderAgentId: e.BUILDER_AGENT_ID || undefined,
+      chatAgentId: e.CHAT_AGENT_ID || undefined,
+    },
     publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
     gitOAuth: {
       github: { clientId: e.GITHUB_CLIENT_ID, clientSecret: e.GITHUB_CLIENT_SECRET },

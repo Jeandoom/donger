@@ -104,9 +104,16 @@ export class SqliteConversationStore implements ConversationStore {
     const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
     this.db
       .prepare(
-        "UPDATE conversations SET sdkSessionId = ?, title = ?, archived = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, archived = ?, updatedAt = ? WHERE id = ?",
       )
-      .run(updated.sdkSessionId, updated.title, updated.archived ? 1 : 0, updated.updatedAt, id);
+      .run(
+        updated.sdkSessionId,
+        updated.title,
+        updated.agentId,
+        updated.archived ? 1 : 0,
+        updated.updatedAt,
+        id,
+      );
   }
 
   private rowToConv(row: Record<string, unknown>): Conversation {

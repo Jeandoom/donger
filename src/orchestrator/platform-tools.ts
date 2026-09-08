@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createSdkMcpServer,
@@ -11,8 +11,10 @@ import { canManageAgent } from "../domain/agent-policy.js";
 import { appendDispatcherAgentRow } from "../domain/dispatcher-registry.js";
 import type { User } from "../domain/user.js";
 import type { AgentStore } from "../ports/agent-store.js";
+import type { ConversationStore } from "../ports/conversation-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
+import { AGENT_BUILDER_ID } from "./agent-builder.js";
 
 export interface PlatformToolsDeps {
   user: User;
@@ -20,6 +22,13 @@ export interface PlatformToolsDeps {
   installer: SkillInstaller;
   packStore: SkillPackStore;
   kbDir?: string;
+  /** finish_builder 用：会话上下文缺省时该工具不可用 */
+  conversationStore?: ConversationStore;
+  conversationId?: string;
+  /** update_kb_registry 用（可选）：登记后用触发补建的原任务干跑一次 dispatcher，验证路由闭环 */
+  dispatchDryRun?: () => Promise<{ agentId: string; rationale: string }>;
+  /** finish_builder 成功解绑后回调（orchestrator 借此安排原任务自动重派） */
+  onBuilderFinish?: () => void;
 }
 
 /** MCP 工具返回（结构兼容 SDK CallToolResult，避免依赖其类型导出） */
@@ -30,12 +39,20 @@ const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }],
 
 // 注：数组元素类型是擦除泛型（AnyZodRawShape），handler args 的上下文类型是索引 never，
 // 故各 handler 用 z.object(shape).parse(args) 做入参校验 + 取回精确类型。
+const ToolsShape = {
+  mode: z.enum(["all", "whitelist"]).describe("all=全开；whitelist=仅白名单（推荐按需最小化）"),
+  whitelist: z.array(z.string()).default([]).describe("白名单工具名（如 Read/Glob/Grep/Bash）"),
+};
 const CreateAgentShape = {
   name: z.string().min(1).describe("智能体名称（同用户下唯一）"),
   description: z.string().optional().describe("一句话职责描述"),
   systemPrompt: z.string().optional().describe("系统提示"),
   skills: z.array(z.string()).optional().describe("技能名列表"),
   defaultSkill: z.string().optional().describe("默认技能（自动追加为 /技能 指令）"),
+  tools: z
+    .object(ToolsShape)
+    .optional()
+    .describe("工具范围（缺省 all 全开；须与用户确认后尽量收敛）"),
 };
 const UpdateAgentShape = {
   agentId: z.string().min(1),
@@ -92,18 +109,38 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           (agent) => agent.name === a.name,
         );
         if (dup) return fail(`同名智能体已存在：${a.name}，请换名或改用 update_agent`);
+        const skills = a.skills ?? [];
+        if (skills.length > 0) {
+          const enabled = new Set(
+            (await deps.packStore.listEnabledSkillsWithPack(deps.user.id)).map(
+              (row) => row.skill.name,
+            ),
+          );
+          const unknown = skills.filter((s) => !enabled.has(s));
+          if (unknown.length > 0) {
+            return fail(
+              `以下技能不存在或未启用：${unknown.join("、")}。请先用 list_skills 核对名称，缺失的先 write_skill 写入。`,
+            );
+          }
+        }
         const agent = await deps.agentStore.create({
           ownerId: deps.user.id,
           name: a.name,
           description: a.description,
           systemPrompt: a.systemPrompt,
-          skills: a.skills ?? [],
+          skills,
           defaultSkill: a.defaultSkill,
-          tools: { mode: "all", whitelist: [] },
+          tools: a.tools ?? { mode: "all", whitelist: [] },
           mcpServers: [],
           llm: {},
         });
-        return ok(`已创建智能体 id=${agent.id} name=${agent.name}（登记路由表时 agentId 用此 id）`);
+        const toolsNote =
+          agent.tools.mode === "all"
+            ? "工具全开（all）"
+            : `工具白名单：${agent.tools.whitelist.join("、") || "空"}`;
+        return ok(
+          `已创建智能体 id=${agent.id} name=${agent.name}（${toolsNote}；登记路由表时 agentId 用此 id）`,
+        );
       },
     },
     {
@@ -167,6 +204,13 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
       inputSchema: KbRegistryShape,
       handler: async (args): Promise<ToolResult> => {
         const a = z.object(KbRegistryShape).parse(args);
+        const agent = await deps.agentStore.get(a.agentId);
+        if (!agent) {
+          return fail(`智能体不存在：${a.agentId}（必须用 create_agent 返回的真实 id）`);
+        }
+        if (!canManageAgent(agent, deps.user)) {
+          return fail("只能登记自己创建（或管理）的智能体");
+        }
         if (!deps.kbDir) return fail("平台未装配任务管理知识库（kbDir），无法登记");
         const file = join(deps.kbDir, "dispatcher", "agents.md");
         let md: string;
@@ -181,10 +225,49 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
         } catch (e) {
           return fail(`登记失败：${(e as Error).message}`);
         }
-        writeFileSync(file, next, "utf8");
+        // 原子写：temp + rename，避免并发会话互相覆盖出半行
+        const tmp = `${file}.tmp`;
+        writeFileSync(tmp, next, "utf8");
+        renameSync(tmp, file);
+
+        // 干跑验证（装配了 dispatchDryRun 时）：用原任务跑一次 dispatcher，确认登记真的可路由
+        let verifyNote = "";
+        if (deps.dispatchDryRun) {
+          try {
+            const routing = await deps.dispatchDryRun();
+            if (routing.agentId === a.agentId) {
+              verifyNote = "干跑验证通过：dispatcher 已能把原任务路由到本智能体。";
+            } else if (routing.agentId === "none") {
+              verifyNote = `⚠️ 干跑验证未通过：dispatcher 仍路由到 none（${routing.rationale}）。请修订职责/适用任务类型描述后重新登记。`;
+            } else {
+              verifyNote = `⚠️ 干跑验证路由到了其他智能体（${routing.agentId}），请检查职责描述是否与现有智能体重叠。`;
+            }
+          } catch (e) {
+            verifyNote = `（干跑验证失败：${(e as Error).message}；登记本身已生效）`;
+          }
+        }
         return ok(
-          `已登记到路由表：${a.name}（agentId=${a.agentId}）。下一条任务消息即可被分发到该智能体。`,
+          `已登记到路由表：${a.name}（agentId=${a.agentId}）。${verifyNote}请调用 finish_builder 收尾，用户重发原任务即可被分发到该智能体。`,
         );
+      },
+    },
+    {
+      name: "finish_builder",
+      description:
+        "补建流程收尾：解除本会话与 Agent Builder 的绑定，此后用户消息恢复正常任务分发。路由表登记成功或用户放弃创建时必须调用。",
+      inputSchema: {},
+      handler: async (): Promise<ToolResult> => {
+        if (!deps.conversationStore || !deps.conversationId) {
+          return fail("会话上下文缺失，无法解除绑定");
+        }
+        const conv = await deps.conversationStore.get(deps.conversationId);
+        if (!conv) return fail("会话不存在，无法解除绑定");
+        if (conv.agentId !== AGENT_BUILDER_ID) {
+          return fail("该会话未绑定 Agent Builder，无需解除");
+        }
+        await deps.conversationStore.update(deps.conversationId, { agentId: "" });
+        deps.onBuilderFinish?.();
+        return ok("已解除绑定：系统将自动重派你的原任务到新智能体。请汇总本次补建结果。");
       },
     },
   ];

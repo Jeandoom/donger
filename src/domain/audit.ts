@@ -1,6 +1,6 @@
 import type { AuditEvent, RunnerEvent } from "./types.js";
 
-type AuditableRunnerEvent = Exclude<RunnerEvent, { type: "text_delta" }>;
+type AuditableRunnerEvent = Exclude<RunnerEvent, { type: "text_delta" | "thinking_delta" }>;
 
 /** 审计 IO 截断上限（toolInput / toolOutput）；agent 文本与 prompt 不截断。 */
 export const AUDIT_TRUNCATE_LIMIT = 4096;

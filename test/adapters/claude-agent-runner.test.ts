@@ -216,6 +216,21 @@ describe("ClaudeAgentRunner", () => {
     expect(seen).toEqual(["deploy"]);
   });
 
+  it("canUseTool：allowedTools 白名单外的工具 → deny（约束只读 agent 不放行 Bash）", async () => {
+    mockStream([]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    // 消费 generator 触发 query 调用，捕获 options.canUseTool
+    await collect(
+      runner.run(task, { ...opts, allowedTools: ["Read", "Glob"] }, async () => ({
+        approved: true,
+      })),
+    );
+    const r = await captured?.canUseTool?.("Bash", { command: "ls" }, { toolUseID: "tu" });
+    expect(r?.behavior).toBe("deny");
+    const ok = await captured?.canUseTool?.("Read", { file_path: "x" }, { toolUseID: "tu2" });
+    expect(ok?.behavior).toBe("allow");
+  });
+
   it("result 携带 usage（snake_case → camelCase）", async () => {
     mockStream([
       {
@@ -250,6 +265,35 @@ describe("ClaudeAgentRunner", () => {
     const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
     const last = events[events.length - 1];
     if (last?.type === "result") expect(last.usage).toBeUndefined();
+  });
+
+  it("result error → 透传 SDK errors[] 原始文本（session 过期重试依赖该文本匹配）", async () => {
+    mockStream([
+      {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: [
+          "Claude Code returned an error result: No conversation found with session ID: 9b7d512b",
+        ],
+      },
+    ]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const last = events[events.length - 1];
+    expect(last?.type).toBe("result");
+    if (last?.type === "result") {
+      expect(last.subtype).toBe("error");
+      expect(last.error).toContain("No conversation found with session ID");
+    }
+  });
+
+  it("result error 无 errors 字段 → 兜底固定文案（不爆）", async () => {
+    mockStream([{ type: "result", subtype: "error_during_execution", is_error: true }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const last = events[events.length - 1];
+    if (last?.type === "result") expect(last.error).toBe("agent 执行出错");
   });
 
   it("canUseTool：写入越界 workspaceRoot → deny", async () => {

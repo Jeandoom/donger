@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildOptimizeBrief } from "../../src/orchestrator/optimize-brief.js";
-import type { AuditEvent } from "../../src/domain/types.js";
 import type { Comment } from "../../src/domain/comment.js";
-import type { Task } from "../../src/domain/types.js";
+import type { AuditEvent, Task } from "../../src/domain/types.js";
+import { buildOptimizeBrief } from "../../src/orchestrator/optimize-brief.js";
 
 const task: Task = {
   id: "t1",
@@ -48,7 +47,12 @@ describe("buildOptimizeBrief", () => {
         ev({
           type: "result",
           resultSubtype: "success",
-          usage: { inputTokens: 10, outputTokens: 20, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+          },
           durationMs: 1500,
         }),
       ],

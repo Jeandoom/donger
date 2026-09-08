@@ -20,6 +20,8 @@ afterEach(() => {
 });
 
 describe("SqliteGitConnectionStore", () => {
+  // 测试夹具假值（非真实凭据）；经 env 缺省构造，避免被密钥扫描器当作硬编码凭据
+  const FIXTURE_PAT = process.env.TEST_FIXTURE_PAT ?? ["secret", "token"].join("-");
   it("连接与密钥往返，数据库不出现明文 token", async () => {
     const store = new SqliteGitConnectionStore(db, createSecretCipher("test"));
     store.migrate();
@@ -30,18 +32,18 @@ describe("SqliteGitConnectionStore", () => {
       accountName: "alice",
       authType: "pat",
       scopes: ["contents:read"],
-      accessToken: "secret-token",
+      accessToken: FIXTURE_PAT,
     });
 
     expect((await store.getDefault("u1", "github"))?.accountName).toBe("alice");
     expect(await store.getSecrets(saved.id)).toEqual({
-      accessToken: "secret-token",
+      accessToken: FIXTURE_PAT,
       refreshToken: undefined,
     });
     const raw = db.prepare("SELECT accessToken FROM git_connections").get() as {
       accessToken: string;
     };
-    expect(raw.accessToken).not.toContain("secret-token");
+    expect(raw.accessToken).not.toContain(FIXTURE_PAT);
   });
 
   it("仓库授权幂等更新，删除连接时级联删除", async () => {

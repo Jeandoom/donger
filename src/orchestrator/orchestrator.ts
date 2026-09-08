@@ -3,8 +3,11 @@ import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { Conversation } from "../domain/conversation.js";
+import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { appendMessageFiles } from "../domain/message-files.js";
+import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
+import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
 import type { User } from "../domain/user.js";
@@ -25,10 +28,12 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
+import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { makeCredentialResolver } from "./credential-flow.js";
-import { dispatchTask } from "./dispatch-flow.js";
+import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import {
@@ -69,6 +74,8 @@ export interface OrchestratorDeps {
   skillPackStore?: SkillPackStore;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
   commentStore?: CommentStore;
+  /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
+  agentChain?: AgentChainConfig;
 }
 
 export class Orchestrator {
@@ -77,8 +84,20 @@ export class Orchestrator {
   // userId → 活跃任务数（并发限制）
   private readonly userActiveCounts = new Map<string, number>();
   private readonly abortControllers = new Map<string, AbortController>();
+  // conversationId → 触发补建的原任务文本（builder 干跑验证用；进程内存态，重启丢失后回退当前消息）
+  private readonly builderOriginalPrompts = new Map<string, string>();
+  // conversationId → builder 已 finish（待自动重派原任务；runExclusive finally 消费）
+  private readonly builderFinished = new Set<string>();
+  // conversationId → builder 绑定时刻（闲置超时自动解绑用；重启丢失后从下一条消息重新计时）
+  private readonly builderBoundAt = new Map<string, number>();
+  /** builder 绑定闲置上限：超时未完成补建视为放弃，自动解绑回归正常分发 */
+  private static readonly BUILDER_BIND_TIMEOUT_MS = 10 * 60 * 1000;
+  // conversationId → 会话 busy 期间排队的消息（当前任务完成后自动依序处理；进程内存态）
+  private readonly pendingQueues = new Map<string, Array<{ user: User; msg: IncomingMessage }>>();
   /** 同用户最大并行任务数 */
   private static readonly MAX_CONCURRENT_PER_USER = 10;
+  /** 同会话最大排队消息数（超出直接拒绝，防止刷屏堆积） */
+  private static readonly MAX_QUEUED_PER_CONVERSATION = 5;
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
@@ -168,6 +187,7 @@ export class Orchestrator {
   }> {
     // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
     if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
+    if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
     if (!this.deps.agentStore) {
       throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
     }
@@ -216,6 +236,12 @@ export class Orchestrator {
     runController: AbortController;
     /** 多阶段任务的非末轮置 true：不向渠道推 result 事件（CLI/web 的回合不提前结束） */
     quietResult?: boolean;
+    /** 会话标题取材文本（缺省=task.prompt）；阶段轮的 task.prompt 是阶段引导词，标题须保持用户原文 */
+    titleText?: string;
+    /** 内部轮（dispatcher）：不接续会话 resume、不回写 sdkSessionId（独立决策，防历史污染） */
+    noResume?: boolean;
+    /** 内部轮（dispatcher）：事件只落审计，不推送渠道、不持久化消息 */
+    silent?: boolean;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
     const prepareOnce = async (): Promise<RunOptions> => {
@@ -227,12 +253,33 @@ export class Orchestrator {
         gitMaterializeItems: p.gitMaterializeItems,
       });
       const base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
-      if (p.agent?.id !== BUILTIN_ASSIST_AGENT_ID) return base;
+      if (p.noResume) {
+        return { ...base, resume: undefined, sessionStore: undefined };
+      }
+      // 内置创作/构建智能体注入平台工具（write_skill / create_agent / update_kb_registry 等）
+      const isBuiltinAuthor =
+        p.agent?.id === BUILTIN_ASSIST_AGENT_ID || p.agent?.id === AGENT_BUILDER_ID;
+      if (!isBuiltinAuthor) return base;
       if (!this.deps.agentStore || !this.deps.installer || !this.deps.skillPackStore) {
         throw new ForbiddenError(
           "PLATFORM_TOOLS_MISSING",
           "平台工具未装配（agentStore/installer/skillPackStore）",
         );
+      }
+      // builder 专属：登记后干跑验证——用触发补建的原任务跑一次 dispatcher 确认可路由
+      let dispatchDryRun: (() => Promise<{ agentId: string; rationale: string }>) | undefined;
+      if (p.agent?.id === AGENT_BUILDER_ID && this.deps.kbDir) {
+        const originalPrompt = this.builderOriginalPrompts.get(p.conversation.id) ?? p.task.prompt;
+        dispatchDryRun = async () => {
+          const routing = await this.runDispatcherTurn({
+            task: p.task,
+            user: p.user,
+            conversation: p.conversation,
+            prompt: originalPrompt,
+            runController: p.runController,
+          });
+          return { agentId: routing.agentId, rationale: routing.rationale };
+        };
       }
       return {
         ...base,
@@ -242,6 +289,10 @@ export class Orchestrator {
           installer: this.deps.installer,
           packStore: this.deps.skillPackStore,
           kbDir: this.deps.kbDir,
+          conversationStore: this.deps.conversationStore,
+          conversationId: p.conversation.id,
+          dispatchDryRun,
+          onBuilderFinish: () => this.builderFinished.add(p.conversation.id),
         }),
       };
     };
@@ -331,36 +382,38 @@ export class Orchestrator {
 
       for await (const e of rawEvents) {
         if (e.type === "session_init") capturedSessionId = e.sessionId;
-        yield e; // 先推流（保证审计失败不阻塞推送）
-        if (e.type === "text_delta") continue;
-        const extra: { durationMs?: number; model?: string } = {};
-        if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
-        if (e.type === "tool_result") {
-          const start = toolStartMs.get(e.toolUseId);
-          if (start !== undefined) extra.durationMs = Date.now() - start;
+        // 先落审计再推送：历史（audit）永远 ≥ 实时流，按会话回放不缺事件；审计失败不阻塞推送
+        if (e.type !== "text_delta" && e.type !== "thinking_delta") {
+          const extra: { durationMs?: number; model?: string } = {};
+          if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
+          if (e.type === "tool_result") {
+            const start = toolStartMs.get(e.toolUseId);
+            if (start !== undefined) extra.durationMs = Date.now() - start;
+          }
+          if (e.type === "result") {
+            extra.durationMs = Date.now() - turnStartMs;
+            extra.model = opts.llm.model;
+          }
+          try {
+            await this.deps.auditStore.record(
+              toAuditEvent(
+                e,
+                {
+                  conversationId: p.conversation.id,
+                  userId: p.user.id,
+                  taskId: taskId,
+                  seq,
+                  recordedAt: new Date().toISOString(),
+                },
+                extra,
+              ),
+            );
+          } catch (err) {
+            console.error("[orchestrator] 审计记录失败", err);
+          }
+          seq++;
         }
-        if (e.type === "result") {
-          extra.durationMs = Date.now() - turnStartMs;
-          extra.model = opts.llm.model;
-        }
-        try {
-          await this.deps.auditStore.record(
-            toAuditEvent(
-              e,
-              {
-                conversationId: p.conversation.id,
-                userId: p.user.id,
-                taskId: taskId,
-                seq,
-                recordedAt: new Date().toISOString(),
-              },
-              extra,
-            ),
-          );
-        } catch (err) {
-          console.error("[orchestrator] 审计记录失败", err);
-        }
-        seq++;
+        yield e;
       }
     }.call(this);
 
@@ -368,8 +421,9 @@ export class Orchestrator {
       channel,
       p.conversation.id,
       wrappedEvents,
-      this.deps.messageStore,
+      p.silent ? undefined : this.deps.messageStore,
       p.quietResult === true,
+      p.silent === true,
     );
 
     if (p.runController.signal.aborted) {
@@ -398,14 +452,14 @@ export class Orchestrator {
       }
     }
 
-    // 回写 sdkSessionId（经 RuntimeManager.commit）；title 仅首轮设置
-    if (capturedSessionId && capturedSessionId !== p.conversation.sdkSessionId) {
+    // 回写 sdkSessionId（经 RuntimeManager.commit）；title 仅首轮设置。内部轮（noResume）不回写
+    if (!p.noResume && capturedSessionId && capturedSessionId !== p.conversation.sdkSessionId) {
       const wasFirstTurn = !p.conversation.sdkSessionId;
       await this.deps.runtimeMgr.commit(p.conversation.id, { sdkSessionId: capturedSessionId });
       p.conversation.sdkSessionId = capturedSessionId;
       if (wasFirstTurn) {
         await this.deps.conversationStore.update(p.conversation.id, {
-          title: p.task.prompt.slice(0, 30),
+          title: (p.titleText ?? p.task.prompt).slice(0, 30),
         });
       }
     }
@@ -425,6 +479,69 @@ export class Orchestrator {
     return conversation.id;
   }
 
+  /** 收尾 task 上仍处于 running 的 flow step（runPhases 出口统一调用；保持 task 现有状态不变）。 */
+  private async completeTaskSteps(task: Task): Promise<void> {
+    if (!task.steps?.some((s) => s.status === "running")) return;
+    const cur = await this.deps.store.get(task.id);
+    if (!cur) return;
+    await this.deps.store
+      .updateStatus(task.id, cur.status, { steps: completeStep(task.steps) })
+      .catch(() => {});
+  }
+
+  /** agent 链解析：配置的自定义 agent 不存在时兜底内置（启动时已 warn）。 */
+  private async resolveChainAgent(
+    configuredId: string | undefined,
+    builtin: Agent,
+  ): Promise<Agent> {
+    if (!configuredId) return builtin;
+    const custom = await this.deps.agentStore?.get(configuredId);
+    if (!custom) {
+      console.error(`[orchestrator] agentChain 配置的智能体不存在: ${configuredId}，回退内置`);
+      return builtin;
+    }
+    return custom;
+  }
+
+  /**
+   * dispatcher 路由轮（Task Flow 第一步）：走统一 runTurn 管道——
+   * 事件静默落审计/usage，不推送渠道不持久化；不 resume、不回写 sdkSessionId。
+   * 返回结构化路由决策；失败抛 RunnerError("DISPATCH_FAILED")。
+   */
+  private async runDispatcherTurn(p: {
+    task: Task;
+    user: User;
+    conversation: Conversation;
+    prompt: string;
+    runController: AbortController;
+  }): Promise<RoutingDecision> {
+    if (!this.deps.kbDir) {
+      throw new RunnerError("DISPATCH_FAILED", "任务分发未装配（kbDir 缺失）");
+    }
+    const dispatcher = buildDispatcherAgent(this.deps.kbDir);
+    const r = await this.runTurn({
+      task: { ...p.task, prompt: p.prompt },
+      user: p.user,
+      conversation: p.conversation,
+      threadId: p.conversation.id,
+      channelId: p.task.channelId,
+      agent: dispatcher,
+      skills: dispatcher.skills,
+      noResume: true,
+      silent: true,
+      quietResult: true,
+      runController: p.runController,
+    });
+    if (!r.ok) {
+      throw new RunnerError("DISPATCH_FAILED", `任务分发失败：${r.error ?? "dispatcher 执行出错"}`);
+    }
+    try {
+      return parseRoutingDecision(r.resultText);
+    } catch (e) {
+      throw new RunnerError("DISPATCH_FAILED", `任务分发失败：${(e as Error).message}`, e);
+    }
+  }
+
   /**
    * agent 绑定任务的三段式生命周期（spec §5）：
    * design（可选）→ 方案门 → execute → accept（可选）→ 验收门 → done。
@@ -442,6 +559,8 @@ export class Orchestrator {
     sharedAgentSkillOwner?: User;
     gitMaterializeItems?: RepositoryMaterializeItem[];
     requiresDesign: boolean;
+    /** 首个执行轮的提示词（如 builder 的缺口引导）；缺省用 task.prompt。不改写 task，保持原始任务入库/审计/标题 */
+    firstTurnPrompt?: string;
     runController: AbortController;
   }): Promise<string | undefined> {
     const { store, channel, gates } = this.deps;
@@ -468,6 +587,7 @@ export class Orchestrator {
         gitMaterializeItems: p.gitMaterializeItems,
         runController: p.runController,
         quietResult: quietTurn,
+        titleText: p.task.prompt,
       });
     const finishTask = async (ok: boolean, error?: string, resultText = "") => {
       await store.updateStatus(
@@ -475,6 +595,14 @@ export class Orchestrator {
         ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
         { error },
       );
+      // acceptanceGate 路径的轮次全部静默，回合终态由此统一收束（前端/CLI 的回合在此结束）
+      if (plan.acceptanceGate) {
+        channel.pushResult?.(
+          p.conversation.id,
+          ok ? "success" : "error",
+          resultText || error || (ok ? "完成" : "失败"),
+        );
+      }
       if (!channel.streaming && ok) await channel.send(p.threadId, { text: "✅" });
       if (p.memory) {
         p.memory.append({
@@ -507,6 +635,11 @@ export class Orchestrator {
         }
         await store.updateStatus(p.task.id, nextStatus("planning", "request_approval"), {
           phase: "design",
+          pendingGate: {
+            gateId: "design",
+            title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
+            requestedAt: new Date().toISOString(),
+          },
         });
         const decision = await channel.requestApproval(p.threadId, {
           gateId: "design",
@@ -514,11 +647,14 @@ export class Orchestrator {
           summary: r.resultText,
         });
         if (decision.approved) {
-          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"));
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
+            pendingGate: undefined,
+          });
           break;
         }
         await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "redesign"), {
           phase: "design",
+          pendingGate: undefined,
         });
         prompt = designRejected(decision.reason ?? "未提供原因");
       }
@@ -541,9 +677,10 @@ export class Orchestrator {
         round === 0
           ? hasDesign
             ? executeAfterDesign()
-            : p.task.prompt
+            : (p.firstTurnPrompt ?? p.task.prompt)
           : executeRejected(lastRejectionReason ?? "未提供原因");
-      const re = await turn(execPrompt, execStep.skills, acceptStep !== undefined);
+      // 验收门存在时 execute/accept 轮都静默：回合贯穿到验收门决议，不在中途提前结束
+      const re = await turn(execPrompt, execStep.skills, plan.acceptanceGate);
       if (re.aborted) return await this.finishCanceled(p.task, p.conversation);
       if (!re.ok) {
         await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: re.error });
@@ -556,7 +693,7 @@ export class Orchestrator {
         await channel.send(p.threadId, {
           text: `🔍 验收阶段（skills: ${acceptStep.skills.join("、") || "默认"}）`,
         });
-        const ra = await turn(acceptAsk(), acceptStep.skills);
+        const ra = await turn(acceptAsk(), acceptStep.skills, true);
         if (ra.aborted) return await this.finishCanceled(p.task, p.conversation);
         if (!ra.ok) {
           await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: ra.error });
@@ -570,6 +707,11 @@ export class Orchestrator {
       }
       await store.updateStatus(p.task.id, nextStatus("running", "request_approval"), {
         phase: "accept",
+        pendingGate: {
+          gateId: "acceptance",
+          title: `审批门：${gates.getGate("acceptance")?.description ?? "验收确认"}`,
+          requestedAt: new Date().toISOString(),
+        },
       });
       const decision = await channel.requestApproval(p.threadId, {
         gateId: "acceptance",
@@ -577,7 +719,9 @@ export class Orchestrator {
         summary,
       });
       if (decision.approved) {
-        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"));
+        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
+          pendingGate: undefined,
+        });
         return await finishTask(true, undefined, summary);
       }
       rejectionCount += 1;
@@ -589,7 +733,7 @@ export class Orchestrator {
   }
 
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
-    const { store, conversationStore, runner, channel } = this.deps;
+    const { conversationStore } = this.deps;
 
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
     const user = await this.resolveUser(msg);
@@ -597,8 +741,8 @@ export class Orchestrator {
     // "/new" 命令：创建新会话
     if (msg.text.trim().toLowerCase() === "/new") {
       await conversationStore.create(user.id, msg.channelId, "新对话");
-      await channel.send(msg.threadId, { text: "✨ 已开启新对话" });
-      channel.pushResult?.(msg.threadId, "success", "已开启新对话");
+      await this.deps.channel.send(msg.threadId, { text: "✨ 已开启新对话" });
+      this.deps.channel.pushResult?.(msg.threadId, "success", "已开启新对话");
       return;
     }
 
@@ -610,12 +754,142 @@ export class Orchestrator {
         (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30))))
       : await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30));
 
-    // 显式 agent 解析（M13）：会话绑了 agentId 时旁路 Planner 与 dispatcher
+    // 并发控制（同会话串行）：busy 时入队，当前任务完成后自动依序处理
+    if (this.isConversationBusy(conversation.id)) {
+      return await this.enqueueMessage(user, msg, conversation);
+    }
+    return await this.runExclusive(user, msg, conversation);
+  }
+
+  /** 会话 busy 时把消息排入队列；超过上限仍拒绝。返回 conversationId。 */
+  private async enqueueMessage(
+    user: User,
+    msg: IncomingMessage,
+    conversation: Conversation,
+  ): Promise<string> {
+    const { channel } = this.deps;
+    let queue = this.pendingQueues.get(conversation.id);
+    if (!queue) {
+      queue = [];
+      this.pendingQueues.set(conversation.id, queue);
+    }
+    if (queue.length >= Orchestrator.MAX_QUEUED_PER_CONVERSATION) {
+      const text = `⏳ 排队消息已达上限（${Orchestrator.MAX_QUEUED_PER_CONVERSATION} 条），请等当前任务完成后再发。`;
+      await channel.send(msg.threadId, { text });
+      channel.pushResult?.(conversation.id, "error", text);
+      return conversation.id;
+    }
+    queue.push({ user, msg });
+    const text = `⏳ 已排队：当前任务完成后自动处理（前方 ${queue.length - 1} 条）`;
+    await channel.send(msg.threadId, { text });
+    return conversation.id;
+  }
+
+  /** 独占执行一条消息：并发闸 → 处理 → 收尾（含接续处理同会话队列）。 */
+  private async runExclusive(
+    user: User,
+    msg: IncomingMessage,
+    conversation: Conversation,
+  ): Promise<string | undefined> {
+    const { channel } = this.deps;
+    if (!this.checkUserLimit(user.id)) {
+      const text = "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。";
+      await channel.send(msg.threadId, { text });
+      channel.pushResult?.(conversation.id, "error", text);
+      return conversation.id;
+    }
+
+    this.markBusy(conversation.id, "");
+    this.registerActive(user.id);
+    const runController = new AbortController();
+    this.abortControllers.set(conversation.id, runController);
+    try {
+      return await this.processMessage(user, msg, conversation, runController);
+    } finally {
+      this.abortControllers.delete(conversation.id);
+      this.unmarkBusy(conversation.id);
+      this.unregisterActive(user.id);
+      // builder 补建完成（finish_builder）→ 原任务自动重派：复用会话排队机制接续执行
+      if (this.builderFinished.delete(conversation.id)) {
+        const original = this.builderOriginalPrompts.get(conversation.id);
+        this.builderBoundAt.delete(conversation.id);
+        if (original) {
+          this.builderOriginalPrompts.delete(conversation.id);
+          let queue = this.pendingQueues.get(conversation.id);
+          if (!queue) {
+            queue = [];
+            this.pendingQueues.set(conversation.id, queue);
+          }
+          queue.push({
+            user,
+            msg: { ...msg, text: original, builderFromTaskId: msg.builderFromTaskId },
+          });
+        }
+      }
+      this.dispatchQueue(conversation.id);
+    }
+  }
+
+  /** 当前任务结束后的接续：同会话队列非空则取出下一条继续独占执行。 */
+  private dispatchQueue(conversationId: string): void {
+    const queue = this.pendingQueues.get(conversationId);
+    const next = queue?.shift();
+    if (!next) {
+      this.pendingQueues.delete(conversationId);
+      return;
+    }
+    // 重新解析会话：排队期间 agentId 可能已被绑定（如 builder 转入）
+    void (async () => {
+      try {
+        const conversation =
+          (await this.deps.conversationStore.get(conversationId)) ??
+          (await this.deps.conversationStore.create(
+            next.user.id,
+            next.msg.channelId,
+            next.msg.text.slice(0, 30),
+          ));
+        await this.runExclusive(next.user, next.msg, conversation);
+      } catch (e) {
+        console.error("[orchestrator] 排队消息处理失败", e);
+      }
+    })();
+  }
+
+  /** 消息处理主体（在 runExclusive 的并发闸内执行；原 handleMessage 逻辑）。 */
+  private async processMessage(
+    user: User,
+    msg: IncomingMessage,
+    conversation: Conversation,
+    runController: AbortController,
+  ): Promise<string | undefined> {
+    const { store, conversationStore, runner, channel } = this.deps;
+
+    // 入口解析（统一对话入口模型）：显式绑定 → direct；否则 task-flow（dispatcher 路由）
+    let entry = resolveEntry(conversation, this.deps.agentChain);
     let agent: Agent | undefined;
     let sharedAgentSkillOwner: User | undefined;
     let gitMaterializeItems: RepositoryMaterializeItem[] | undefined;
-    if (conversation.agentId) {
-      const r = await this.resolveAgentForUse(conversation.agentId, user);
+
+    // builder 绑定闲置超时自愈：用户放弃补建（未调 finish_builder）后，绑定不得永久劫持会话。
+    // 超过上限仍未完成 → 自动解绑，本条消息回归正常分发（重启丢失绑定时刻时从本条消息重新计时）。
+    const builderAgentId = this.deps.agentChain?.builderAgentId ?? AGENT_BUILDER_ID;
+    if (entry.flow === "direct" && entry.agentId === builderAgentId) {
+      const boundAt = this.builderBoundAt.get(conversation.id) ?? Date.now();
+      if (Date.now() - boundAt > Orchestrator.BUILDER_BIND_TIMEOUT_MS) {
+        await conversationStore.update(conversation.id, { agentId: "" });
+        conversation.agentId = "";
+        this.builderBoundAt.delete(conversation.id);
+        this.builderOriginalPrompts.delete(conversation.id);
+        entry = resolveEntry(conversation, this.deps.agentChain);
+        const text = "⏱ Agent Builder 补建会话已超时结束；本条消息将按正常任务分发处理。";
+        await channel.send(msg.threadId, { text });
+      } else {
+        this.builderBoundAt.set(conversation.id, boundAt);
+      }
+    }
+
+    if (entry.flow === "direct") {
+      const r = await this.resolveAgentForUse(entry.agentId, user);
       if (r.gitBlocked) {
         await channel.send(msg.threadId, { text: r.gitBlocked });
         channel.pushResult?.(conversation.id, "error", r.gitBlocked);
@@ -623,28 +897,6 @@ export class Orchestrator {
       }
       ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
     }
-
-    // 并发控制：
-    //  同一会话：串行排队（后到的排队等前序完成）
-    //  同一用户：最多 MAX_CONCURRENT_PER_USER 并行（超限提示）
-    if (this.isConversationBusy(conversation.id)) {
-      const text = "⏳ 该会话正在处理上一条消息，请稍候…";
-      await channel.send(msg.threadId, { text });
-      channel.pushResult?.(conversation.id, "error", text);
-      return;
-    }
-    if (!this.checkUserLimit(user.id)) {
-      const text = "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。";
-      await channel.send(msg.threadId, { text });
-      channel.pushResult?.(conversation.id, "error", text);
-      return;
-    }
-
-    // 标记会话繁忙 + 用户活跃计数
-    this.markBusy(conversation.id, "");
-    this.registerActive(user.id);
-    const runController = new AbortController();
-    this.abortControllers.set(conversation.id, runController);
 
     let task: Task | undefined;
     const _capturedConversationId = conversation.id;
@@ -665,45 +917,84 @@ export class Orchestrator {
         prompt: appendDefaultSkill(appendMessageFiles(msg.text, msg.files), agent?.defaultSkill),
         status: "created",
         skillChain: [],
+        // builder 自动重派的消息：串联回触发补建的原 task
+        ...(msg.builderFromTaskId ? { builderFromTaskId: msg.builderFromTaskId } : {}),
         createdAt: now,
         updatedAt: now,
       };
       await store.create(task);
 
-      // 任务分发（P1）：会话未绑定 agent 且装配了 kbDir → 经 dispatcher 路由
+      // 任务分发（P1）：会话未绑定 agent 且装配了 kbDir → 经 dispatcher 路由（Task Flow 第一步）
       let requiresDesign = false;
+      let firstTurnPrompt: string | undefined;
+      let steps: FlowStep[] = task.steps ?? [];
       if (!conversation.agentId && this.deps.kbDir) {
-        const routing = await dispatchTask({
-          runner,
-          runtimeMgr: this.deps.runtimeMgr,
+        steps = beginStep(steps, {
+          role: "dispatcher",
+          agentId: this.deps.agentChain?.dispatcherAgentId ?? "builtin-dispatcher",
+          conversationId: conversation.id,
+          startedAt: new Date().toISOString(),
+        });
+        const routing = await this.runDispatcherTurn({
+          task,
           user,
           conversation,
           prompt: task.prompt,
-          kbDir: this.deps.kbDir,
-          abortSignal: runController.signal,
+          runController,
         });
-        // "none" = 登记表无匹配智能体：任务类输入告知缺口；chat 类输入走闲聊兜底（普通对话直答）
-        if (routing.agentId === "none" && routing.taskType !== "chat") {
-          await store.updateStatus(task.id, "failed", {
-            error: `未找到匹配的执行智能体：${routing.rationale}`,
+        steps = completeStep(steps, { summary: routing.rationale });
+        // "none" = 登记表无匹配智能体：任务类输入转入 agent-builder 对话式补建；chat 类输入走对话兜底
+        if (routing.agentId === "none" && !isChatTaskType(routing.taskType)) {
+          // 不失败：会话绑定 builder（持久化，后续消息直连 builder 多轮澄清，不再过 dispatcher）
+          const builder = await this.resolveChainAgent(
+            this.deps.agentChain?.builderAgentId,
+            AGENT_BUILDER_AGENT,
+          );
+          await store.updateStatus(task.id, nextStatus("created", "plan"), {
+            agentId: builder.id,
             routingRationale: routing.rationale,
+            steps: beginStep(steps, {
+              role: "builder",
+              agentId: builder.id,
+              conversationId: conversation.id,
+              startedAt: new Date().toISOString(),
+            }),
           });
-          const text = `🤷 暂无能处理该任务的智能体：${routing.rationale}\n可在「任务管理知识库」登记新智能体后重试；也可让 AI 生成助手协助创建对应智能体。`;
-          await channel.send(msg.threadId, { text });
-          channel.pushResult?.(conversation.id, "error", text);
-          return conversation.id;
-        }
-        if (routing.agentId !== "none") {
+          await conversationStore.update(conversation.id, { agentId: builder.id });
+          conversation.agentId = builder.id;
+          this.builderBoundAt.set(conversation.id, Date.now());
+          // 记录原任务供干跑验证与自动重派（后续澄清轮的 task.prompt 已不是原文）
+          this.builderOriginalPrompts.set(conversation.id, task.prompt);
+          await channel.send(msg.threadId, {
+            text: `🧩 未找到匹配的执行智能体（${routing.rationale}），已转入 Agent Builder，协助你补建该能力：`,
+          });
+          agent = builder;
+          // 引导词经 firstTurnPrompt 注入；task.prompt 保持用户原文（入库/审计/记忆/标题不被污染）
+          firstTurnPrompt = builderCreationAsk(task.prompt, routing.rationale);
+        } else if (routing.agentId !== "none") {
           let r: Awaited<ReturnType<typeof this.resolveAgentForUse>>;
           try {
             r = await this.resolveAgentForUse(routing.agentId, user);
           } catch (e) {
+            const code = (e as { code?: string })?.code;
             // dispatcher 偶发输出无效 id（名称/技能名）：转译为可行动的失败提示而非裸 404
-            if ((e as { code?: string })?.code === "AGENT_NOT_FOUND") {
+            if (code === "AGENT_NOT_FOUND") {
               await store.updateStatus(task.id, "failed", {
                 error: `分发异常：dispatcher 选择了未登记的 id "${routing.agentId}"，请重试；多次失败请检查 kb/dispatcher/agents.md`,
+                steps: completeStep(steps, { status: "failed", summary: "路由到未登记 id" }),
               });
               const text = `⚠️ 分发异常：dispatcher 选择了一个不存在的智能体（${routing.agentId}），请重发任务重试；多次出现请检查登记表。`;
+              await channel.send(msg.threadId, { text });
+              channel.pushResult?.(conversation.id, "error", text);
+              return conversation.id;
+            }
+            // 权限不足（路由表登记了该 agent，但当前用户无权使用）：降级为可行动提示而非硬失败
+            if (code === "AGENT_FORBIDDEN") {
+              await store.updateStatus(task.id, "failed", {
+                error: `分发异常：路由到智能体 ${routing.agentId} 但当前用户无权使用（属主未分享）`,
+                steps: completeStep(steps, { status: "failed", summary: "路由目标无权使用" }),
+              });
+              const text = `⚠️ 已找到能处理该任务的智能体，但你当前无权使用它。可请智能体属主开启分享授权，或联系管理员；之后重发任务即可。`;
               await channel.send(msg.threadId, { text });
               channel.pushResult?.(conversation.id, "error", text);
               return conversation.id;
@@ -715,22 +1006,53 @@ export class Orchestrator {
           }
           ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
           requiresDesign = routing.requiresDesign;
+          steps = beginStep(steps, {
+            role: "agent",
+            agentId: agent.id,
+            conversationId: conversation.id,
+            startedAt: new Date().toISOString(),
+          });
           await store.updateStatus(task.id, "planning", {
             agentId: routing.agentId,
             requiresDesign: routing.requiresDesign,
             routingRationale: routing.rationale,
+            steps,
           });
-          // 路由反馈（V9）：dispatch 静默 30s+，明确告知任务被谁接了
+          // 路由反馈（V9）：明确告知任务被谁接了；带任务短 id 供 tasks files 衔接
           await channel.send(msg.threadId, {
-            text: `📨 已分派给「${agent.name}」：${routing.rationale}`,
+            text: `📨 已分派给「${agent.name}」（任务 ${task.id.slice(0, 8)}）：${routing.rationale}`,
           });
         } else {
-          // 闲聊兜底：不绑 agent，按普通对话直答
-          await store.updateStatus(task.id, nextStatus("created", "plan"));
+          // 闲聊兜底（chat step）：默认内置 chat agent，可经 agentChain.chatAgentId 替换
+          const chatAgent = await this.resolveChainAgent(
+            this.deps.agentChain?.chatAgentId,
+            BUILTIN_CHAT_AGENT,
+          );
+          steps = beginStep(steps, {
+            role: "chat",
+            agentId: chatAgent.id,
+            conversationId: conversation.id,
+            startedAt: new Date().toISOString(),
+          });
+          await store.updateStatus(task.id, nextStatus("created", "plan"), {
+            agentId: chatAgent.id,
+            steps,
+          });
+          agent = chatAgent;
         }
       } else {
-        await store.updateStatus(task.id, nextStatus("created", "plan"));
+        // direct 入口（会话显式绑定 agent）
+        if (agent) {
+          steps = beginStep(steps, {
+            role: "agent",
+            agentId: agent.id,
+            conversationId: conversation.id,
+            startedAt: new Date().toISOString(),
+          });
+        }
+        await store.updateStatus(task.id, nextStatus("created", "plan"), { steps });
       }
+      task.steps = steps;
 
       // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并
       let memoryAppend: string | undefined;
@@ -756,9 +1078,10 @@ export class Orchestrator {
         }
       }
 
-      // agent 绑定任务（显式选择或 dispatcher 路由）→ 三段式生命周期
-      if (agent) {
-        return await this.runPhases({
+      // agent 绑定任务（显式选择或 dispatcher 路由）→ 三段式生命周期；
+      // chat 兜底走单轮（无阶段横幅），其余走 runPhases
+      if (agent && steps[steps.length - 1]?.role !== "chat") {
+        const convId = await this.runPhases({
           task,
           user,
           conversation,
@@ -770,8 +1093,11 @@ export class Orchestrator {
           sharedAgentSkillOwner,
           gitMaterializeItems,
           requiresDesign,
+          firstTurnPrompt,
           runController,
         });
+        await this.completeTaskSteps(task);
+        return convId;
       }
 
       await store.updateStatus(task.id, nextStatus("planning", "start"));
@@ -793,7 +1119,13 @@ export class Orchestrator {
       await store.updateStatus(
         task.id,
         r.ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
-        { error: r.error },
+        {
+          error: r.error,
+          steps: completeStep(task.steps ?? [], {
+            status: r.ok ? "done" : "failed",
+            summary: r.resultText.slice(0, 200),
+          }),
+        },
       );
 
       // 非流式渠道：成功后回复完成标记
@@ -825,7 +1157,13 @@ export class Orchestrator {
       console.error("[orchestrator] 处理失败:", errMsg);
       if (task) {
         try {
-          await this.deps.store.updateStatus(task.id, "failed", { error: errMsg });
+          await this.deps.store.updateStatus(task.id, "failed", {
+            error: errMsg,
+            steps: completeStep(task.steps ?? [], {
+              status: "failed",
+              summary: errMsg.slice(0, 200),
+            }),
+          });
         } catch {
           // ignore
         }
