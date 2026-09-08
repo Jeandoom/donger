@@ -277,6 +277,113 @@ describe("WebChannel auth", () => {
     }
   });
 
+  it("POST /api/approvals/:id/respond 无 token → 401（审批决议必须认证）", async () => {
+    const port = await createAuthChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/approvals/gate-xyz/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("POST /api/credentials/:reqId/submit 无 token → 401（凭证提交必须认证）", async () => {
+    const port = await createAuthChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/credentials/req-xyz/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: { API_KEY: "v" } }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  /** 事件回放专用通道：带 sessionStore + conversationStore + auditStore，预置属主用户/会话/审计事件 */
+  async function createEventsChannel(): Promise<{
+    port: number;
+    token: string;
+    convId: string;
+    otherToken: string;
+  }> {
+    db = new Database(":memory:");
+    const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
+    const userStore = new SqliteUserStore(db, {
+      adminExternalIds: new Set(),
+      usersDir: mkdtempSync(join(tmpdir(), "web-events-users-")),
+    });
+    userStore.migrate();
+    const owner = await userStore.getOrCreateByIdentity("internal", "events-owner", "属主");
+    const { token } = await sessionStore.create(owner.id);
+    const other = await userStore.getOrCreateByIdentity("internal", "events-other", "旁人");
+    const otherToken = (await sessionStore.create(other.id)).token;
+
+    const { SqliteConversationStore } = await import(
+      "../../src/adapters/sqlite-conversation-store.js"
+    );
+    const convStore = new SqliteConversationStore(db);
+    convStore.migrate();
+    await convStore.create(owner.id, "web", "事件回放");
+    const convId = (await convStore.listByUser(owner.id))[0]?.id;
+    if (!convId) throw new Error("no conversation");
+
+    const { InMemoryAuditStore } = await import("../../src/adapters/in-memory-audit-store.js");
+    const auditStore = new InMemoryAuditStore();
+    const mk = (id: string, type: "text" | "llm_input" | "tool_use") => ({
+      id,
+      conversationId: convId,
+      taskId: "t1",
+      userId: owner.id,
+      seq: 0,
+      type,
+      text: type === "text" ? "hi" : undefined,
+      recordedAt: "t0",
+    });
+    await auditStore.record(mk("e1", "text"));
+    await auditStore.record(mk("e2", "llm_input"));
+    await auditStore.record(mk("e3", "tool_use"));
+
+    const tmp = mkdtempSync(join(tmpdir(), "web-events-"));
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: tmp,
+      sessionStore,
+      userStore,
+      conversationStore: convStore,
+      auditStore,
+    });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("no port");
+    return { port, token, convId, otherToken };
+  }
+
+  it("GET /api/conversations/:id/events 无 token → 401", async () => {
+    const { port, convId } = await createEventsChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/events`);
+    expect(res.status).toBe(401);
+  });
+
+  it("GET /api/conversations/:id/events 属主可回放，llm_input/llm_output 被过滤", async () => {
+    const { port, token, convId } = await createEventsChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { events: Array<{ type: string }> };
+    expect(body.events.map((e) => e.type)).toEqual(["text", "tool_use"]);
+  });
+
+  it("GET /api/conversations/:id/events 非属主 → 403", async () => {
+    const { port, convId, otherToken } = await createEventsChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/events`, {
+      headers: { Authorization: `Bearer ${otherToken}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
   it("POST /api/auth/exchange 未配置 CLI_TOKEN → 403", async () => {
     const port = await createAuthChannel();
     const res = await fetch(`http://127.0.0.1:${port}/api/auth/exchange`, {
@@ -821,6 +928,7 @@ async function startWebWithAgents(
   agentStore: SqliteAgentStore;
   agentShareStore: SqliteAgentShareStore;
   skillPackStore: SqliteSkillPackStore;
+  convStore: SqliteConversationStore;
 }> {
   const tmp = mkdtempSync(join(tmpdir(), "web-agent-"));
   const db = new Database(join(tmp, "t.db"));
@@ -857,7 +965,7 @@ async function startWebWithAgents(
   await web.ready();
   const port = web.boundPort;
   if (!port) throw new Error("server not listening");
-  return { port, token, userId: user.id, agentStore, agentShareStore, skillPackStore };
+  return { port, token, userId: user.id, agentStore, agentShareStore, skillPackStore, convStore };
 }
 
 describe("WebChannel /api/agents", () => {
@@ -1059,6 +1167,30 @@ describe("WebChannel /api/agents", () => {
     });
     const c2 = (await r2.json()) as { id: string };
     expect(c2.id).toBe(c1.id);
+  });
+
+  it("GET /:id/conversation 多会话时复用最近使用的（updatedAt 倒序首个）", async () => {
+    const { port, token, userId, agentStore, convStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const c1 = (await r1.json()) as { id: string };
+    // 同 agent 再建一条（updatedAt 更晚）；此前实现按创建序取首个会误回 c1
+    const newer = await convStore.createWithAgent(userId, "web", a.name, a.id);
+    const r2 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const c2 = (await r2.json()) as { id: string };
+    expect(c2.id).toBe(newer.id);
+    expect(c2.id).not.toBe(c1.id);
   });
 });
 

@@ -28,9 +28,11 @@ import {
   MessageFileSchema,
   type OutgoingMessage,
 } from "../domain/types.js";
+import { checkUnattendedSafety } from "../domain/unattended-guard.js";
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
@@ -82,6 +84,16 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/** get-or-create 复用匹配：同一 agent 已有多个会话时取最近使用的（updatedAt 倒序首个），而非创建序首个 */
+function latestConversationFor<T extends { agentId: string; updatedAt: string }>(
+  list: T[],
+  agentId: string,
+): T | undefined {
+  return list
+    .filter((c) => c.agentId === agentId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
 export type StaticTarget = { kind: "file"; absPath: string } | null;
 
 /**
@@ -115,6 +127,7 @@ function contentType(absPath: string): string {
 type SSEEvent =
   | { type: "text"; text: string }
   | { type: "text_delta"; messageId: string; text: string }
+  | { type: "thinking_delta"; messageId: string; text: string }
   | { type: "activity"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
@@ -276,6 +289,10 @@ export class WebChannel implements Channel {
     this.broadcastToConversation(conversationId, { type: "text_delta", messageId, text });
   }
 
+  pushThinkingDelta(conversationId: string, messageId: string, text: string): void {
+    this.broadcastToConversation(conversationId, { type: "thinking_delta", messageId, text });
+  }
+
   /** 向会话的 SSE 客户端推送完成通知 */
   pushResult(conversationId: string, subtype: "success" | "error", text: string): void {
     this.broadcastToConversation(conversationId, { type: "result", subtype, text });
@@ -295,10 +312,16 @@ export class WebChannel implements Channel {
 
   /** 等待审批响应（通过 HTTP POST /api/approvals/:id/respond） */
   async requestApproval(
-    _threadId: string,
+    threadId: string,
     card: ApprovalCard,
   ): Promise<{ approved: boolean; reason?: string }> {
-    // 通过 SSE 广播审批请求，客户端通过 HTTP POST 响应
+    // V21 修复：先把审批卡广播给会话订阅者（此前卡片从不推送，前端/CLI 全程看不到门）
+    this.broadcastToConversation(threadId, {
+      type: "approval_card",
+      gateId: card.gateId,
+      title: card.title,
+      summary: card.summary,
+    });
     return new Promise((resolve, reject) => {
       this.approvalStreams.set(card.gateId, {
         write: (_event: SSEEvent) => {},
@@ -316,24 +339,35 @@ export class WebChannel implements Channel {
 
       // 注意：实际的审批响应通过 HTTP POST /api/approvals/:id/respond 处理
       // 这里返回一个占位 Promise，实际响应由 HTTP 处理器调用 resolve
-      this.pendingApprovalResolves.set(card.gateId, (result) => {
-        clearTimeout(timeout);
-        this.approvalStreams.delete(card.gateId);
-        resolve(result);
+      this.pendingApprovalResolves.set(card.gateId, {
+        conversationId: threadId,
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this.approvalStreams.delete(card.gateId);
+          resolve(result);
+        },
       });
     });
   }
 
-  /** 存储审批响应的 resolve 函数 */
+  /** 存储审批响应的 resolve 函数（带会话归属，供 owner 校验） */
   private readonly pendingApprovalResolves = new Map<
     string,
-    (result: { approved: boolean; reason?: string; comment?: string; responderId?: string }) => void
+    {
+      conversationId: string;
+      resolve: (result: {
+        approved: boolean;
+        reason?: string;
+        comment?: string;
+        responderId?: string;
+      }) => void;
+    }
   >();
 
-  /** 存储凭证提交的 resolve 函数（key = credential reqId） */
+  /** 存储凭证提交的 resolve 函数（key = credential reqId；带会话归属供 owner 校验） */
   private readonly pendingCredentialResolves = new Map<
     string,
-    (values: Record<string, string>) => void
+    { conversationId: string; resolve: (values: Record<string, string>) => void }
   >();
 
   /** 等待用户提交凭证（通过 SSE credential_card + HTTP POST /api/credentials/:reqId/submit） */
@@ -354,10 +388,13 @@ export class WebChannel implements Channel {
         this.pendingCredentialResolves.delete(reqId);
         reject(new Error("凭证提交超时（300秒）"));
       }, 300_000);
-      this.pendingCredentialResolves.set(reqId, (values) => {
-        clearTimeout(timeout);
-        this.pendingCredentialResolves.delete(reqId);
-        resolve(values);
+      this.pendingCredentialResolves.set(reqId, {
+        conversationId: req.conversationId,
+        resolve: (values) => {
+          clearTimeout(timeout);
+          this.pendingCredentialResolves.delete(reqId);
+          resolve(values);
+        },
       });
     });
   }
@@ -684,22 +721,39 @@ export class WebChannel implements Channel {
     }
     const approvalId = match[1] ?? "";
 
+    // 认证：审批决议是高危操作，未装配 sessionStore（本地无认证模式）时跳过
+    let authUserId: string | undefined;
+    if (this.sessionStore) {
+      authUserId = (await this.authMiddleware(req)) ?? undefined;
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+
     const body = JSON.parse(await this.readBody(req)) as {
       approved: boolean;
       reason?: string;
       comment?: string;
     };
 
-    const resolve = this.pendingApprovalResolves.get(approvalId);
-    if (resolve) {
+    const pending = this.pendingApprovalResolves.get(approvalId);
+    if (pending) {
+      // 会话属主校验（多用户隔离）：仅会话 owner 可决议
+      const conv = await this.deps.conversationStore?.get(pending.conversationId);
+      if (conv && authUserId && conv.userId !== authUserId) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
+        return;
+      }
       this.pendingApprovalResolves.delete(approvalId);
       // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
-      const responderId = (req as HttpRequest & { userId?: string }).userId;
-      resolve({
+      pending.resolve({
         approved: body.approved,
         reason: body.reason,
         comment: body.comment?.trim() || undefined,
-        responderId,
+        responderId: authUserId,
       });
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true }));
@@ -722,10 +776,28 @@ export class WebChannel implements Channel {
       return;
     }
     const reqId = match[1] ?? "";
+
+    // 认证 + 会话属主校验：凭证值只能由会话 owner 提交
+    let authUserId: string | undefined;
+    if (this.sessionStore) {
+      authUserId = (await this.authMiddleware(req)) ?? undefined;
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+
     const body = JSON.parse(await this.readBody(req)) as { values?: Record<string, string> };
-    const resolve = this.pendingCredentialResolves.get(reqId);
-    if (resolve) {
-      resolve(body.values ?? {});
+    const pending = this.pendingCredentialResolves.get(reqId);
+    if (pending) {
+      const conv = await this.deps.conversationStore?.get(pending.conversationId);
+      if (conv && authUserId && conv.userId !== authUserId) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可提交凭证" }));
+        return;
+      }
+      pending.resolve(body.values ?? {});
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true }));
     } else {
@@ -1330,6 +1402,25 @@ export class WebChannel implements Channel {
     }
 
     // GET /api/conversations/:id/messages — 会话消息列表
+    // GET /api/conversations/:id/events —— 会话执行事件回放（audit 统一事件源；owner/admin 可见）
+    const eventsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/events$/);
+    if (eventsMatch && req.method === "GET") {
+      const conversationId = eventsMatch[1] ?? "";
+      const uid = this.requireRequestUser(req);
+      const conv = await this.deps.conversationStore?.get(conversationId);
+      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
+      if (conv && viewer && conv.userId !== viewer.id && viewer.role !== "admin") {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主或管理员可查看执行事件" }));
+        return;
+      }
+      const all = (await this.deps.auditStore?.listByConversation(conversationId)) ?? [];
+      // llm_input/llm_output 是调试级原始消息（体积大、含系统提示），不入回放流
+      const events = all.filter((e) => e.type !== "llm_input" && e.type !== "llm_output");
+      this.json(res, { events });
+      return;
+    }
+
     const msgMatch = url.match(/^\/api\/conversations\/([\w-]+)\/messages$/);
     if (msgMatch && req.method === "GET") {
       const conversationId = msgMatch[1] ?? "";
@@ -1569,6 +1660,37 @@ export class WebChannel implements Channel {
         llmPresets: this.agentMeta?.presets ?? [],
       });
     }
+    // GET /api/agents/:id/versions —— 版本历史（摘要，不含 mcp 密钥字段）
+    const agentVersionsMatch = url.match(/^\/api\/agents\/([\w-]+)\/versions$/);
+    if (agentVersionsMatch && req.method === "GET") {
+      const id = agentVersionsMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(id);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
+      if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      return this.json(res, { versions: (await this.agentStore?.listVersions(id)) ?? [] });
+    }
+    // POST /api/agents/:id/versions/:version/rollback —— 回滚（生成新版本，不改写历史）
+    const agentRollbackMatch = url.match(/^\/api\/agents\/([\w-]+)\/versions\/(\d+)\/rollback$/);
+    if (agentRollbackMatch && req.method === "POST") {
+      const id = agentRollbackMatch[1] ?? "";
+      const target = Number(agentRollbackMatch[2]);
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(id);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+      try {
+        const rolled = await this.agentStore?.rollback(id, target);
+        return this.json(res, this.agentToDTO(rolled ?? a, true));
+      } catch {
+        return this.json(res, { error: `version not found: ${target}` }, 404);
+      }
+    }
     const agentMatch = url.match(/^\/api\/agents\/([\w-]+)$/);
     if (
       agentMatch &&
@@ -1608,18 +1730,19 @@ export class WebChannel implements Channel {
     if (agentConvMatch && req.method === "GET") {
       const id = agentConvMatch[1] ?? "";
       const me = this.requireUserId(req);
-      // 内置 assist 智能体：代码常量不入库，直接 get-or-create 其会话
-      if (id === BUILTIN_ASSIST_AGENT_ID) {
+      // 内置智能体（assist/builder）：代码常量不入库，直接 get-or-create 其会话
+      const builtinName =
+        id === BUILTIN_ASSIST_AGENT_ID
+          ? BUILTIN_ASSIST_AGENT.name
+          : id === AGENT_BUILDER_ID
+            ? AGENT_BUILDER_AGENT.name
+            : undefined;
+      if (builtinName) {
         const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
-        const existing = list.find((c) => c.agentId === id);
+        const existing = latestConversationFor(list, id);
         const conv =
           existing ??
-          (await this.deps.conversationStore?.createWithAgent(
-            me,
-            "cli",
-            BUILTIN_ASSIST_AGENT.name,
-            id,
-          ));
+          (await this.deps.conversationStore?.createWithAgent(me, "cli", builtinName, id));
         return this.json(res, conv);
       }
       const a = await this.agentStore?.get(id);
@@ -1629,7 +1752,7 @@ export class WebChannel implements Channel {
       const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
       if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
       const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
-      const existing = list.find((c) => c.agentId === id);
+      const existing = latestConversationFor(list, id);
       const conv =
         existing ?? (await this.deps.conversationStore?.createWithAgent(me, "web", a.name, id));
       return this.json(res, conv);
@@ -1924,15 +2047,26 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/(enable|disable)$/);
     if (m && req.method === "POST") {
-      await this.requireOwnedLoop(m[1] ?? "", uid);
+      const loop = await this.requireOwnedLoop(m[1] ?? "", uid);
       const enabled = m[2] === "enable";
-      const loop = await ls?.setEnabled(m[1] ?? "", enabled);
-      // 启停时同步调度器
-      if (this.deps.scheduler && loop) {
-        if (enabled) await this.deps.scheduler.register(loop);
-        else this.deps.scheduler.unregister(loop.id);
+      if (enabled) {
+        // 无人值守防护：绑定 agent 的技能含验收门时，定时任务会永久卡在人工门 → 拒绝启用
+        const wf = loop.workflowId ? await ws?.get(loop.workflowId) : undefined;
+        const agent = wf?.agentId ? await this.deps.agentStore?.get(wf.agentId) : undefined;
+        if (agent) {
+          const check = checkUnattendedSafety(agent);
+          if (!check.safe) {
+            throw new ValidationError("UNATTENDED_UNSAFE", check.reason);
+          }
+        }
       }
-      this.json(res, loop);
+      const updated = await ls?.setEnabled(m[1] ?? "", enabled);
+      // 启停时同步调度器
+      if (this.deps.scheduler && updated) {
+        if (enabled) await this.deps.scheduler.register(updated);
+        else this.deps.scheduler.unregister(updated.id);
+      }
+      this.json(res, updated);
       return true;
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/run$/);
@@ -2468,8 +2602,13 @@ export class WebChannel implements Channel {
       throw new ForbiddenError("CONVERSATION_FORBIDDEN", "会话不存在或不属于当前用户");
     }
     if (!conversation.agentId) return undefined;
-    // 内置 assist 智能体不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
-    if (conversation.agentId === BUILTIN_ASSIST_AGENT_ID) return undefined;
+    // 内置智能体（assist/builder）不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
+    if (
+      conversation.agentId === BUILTIN_ASSIST_AGENT_ID ||
+      conversation.agentId === AGENT_BUILDER_ID
+    ) {
+      return undefined;
+    }
     const user = await this.deps.userStore?.get(userId);
     const agent = await this.deps.agentStore?.get(conversation.agentId);
     if (!user || !agent) throw new NotFoundError("AGENT_NOT_FOUND", "智能体不存在");
