@@ -1,9 +1,10 @@
 import { clearLine, createInterface, cursorTo } from "node:readline";
 import pc from "picocolors";
 import type { ApiError, AttachmentFile, DongerApi } from "./api.js";
+import { MarkdownStream } from "./markdown-stream.js";
 import { renderMarkdown } from "./render.js";
 import { type ConnStatus, Session, type SessionEvents } from "./session.js";
-import type { AgentSummary } from "./types.js";
+import type { AgentSummary, ConversationSummary } from "./types.js";
 
 export const CLI_VERSION = "0.1.0";
 
@@ -26,12 +27,20 @@ const COMMANDS = [
   "/result",
   "/resume",
   "/agent",
+  "/agent-new",
+  "/chat",
   "/new",
   "/file",
   "/multi",
   "/cancel",
   "/exit",
 ];
+
+/** 内置智能体（不入库，后端短路解析）：id → 展示名 */
+const BUILTIN_AGENTS: Record<string, string> = {
+  "builtin-assist": "AI 生成助手",
+  "agent-builder": "Agent Builder",
+};
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -56,6 +65,47 @@ const asArr = (v: unknown): Record<string, unknown>[] =>
 const s = (v: unknown): string => (typeof v === "string" ? v : "");
 
 const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "md"]);
+
+/** 内置智能体上下文标记（builtin-assist / agent-builder，id 即后端常量） */
+const BUILTIN_ASSIST_ID = "builtin-assist";
+
+/**
+ * /resume 作用域过滤（PM 会话隔离）：agent 上下文默认只列该 agent 的会话，
+ * 参数 "all"（或 chat 上下文）列全部。倒序截断也在此收口。
+ */
+export function filterResumeScope(
+  list: ConversationSummary[],
+  currentAgent: AgentSummary | null,
+  arg: string,
+): { items: ConversationSummary[]; scope: "agent" | "all" } {
+  const sorted = [...list]
+    .filter((c) => !c.archived)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  if (currentAgent && arg !== "all") {
+    return {
+      items: sorted.filter((c) => c.agentId === currentAgent.id).slice(0, 10),
+      scope: "agent",
+    };
+  }
+  return { items: sorted.slice(0, 10), scope: "all" };
+}
+
+/**
+ * /tasks 作用域过滤：始终只看本人任务（后端 /api/tasks 无用户隔离，CLI 侧自救）；
+ * agent 上下文（已有会话）再收窄到当前会话，参数 "all" 解除全部过滤。
+ */
+export function filterTasksScope(
+  tasks: Record<string, unknown>[],
+  userId: string,
+  conversationId: string,
+  arg: string,
+): Record<string, unknown>[] {
+  if (arg === "all") return tasks;
+  return tasks.filter(
+    (task) =>
+      s(task.requesterId) === userId && (!conversationId || s(task.threadId) === conversationId),
+  );
+}
 
 /**
  * 解析 /file 参数：「<路径> [提问]」一行直达。
@@ -160,6 +210,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     currentPrompt = prompt;
     askPending = true;
     lineCleared = false;
+    // 非 TTY（piped 驱动/脚本）下 readline 不回显提示——补一次输出，否则提问对用户不可见
+    if (!isTTY) write(prompt);
     rl.setPrompt(prompt);
     rl.prompt();
     return new Promise<string>((resolve) => {
@@ -207,8 +259,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     });
   }
 
-  // 消息排队（P0）：任务运行中的输入入队，回合结束后逐条自动发送
-  const pendingSends: string[] = [];
+  // 消息排队（P0）：任务运行中/boot 未就绪时的输入统一入队，主循环按序处理，不丢弃；
+  // 斜杠命令排队后仍按命令执行（不会当聊天消息发给后端），/cancel 例外——立即生效。
+  const lineQueue: string[] = [];
   let roundActive = false;
 
   rl.on("line", (l: string) => {
@@ -219,9 +272,14 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       r(l);
       return;
     }
+    const t = l.trim();
+    if (roundActive && t.startsWith("/cancel")) {
+      void handleCancelNow(t);
+      return;
+    }
+    lineQueue.push(l);
     if (roundActive) {
-      pendingSends.push(l);
-      emit(pc.dim(`(已排队，当前任务完成后自动发送 · 共 ${pendingSends.length} 条)\n`));
+      emit(pc.dim(`(已排队，当前任务完成后自动处理 · 共 ${lineQueue.length} 条)\n`));
     }
   });
   rl.on("close", () => {
@@ -248,19 +306,42 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let atLineStart = true; // 活动行拼接用：流式文本未换行时先补换行
   let lastTaskId = ""; // 最近一次分派的任务短 id（产物入口衔接用）
 
+  // 流式 markdown 块渲染器（V18）：普通文本直出，代码块/表格闭合成型；非 TTY 直通
+  const mdStream = new MarkdownStream(isTTY);
+
+  // 思考流状态：首个 delta 打 💭 前缀，其余暗淡直出；切换到正文/活动行前收行
+  let thinkingActive = false;
+  const closeThinking = (): void => {
+    if (thinkingActive) {
+      thinkingActive = false;
+      emit("\n");
+    }
+  };
+
   const events: SessionEvents = {
     onDelta: (t) => {
-      emit(t);
+      closeThinking();
+      emit(mdStream.feed(t));
+    },
+    onThinking: (t) => {
+      if (!thinkingActive) {
+        thinkingActive = true;
+        emit(`${atLineStart ? "" : "\n"}${pc.dim("💭 ")}`);
+      }
+      emit(pc.dim(t));
     },
     onActivity: (t) => {
+      closeThinking();
       emit(`${atLineStart ? "" : "\n"}${activityLine(t)}\n`);
     },
     onPrint: (t) => {
+      closeThinking();
+      emit(mdStream.end());
       emit(`\n${renderMarkdown(t, isTTY)}\n`);
       lastPrinted = t;
-      // 📨 分派反馈携带任务短 id → 任务完成后衔接产物入口（PM 评审 F）
-      const dispatched = /📨.*\(([0-9a-f]{8})\)/.exec(t);
-      if (dispatched) lastTaskId = dispatched[1]!;
+      // 📨 分派反馈携带任务短 id → 任务完成后衔接产物入口（PM 评审 F）；括号全半角兼容
+      const dispatched = t.match(/📨.*[（(]任务\s*([0-9a-f]{8})[）)]/)?.[1];
+      if (dispatched) lastTaskId = dispatched;
       // 冷启动引导（PM 评审#5）：无可用智能体时指一条 CLI 侧出路
       if (t.startsWith("🤷")) {
         emit(
@@ -271,7 +352,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
     },
     onApproval: async (gateId, title, summary) => {
-      emit(pc.yellow(`\n🔔 审批门：${title}\n${summary}\n`));
+      // 后端 title 已带「审批门：」前缀，此处只加图标，避免「审批门：审批门：…」
+      emit(pc.yellow(`\n🔔 ${title}\n${summary}\n`));
       const lifeCycleGate = gateId === "design" || gateId === "acceptance";
       emit(pc.dim(`（${lifeCycleGate ? "10 分钟" : "60 秒"}内未响应，后端将取消本次审批）\n`));
       const ans = (await ask(pc.yellow("通过? [y/N]: "))).trim();
@@ -292,6 +374,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       return values;
     },
     onRoundEnd: (ok, text) => {
+      closeThinking();
+      emit(mdStream.end());
       if (!ok && text && text === lastPrinted) {
         // 失败正文已随 print 展示（后端 send+pushResult 双通道），只补结束标记
         emit(pc.red("\n❌ 任务失败\n"));
@@ -326,11 +410,20 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
   }
 
+  /** 切会话必清的运行态：流式渲染器复位（残余属旧会话，丢弃）、思考行、任务衔接与去重标记 */
+  function resetRoundState(): void {
+    mdStream.end();
+    thinkingActive = false;
+    lastPrinted = "";
+    lastTaskId = "";
+  }
+
   async function switchTo(target: {
     conversationId: string;
     agent: AgentSummary | null;
   }): Promise<void> {
     session?.stop();
+    resetRoundState();
     pendingFiles.length = 0; // 附件与会话绑定（后端校验归属），切会话必须清空
     session = Session.start(api, baseUrl, token, target.conversationId, events);
     conversationId = target.conversationId;
@@ -354,9 +447,10 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     await session!.connected();
   }
 
-  /** 回到未创建态（/new、/agent 切换后） */
+  /** 回到未创建态（/new、/agent、/chat、/agent-new 切换后） */
   function resetConversation(): void {
     session?.stop();
+    resetRoundState();
     session = null;
     conversationId = "";
     pendingFiles.length = 0;
@@ -410,14 +504,14 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   if (opts.conversationId) {
     const list = await api.listConversations(meUser.id).catch(() => []);
     const conv = list.find((c) => c.id === opts.conversationId);
-    currentAgent =
-      conv?.agentId === "builtin-assist"
-        ? { id: "builtin-assist", name: "AI 生成助手", _mine: true }
-        : null;
+    const convAgentId = conv?.agentId ?? "";
+    const convBuiltin = BUILTIN_AGENTS[convAgentId];
+    currentAgent = convBuiltin ? { id: convAgentId, name: convBuiltin, _mine: true } : null;
     await switchTo({ conversationId: opts.conversationId, agent: currentAgent });
-  } else if (opts.agent === "builtin-assist") {
-    // 内置 assist 智能体（不入库，后端短路解析）：AI 生成入口
-    currentAgent = { id: opts.agent, name: "AI 生成助手", _mine: true };
+  } else if (opts.agent && BUILTIN_AGENTS[opts.agent]) {
+    // 内置智能体（不入库，后端短路解析）：AI 生成 / Agent Builder 入口
+    const builtinName = BUILTIN_AGENTS[opts.agent] ?? opts.agent;
+    currentAgent = { id: opts.agent, name: builtinName, _mine: true };
   } else if (opts.agent) {
     const agents = await api.listAgents().catch(() => []);
     const hit = agents.find((a) => a.id === opts.agent || a.name === opts.agent);
@@ -472,6 +566,28 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
   });
 
+  /** /cancel 实现：无参数=中断当前会话任务；带 id 前缀=中断任意运行中任务。回合中输入时立即执行。 */
+  async function handleCancelNow(t: string): Promise<void> {
+    const targetId = t.slice(7).trim();
+    if (!targetId) {
+      if (!conversationId) {
+        emit(pc.dim("尚无进行中的会话，无需中断\n"));
+        return;
+      }
+      await api.cancel(conversationId).catch(() => {});
+      emit(pc.dim("(已发送中断请求)\n"));
+      return;
+    }
+    try {
+      const task = (await resolveTaskId(targetId)) as { threadId?: string } | undefined;
+      if (!task?.threadId) throw new Error("任务不存在或无关联会话");
+      await api.cancel(task.threadId);
+      emit(pc.dim(`(已向任务 ${targetId} 发送取消请求)\n`));
+    } catch (e) {
+      emit(formatError(e));
+    }
+  }
+
   // ── 主循环 ──
   let multiBuf: string[] | null = null;
   async function sendText(t: string): Promise<void> {
@@ -494,20 +610,17 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     }
   }
 
-  /** 回合结束后放行排队消息（P0）：斜杠命令不入队，此处只会收到普通消息 */
-  async function drainQueue(): Promise<void> {
-    while (pendingSends.length > 0 && !forceExit && !eof) {
-      const line = (pendingSends.shift() ?? "").trim();
-      if (!line) continue;
-      // 后端 result 事件先于 orchestrator 收尾到达，稍候再发避免 busy 拒绝
-      await new Promise((r) => setTimeout(r, 800));
-      await sendText(line);
-    }
-  }
-
   for (;;) {
-    const line = await ask(multiBuf ? pc.dim("…multi> ") : promptText());
-    if (forceExit || (line === "" && eof)) break;
+    // 队列优先：回合中/boot 期间排队的输入先于新输入处理（斜杠命令按命令执行）
+    let fromQueue = false;
+    let line: string;
+    if (lineQueue.length > 0) {
+      line = lineQueue.shift() ?? "";
+      fromQueue = true;
+    } else {
+      line = await ask(multiBuf ? pc.dim("…multi> ") : promptText());
+    }
+    if (forceExit || (line === "" && eof && lineQueue.length === 0)) break;
     const t = line.trim();
     if (multiBuf !== null) {
       // I6 多行输入：逐行累积，单独一行 "." 提交，/q 放弃
@@ -529,7 +642,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     if (t === "/help") {
       emit(
         pc.dim(
-          `${COMMANDS.join("  ")}\n  /tasks [id前缀] 任务列表/详情与最终输出  /result <id前缀> 只看任务结果  /cancel [id前缀] 中断当前或指定任务\n  /status 连接与会话状态  /resume 恢复历史会话  /agent 切换智能体\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /exit 退出\n`,
+          `${COMMANDS.join("  ")}\n  /tasks [id前缀|all] 任务列表（agent 会话内仅列当前会话）/详情与最终输出  /result <id前缀> 只看任务结果  /cancel [id前缀] 中断当前或指定任务\n  /status 连接与会话状态  /resume 恢复历史会话（agent 内仅列该 agent 的会话，/resume all 查看全部）  /agent 切换智能体  /agent-new 对话式创建 agent  /chat 回到默认会话\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /exit 退出\n`,
         ),
       );
       continue;
@@ -537,7 +650,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     if (t === "/status") {
       const gate = session?.pendingGate;
       emit(
-        `后端   ${baseUrl}\n用户   ${meUser.name}（${meUser.role}）\n会话   ${conversationId ? conversationId.slice(0, 8) : "（未创建，发消息时建立）"}\n智能体 ${currentAgent?.name ?? "默认会话"}\n连接   ${session ? connState : "-"}${gate ? `\n挂起   ${gate}（等待人工响应）` : ""}\n`,
+        `后端   ${baseUrl}\n用户   ${meUser.name}（${meUser.role}）\n会话   ${conversationId ? conversationId.slice(0, 8) : "（未创建，发消息时建立）"}\n智能体 ${currentAgent?.name ?? "默认会话"}\n范围   ${currentAgent ? `agent「${currentAgent.name}」（/resume、/tasks 仅列该 agent，all 看全部）` : "全部"}\n连接   ${session ? connState : "-"}${gate ? `\n挂起   ${gate}（等待人工响应）` : ""}\n`,
       );
       continue;
     }
@@ -548,27 +661,64 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       resetConversation();
       continue;
     }
+    if (t === "/agent-new") {
+      // 等价顶层命令 donger agent-new：切到内置 assist 对话式创建 agent/skill
+      currentAgent = {
+        id: BUILTIN_ASSIST_ID,
+        name: BUILTIN_AGENTS[BUILTIN_ASSIST_ID]!,
+        _mine: true,
+      };
+      resetConversation();
+      continue;
+    }
+    if (t === "/chat") {
+      if (currentAgent === null) {
+        emit(pc.dim("已在默认会话（chat 模式）\n"));
+        continue;
+      }
+      currentAgent = null;
+      resetConversation();
+      continue;
+    }
     if (t === "/new") {
       // D4 语义：保留当前 agent，下一条消息强制新建（绕过 get-or-create）
       resetConversation();
       forceNewOnce = true;
       continue;
     }
-    if (t === "/resume") {
-      const list = await api.listConversations(meUser.id).catch(() => []);
-      const sorted = [...list]
-        .filter((c) => !c.archived)
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        .slice(0, 10);
+    if (t === "/resume" || t.startsWith("/resume ")) {
+      const arg = t.slice(7).trim();
+      const [list, agents] = await Promise.all([
+        api.listConversations(meUser.id).catch(() => []),
+        api.listAgents().catch(() => []),
+      ]);
+      // 全量视图需标注归属 agent（含内置）；agent 视图同源冗余，不带
+      const nameOf = (id: string): string =>
+        BUILTIN_AGENTS[id] ?? agents.find((a) => a.id === id)?.name ?? "";
+      const { items: sorted, scope } = filterResumeScope(list, currentAgent, arg);
       if (sorted.length === 0) {
-        emit(pc.dim("（暂无历史会话）\n"));
+        emit(
+          scope === "agent"
+            ? pc.dim(
+                `agent「${currentAgent?.name}」暂无历史会话；直接发消息创建，或 /resume all 查看全部\n`,
+              )
+            : pc.dim("（暂无历史会话）\n"),
+        );
         continue;
       }
+      emit(
+        pc.dim(
+          scope === "agent"
+            ? `── agent「${currentAgent?.name}」的会话（/resume all 查看全部）──\n`
+            : "── 全部会话 ──\n",
+        ),
+      );
       sorted.forEach((c, i) => {
         const title = (c.title || "（无标题）").replace(/\s+/g, " ");
+        const owner = scope === "all" ? `${nameOf(c.agentId) || "（默认）"}  ` : "";
         write(
           pc.dim(
-            `  [${i + 1}] ${truncate(title, 40)} ${c.updatedAt.replace("T", " ").slice(0, 16)} ${c.id.slice(0, 8)}\n`,
+            `  [${i + 1}] ${truncate(title, 40)}  ${owner}${c.updatedAt.replace("T", " ").slice(0, 16)} ${c.id.slice(0, 8)}\n`,
           ),
         );
       });
@@ -576,9 +726,13 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       const hit =
         Number.isInteger(pick) && pick >= 1 && pick <= sorted.length ? sorted[pick - 1] : undefined;
       if (hit) {
-        // 按会话归属反查 agent（而非「当前选中」），提示行/后续会话才能正确显示
+        // 按会话归属反查 agent（而非「当前选中」），提示行/后续会话才能正确显示；
+        // agent 视图下反查结果即当前 agent（列表已按其过滤），幂等
         const targetAgent = hit.agentId
-          ? ((await api.listAgents().catch(() => [])).find((a) => a.id === hit.agentId) ?? null)
+          ? (agents.find((a) => a.id === hit.agentId) ??
+            (BUILTIN_AGENTS[hit.agentId]
+              ? { id: hit.agentId, name: BUILTIN_AGENTS[hit.agentId]!, _mine: true }
+              : null))
           : null;
         await switchTo({ conversationId: hit.id, agent: targetAgent });
       } else {
@@ -617,31 +771,14 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       continue;
     }
     if (t.startsWith("/cancel")) {
-      const targetId = t.slice(7).trim();
-      if (!targetId) {
-        if (!conversationId) {
-          emit(pc.dim("尚无进行中的会话，无需中断\n"));
-          continue;
-        }
-        await api.cancel(conversationId).catch(() => {});
-        emit(pc.dim("(已发送中断请求)\n"));
-        continue;
-      }
-      // /cancel <任务id前缀>：取消任意运行中任务
-      try {
-        const task = (await resolveTaskId(targetId)) as { threadId?: string } | undefined;
-        if (!task?.threadId) throw new Error("任务不存在或无关联会话");
-        await api.cancel(task.threadId);
-        emit(pc.dim(`(已向任务 ${targetId} 发送取消请求)\n`));
-      } catch (e) {
-        emit(formatError(e));
-      }
+      await handleCancelNow(t);
       continue;
     }
     if (t === "/tasks" || t.startsWith("/tasks ")) {
       const idPrefix = t.slice(6).trim();
+      const scopeAll = idPrefix === "all";
       try {
-        if (idPrefix) {
+        if (idPrefix && !scopeAll) {
           const task = (await resolveTaskId(idPrefix)) as
             | {
                 id: string;
@@ -668,18 +805,42 @@ export async function runChat(opts: ChatOptions): Promise<void> {
             if (last) emit(`\n${renderMarkdown(last.text, isTTY)}\n`);
           }
         } else {
-          const [created, running, done, failed] = await Promise.all([
+          const [created, running, done, failed, canceled] = await Promise.all([
             api.call("GET", "/api/tasks?status=created"),
             api.call("GET", "/api/tasks?status=running"),
             api.call("GET", "/api/tasks?status=done"),
             api.call("GET", "/api/tasks?status=failed"),
+            api.call("GET", "/api/tasks?status=canceled"),
           ]);
-          const all = [...asArr(running), ...asArr(created), ...asArr(failed), ...asArr(done)]
+          const all = filterTasksScope(
+            [
+              ...asArr(running),
+              ...asArr(created),
+              ...asArr(failed),
+              ...asArr(canceled),
+              ...asArr(done),
+            ],
+            meUser.id,
+            // 会话收窄只在 agent 上下文生效；chat 模式传空跳过
+            currentAgent ? conversationId : "",
+            scopeAll ? "all" : "",
+          )
             .sort((a, b) => s(b.createdAt).localeCompare(s(a.createdAt)))
             .slice(0, 8);
           if (all.length === 0) {
-            emit(pc.dim("（暂无任务）\n"));
+            emit(
+              currentAgent
+                ? pc.dim("（当前范围暂无任务；/tasks all 查看全部）\n")
+                : pc.dim("（暂无任务）\n"),
+            );
             continue;
+          }
+          if (currentAgent) {
+            emit(
+              pc.dim(
+                `── ${conversationId ? "当前会话" : `agent「${currentAgent.name}」`}的任务（/tasks all 查看全部）──\n`,
+              ),
+            );
           }
           for (const task of all) {
             const st =
@@ -689,14 +850,16 @@ export async function runChat(opts: ChatOptions): Promise<void> {
                   ? pc.red("failed  ")
                   : s(task.status) === "created"
                     ? pc.cyan("created ")
-                    : pc.dim("done    ");
+                    : s(task.status) === "canceled"
+                      ? pc.dim("canceled")
+                      : pc.dim("done    ");
             emit(
               `${st} ${(s(task.phase) || "-").padEnd(8)} ${truncate(s(task.prompt), 36)}  ${pc.dim(s(task.id).slice(0, 8))}\n`,
             );
           }
           emit(
             pc.dim(
-              "（/tasks <id前缀> 看详情与最终输出；/result <id前缀> 只看结果；/cancel <id前缀> 取消）\n",
+              "（/tasks <id前缀> 看详情与最终输出；/result <id前缀> 只看结果；/cancel <id前缀> 取消；/tasks all 查看全部任务）\n",
             ),
           );
         }
@@ -739,8 +902,11 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       continue;
     }
 
+    if (fromQueue) {
+      // 后端 result 事件先于 orchestrator 收尾到达，稍候再发避免 busy 拒绝
+      await new Promise((r) => setTimeout(r, 800));
+    }
     await sendText(t);
-    await drainQueue();
   }
   session?.stop();
   rl.close();
