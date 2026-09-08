@@ -7,7 +7,7 @@ import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
-import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteCredentialSetStore } from "../../src/adapters/sqlite-credential-set-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { Agent } from "../../src/domain/agent.js";
 import type { Conversation } from "../../src/domain/conversation.js";
@@ -154,18 +154,18 @@ function mockTranscriptStore(): TranscriptStore {
 
 function makeRuntimeMgr(conversationStore: ConversationStore): {
   mgr: RuntimeManager;
-  credentialStore: SqliteCredentialStore;
+  credentialSets: SqliteCredentialSetStore;
   packStore: SqliteSkillPackStore;
   installer: SkillInstaller;
 } {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialStore = new SqliteCredentialStore(
+  const credentialSets = new SqliteCredentialSetStore(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
-  credentialStore.migrate();
+  credentialSets.migrate();
   const fakeInstaller: SkillInstaller = {
     installFromGit: async () => ({}) as SkillPack,
     installFromUpload: async () => ({}) as SkillPack,
@@ -184,11 +184,11 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
       agentLlmPresets: [],
     },
     skillPackStore: packStore,
-    credentialStore,
+    credentialSets,
     installer: fakeInstaller,
     builtinSkillsDir: "",
   });
-  return { mgr, credentialStore, packStore, installer: fakeInstaller };
+  return { mgr, credentialSets, packStore, installer: fakeInstaller };
 }
 
 const ROUTING_JSON =
@@ -223,7 +223,7 @@ function build(
     update: async () => agent,
     delete: async () => {},
   } as unknown as import("../../src/ports/agent-store.js").AgentStore;
-  const { mgr: runtimeMgr, credentialStore, packStore, installer } = makeRuntimeMgr(convStore);
+  const { mgr: runtimeMgr, credentialSets, packStore, installer } = makeRuntimeMgr(convStore);
   const kbDir = mkdtempSync(join(tmpdir(), "donger-kb-"));
   ensureDispatcherKb(kbDir);
   const orch = new Orchestrator({
@@ -236,7 +236,7 @@ function build(
     runner,
     channel,
     runtimeMgr,
-    credentialStore,
+    credentialSets,
     agentStore,
     installer,
     skillPackStore: packStore,

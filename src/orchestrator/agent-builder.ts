@@ -30,6 +30,7 @@ export const AGENT_BUILDER_AGENT: Agent = {
   skills: [],
   tools: { mode: "whitelist", whitelist: ["mcp__donger-platform"] },
   mcpServers: [],
+  credentials: [],
   gitRepositories: [],
   extensionDirectories: [],
   llm: {},

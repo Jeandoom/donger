@@ -363,15 +363,19 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       const why = (await ask(pc.yellow("驳回原因（回车跳过）: "))).trim();
       return { approved: false, reason: why || "CLI 驳回" };
     },
-    onCredential: async (items) => {
-      emit(pc.yellow("\n🔑 需要补充凭证：\n"));
-      const values: Record<string, string> = {};
+    onMissingCredentials: async (items) => {
+      emit(pc.yellow("\n🔑 当前智能体缺少以下凭证（值仅存你个人账号）：\n"));
       for (const item of items) {
-        const hint = item.secret ? pc.dim("（输入不可见）") : "";
-        const desc = item.description ? `（${item.description}）` : "";
-        values[item.key] = await ask(`${item.label}${desc}${hint}: `, { secret: item.secret });
+        emit(pc.yellow(`  - ${item.name}(${item.code})  需要键: ${item.keys.join(", ")}\n`));
       }
-      return values;
+      emit(pc.dim("   [c] 继续执行（跳过缺失）   [g] 去配置，完成后重试   [x] 取消任务\n"));
+      const ans = (await ask(pc.yellow("选择 [c/G/x]: "))).trim().toLowerCase();
+      if (ans === "c") return "continue";
+      if (ans === "x") return "cancel";
+      // g：等用户在另一终端 donger credentials set 配置完成后回车重试；期间输 x 取消
+      const again = (await ask(pc.yellow("配置完成后回车重试（输入 x 取消）: "))).trim().toLowerCase();
+      if (again === "x") return "cancel";
+      return "retry";
     },
     onRoundEnd: (ok, text) => {
       closeThinking();

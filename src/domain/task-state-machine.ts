@@ -9,6 +9,7 @@ export type TaskEvent =
   | "redesign"
   | "request_credentials"
   | "credentials_provided"
+  | "bypass"
   | "finish"
   | "fail"
   | "cancel";
@@ -33,7 +34,13 @@ const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = 
     fail: "failed",
     cancel: "canceled",
   },
-  awaiting_credentials: { credentials_provided: "planning", fail: "failed", cancel: "canceled" },
+  awaiting_credentials: {
+    /** bypass：缺失凭证问询中用户选择「继续执行」，带病运行（缺失凭证注入 _MISSING 标记） */
+    bypass: "running",
+    credentials_provided: "planning",
+    fail: "failed",
+    cancel: "canceled",
+  },
   done: {},
   failed: {},
   canceled: {},

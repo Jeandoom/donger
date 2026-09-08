@@ -9,16 +9,10 @@ export type SSEEvent =
   | { type: "activity"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
-      type: "credential_card";
+      type: "credential_missing_card";
       reqId: string;
       conversationId: string;
-      items: Array<{
-        key: string;
-        label: string;
-        description?: string;
-        secret: boolean;
-        packName: string;
-      }>;
+      items: Array<{ code: string; name: string; description?: string; keys: string[] }>;
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "error"; error: string };

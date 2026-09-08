@@ -1,12 +1,10 @@
 import type { SkillPack } from "../domain/skill-pack.js";
-import type { CredentialStore } from "../ports/credential-store.js";
 import type { InstallGitReq, InstallPasteReq, SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 
 export interface SkillApiDeps {
   packStore: SkillPackStore;
   installer: SkillInstaller;
-  credentialStore: CredentialStore;
 }
 
 export interface ApiResult {
@@ -14,19 +12,14 @@ export interface ApiResult {
   json: unknown;
 }
 
-/** Pack 视图：含 skills + 凭证声明的"已配置"状态。 */
+/** Pack 视图：含 skills。 */
 async function packView(
   d: SkillApiDeps,
   userId: string,
   pack: SkillPack,
 ): Promise<Record<string, unknown>> {
   const skills = await d.packStore.listSkills(userId, pack.id);
-  const vaultKeys = new Set((await d.credentialStore.list(userId)).map((e) => e.key));
-  return {
-    ...pack,
-    skills,
-    credentials: pack.credentials.map((c) => ({ ...c, configured: vaultKeys.has(c.key) })),
-  };
+  return { ...pack, skills };
 }
 
 export async function handleListPacks(
@@ -125,46 +118,4 @@ export async function handleUninstall(
   } catch (e) {
     return { status: 400, json: { error: (e as Error).message } };
   }
-}
-
-export async function handleListCredentials(
-  userId: string,
-  _body: unknown,
-  d: SkillApiDeps,
-): Promise<ApiResult> {
-  const entries = await d.credentialStore.list(userId);
-  const packs = await d.packStore.listPacks(userId);
-  const usedBy: Record<string, string[]> = {};
-  for (const p of packs) {
-    for (const c of p.credentials) {
-      const packsUsingCredential = usedBy[c.key] ?? [];
-      packsUsingCredential.push(p.name);
-      usedBy[c.key] = packsUsingCredential;
-    }
-  }
-  return {
-    status: 200,
-    json: { credentials: entries.map((e) => ({ ...e, usedBy: usedBy[e.key] ?? [] })) },
-  };
-}
-
-export async function handleSetCredential(
-  userId: string,
-  body: { key: string; value: string; label?: string },
-  d: SkillApiDeps,
-): Promise<ApiResult> {
-  if (!body.key || typeof body.value !== "string") {
-    return { status: 400, json: { error: "缺少 key/value" } };
-  }
-  await d.credentialStore.setValue(userId, body.key, body.value, body.label);
-  return { status: 200, json: { ok: true } };
-}
-
-export async function handleDeleteCredential(
-  userId: string,
-  body: { key: string },
-  d: SkillApiDeps,
-): Promise<ApiResult> {
-  await d.credentialStore.deleteValue(userId, body.key);
-  return { status: 200, json: { ok: true } };
 }

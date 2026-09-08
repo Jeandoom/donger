@@ -22,7 +22,6 @@ function pack(over: Partial<SkillPack> = {}): SkillPack {
     installedPath: ".skills/demo",
     enabled: true,
     builtin: false,
-    credentials: [],
     createdAt: "t",
     updatedAt: "t",
     ...over,
@@ -98,15 +97,5 @@ describe("SqliteSkillPackStore", () => {
     await store.deletePack("u1", "p1");
     expect(await store.listPacks("u1")).toHaveLength(0);
     expect(await store.listSkills("u1", "p1")).toHaveLength(0);
-  });
-
-  it("credentials/allowedTools JSON 往返", async () => {
-    await store.upsertPack(
-      pack({ credentials: [{ key: "K", label: "K", required: true, secret: true }] }),
-    );
-    await store.upsertSkills("u1", "p1", [skill({ allowedTools: ["Read", "Write"] })]);
-    const p = await store.getPack("u1", "p1");
-    expect(p?.credentials[0]?.key).toBe("K");
-    expect((await store.listSkills("u1", "p1"))[0]?.allowedTools).toEqual(["Read", "Write"]);
   });
 });

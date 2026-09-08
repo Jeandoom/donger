@@ -1,20 +1,12 @@
-// 技能模块领域类型（纯数据）。持久化时 source/credentials 序列化为 JSON。
+// 技能模块领域类型（纯数据）。持久化时 source 序列化为 JSON。
 // 加载由 Claude Agent SDK 原生完成；donger 只持元数据。
+// 凭证：旧 pack 声明式单值体系已移除，改由凭证模板 + 用户值 + agent 勾选（domain/credential.ts）。
 
 export type SkillPackSource =
   | { kind: "git"; url: string; ref?: string; subPath?: string }
   | { kind: "upload"; originalFilename: string }
   | { kind: "paste" }
   | { kind: "builtin" };
-
-/** 凭证声明（需求侧，来自 donger.manifest.json）。值在用户保险柜（CredentialStore）。 */
-export interface SkillCredentialSpec {
-  key: string;
-  label: string;
-  description?: string;
-  required: boolean;
-  secret: boolean;
-}
 
 /** Pack = 安装单元（对应 Claude plugin）。 */
 export interface SkillPack {
@@ -28,7 +20,6 @@ export interface SkillPack {
   installedPath: string; // 用户 pack=相对 homeDir；预装=共享绝对路径
   enabled: boolean;
   builtin: boolean;
-  credentials: SkillCredentialSpec[];
   createdAt: string;
   updatedAt: string;
 }

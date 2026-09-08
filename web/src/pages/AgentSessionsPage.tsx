@@ -151,7 +151,7 @@ export function AgentSessionsPage() {
       onCancel={wc.cancel}
       onEnsureConversation={wc.ensureConversation}
       onResolveApproval={wc.resolveApproval}
-      onSubmitCredential={wc.submitCredential}
+      onDecideCredentialMissing={wc.decideCredentialMissing}
       inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}
       aboveComposer={
         assistDraft ? (

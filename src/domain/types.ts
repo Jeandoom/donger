@@ -44,8 +44,10 @@ export const TaskSchema = z.object({
   pendingGate: z
     .object({ gateId: z.string(), title: z.string(), requestedAt: z.string() })
     .optional(),
-  /** 任务正卡在凭证收集门时写入 */
-  pendingCredentials: z.object({ requestedAt: z.string() }).optional(),
+  /** 任务正卡在凭证缺失问询时写入（missingCodes = agent 勾选但当前用户未配置的 code） */
+  pendingCredentials: z
+    .object({ requestedAt: z.string(), missingCodes: z.array(z.string()).optional() })
+    .optional(),
   /** Task Flow 流水线：dispatcher/builder/chat/agent 步骤链（请求级，方案 A 挂用户当前会话） */
   steps: z.array(FlowStepSchema).optional(),
   /** builder 完成自动重派产生本 task 时，指回触发补建的原 task */
@@ -124,7 +126,9 @@ export interface AuditEvent {
     | "text"
     | "tool_use"
     | "tool_result"
-    | "result";
+    | "result"
+    /** 凭证缺失问询（text=人读提示；toolInput=JSON {codes:[{code,name,keys}]}，不含值） */
+    | "credential_prompt";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;

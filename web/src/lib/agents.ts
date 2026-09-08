@@ -39,6 +39,7 @@ export interface AgentDTO {
   defaultSkill?: string;
   tools: { mode: "all" | "whitelist"; whitelist: string[] };
   mcpServers: McpServerDTO[];
+  credentials?: string[];
   gitRepositories: AgentGitRepositoryDTO[];
   extensionDirectories: AgentExtensionDirectoryDTO[];
   llm: { presetId?: string };

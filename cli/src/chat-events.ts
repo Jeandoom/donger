@@ -9,9 +9,9 @@ export type EventAction =
   | { kind: "round_end"; ok: boolean; text: string }
   | { kind: "approval"; gateId: string; title: string; summary: string }
   | {
-      kind: "credential";
+      kind: "credential_missing";
       reqId: string;
-      items: Array<{ key: string; label: string; description?: string; secret: boolean }>;
+      items: Array<{ code: string; name: string; description?: string; keys: string[] }>;
     }
   | { kind: "ignore" };
 
@@ -39,8 +39,8 @@ export function classifyEvent(e: SSEEvent, streaming: { messageId: string | null
     }
     case "approval_card":
       return { kind: "approval", gateId: e.gateId, title: e.title, summary: e.summary };
-    case "credential_card":
-      return { kind: "credential", reqId: e.reqId, items: e.items };
+    case "credential_missing_card":
+      return { kind: "credential_missing", reqId: e.reqId, items: e.items };
     case "result":
       return { kind: "round_end", ok: e.subtype === "success", text: e.text };
     case "error":

@@ -38,18 +38,18 @@ describe("classifyEvent", () => {
     ).toEqual({ kind: "approval", gateId: "g1", title: "部署", summary: "确认?" });
   });
 
-  it("凭证卡片 → credential 动作", () => {
+  it("缺失卡片 → credential_missing 动作", () => {
     const s = { messageId: null };
     const r = classifyEvent(
       {
-        type: "credential_card",
+        type: "credential_missing_card",
         reqId: "r1",
         conversationId: "c1",
-        items: [{ key: "k", label: "密钥", secret: true, packName: "p" }],
+        items: [{ code: "c1", name: "密钥", keys: ["token"] }],
       },
       s,
     );
-    expect(r).toMatchObject({ kind: "credential", reqId: "r1" });
+    expect(r).toMatchObject({ kind: "credential_missing", reqId: "r1" });
   });
 
   it("result → round_end（success/error）", () => {

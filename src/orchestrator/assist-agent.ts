@@ -29,6 +29,7 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   skills: ["task-optimize"],
   tools: { mode: "whitelist", whitelist: ["mcp__donger-platform"] },
   mcpServers: [],
+  credentials: [],
   gitRepositories: [],
   extensionDirectories: [],
   llm: {},

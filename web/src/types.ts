@@ -7,15 +7,14 @@ export type SSEEvent =
   | { type: "text_delta"; messageId: string; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
-      type: "credential_card";
+      type: "credential_missing_card";
       reqId: string;
       conversationId: string;
       items: Array<{
-        key: string;
-        label: string;
+        code: string;
+        name: string;
         description?: string;
-        secret: boolean;
-        packName: string;
+        keys: string[];
       }>;
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
@@ -46,11 +45,10 @@ export interface PendingApproval {
 export interface PendingCredential {
   reqId: string;
   items: Array<{
-    key: string;
-    label: string;
+    code: string;
+    name: string;
     description?: string;
-    secret: boolean;
-    packName: string;
+    keys: string[];
   }>;
 }
 

@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import type { SkillCredentialSpec } from "./skill-pack.js";
 
 export interface ParsedFrontmatter {
   name?: string;
@@ -63,7 +62,6 @@ export interface ScannedSkill {
 export interface ScannedPack {
   packMeta: { name: string; description?: string; version?: string };
   skills: ScannedSkill[];
-  credentials: SkillCredentialSpec[];
 }
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".donger-sdk-plugin"]);
@@ -106,17 +104,5 @@ export function scanSkillPack(packDir: string, skillRoot = packDir): ScannedPack
     }
   }
 
-  let credentials: SkillCredentialSpec[] = [];
-  const manifestPath = join(packDir, "donger.manifest.json");
-  if (existsSync(manifestPath)) {
-    try {
-      const m = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-        credentials?: SkillCredentialSpec[];
-      };
-      if (Array.isArray(m.credentials)) credentials = m.credentials;
-    } catch {
-      credentials = [];
-    }
-  }
-  return { packMeta, skills, credentials };
+  return { packMeta, skills };
 }

@@ -20,6 +20,7 @@ import {
   mergeSkillSelectorOptions,
   type SkillSelectorOption,
 } from "../lib/skillSelector";
+import { fetchCredentialTemplates, fetchMyCredentials } from "../lib/skills";
 
 const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   name: "",
@@ -29,6 +30,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   defaultSkill: undefined,
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
+  credentials: [],
   gitRepositories: [],
   extensionDirectories: [],
   llm: {},
@@ -69,6 +71,7 @@ export function AgentEditorPage() {
             defaultSkill: a.defaultSkill,
             tools: a.tools,
             mcpServers: a.mcpServers,
+            credentials: a.credentials ?? [],
             gitRepositories: a.gitRepositories ?? [],
             extensionDirectories: a.extensionDirectories ?? [],
             llm: a.llm,
@@ -177,6 +180,11 @@ export function AgentEditorPage() {
             }
           />
         </Field>
+
+        <CredentialPicker
+          value={form.credentials ?? []}
+          onChange={(credentials) => setForm({ ...form, credentials })}
+        />
 
         <Field label="默认 Skill（可选）">
           <select
@@ -708,5 +716,91 @@ function SharePanel({ agentId }: { agentId: string }) {
         </>
       ) : null}
     </div>
+  );
+}
+
+/** 凭证勾选：选项 = 我的凭证 ∪ 全局模板；运行时按当前用户已配置的值注入 */
+function CredentialPicker({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (codes: string[]) => void;
+}) {
+  const [options, setOptions] = useState<
+    Array<{ code: string; name: string; keys: string[]; configured: boolean }>
+  >([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [mine, templates] = await Promise.all([
+          fetchMyCredentials(),
+          fetchCredentialTemplates(),
+        ]);
+        const mineCodes = new Set(mine.map((m) => m.code));
+        const seen = new Set<string>();
+        const options: Array<{
+          code: string;
+          name: string;
+          keys: string[];
+          configured: boolean;
+        }> = [];
+        for (const m of mine) {
+          if (seen.has(m.code)) continue;
+          seen.add(m.code);
+          options.push({
+            code: m.code,
+            name: m.name,
+            keys: m.keySpecs.map((k) => k.key),
+            configured: true,
+          });
+        }
+        for (const t of templates) {
+          if (seen.has(t.code)) continue;
+          seen.add(t.code);
+          options.push({
+            code: t.code,
+            name: t.name,
+            keys: t.keySpecs.map((k) => k.key),
+            configured: false,
+          });
+        }
+        setOptions(options);
+        void mineCodes;
+      } catch {
+        // 凭证存储未装配或网络失败：不阻断 agent 编辑
+      }
+    })();
+  }, []);
+
+  const toggle = (code: string) =>
+    onChange(value.includes(code) ? value.filter((c) => c !== code) : [...value, code]);
+
+  return (
+    <Field label="凭证（勾选后运行时按当前用户已配置的值注入）">
+      {options.length === 0 ? (
+        <div className="text-xs text-muted-foreground">
+          暂无可选凭证。可先到「凭证管理」页创建。
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {options.map((o) => (
+            <label key={o.code} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={value.includes(o.code)}
+                onChange={() => toggle(o.code)}
+              />
+              <span className="font-mono">{o.code}</span>
+              <span>{o.name}</span>
+              <span className="text-xs text-muted-foreground">
+                keys=[{o.keys.join(",")}]{o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </Field>
   );
 }

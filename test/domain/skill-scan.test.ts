@@ -50,7 +50,7 @@ describe("scanSkillPack", () => {
     writeFileSync(join(p, "SKILL.md"), fm);
   }
 
-  it("扫描出 skills + plugin.json + donger.manifest.json", () => {
+  it("扫描出 skills + plugin.json", () => {
     writeSkill("demo", "alpha", `---\nname: alpha\ndescription: "a"\n---\n# alpha`);
     mkdirSync(join(dir, "demo", ".claude-plugin"), { recursive: true });
     writeFileSync(
@@ -67,7 +67,6 @@ describe("scanSkillPack", () => {
     const result = scanSkillPack(join(dir, "demo"));
     expect(result.packMeta.name).toBe("demo");
     expect(result.skills.map((s) => s.name)).toEqual(["alpha"]);
-    expect(result.credentials[0]?.key).toBe("K");
   });
 
   it("无 plugin.json 时 packMeta.name 取目录名", () => {
@@ -75,7 +74,6 @@ describe("scanSkillPack", () => {
     const result = scanSkillPack(join(dir, "lonely"));
     expect(result.packMeta.name).toBe("lonely");
     expect(result.skills[0]?.name).toBe("beta");
-    expect(result.credentials).toEqual([]);
   });
 
   it("跳过 node_modules / .git 目录", () => {

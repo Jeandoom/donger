@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { LocalExtensionDirectoryResolver } from "../../src/adapters/local-extension-directory-resolver.js";
-import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteCredentialSetStore } from "../../src/adapters/sqlite-credential-set-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
@@ -96,14 +96,14 @@ function emptySkillDeps() {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialStore = new SqliteCredentialStore(
+  const credentialSets = new SqliteCredentialSetStore(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
-  credentialStore.migrate();
+  credentialSets.migrate();
   return {
     skillPackStore: packStore,
-    credentialStore,
+    credentialSets,
     installer: {
       installFromGit: async () => ({}) as SkillPack,
       installFromUpload: async () => ({}) as SkillPack,
@@ -120,14 +120,14 @@ describe("RuntimeManager", () => {
   let ws: string;
   let db: Database.Database;
   let packStore: SqliteSkillPackStore;
-  let credStore: SqliteCredentialStore;
+  let credStore: SqliteCredentialSetStore;
 
   beforeEach(() => {
     ws = mkdtempSync(join(tmpdir(), "rtmgr-"));
     db = new Database(":memory:");
     packStore = new SqliteSkillPackStore(db);
     packStore.migrate();
-    credStore = new SqliteCredentialStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+    credStore = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
     credStore.migrate();
   });
 
@@ -137,7 +137,7 @@ describe("RuntimeManager", () => {
       conversationStore: convStore as unknown as ConversationStore,
       config: baseConfig(ws),
       skillPackStore: packStore,
-      credentialStore: credStore,
+      credentialSets: credStore,
       installer: fakeInstaller,
       builtinSkillsDir: "",
     });
@@ -174,15 +174,50 @@ describe("RuntimeManager", () => {
     };
   }
 
-  it("prepare：启用 pack 的路径/白名单/凭证进入 runOptions", async () => {
+  it("prepare：启用 pack 的路径/白名单进入 runOptions；agent 勾选凭证注入 env", async () => {
     await packStore.upsertPack(mkPack());
     await packStore.upsertSkills("u1", "p1", [mkSkill()]);
-    await credStore.setValue("u1", "K", "v");
+    await credStore.createTemplate(
+      "c1",
+      {
+        name: "凭证一",
+        keySpecs: [{ key: "K" }],
+      },
+      "u1",
+    );
+    await credStore.createTemplate(
+      "c2",
+      {
+        name: "凭证二",
+        keySpecs: [{ key: "X" }],
+      },
+      "u1",
+    );
+    await credStore.upsertValue("u1", "c1", { K: "v" });
     const m = makeMgr(fakeConvStore([baseConv()]));
-    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
+    const agent = {
+      id: "a1",
+      ownerId: "u1",
+      name: "ag",
+      skills: [] as string[],
+      tools: { mode: "all" as const, whitelist: [] },
+      mcpServers: [],
+      credentials: ["c1", "c2"],
+      gitRepositories: [],
+      extensionDirectories: [],
+      llm: {},
+      version: 1,
+      createdAt: "t",
+      updatedAt: "t",
+    };
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {
+      agent,
+    });
     expect(runOptions.pluginPaths?.some((p) => p.endsWith(join(".skills", "demo")))).toBe(true);
     expect(runOptions.skills).toEqual(["demo:alpha"]);
-    expect(runOptions.credentialsEnv?.K).toBe("v");
+    // 命中：K 平铺；未配置：c2 注入 MISSING 标记
+    expect(runOptions.credentialsEnv?.C1_K).toBe("v");
+    expect(runOptions.credentialsEnv?.C2_MISSING).toBe("1");
     expect(runOptions.resume).toBeUndefined();
     expect(runOptions.sessionStore).toBeDefined();
   });
@@ -214,33 +249,33 @@ describe("RuntimeManager", () => {
     expect(runOptions.resume).toBe("sdk-xyz");
   });
 
-  it("missingCredentialItems：仅返回缺失的 required 项（带 packName）", async () => {
-    await packStore.upsertPack(
-      mkPack({
-        credentials: [
-          { key: "REQ", label: "R", required: true, secret: true },
-          { key: "OPT", label: "O", required: false, secret: true },
-        ],
-      }),
+  it("inspectCredentials：仅返回缺失项的模板元数据（不含值）", async () => {
+    await credStore.createTemplate(
+      "hit",
+      {
+        name: "已配置",
+        keySpecs: [{ key: "K" }],
+      },
+      "u1",
     );
-    await credStore.setValue("u1", "REQ", "v");
+    await credStore.createTemplate(
+      "miss",
+      {
+        name: "未配置",
+        description: "说明",
+        keySpecs: [{ key: "K" }, { key: "S" }],
+      },
+      "u1",
+    );
+    await credStore.upsertValue("u1", "hit", { K: "v" });
     const m = makeMgr(fakeConvStore([baseConv()]));
-    const items = await m.missingCredentialItems("u1");
-    // REQ 已配、OPT 非必需 → 均不出现
-    expect(items).toEqual([]);
-    // 再加一个未配的 required
-    await packStore.upsertPack(
-      mkPack({
-        id: "p2",
-        slug: "demo2",
-        name: "demo2",
-        credentials: [{ key: "MISS", label: "M", required: true, secret: true }],
-      }),
-    );
-    const items2 = await m.missingCredentialItems("u1");
-    expect(items2).toEqual([
-      { key: "MISS", label: "M", description: undefined, secret: true, packName: "demo2" },
+    const items = await m.inspectCredentials("u1", ["hit", "miss"]);
+    expect(items).toEqual([
+      { code: "miss", name: "未配置", description: "说明", keys: ["K", "S"] },
     ]);
+    // 全命中 → 空
+    expect(await m.inspectCredentials("u1", ["hit"])).toEqual([]);
+    expect(await m.inspectCredentials("u1", [])).toEqual([]);
   });
 
   it("commit：回写 sdkSessionId 到 ConversationStore", async () => {

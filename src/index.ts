@@ -22,7 +22,7 @@ import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
-import { SqliteCredentialStore } from "./adapters/sqlite-credential-store.js";
+import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteGitConnectionStore } from "./adapters/sqlite-git-connection-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
   function createOrch(
     channel: Channel,
     skillPackStore: SqliteSkillPackStore,
-    credentialStore: SqliteCredentialStore,
+    credentialSets: SqliteCredentialSetStore,
     skillInstaller: LocalSkillInstaller,
   ): Orchestrator {
     const runtimeMgr = new RuntimeManager({
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
         agentLlmPresets: cfg.agentLlmPresets,
       },
       skillPackStore,
-      credentialStore,
+      credentialSets,
       modelConfigStore,
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,
@@ -182,7 +182,7 @@ async function main(): Promise<void> {
       runner: new ClaudeAgentRunner(createDefaultGates()),
       channel,
       runtimeMgr,
-      credentialStore,
+      credentialSets,
       agentStore,
       agentShareStore,
       gitAccessGate,
@@ -196,11 +196,11 @@ async function main(): Promise<void> {
   // 技能 store/installer（WebChannel 与 Orchestrator 共享同一实例）
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const credentialStore = new SqliteCredentialStore(
+  const credentialSets = new SqliteCredentialSetStore(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
-  credentialStore.migrate();
+  credentialSets.migrate();
   const modelConfigStore = new SqliteModelConfigStore(db, secretCipher);
   modelConfigStore.migrate();
   const skillInstaller = new LocalSkillInstaller({
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
     fileBrowser,
     skillPackStore,
     installer: skillInstaller,
-    credentialStore,
+    credentialSets,
     modelConfigStore,
     agentStore,
     agentShareStore,
@@ -279,7 +279,7 @@ async function main(): Promise<void> {
     llmDebugRunner: new ClaudeLlmDebugRunner(),
   };
   const webChannel = new WebChannel(webChannelDeps);
-  const webOrch = createOrch(webChannel, skillPackStore, credentialStore, skillInstaller);
+  const webOrch = createOrch(webChannel, skillPackStore, credentialSets, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
 
@@ -333,7 +333,7 @@ async function main(): Promise<void> {
   // 钉钉 Channel（有配置才启动）
   if (cfg.dingtalk) {
     const dtChannel = new DingTalkChannel(cfg.dingtalk);
-    const dtOrch = createOrch(dtChannel, skillPackStore, credentialStore, skillInstaller);
+    const dtOrch = createOrch(dtChannel, skillPackStore, credentialSets, skillInstaller);
     dtChannel.onMessage((m) => void dtOrch.handleMessage(m));
     log.info({ channel: "dingtalk" }, "就绪");
   }

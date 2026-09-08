@@ -196,7 +196,6 @@ export class LocalSkillInstaller implements SkillInstaller {
       installedPath: builtin ? packDir : `.skills/${slug}`,
       enabled: true,
       builtin,
-      credentials: scanned.credentials,
       createdAt: now,
       updatedAt: now,
     };

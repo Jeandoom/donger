@@ -46,7 +46,7 @@ export function ChatPage() {
         onEnsureConversation={wc.ensureConversation}
         onCancel={wc.cancel}
         onResolveApproval={wc.resolveApproval}
-        onSubmitCredential={wc.submitCredential}
+        onDecideCredentialMissing={wc.decideCredentialMissing}
         errors={wc.errors}
         onReloadConversations={() => void wc.loadConversations()}
         onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}

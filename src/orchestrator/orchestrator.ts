@@ -9,7 +9,7 @@ import { appendMessageFiles } from "../domain/message-files.js";
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { IncomingMessage, RunnerEvent, Task } from "../domain/types.js";
+import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
@@ -19,7 +19,7 @@ import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
-import type { CredentialStore } from "../ports/credential-store.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
@@ -32,10 +32,10 @@ import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./age
 import { makeApprovalResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
-import { makeCredentialResolver } from "./credential-flow.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
+import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import {
   acceptAsk,
   designFirstAsk,
@@ -59,8 +59,8 @@ export interface OrchestratorDeps {
   channel: Channel;
   /** 会话运行态总管：组装 RunOptions（cwd/skills/plugins/sessionStore/resume）+ 回写 sdkSessionId */
   runtimeMgr: RuntimeManager;
-  /** 用户凭证保险柜：凭证门收集到的值落此，运行时注入 env */
-  credentialStore: CredentialStore;
+  /** 凭证集存储：agent 勾选 code → 当前用户已配置值（注入 env） */
+  credentialSets: CredentialSetStore;
   /** 智能体存储（M13；缺省=不支持显式 agent，会话 agentId 必须为空） */
   agentStore?: AgentStore;
   /** 智能体分享/授权存储 */
@@ -862,7 +862,7 @@ export class Orchestrator {
     conversation: Conversation,
     runController: AbortController,
   ): Promise<string | undefined> {
-    const { store, conversationStore, runner, channel } = this.deps;
+    const { store, conversationStore, channel } = this.deps;
 
     // 入口解析（统一对话入口模型）：显式绑定 → direct；否则 task-flow（dispatcher 路由）
     let entry = resolveEntry(conversation, this.deps.agentChain);
@@ -1064,18 +1064,35 @@ export class Orchestrator {
         }
       }
 
-      // 凭证门：缺失必需凭证 → 经对话收集到用户保险柜（runTurn 内 prepare 会带入最新 credentialsEnv）
-      const missingItems = await this.deps.runtimeMgr.missingCredentialItems(user.id);
-      if (missingItems.length > 0) {
-        const credResolver = makeCredentialResolver(store, channel, msg.threadId);
-        const provided = await credResolver({
-          taskId: task.id,
-          conversationId: conversation.id,
-          items: missingItems,
+      // 凭证缺失预检：agent 勾选但当前用户未配置 → 三选问询（继续执行/暂停/重试）。
+      // code 按执行者用户空间解析：owner 勾选只声明需求，访问者用自己的同名凭证。
+      if (agent?.credentials?.length) {
+        const currentTask: Task = task;
+        const proceed = await promptMissingCredentials({
+          task: currentTask,
+          user,
+          conversation,
+          channel,
+          threadId: msg.threadId,
+          codes: agent.credentials,
+          inspect: (userId, codes) => this.deps.runtimeMgr.inspectCredentials(userId, codes),
+          updateTask: async (status, patch) => {
+            await store.updateStatus(currentTask.id, status as TaskStatus, patch);
+          },
+          recordAudit: async (missing) => {
+            await this.deps.auditStore.record({
+              conversationId: conversation.id,
+              taskId: currentTask.id,
+              userId: user.id,
+              seq: -1, // 预检事件（轮内 seq 从 0 起算）；-1 = 执行前问询
+              type: "credential_prompt",
+              text: `缺少凭证：${missing.map((m) => m.name).join("、")}`,
+              toolInput: JSON.stringify({ codes: missing }),
+              recordedAt: new Date().toISOString(),
+            });
+          },
         });
-        for (const [k, v] of Object.entries(provided)) {
-          if (v) await this.deps.credentialStore.setValue(user.id, k, v);
-        }
+        if (!proceed) return conversation.id;
       }
 
       // agent 绑定任务（显式选择或 dispatcher 路由）→ 三段式生命周期；

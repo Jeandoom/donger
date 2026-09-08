@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
   credentialStatus,
   fetchPacks,
@@ -11,7 +12,6 @@ import {
   uninstallPack,
   updatePack,
 } from "../lib/skills";
-import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { cn } from "../lib/utils";
 
 export function SkillsPage() {

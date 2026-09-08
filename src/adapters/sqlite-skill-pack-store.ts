@@ -1,10 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type {
-  PackSkill,
-  SkillCredentialSpec,
-  SkillPack,
-  SkillPackSource,
-} from "../domain/skill-pack.js";
+import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 
 type Row = Record<string, unknown>;
@@ -75,7 +70,7 @@ export class SqliteSkillPackStore implements SkillPackStore {
         pack.installedPath,
         pack.enabled ? 1 : 0,
         pack.builtin ? 1 : 0,
-        JSON.stringify(pack.credentials),
+        "[]",
         pack.createdAt,
         pack.updatedAt,
       );
@@ -159,7 +154,6 @@ export class SqliteSkillPackStore implements SkillPackStore {
       installedPath: r.installedPath as string,
       enabled: r.enabled === 1,
       builtin: r.builtin === 1,
-      credentials: JSON.parse(r.credentialsJson as string) as SkillCredentialSpec[],
       createdAt: r.createdAt as string,
       updatedAt: r.updatedAt as string,
     };

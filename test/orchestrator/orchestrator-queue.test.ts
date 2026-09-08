@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
-import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteCredentialSetStore } from "../../src/adapters/sqlite-credential-set-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import type { RunnerEvent, Task } from "../../src/domain/types.js";
 import type { UserRole } from "../../src/domain/user.js";
@@ -163,11 +163,11 @@ function build(
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialStore = new SqliteCredentialStore(
+  const credentialSets = new SqliteCredentialSetStore(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
-  credentialStore.migrate();
+  credentialSets.migrate();
   const fakeInstaller: SkillInstaller = {
     installFromGit: async () => ({}) as never,
     installFromUpload: async () => ({}) as never,
@@ -186,7 +186,7 @@ function build(
       agentLlmPresets: [],
     },
     skillPackStore: packStore,
-    credentialStore,
+    credentialSets,
     installer: fakeInstaller,
     builtinSkillsDir: "",
   });
@@ -205,7 +205,7 @@ function build(
     runner,
     channel,
     runtimeMgr,
-    credentialStore,
+    credentialSets,
     installer: fakeInstaller,
     skillPackStore: packStore,
     ...(kbDir ? { kbDir } : {}),

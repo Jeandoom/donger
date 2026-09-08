@@ -32,6 +32,8 @@ export const AgentSchema = z.object({
   defaultSkill: z.string().min(1).optional(),
   tools: AgentToolsSchema,
   mcpServers: z.array(McpServerConfigSchema).default([]),
+  /** 勾选的凭证模板 code（弱引用：执行时按当前用户解析，未配置的注入 _MISSING 标记） */
+  credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,
   extensionDirectories: AgentExtensionDirectoriesSchema,
   llm: AgentLLMSchema,
@@ -55,10 +57,17 @@ export interface AgentVersionSummary {
 /** 入参用：不带 id/时间戳/版本号（由 store 填充） */
 export type AgentInput = Omit<
   Agent,
-  "id" | "createdAt" | "updatedAt" | "version" | "gitRepositories" | "extensionDirectories"
+  | "id"
+  | "createdAt"
+  | "updatedAt"
+  | "version"
+  | "gitRepositories"
+  | "extensionDirectories"
+  | "credentials"
 > & {
   gitRepositories?: Agent["gitRepositories"];
   extensionDirectories?: Agent["extensionDirectories"];
+  credentials?: string[];
   version?: number;
 };
 export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true });

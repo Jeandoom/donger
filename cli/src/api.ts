@@ -46,7 +46,7 @@ export interface DongerApi {
   /** 触发 task-optimize：返回 assist 优化会话 id（提案经审批卡确认落盘） */
   optimizeTask(taskId: string): Promise<{ conversationId: string }>;
   respondApproval(gateId: string, approved: boolean, reason?: string): Promise<void>;
-  submitCredential(reqId: string, values: Record<string, string>): Promise<void>;
+  decideCredentialMissing(reqId: string, decision: string): Promise<void>;
   /** 管理命令通用调用：返回解析后的 JSON（无类型约束，命令层自行取字段） */
   call(method: string, path: string, body?: unknown): Promise<unknown>;
 }
@@ -192,8 +192,8 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     optimizeTask: (taskId) => request("POST", `/api/tasks/${taskId}/optimize`, {}),
     respondApproval: (gateId, approved, reason) =>
       request("POST", `/api/approvals/${gateId}/respond`, { approved, reason }),
-    submitCredential: (reqId, values) =>
-      request("POST", `/api/credentials/${reqId}/submit`, { values }),
+    decideCredentialMissing: (reqId, decision) =>
+      request("POST", `/api/credential-missing/${reqId}/decide`, { decision }),
     call: (method, path, body) => request(method, path, body),
   };
 }

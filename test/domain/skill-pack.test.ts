@@ -1,20 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type {
-  PackSkill,
-  SkillCredentialSpec,
-  SkillPack,
-  SkillPackSource,
-} from "../../src/domain/skill-pack.js";
+import type { PackSkill, SkillPack, SkillPackSource } from "../../src/domain/skill-pack.js";
 
 describe("skill-pack 类型", () => {
   it("可构造一个用户 git Pack", () => {
     const src: SkillPackSource = { kind: "git", url: "https://github.com/x/y", ref: "main" };
-    const cred: SkillCredentialSpec = {
-      key: "GITHUB_TOKEN",
-      label: "t",
-      required: true,
-      secret: true,
-    };
     const pack: SkillPack = {
       id: "p1",
       userId: "u1",
@@ -24,12 +13,10 @@ describe("skill-pack 类型", () => {
       installedPath: ".skills/y",
       enabled: true,
       builtin: false,
-      credentials: [cred],
       createdAt: "2026-07-12T00:00:00.000Z",
       updatedAt: "2026-07-12T00:00:00.000Z",
     };
     expect(pack.source.kind).toBe("git");
-    expect(pack.credentials[0]?.key).toBe("GITHUB_TOKEN");
   });
 
   it("预装 Pack 用 builtin 来源", () => {
@@ -42,7 +29,6 @@ describe("skill-pack 类型", () => {
       installedPath: "/abs/skills/superpowers",
       enabled: true,
       builtin: true,
-      credentials: [],
       createdAt: "2026-07-12T00:00:00.000Z",
       updatedAt: "2026-07-12T00:00:00.000Z",
     };

@@ -18,7 +18,7 @@ import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "../../src/adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "../../src/adapters/sqlite-comment-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
-import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteCredentialSetStore } from "../../src/adapters/sqlite-credential-set-store.js";
 import { SqliteMessageStore } from "../../src/adapters/sqlite-message-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "../../src/adapters/sqlite-task-store.js";
@@ -107,11 +107,11 @@ async function startBackend(): Promise<Backend> {
   sessionStore.migrate();
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const credentialStore = new SqliteCredentialStore(
+  const credentialSets = new SqliteCredentialSetStore(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
-  credentialStore.migrate();
+  credentialSets.migrate();
   const agentStore = new SqliteAgentStore(db, createSecretCipher("e2e-seed"));
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
@@ -160,7 +160,7 @@ async function startBackend(): Promise<Backend> {
       agentLlmPresets: [],
     },
     skillPackStore,
-    credentialStore,
+    credentialSets,
     installer,
     builtinSkillsDir: "",
   });
@@ -194,7 +194,7 @@ async function startBackend(): Promise<Backend> {
     runner,
     channel,
     runtimeMgr,
-    credentialStore,
+    credentialSets,
     agentStore,
     agentShareStore,
     kbDir,

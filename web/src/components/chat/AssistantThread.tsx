@@ -221,7 +221,7 @@ export interface AssistantThreadProps {
   approvalError?: string;
   credentialError?: string;
   onResolveApproval: (approved: boolean, reason?: string) => void;
-  onSubmitCredential: (values: Record<string, string>) => void;
+  onDecideCredentialMissing: (decision: string) => void;
   placeholder: string;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
@@ -241,7 +241,7 @@ export function AssistantThread(props: AssistantThreadProps) {
             approvalError={props.approvalError}
             credentialError={props.credentialError}
             onResolveApproval={props.onResolveApproval}
-            onSubmitCredential={props.onSubmitCredential}
+            onDecideCredentialMissing={props.onDecideCredentialMissing}
           />
         </div>
       </ThreadPrimitive.Viewport>

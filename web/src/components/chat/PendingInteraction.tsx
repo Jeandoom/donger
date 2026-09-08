@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { PendingApproval, PendingCredential } from "../../types";
 import { Button } from "../ui/button";
 
@@ -8,7 +7,7 @@ export interface PendingInteractionProps {
   approvalError?: string;
   credentialError?: string;
   onResolveApproval: (approved: boolean, reason?: string) => void;
-  onSubmitCredential: (values: Record<string, string>) => void;
+  onDecideCredentialMissing: (decision: string) => void;
 }
 
 export function PendingInteraction({
@@ -17,7 +16,7 @@ export function PendingInteraction({
   approvalError,
   credentialError,
   onResolveApproval,
-  onSubmitCredential,
+  onDecideCredentialMissing,
 }: PendingInteractionProps) {
   return (
     <>
@@ -48,60 +47,63 @@ export function PendingInteraction({
         </fieldset>
       ) : null}
       {credential ? (
-        <CredentialCard
+        <MissingCredentialsCard
           key={credential.reqId}
           items={credential.items}
           error={credentialError}
-          onSubmit={onSubmitCredential}
+          onDecide={onDecideCredentialMissing}
         />
       ) : null}
     </>
   );
 }
 
-function CredentialCard({
+/** 凭证缺失问询卡：继续执行（跳过）/ 暂停 / 配置后重试 / 取消 */
+function MissingCredentialsCard({
   items,
   error,
-  onSubmit,
+  onDecide,
 }: {
   items: PendingCredential["items"];
   error?: string;
-  onSubmit: (values: Record<string, string>) => void;
+  onDecide: (decision: string) => void;
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
   return (
     <div className="rounded-lg border border-blue-400 bg-blue-50 p-3">
-      <div className="font-semibold text-blue-800">需要凭证</div>
+      <div className="font-semibold text-blue-800">缺少凭证</div>
       <div className="mt-1 text-sm text-blue-700">
-        运行此任务需要以下凭证。提交值只保存在当前组件内存。
+        当前智能体需要以下凭证，但你的账号尚未配置（值仅存你个人账号）：
       </div>
-      <div className="mt-2 space-y-2">
+      <ul className="mt-1 list-inside list-disc text-sm text-blue-800">
         {items.map((item) => (
-          <label key={item.key} className="block text-sm text-blue-800">
-            {item.label}（{item.packName}）
-            <input
-              type={item.secret ? "password" : "text"}
-              className="mt-1 w-full rounded border border-blue-300 bg-white px-2 py-1"
-              value={values[item.key] ?? ""}
-              onChange={(event) =>
-                setValues((current) => ({ ...current, [item.key]: event.target.value }))
-              }
-            />
-          </label>
+          <li key={item.code}>
+            {item.name}（<span className="font-mono">{item.code}</span>）需要键：
+            {item.keys.join(", ")}
+          </li>
         ))}
+      </ul>
+      <div className="mt-1 text-xs text-blue-600">
+        请先在「凭证管理」页填写缺失项（可新开标签页），完成后点「重试」。
       </div>
-      <Button
-        className="mt-3"
-        size="sm"
-        onClick={() => {
-          const filled = Object.fromEntries(
-            Object.entries(values).filter(([, value]) => value.length > 0),
-          );
-          onSubmit(filled);
-        }}
-      >
-        提交并继续
-      </Button>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={() => onDecide("continue")}>
+          继续执行（跳过缺失）
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => onDecide("pause")}>
+          暂停
+        </Button>
+        <Button size="sm" onClick={() => onDecide("retry")}>
+          已配置，重试
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-red-700"
+          onClick={() => onDecide("cancel")}
+        >
+          取消任务
+        </Button>
+      </div>
       {error ? (
         <p role="alert" className="mt-2 text-sm text-red-700">
           {error}

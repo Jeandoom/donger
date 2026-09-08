@@ -10,21 +10,24 @@ export interface ApprovalResult {
   comment?: string;
 }
 
-/** 凭证门单项：要求用户提供的一个凭证 */
-export interface CredentialRequestItem {
-  key: string;
-  label: string;
+/** 凭证缺失问询单项：agent 勾选但当前用户未配置的模板（结构元数据，不含值） */
+export interface MissingCredentialItem {
+  code: string;
+  name: string;
   description?: string;
-  secret: boolean;
-  packName: string;
+  /** 模板声明的键名清单（用户需填写的 value 对应的 k） */
+  keys: string[];
 }
 
-/** 凭证门请求：任务执行前缺失的必需凭证 */
-export interface CredentialRequest {
+/** 凭证缺失问询请求 */
+export interface MissingCredentialsRequest {
   taskId: string;
   conversationId: string;
-  items: CredentialRequestItem[];
+  items: MissingCredentialItem[];
 }
+
+/** 问询决议：继续执行（带病跑）/ 暂停（挂起任务，稍后处理）/ 重试（用户已配置后重跑预检）/ 取消任务 */
+export type MissingCredentialsDecision = "continue" | "pause" | "retry" | "cancel";
 
 /** IM / 控制台入口端口 */
 export interface Channel {
@@ -53,8 +56,11 @@ export interface Channel {
     summary: string,
   ): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
-  /** 收集缺失凭证（WebChannel 实现；钉钉不实现 → 凭证门降级为失败提示）。 */
-  requestCredentials?(threadId: string, req: CredentialRequest): Promise<Record<string, string>>;
+  /** 凭证缺失问询（Web/CLI 实现；未实现的渠道由编排层按「暂停」降级并提示到 Web 操作）。 */
+  requestMissingCredentials?(
+    threadId: string,
+    req: MissingCredentialsRequest,
+  ): Promise<MissingCredentialsDecision>;
   /** 收到确认（可选）；返回 ack 上下文供 ackEnd 用 */
   ack?(threadId: string): Promise<unknown>;
   /** 撤销确认（可选，任务完成后调用） */

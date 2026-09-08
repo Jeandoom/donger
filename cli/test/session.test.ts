@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { errorKind } from "../src/api.js";
-import { autoApprovalResponse, emptyCredentialValues, nextBackoffMs } from "../src/session.js";
+import { autoApprovalResponse, defaultMissingDecision, nextBackoffMs } from "../src/session.js";
 
 describe("nextBackoffMs", () => {
   it("指数退避 1s 起步，30s 封顶", () => {
@@ -23,13 +23,8 @@ describe("非交互安全默认", () => {
     });
   });
 
-  it("凭证提交空值（键位齐全）", () => {
-    expect(
-      emptyCredentialValues([
-        { key: "token", label: "令牌", secret: true },
-        { key: "region", label: "区域", secret: false },
-      ]),
-    ).toEqual({ token: "", region: "" });
+  it("非交互模式凭证缺失默认：暂停", () => {
+    expect(defaultMissingDecision()).toBe("pause");
   });
 });
 

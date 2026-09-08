@@ -3,15 +3,16 @@ import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { LlmPreset } from "../config.js";
 import type { Agent, McpServerConfig } from "../domain/agent.js";
 import type { Conversation } from "../domain/conversation.js";
+import { resolveInjectionEnv } from "../domain/credential-injection.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
-import type { CredentialRequestItem } from "../ports/channel.js";
+import type { MissingCredentialItem } from "../ports/channel.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
-import type { CredentialStore } from "../ports/credential-store.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
 import type { UserModelConfigStore } from "../ports/model-config-store.js";
 import type {
@@ -49,7 +50,8 @@ interface RuntimeManagerDeps {
   conversationStore: ConversationStore;
   config: RuntimeManagerConfig;
   skillPackStore: SkillPackStore;
-  credentialStore: CredentialStore;
+  /** 凭证集存储：agent 勾选的模板 code → 当前用户已配置值（解密仅此链路） */
+  credentialSets: CredentialSetStore;
   modelConfigStore?: UserModelConfigStore;
   installer: SkillInstaller;
   builtinSkillsDir: string;
@@ -84,17 +86,26 @@ export class RuntimeManager {
       user.id,
     );
 
-    // —— 由启用 Pack 派生默认能力（skills 白名单 + pluginPaths）+ 凭证 ——
+    // —— 由启用 Pack 派生默认能力（skills 白名单 + pluginPaths）——
     const packs = await this.deps.skillPackStore.listPacks(user.id);
     const skillsByPack = new Map<string, PackSkill[]>();
     for (const p of packs) {
       skillsByPack.set(p.id, await this.deps.skillPackStore.listSkills(user.id, p.id));
     }
     const resolved = resolveActiveSkills(packs, skillsByPack, (p) => this.resolvePackPath(user, p));
-    const credentialsEnv = await this.deps.credentialStore.getMany(
-      user.id,
-      resolved.declaredCredentialKeys,
-    );
+    // agent 勾选凭证：按当前用户解析（共享 agent 时即访问者自己的值）；未配置的由
+    // Orchestrator 预检问询，此处注入 <CODE>_MISSING=1 兜底，agent 可自检
+    let credentialsEnv: Record<string, string> = {};
+    if (opts.agent?.credentials?.length) {
+      const filled = await this.deps.credentialSets.getFilledValues(
+        user.id,
+        opts.agent.credentials,
+      );
+      credentialsEnv = resolveInjectionEnv(
+        filled.map((f) => ({ code: f.code, values: f.values })),
+        opts.agent.credentials,
+      ).env;
+    }
 
     // agent 分支：显式 agent 可覆盖 skills/llm/工具/mcp/系统提示；否则用 Pack 派生默认
     let skills = resolved.whitelist;
@@ -249,25 +260,24 @@ export class RuntimeManager {
     return { context, runOptions };
   }
 
-  /** 凭证门用：返回启用 pack 声明、且用户保险柜尚缺的 required 凭证项（带 packName）。 */
-  async missingCredentialItems(userId: string): Promise<CredentialRequestItem[]> {
-    const packs = (await this.deps.skillPackStore.listPacks(userId)).filter((p) => p.enabled);
-    const vault = new Set((await this.deps.credentialStore.list(userId)).map((e) => e.key));
-    const items: CredentialRequestItem[] = [];
-    for (const p of packs) {
-      for (const c of p.credentials) {
-        if (c.required && !vault.has(c.key)) {
-          items.push({
-            key: c.key,
-            label: c.label,
-            description: c.description,
-            secret: c.secret,
-            packName: p.name,
-          });
-        }
-      }
+  /** 凭证缺失预检：agent 勾选但当前用户未配置的模板元数据（问询卡/日志用，不含值）。 */
+  async inspectCredentials(userId: string, codes: string[]): Promise<MissingCredentialItem[]> {
+    if (codes.length === 0) return [];
+    const filled = new Set(
+      (await this.deps.credentialSets.getFilledValues(userId, codes)).map((f) => f.code),
+    );
+    const missing: MissingCredentialItem[] = [];
+    for (const code of codes) {
+      if (filled.has(code)) continue;
+      const t = await this.deps.credentialSets.getTemplate(code);
+      missing.push({
+        code,
+        name: t?.name ?? code,
+        description: t?.description,
+        keys: t?.keySpecs.map((k) => k.key) ?? [],
+      });
     }
-    return items;
+    return missing;
   }
 
   /** 解析 pack 绝对路径：预装/绝对路径原样，用户 pack 拼 homeDir。 */

@@ -599,48 +599,128 @@ export function buildProgram(): Command {
   }
 
   // ── credentials ──
-  const creds = program.command("credentials").description("技能凭证");
+  const creds = program.command("credentials").description("凭证集（模板 + 个人值；值永不回显）");
   creds
     .command("list")
-    .description("凭证列表（值脱敏）")
+    .description("我的凭证（含缺失键提示；不含值）")
     .action((_opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const body = (await api.call("GET", "/api/credentials")) as { credentials?: unknown[] };
+        const body = (await api.call("GET", "/api/credential-values")) as {
+          credentials?: Array<{ code: string; name: string; filledKeys: string[]; missingKeys: string[] }>;
+        };
         const list = asArr(body.credentials);
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
-          const usedBy = asArr(c.usedBy)
-            .map((u) => s(u))
-            .join(",");
-          console.log(`${s(c.key)}  ${s(c.label)}${usedBy ? pc.dim(`  ← ${usedBy}`) : ""}`);
+          const miss = asArr(c.missingKeys);
+          console.log(
+            `${s(c.code)}  ${s(c.name)}  keys=[${asArr(c.filledKeys).map((k) => s(k)).join(",")}]` +
+              (miss.length ? pc.yellow(`  缺填: ${miss.join(",")}`) : ""),
+          );
         }
         console.error(pc.dim(`共 ${list.length} 条`));
       }),
     );
   creds
-    .command("set <key> [value]")
-    .description("设置凭证（value 缺省且 TTY 时静默输入）")
-    .option("-l, --label <label>")
-    .action((key: string, value: string | undefined, opts: { label?: string }, cmd: Command) =>
+    .command("templates [query]")
+    .description("查询全局凭证模板（code/名称/描述模糊匹配）")
+    .action((query: string | undefined, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        const v = value ?? (await readSecret("输入凭证值（不可见）: "));
-        await api.call("PUT", `/api/credentials/${encodeURIComponent(key)}`, {
-          key,
-          value: v,
-          label: opts.label,
-        });
+        const body = (await api.call(
+          "GET",
+          `/api/credential-templates${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+        )) as {
+          templates?: Array<{
+            code: string;
+            name: string;
+            keySpecs: Array<{ key: string; label?: string }>;
+          }>;
+        };
+        const list = asArr(body.templates);
+        if (globals(cmd).json) return printJson(list);
+        for (const t of list) {
+          const keys = asArr(t.keySpecs)
+            .map((k) => s(k.key))
+            .join(",");
+          console.log(`${s(t.code)}  ${s(t.name)}  keys=[${keys}]`);
+        }
+        console.error(pc.dim(`共 ${list.length} 个模板`));
+      }),
+    );
+  creds
+    .command("create <code>")
+    .description("创建新凭证（code 全局唯一；模板已存在时仅填写自己的值）")
+    .requiredOption("-n, --name <name>", "凭证名称")
+    .option("-d, --desc <desc>", "说明")
+    .option("-k, --keys <keys>", "逗号分隔的键名（新模板必填，如: token,secret）")
+    .action(
+      async (code: string, opts: { name: string; desc?: string; keys?: string }, cmd: Command) =>
+        run(async () => {
+          const { api } = requireApi(cmd);
+          const findTpl = async () => {
+            const r = (await api.call(
+              "GET",
+              `/api/credential-templates?q=${encodeURIComponent(code)}`,
+            )) as { templates?: Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }> };
+            return ((r.templates ?? []) as Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }>).find((t) => t.code === code);
+          };
+          let tpl = await findTpl();
+          if (!tpl) {
+            if (!opts.keys) throw new Error("新模板需要 -k 指定键名（逗号分隔）");
+            const keySpecs = opts.keys.split(",").map((k) => ({ key: k.trim() }));
+            await api.call("POST", "/api/credential-templates", {
+              code,
+              name: opts.name,
+              description: opts.desc,
+              keySpecs,
+            });
+            console.error(pc.dim(`模板已注册: ${code}`));
+            tpl = await findTpl();
+          } else {
+            console.error(
+              pc.dim(`模板 ${code} 已存在（keys: ${tpl.keySpecs.map((k) => k.key).join(", ")}），直接填写值`),
+            );
+          }
+          const values: Record<string, string> = {};
+          for (const ks of tpl?.keySpecs ?? []) {
+            values[ks.key] = await readSecret(
+              `输入 ${ks.key}${ks.label ? `（${ks.label}）` : ""}（不可见）: `,
+            );
+          }
+          await api.call("PUT", `/api/credential-values/${encodeURIComponent(code)}`, { values });
+          console.log("ok");
+        }),
+    );
+  creds
+    .command("set <code>")
+    .description("填写/覆写已有凭证的值（按模板键名逐项输入）")
+    .action((code: string, _opts: object, cmd: Command) =>
+      run(async () => {
+        const { api } = requireApi(cmd);
+        const r = (await api.call(
+          "GET",
+          `/api/credential-templates?q=${encodeURIComponent(code)}`,
+        )) as { templates?: Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }> };
+        const t = ((r.templates ?? []) as Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }>).find((x) => x.code === code);
+        if (!t) throw new Error(`模板不存在: ${code}（用 credentials create 新建）`);
+        const values: Record<string, string> = {};
+        for (const ks of t.keySpecs) {
+          values[ks.key] = await readSecret(
+            `输入 ${ks.key}${ks.label ? `（${ks.label}）` : ""}（不可见）: `,
+          );
+        }
+        await api.call("PUT", `/api/credential-values/${encodeURIComponent(code)}`, { values });
         console.log("ok");
       }),
     );
   creds
-    .command("delete <key>")
-    .description("删除凭证")
-    .action((key: string, _opts: object, cmd: Command) =>
+    .command("delete <code>")
+    .description("删除我的凭证值（不影响全局模板）")
+    .action((code: string, _opts: object, cmd: Command) =>
       run(async () => {
         const { api } = requireApi(cmd);
-        await api.call("DELETE", `/api/credentials/${encodeURIComponent(key)}`);
+        await api.call("DELETE", `/api/credential-values/${encodeURIComponent(code)}`);
         console.log("ok");
       }),
     );

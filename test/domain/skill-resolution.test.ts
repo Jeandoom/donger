@@ -12,7 +12,6 @@ function pack(over: Partial<SkillPack> = {}): SkillPack {
     installedPath: ".skills/demo",
     enabled: true,
     builtin: false,
-    credentials: [{ key: "K", label: "K", required: true, secret: true }],
     createdAt: "t",
     updatedAt: "t",
     ...over,
@@ -34,12 +33,10 @@ function skill(over: Partial<PackSkill> = {}): PackSkill {
 }
 
 describe("resolveActiveSkills", () => {
-  it("启用 pack+skill → 进 pluginPaths/白名单/声明 key", () => {
+  it("启用 pack+skill → 进 pluginPaths/白名单", () => {
     const r = resolveActiveSkills([pack()], new Map([["p1", [skill()]]]), (p) => p.installedPath);
     expect(r.pluginPaths).toEqual([".skills/demo"]);
     expect(r.whitelist).toEqual(["demo:alpha"]);
-    expect(r.declaredCredentialKeys).toEqual(["K"]);
-    expect(r.requiredCredentialKeys).toEqual(["K"]);
   });
 
   it("停用 pack 不进任何集合", () => {
@@ -62,7 +59,7 @@ describe("resolveActiveSkills", () => {
     expect(r.whitelist).toEqual(["demo:alpha"]);
   });
 
-  it("pluginPaths/keys 去重", () => {
+  it("pluginPaths 去重（同目录多 pack）", () => {
     const r = resolveActiveSkills(
       [pack(), pack({ id: "p2", name: "demo2", slug: "demo2", installedPath: ".skills/demo" })],
       new Map([
@@ -72,23 +69,5 @@ describe("resolveActiveSkills", () => {
       (p) => p.installedPath,
     );
     expect(r.pluginPaths).toEqual([".skills/demo"]);
-    expect(r.declaredCredentialKeys).toEqual(["K"]);
-  });
-
-  it("optional 凭证进 declared 不进 required", () => {
-    const r = resolveActiveSkills(
-      [
-        pack({
-          credentials: [
-            { key: "REQ", label: "R", required: true, secret: true },
-            { key: "OPT", label: "O", required: false, secret: true },
-          ],
-        }),
-      ],
-      new Map([["p1", [skill()]]]),
-      (p) => p.installedPath,
-    );
-    expect(r.declaredCredentialKeys).toEqual(["REQ", "OPT"]);
-    expect(r.requiredCredentialKeys).toEqual(["REQ"]);
   });
 });

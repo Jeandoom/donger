@@ -35,7 +35,7 @@ export interface ChatWorkspaceProps {
   onEnsureConversation?: () => Promise<string | null>;
   onCancel: () => Promise<void>;
   onResolveApproval: (approved: boolean, reason?: string) => void;
-  onSubmitCredential: (values: Record<string, string>) => void;
+  onDecideCredentialMissing: (decision: string) => void;
   inputPlaceholder?: string;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
@@ -145,7 +145,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               approvalError={props.errors.approval}
               credentialError={props.errors.credential}
               onResolveApproval={props.onResolveApproval}
-              onSubmitCredential={props.onSubmitCredential}
+              onDecideCredentialMissing={props.onDecideCredentialMissing}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
               aboveComposer={props.aboveComposer}
             />

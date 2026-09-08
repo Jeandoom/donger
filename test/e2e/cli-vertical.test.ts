@@ -9,7 +9,7 @@ import { FakeAgentRunner, type FakeScript } from "../../src/adapters/fake-agent-
 import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
-import { SqliteCredentialStore } from "../../src/adapters/sqlite-credential-store.js";
+import { SqliteCredentialSetStore } from "../../src/adapters/sqlite-credential-set-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
 import type { SkillPack } from "../../src/domain/skill-pack.js";
@@ -100,11 +100,11 @@ function setup(script: FakeScript) {
   const db = new Database(":memory:");
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const credentialStore = new SqliteCredentialStore(
+  const credentialSets = new SqliteCredentialSetStore(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
-  credentialStore.migrate();
+  credentialSets.migrate();
   const fakeInstaller: SkillInstaller = {
     installFromGit: async () => ({}) as SkillPack,
     installFromUpload: async () => ({}) as SkillPack,
@@ -134,7 +134,7 @@ function setup(script: FakeScript) {
       defaultSystemPromptAppend: "测试",
     },
     skillPackStore,
-    credentialStore,
+    credentialSets,
     installer: fakeInstaller,
     builtinSkillsDir: "",
   });
@@ -148,7 +148,7 @@ function setup(script: FakeScript) {
     runner,
     channel,
     runtimeMgr,
-    credentialStore,
+    credentialSets,
   });
   channel.onMessage((m) => {
     void orch.handleMessage(m);

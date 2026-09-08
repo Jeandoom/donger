@@ -5,13 +5,6 @@ import type { SSEEvent } from "./types.js";
 
 export type ConnStatus = "connected" | "reconnecting" | "offline";
 
-export interface CredentialItem {
-  key: string;
-  label: string;
-  description?: string;
-  secret: boolean;
-}
-
 export interface ApprovalResponse {
   approved: boolean;
   reason?: string;
@@ -26,8 +19,10 @@ export interface SessionEvents {
   onActivity?(text: string): void;
   /** 审批决策（缺省 = 非交互安全默认：自动驳回） */
   onApproval?(gateId: string, title: string, summary: string): Promise<ApprovalResponse>;
-  /** 凭证收集（缺省 = 提交空值，任务将以缺凭证失败） */
-  onCredential?(items: CredentialItem[]): Promise<Record<string, string>>;
+  /** 凭证缺失问询（缺省 = 暂停，任务挂起） */
+  onMissingCredentials?(
+    items: Array<{ code: string; name: string; description?: string; keys: string[] }>,
+  ): Promise<string>;
   onRoundEnd(ok: boolean, text: string): void;
   /** 连接状态变化（reconnecting 携带第几次重试） */
   onStatus?(status: ConnStatus, attempt?: number): void;
@@ -45,11 +40,10 @@ export function autoApprovalResponse(): ApprovalResponse {
   return { approved: false, reason: "非交互模式自动驳回" };
 }
 
-/** 非交互模式凭证默认：提交空值，任务将以缺凭证失败（纯函数，单测覆盖） */
-export function emptyCredentialValues(items: CredentialItem[]): Record<string, string> {
-  return Object.fromEntries(items.map((i) => [i.key, ""]));
+/** 非交互模式凭证缺失默认：暂停（任务挂起，用户配置后重发） */
+export function defaultMissingDecision(): string {
+  return "pause";
 }
-
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const done = (): void => {
@@ -229,14 +223,14 @@ export class Session {
           .catch((e: Error) => this.events.onPrint(`⚠️ 审批提交失败：${e.message}`));
         break;
       }
-      case "credential": {
-        this.gateName = "凭证输入";
-        const values =
-          (await this.events.onCredential?.(action.items)) ?? emptyCredentialValues(action.items);
+      case "credential_missing": {
+        this.gateName = "凭证问询";
+        const decision =
+          (await this.events.onMissingCredentials?.(action.items)) ?? defaultMissingDecision();
         this.gateName = null;
         await this.api
-          .submitCredential(action.reqId, values)
-          .catch((e: Error) => this.events.onPrint(`⚠️ 凭证提交失败：${e.message}`));
+          .decideCredentialMissing(action.reqId, decision)
+          .catch((e: Error) => this.events.onPrint(`⚠️ 凭证问询提交失败：${e.message}`));
         break;
       }
       case "ignore":

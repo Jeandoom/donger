@@ -39,11 +39,99 @@ export interface SkillPackDTO {
   skills: PackSkillDTO[];
 }
 
-export interface CredentialEntryDTO {
+export interface CredentialKeySpecDTO {
   key: string;
   label?: string;
+}
+
+export interface CredentialTemplateDTO {
+  code: string;
+  name: string;
+  description?: string;
+  keySpecs: CredentialKeySpecDTO[];
+  createdBy: string;
   updatedAt: string;
-  usedBy: string[];
+}
+
+export interface CredentialValueViewDTO {
+  code: string;
+  name: string;
+  description?: string;
+  keySpecs: CredentialKeySpecDTO[];
+  filledKeys: string[];
+  missingKeys: string[];
+  updatedAt: string;
+}
+
+/** 模糊查询全局凭证模板（code/名称/描述） */
+export async function fetchCredentialTemplates(q?: string): Promise<CredentialTemplateDTO[]> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+  const res = await apiFetch(`/api/credential-templates${qs}`);
+  if (!res.ok) throw new Error(`list templates ${res.status}`);
+  const data = (await res.json()) as { templates: CredentialTemplateDTO[] };
+  return data.templates;
+}
+
+export async function createCredentialTemplate(input: {
+  code: string;
+  name: string;
+  description?: string;
+  keySpecs: CredentialKeySpecDTO[];
+}): Promise<void> {
+  const res = await apiFetch("/api/credential-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `create template ${res.status}`);
+}
+
+export async function updateCredentialTemplate(
+  code: string,
+  input: { name: string; description?: string; keySpecs: CredentialKeySpecDTO[] },
+): Promise<void> {
+  const res = await apiFetch(`/api/credential-templates/${encodeURIComponent(code)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `update template ${res.status}`);
+}
+
+/** 删除模板；被引用时后端 409，抛错文案含引用数 */
+export async function deleteCredentialTemplate(code: string): Promise<void> {
+  const res = await apiFetch(`/api/credential-templates/${encodeURIComponent(code)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `delete template ${res.status}`);
+}
+
+/** 我的凭证（键名视图，值永不回显） */
+export async function fetchMyCredentials(): Promise<CredentialValueViewDTO[]> {
+  const res = await apiFetch("/api/credential-values");
+  if (!res.ok) throw new Error(`list credentials ${res.status}`);
+  const data = (await res.json()) as { credentials: CredentialValueViewDTO[] };
+  return data.credentials;
+}
+
+/** 填写/覆写凭证值（整体覆写） */
+export async function upsertCredentialValue(
+  code: string,
+  values: Record<string, string>,
+): Promise<void> {
+  const res = await apiFetch(`/api/credential-values/${encodeURIComponent(code)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values }),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `set credential ${res.status}`);
+}
+
+export async function deleteCredentialValue(code: string): Promise<void> {
+  const res = await apiFetch(`/api/credential-values/${encodeURIComponent(code)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`delete credential ${res.status}`);
 }
 
 export async function fetchPacks(): Promise<SkillPackDTO[]> {
@@ -103,25 +191,6 @@ export async function updatePack(id: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id }),
   });
-}
-
-export async function fetchCredentials(): Promise<CredentialEntryDTO[]> {
-  const res = await apiFetch("/api/credentials");
-  if (!res.ok) throw new Error(`list credentials ${res.status}`);
-  const data = (await res.json()) as { credentials: CredentialEntryDTO[] };
-  return data.credentials;
-}
-
-export async function setCredential(key: string, value: string, label?: string): Promise<void> {
-  await apiFetch(`/api/credentials/${encodeURIComponent(key)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value, label }),
-  });
-}
-
-export async function deleteCredential(key: string): Promise<void> {
-  await apiFetch(`/api/credentials/${encodeURIComponent(key)}`, { method: "DELETE" });
 }
 
 async function safeErr(res: Response): Promise<string | undefined> {

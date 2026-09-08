@@ -198,7 +198,7 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         ...state,
         pendingApproval: { gateId: msg.gateId, title: msg.title, summary: msg.summary },
       };
-    case "credential_card":
+    case "credential_missing_card":
       return {
         ...state,
         pendingCredential: { reqId: msg.reqId, items: msg.items },

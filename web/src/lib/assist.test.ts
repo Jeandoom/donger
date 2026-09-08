@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { noneAssistHint } from "./assist";
 import type { ChatMessage } from "../types";
+import { noneAssistHint } from "./assist";
 
 const NONE_TEXT = "🤷 暂无能处理该任务的智能体：缺能力";
 

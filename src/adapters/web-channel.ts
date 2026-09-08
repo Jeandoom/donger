@@ -14,6 +14,12 @@ import { ZodError } from "zod";
 import type { LlmPreset } from "../config.js";
 import { type Agent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
+import {
+  CredentialTemplateInputSchema,
+  CredentialValueInputSchema,
+  type CredentialValueView,
+  parseCredentialCode,
+} from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { GitProvider } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
@@ -42,10 +48,15 @@ import type { SchedulerService } from "../orchestrator/scheduler.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
-import type { Channel, CredentialRequest, CredentialRequestItem } from "../ports/channel.js";
+import type {
+  Channel,
+  MissingCredentialItem,
+  MissingCredentialsDecision,
+  MissingCredentialsRequest,
+} from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
-import type { CredentialStore } from "../ports/credential-store.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
 import type { GitAuthProviderAdapter } from "../ports/git-auth-provider.js";
 import type { GitConnectionStore } from "../ports/git-connection-store.js";
@@ -69,12 +80,9 @@ import {
 } from "../util/errors.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import {
-  handleDeleteCredential,
   handleInstall,
   handleInstallUpload,
-  handleListCredentials,
   handleListPacks,
-  handleSetCredential,
   handleSetPackEnabled,
   handleSetSkillEnabled,
   handleUninstall,
@@ -131,10 +139,10 @@ type SSEEvent =
   | { type: "activity"; text: string }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
-      type: "credential_card";
+      type: "credential_missing_card";
       reqId: string;
       conversationId: string;
-      items: CredentialRequestItem[];
+      items: MissingCredentialItem[];
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "error"; error: string };
@@ -166,7 +174,7 @@ export interface WebChannelDeps {
   fileBrowser?: FileBrowser;
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
-  credentialStore?: CredentialStore;
+  credentialSets?: CredentialSetStore;
   modelConfigStore?: UserModelConfigStore;
   agentStore?: AgentStore;
   agentShareStore?: AgentShareStore;
@@ -364,36 +372,37 @@ export class WebChannel implements Channel {
     }
   >();
 
-  /** 存储凭证提交的 resolve 函数（key = credential reqId；带会话归属供 owner 校验） */
-  private readonly pendingCredentialResolves = new Map<
+  /** 凭证缺失问询决议（key = reqId；带会话归属供 owner 校验） */
+  private readonly pendingMissingDecides = new Map<
     string,
-    { conversationId: string; resolve: (values: Record<string, string>) => void }
+    { conversationId: string; resolve: (decision: MissingCredentialsDecision) => void }
   >();
 
-  /** 等待用户提交凭证（通过 SSE credential_card + HTTP POST /api/credentials/:reqId/submit） */
-  async requestCredentials(
+  /** 凭证缺失问询（SSE credential_missing_card + HTTP POST /api/credential-missing/:reqId/decide）。 */
+  async requestMissingCredentials(
     threadId: string,
-    req: CredentialRequest,
-  ): Promise<Record<string, string>> {
+    req: MissingCredentialsRequest,
+  ): Promise<MissingCredentialsDecision> {
     void threadId;
     const reqId = crypto.randomUUID();
     this.broadcastToConversation(req.conversationId, {
-      type: "credential_card",
+      type: "credential_missing_card",
       reqId,
       conversationId: req.conversationId,
       items: req.items,
     });
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
+      // 30 分钟无决议 → 按暂停收敛（任务留在 awaiting_credentials 挂起态，不失败）
       const timeout = setTimeout(() => {
-        this.pendingCredentialResolves.delete(reqId);
-        reject(new Error("凭证提交超时（300秒）"));
-      }, 300_000);
-      this.pendingCredentialResolves.set(reqId, {
+        this.pendingMissingDecides.delete(reqId);
+        resolve("pause");
+      }, 1_800_000);
+      this.pendingMissingDecides.set(reqId, {
         conversationId: req.conversationId,
-        resolve: (values) => {
+        resolve: (decision) => {
           clearTimeout(timeout);
-          this.pendingCredentialResolves.delete(reqId);
-          resolve(values);
+          this.pendingMissingDecides.delete(reqId);
+          resolve(decision);
         },
       });
     });
@@ -496,13 +505,13 @@ export class WebChannel implements Channel {
           await this.handleApprovalRespond(req, res);
           return;
         }
-        // 凭证门提交
+        // 凭证缺失问询决议
         if (
-          url.startsWith("/api/credentials/") &&
+          url.startsWith("/api/credential-missing/") &&
           req.method === "POST" &&
-          url.endsWith("/submit")
+          url.endsWith("/decide")
         ) {
-          await this.handleCredentialSubmit(url, req, res);
+          await this.handleMissingCredentialDecide(url, req, res);
           return;
         }
         // 发送消息
@@ -763,21 +772,21 @@ export class WebChannel implements Channel {
     }
   }
 
-  /** 凭证门提交：按 reqId 解析 pendingCredentialResolves，把 values 回传给 requestCredentials */
-  private async handleCredentialSubmit(
+  /** 凭证缺失问询决议：按 reqId 解析 pendingMissingDecides，把决议回传给 requestMissingCredentials */
+  private async handleMissingCredentialDecide(
     url: string,
     req: HttpRequest,
     res: ServerResponse,
   ): Promise<void> {
-    const match = url.match(/^\/api\/credentials\/([\w-]+)\/submit$/);
+    const match = url.match(/^\/api\/credential-missing\/([\w-]+)\/decide$/);
     if (!match) {
       res.writeHead(400);
-      res.end(JSON.stringify({ error: "invalid credential url" }));
+      res.end(JSON.stringify({ error: "invalid credential-missing url" }));
       return;
     }
     const reqId = match[1] ?? "";
 
-    // 认证 + 会话属主校验：凭证值只能由会话 owner 提交
+    // 认证 + 会话属主校验：决议只能由会话 owner 作出
     let authUserId: string | undefined;
     if (this.sessionStore) {
       authUserId = (await this.authMiddleware(req)) ?? undefined;
@@ -788,16 +797,27 @@ export class WebChannel implements Channel {
       }
     }
 
-    const body = JSON.parse(await this.readBody(req)) as { values?: Record<string, string> };
-    const pending = this.pendingCredentialResolves.get(reqId);
+    const body = JSON.parse(await this.readBody(req)) as { decision?: string };
+    const decision = body.decision as MissingCredentialsDecision | undefined;
+    if (
+      decision !== "continue" &&
+      decision !== "pause" &&
+      decision !== "retry" &&
+      decision !== "cancel"
+    ) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "decision 必须是 continue/pause/retry/cancel" }));
+      return;
+    }
+    const pending = this.pendingMissingDecides.get(reqId);
     if (pending) {
       const conv = await this.deps.conversationStore?.get(pending.conversationId);
       if (conv && authUserId && conv.userId !== authUserId) {
         res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可提交凭证" }));
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可决议" }));
         return;
       }
-      pending.resolve(body.values ?? {});
+      pending.resolve(decision);
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true }));
     } else {
@@ -2098,6 +2118,8 @@ export class WebChannel implements Channel {
     req: HttpRequest,
     res: ServerResponse,
   ): Promise<boolean> {
+    // 凭证模板查询带 query 参数；剥离 query 供精确匹配路由使用
+    const basePath = url.split("?")[0] ?? url;
     const deps = this.skillDeps();
     const uid = (req as HttpRequest & { userId?: string }).userId ?? "";
     const match = (re: RegExp): RegExpMatchArray | null => url.match(re);
@@ -2105,8 +2127,109 @@ export class WebChannel implements Channel {
       res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(r.json));
     };
+    // ---- 凭证模板（全局结构）+ 用户凭证值（本人隔离；值永不回显）----
+    const csets = this.deps.credentialSets;
+    if (!csets) return false;
+    const notFound = (what: string) => {
+      send({ status: 404, json: { error: `${what}不存在` } });
+      return true;
+    };
+    if (basePath === "/api/credential-templates" && req.method === "GET") {
+      const q = new URL(url, "http://localhost").searchParams.get("q") ?? undefined;
+      send({ status: 200, json: { templates: await csets.listTemplates({ q: q || undefined }) } });
+      return true;
+    }
+    if (basePath === "/api/credential-templates" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = CredentialTemplateInputSchema.safeParse(b);
+      if (!parsed.success) {
+        send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
+        return true;
+      }
+      const code = parseCredentialCode(b.code);
+      if (await csets.getTemplate(code)) {
+        send({ status: 409, json: { error: `凭证 code 已存在: ${code}` } });
+        return true;
+      }
+      await csets.createTemplate(code, parsed.data, uid);
+      send({ status: 201, json: { ok: true, code } });
+      return true;
+    }
+    const tplMatch = match(/^\/api\/credential-templates\/([^/]+)$/);
+    if (tplMatch && (req.method === "PUT" || req.method === "DELETE")) {
+      const code = decodeURIComponent(tplMatch[1] ?? "");
+      const tpl = await csets.getTemplate(code);
+      if (!tpl) return notFound(`凭证模板 ${code} `);
+      if (tpl.createdBy !== uid) {
+        send({ status: 403, json: { error: "forbidden: 仅模板创建人可管理" } });
+        return true;
+      }
+      if (req.method === "DELETE") {
+        const refs = await csets.countTemplateReferences(code);
+        if (refs > 0) {
+          send({
+            status: 409,
+            json: { error: `已被 ${refs} 个用户配置，先删除对应用户凭证后再删除模板` },
+          });
+          return true;
+        }
+        await csets.deleteTemplate(code);
+        send({ status: 200, json: { ok: true } });
+        return true;
+      }
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = CredentialTemplateInputSchema.safeParse(b);
+      if (!parsed.success) {
+        send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
+        return true;
+      }
+      await csets.updateTemplate(code, parsed.data);
+      send({ status: 200, json: { ok: true } });
+      return true;
+    }
+    if (url === "/api/credential-values" && req.method === "GET") {
+      const codes = await csets.listValueCodes(uid);
+      const filled = await csets.getFilledValues(uid, codes);
+      const byCode = new Map(filled.map((f) => [f.code, f]));
+      const views: CredentialValueView[] = [];
+      for (const code of codes) {
+        const tpl = await csets.getTemplate(code);
+        const values = byCode.get(code)?.values ?? {};
+        const keySpecs = tpl?.keySpecs ?? [];
+        views.push({
+          code,
+          name: tpl?.name ?? code,
+          description: tpl?.description,
+          keySpecs,
+          filledKeys: keySpecs.filter((k) => values[k.key] !== undefined).map((k) => k.key),
+          missingKeys: keySpecs.filter((k) => values[k.key] === undefined).map((k) => k.key),
+          updatedAt: byCode.get(code)?.updatedAt ?? "",
+        });
+      }
+      send({ status: 200, json: { credentials: views } });
+      return true;
+    }
+    const valMatch = match(/^\/api\/credential-values\/([^/]+)$/);
+    if (valMatch && (req.method === "PUT" || req.method === "DELETE")) {
+      const code = decodeURIComponent(valMatch[1] ?? "");
+      if (req.method === "DELETE") {
+        await csets.deleteValue(uid, code);
+        send({ status: 200, json: { ok: true } });
+        return true;
+      }
+      const tpl = await csets.getTemplate(code);
+      if (!tpl) return notFound(`凭证模板 ${code} `);
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = CredentialValueInputSchema.safeParse(b);
+      if (!parsed.success) {
+        send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
+        return true;
+      }
+      await csets.upsertValue(uid, code, parsed.data.values);
+      send({ status: 200, json: { ok: true } });
+      return true;
+    }
     if (!deps) return false;
-
     if (url === "/api/skills/packs" && req.method === "GET") {
       send(await handleListPacks(uid, {}, deps));
       return true;
@@ -2147,32 +2270,14 @@ export class WebChannel implements Channel {
       send(await handleSetSkillEnabled(uid, { id: b.id, enabled: false }, deps));
       return true;
     }
-    if (url === "/api/credentials" && req.method === "GET") {
-      send(await handleListCredentials(uid, {}, deps));
-      return true;
-    }
-    const credMatch = match(/^\/api\/credentials\/([^/]+)$/);
-    if (credMatch && req.method === "PUT") {
-      const b = JSON.parse(await this.readBody(req)) as { value: string; label?: string };
-      send(
-        await handleSetCredential(uid, { key: decodeURIComponent(credMatch[1] ?? ""), ...b }, deps),
-      );
-      return true;
-    }
-    if (credMatch && req.method === "DELETE") {
-      send(
-        await handleDeleteCredential(uid, { key: decodeURIComponent(credMatch[1] ?? "") }, deps),
-      );
-      return true;
-    }
     return false;
   }
 
   /** 组装 skill-api 依赖；任一缺失返回 null（路由回 404）。 */
   private skillDeps(): SkillApiDeps | null {
-    const { skillPackStore, installer, credentialStore } = this.deps;
-    if (!skillPackStore || !installer || !credentialStore) return null;
-    return { packStore: skillPackStore, installer, credentialStore };
+    const { skillPackStore, installer } = this.deps;
+    if (!skillPackStore || !installer) return null;
+    return { packStore: skillPackStore, installer };
   }
 
   /** GET /api/files/tree?scope=user|runtime|extension[&conversationId=] */
@@ -2495,6 +2600,7 @@ export class WebChannel implements Channel {
       defaultSkill: a.defaultSkill,
       tools: a.tools,
       mcpServers: maskedMcp,
+      credentials: a.credentials,
       gitRepositories: a.gitRepositories,
       extensionDirectories: a.extensionDirectories,
       llm: a.llm,

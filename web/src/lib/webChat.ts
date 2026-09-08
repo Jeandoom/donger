@@ -117,10 +117,10 @@ export function useWebChat() {
       }
     });
 
-    eventSource.addEventListener("credential_card", (e: MessageEvent) => {
+    eventSource.addEventListener("credential_missing_card", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "credential_card") {
+        if (data.type === "credential_missing_card") {
           dispatch({ type: "ws", msg: data });
         }
       } catch {
@@ -355,20 +355,20 @@ export function useWebChat() {
     [state.pendingApproval],
   );
 
-  const submitCredential = useCallback(
-    async (values: Record<string, string>) => {
+  const decideCredentialMissing = useCallback(
+    async (decision: string) => {
       const pending = state.pendingCredential;
       if (!pending) return;
       const token = getToken();
       dispatch({ type: "clear_error", key: "credential" });
       try {
-        const response = await fetch(`/api/credentials/${pending.reqId}/submit`, {
+        const response = await fetch(`/api/credential-missing/${pending.reqId}/decide`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ values }),
+          body: JSON.stringify({ decision }),
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         dispatch({ type: "clear_credential" });
@@ -376,7 +376,7 @@ export function useWebChat() {
         dispatch({
           type: "set_error",
           key: "credential",
-          message: errorText(error, "凭证提交失败"),
+          message: errorText(error, "凭证问询提交失败"),
         });
       }
     },
@@ -410,7 +410,7 @@ export function useWebChat() {
     send,
     cancel,
     resolveApproval,
-    submitCredential,
+    decideCredentialMissing,
     switchConversation,
     newConversation,
     ensureConversation,

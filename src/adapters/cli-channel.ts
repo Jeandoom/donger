@@ -1,6 +1,10 @@
 import { createInterface, type Interface } from "node:readline";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
-import type { Channel } from "../ports/channel.js";
+import type {
+  Channel,
+  MissingCredentialsDecision,
+  MissingCredentialsRequest,
+} from "../ports/channel.js";
 
 export interface CliChannelOptions {
   /** 输入流（默认 stdin），注入便于测试 */
@@ -57,5 +61,35 @@ export class CliChannel implements Channel {
     });
     const ok = line.trim().toLowerCase().startsWith("y");
     return ok ? { approved: true } : { approved: false, reason: "用户在 CLI 驳回" };
+  }
+
+  /** 凭证缺失问询：终端三选。选「去配置并重试」时阻塞等待用户配置完成（回车触发重试）。 */
+  async requestMissingCredentials(
+    _threadId: string,
+    req: MissingCredentialsRequest,
+  ): Promise<MissingCredentialsDecision> {
+    const list = req.items.map((m) => `  - ${m.name}(${m.code}) 需要键: ${m.keys.join(", ")}`);
+    this.out.write(
+      `\n[凭证缺失] 当前智能体需要以下凭证，但你的账号尚未配置：\n${list.join("\n")}\n` +
+        `选择：c=继续执行（跳过缺失） / g=去配置，完成后重试 / x=取消任务 (c/G/x): `,
+    );
+    for (;;) {
+      const line = await new Promise<string>((resolve) => {
+        this.pendingApproval = resolve;
+      });
+      const v = line.trim().toLowerCase();
+      if (v === "c") return "continue";
+      if (v === "x") return "cancel";
+      if (v === "g" || v === "") {
+        this.out.write("配置完成后回车重试（输入 x 取消任务）: ");
+        // 下一轮循环：回车（空行）→ g → 再询问；输入 x → 取消
+        const second = await new Promise<string>((resolve) => {
+          this.pendingApproval = resolve;
+        });
+        if (second.trim().toLowerCase() === "x") return "cancel";
+        return "retry";
+      }
+      this.out.write("请输入 c / g / x: ");
+    }
   }
 }
