@@ -8,7 +8,7 @@
 const GIT_BIN = /\bgit(\.exe)?\s/;
 /** git 子命令词表：覆盖仓库操作全场景；多为常见英文词，与 GIT_BIN 双条件 AND 降低误伤 */
 const GIT_SUBCOMMAND =
-  /\b(clone|pull|push|fetch|merge|commit|checkout|branch|remote|rebase|reset|tag|ls-remote|stash|cherry-pick|revert|worktree|submodule|init)\b/;
+  /\b(clone|pull|push|fetch|merge|commit|checkout|branch|remote|rebase|reset|tag|ls-remote|stash|cherry-pick|revert|worktree|submodule|init|status)\b/;
 
 export function matchesShellGit(command: string): boolean {
   return GIT_BIN.test(command) && GIT_SUBCOMMAND.test(command);

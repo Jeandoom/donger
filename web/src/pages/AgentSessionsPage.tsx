@@ -6,7 +6,7 @@ import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { isAgentConv } from "../lib/conversations";
-import { fetchGitPreflight, type GitPreflightDTO, grantGitRepositories } from "../lib/gitSettings";
+import { fetchGitPreflight, type GitPreflightDTO } from "../lib/gitSettings";
 import { useWebChat } from "../lib/webChat";
 
 /** 内置协助智能体的合成下拉条目（不入库，前端常量） */
@@ -181,16 +181,6 @@ export function AgentSessionsPage() {
             requirements={gitPreflight.requirements}
             error={gitError || undefined}
             onRetry={() => void checkGitAccess()}
-            onGrant={(repositoryIds) => {
-              setGitLoading(true);
-              setGitError("");
-              void grantGitRepositories(wc.activeConversationId ?? "", repositoryIds)
-                .then(setGitPreflight)
-                .catch((reason: unknown) =>
-                  setGitError(reason instanceof Error ? reason.message : String(reason)),
-                )
-                .finally(() => setGitLoading(false));
-            }}
           />
         ) : undefined
       }

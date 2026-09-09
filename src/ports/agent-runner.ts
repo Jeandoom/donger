@@ -31,8 +31,8 @@ export interface RunOptions {
   /** 透传 SDK allowedTools（工具白名单） */
   allowedTools?: string[];
   /**
-   * shell git 守卫（收口防线 2）：false=agent 会话禁止 Bash 跑 git（引导用 donger-git
-   * 工具）；true=放行（push 仍有 deploy 审批门）；undefined=无 agent 会话，不启用守卫。
+   * shell git 守卫（收口防线 2）：所有会话缺省禁止 Bash 跑 git（引导用 donger-git
+   * 工具）；仅 agent 显式配置 true 时放行（push 仍有 deploy 审批门）。
    */
   gitAllowShellGit?: boolean;
   /** 透传 SDK mcpServers（已解密） */

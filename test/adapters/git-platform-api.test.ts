@@ -112,9 +112,9 @@ describe("GitPlatformApi 三平台契约", () => {
 
   it("resolver：按 provider 复用客户端实例", () => {
     const resolve = createGitPlatformApiResolver();
-    expect(resolve("jihulab")).toBe(resolve("jihulab"));
-    expect(resolve("github")?.provider).toBe("github");
-    expect(resolve("gitee")?.provider).toBe("gitee");
+    expect(resolve("jihulab", "jihulab.com")).toBe(resolve("jihulab", "jihulab.com"));
+    expect(resolve("github", "github.com")?.provider).toBe("github");
+    expect(resolve("gitee", "gitee.com")?.provider).toBe("gitee");
   });
 
   it("resolveApiBase：GHE 走 host/api/v3，官方域名走平台惯用根", () => {

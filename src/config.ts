@@ -43,12 +43,6 @@ const EnvSchema = z.object({
   BUILDER_AGENT_ID: z.string().optional(),
   CHAT_AGENT_ID: z.string().optional(),
   PUBLIC_BASE_URL: z.string().optional().default(""),
-  GITHUB_CLIENT_ID: z.string().optional(),
-  GITHUB_CLIENT_SECRET: z.string().optional(),
-  GITEE_CLIENT_ID: z.string().optional(),
-  GITEE_CLIENT_SECRET: z.string().optional(),
-  JIHULAB_CLIENT_ID: z.string().optional(),
-  JIHULAB_CLIENT_SECRET: z.string().optional(),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
   /** 允许仓库地址指向内网/回环 host（本地部署缺省允许；多用户部署建议 false 防 SSRF） */
@@ -114,7 +108,6 @@ export interface AppConfig {
   /** task-flow agent 链（DISPATCHER_AGENT_ID/BUILDER_AGENT_ID/CHAT_AGENT_ID，均可选） */
   agentChain: AgentChainEnvConfig;
   publicBaseUrl: string;
-  gitOAuth: Record<"github" | "gitee" | "jihulab", { clientId?: string; clientSecret?: string }>;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
@@ -154,11 +147,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       chatAgentId: e.CHAT_AGENT_ID || undefined,
     },
     publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
-    gitOAuth: {
-      github: { clientId: e.GITHUB_CLIENT_ID, clientSecret: e.GITHUB_CLIENT_SECRET },
-      gitee: { clientId: e.GITEE_CLIENT_ID, clientSecret: e.GITEE_CLIENT_SECRET },
-      jihulab: { clientId: e.JIHULAB_CLIENT_ID, clientSecret: e.JIHULAB_CLIENT_SECRET },
-    },
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,

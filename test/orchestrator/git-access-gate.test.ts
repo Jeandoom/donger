@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/domain/agent.js";
-import type { GitConnection, GitRepositoryGrant } from "../../src/domain/git.js";
 import type { User } from "../../src/domain/user.js";
 import { GitAccessGate } from "../../src/orchestrator/git-access-gate.js";
-import type { GitConnectionStore } from "../../src/ports/git-connection-store.js";
+import type { CredentialSetStore } from "../../src/ports/credential-set-store.js";
 import type { RepositoryMaterializer } from "../../src/ports/repository-materializer.js";
 
 const user: User = {
@@ -23,6 +22,7 @@ const agent: Agent = {
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
   credentials: [],
+  gitAllowShellGit: false,
   gitRepositories: [
     {
       id: "r1",
@@ -52,141 +52,118 @@ const jihulabRepo = {
   credentialCode: "jihulab-pat",
 };
 
-const connection: GitConnection = {
-  id: "c1",
-  userId: "u1",
-  provider: "github",
-  accountId: "1",
-  accountName: "alice",
-  authType: "pat",
-  scopes: [],
-  status: "active",
-  createdAt: "t",
-  updatedAt: "t",
-};
+function fakeMaterializer(
+  anonymousOk: boolean,
+  authorized?: { ok: boolean; reason?: "access_denied"; message?: string },
+) {
+  return {
+    checkRead: vi.fn(async (_repo, credential) => {
+      if (!credential) {
+        return anonymousOk
+          ? { ok: true }
+          : { ok: false, reason: "access_denied", message: "denied" };
+      }
+      return authorized ?? { ok: true };
+    }),
+  } as unknown as RepositoryMaterializer;
+}
 
-function setup(args?: {
-  connection?: GitConnection;
-  grant?: GitRepositoryGrant;
-  authenticated?: boolean;
-  credentialValues?: Record<string, string> | undefined;
-}) {
-  const store = {
-    getDefault: vi.fn(async () => args?.connection),
-    getGrant: vi.fn(async () => args?.grant),
-    getSecrets: vi.fn(async () => ({ accessToken: "token" })),
-    saveGrant: vi.fn(async () => undefined),
-  } as unknown as GitConnectionStore;
-  const credentialSets = {
-    getFilledValues: vi.fn(async (_userId: string, codes: string[]) =>
-      args?.credentialValues === undefined
+function fakeCredentialSets(values: Record<string, string> | undefined) {
+  return {
+    getFilledValues: vi.fn(async (uid: string, codes: string[]) =>
+      values === undefined
         ? []
         : codes.map((code) => ({
-            userId: "u1",
+            userId: uid,
             code,
-            values: args.credentialValues as Record<string, string>,
+            values,
             createdAt: "t",
             updatedAt: "t",
           })),
     ),
-  } as unknown as import("../../src/ports/credential-set-store.js").CredentialSetStore;
-  const materializer = {
-    checkRead: vi.fn(async (_repo, credential) => ({
-      ok: credential ? (args?.authenticated ?? true) : false,
-      ...(!credential || args?.authenticated === false
-        ? { reason: "access_denied", message: "denied" }
-        : {}),
-    })),
-  } as unknown as RepositoryMaterializer;
-  return {
-    gate: new GitAccessGate(store, materializer, credentialSets, 60_000),
-    store,
-    materializer,
-    credentialSets,
-  };
+  } as unknown as CredentialSetStore;
 }
 
-describe("GitAccessGate", () => {
-  it("缺少平台连接时聚合授权要求", async () => {
-    const { gate } = setup();
-    const result = await gate.check(user, agent);
-    expect(result.ready).toBe(false);
-    expect(result.requirements).toEqual([
-      {
-        provider: "github",
-        reason: "connection_missing",
-        repositories: [{ id: "r1", name: "private", fingerprint: "github.com/acme/private" }],
-      },
-    ]);
+describe("GitAccessGate（凭证桥单轨）", () => {
+  it("公共仓库匿名可读即通过并物化", async () => {
+    const gate = new GitAccessGate(fakeMaterializer(true));
+    const r = await gate.check(user, agent);
+    expect(r.ready).toBe(true);
+    expect(r.materializeItems).toHaveLength(1);
   });
 
-  it("已有连接但未确认仓库时要求 grant", async () => {
-    const { gate } = setup({ connection });
-    expect((await gate.check(user, agent)).requirements[0]?.reason).toBe("grant_missing");
+  it("非公共仓库无 credentialCode：聚合 access_denied（平台连接流程已退役）", async () => {
+    const gate = new GitAccessGate(fakeMaterializer(false));
+    const r = await gate.check(user, agent);
+    expect(r.ready).toBe(false);
+    expect(r.requirements[0]?.reason).toBe("access_denied");
   });
 
-  it("连接、grant 和真实访问均通过后返回物化凭证", async () => {
-    const grant: GitRepositoryGrant = {
-      userId: "u1",
-      agentId: "a1",
-      repositoryId: "r1",
-      repositoryFingerprint: "github.com/acme/private",
-      connectionId: "c1",
-      permission: "read",
-      grantedAt: "t",
-    };
-    const { gate } = setup({ connection, grant });
-    const result = await gate.check(user, agent);
-    expect(result.ready).toBe(true);
-    expect(result.materializeItems[0]?.credential).toEqual({
-      username: "x-access-token",
-      accessToken: "token",
-    });
-  });
-
-  describe("凭证集 PAT 桥（credentialCode）", () => {
-    const patAgent: Agent = {
+  it("内网 host：allowPrivateHosts=false 时拒绝；=true 时按正常链路处理", async () => {
+    const intranetAgent = {
       ...agent,
+      gitRepositories: [
+        {
+          id: "r-intra",
+          name: "intra",
+          provider: "github" as const,
+          url: "https://192.168.1.10/acme/repo.git",
+          required: true,
+          shallow: true,
+          syncMode: "fastForward" as const,
+        },
+      ],
+    };
+    const deny = new GitAccessGate(fakeMaterializer(true), undefined, 600_000, false);
+    const r1 = await deny.check(user, intranetAgent);
+    expect(r1.ready).toBe(false);
+    expect(r1.requirements[0]?.reason).toBe("provider_unavailable");
+
+    const allow = new GitAccessGate(fakeMaterializer(true), undefined, 600_000, true);
+    const r2 = await allow.check(user, intranetAgent);
+    expect(r2.ready).toBe(true);
+  });
+
+  describe("凭证桥（credentialCode）", () => {
+    const credAgent = {
+      ...agent,
+      credentials: ["jihulab-pat"],
       gitRepositories: [jihulabRepo],
     };
 
     it("用户已填值：用 PAT 凭证校验并物化，username 缺省用平台默认", async () => {
-      const { gate, materializer } = setup({ credentialValues: { token: "pat-1" } });
-      const result = await gate.check(user, patAgent);
-      expect(result.ready).toBe(true);
-      expect(result.requirements).toEqual([]);
-      expect(result.materializeItems[0]?.credential).toEqual({
-        username: "oauth2",
-        accessToken: "pat-1",
-      });
-      expect(materializer.checkRead).toHaveBeenCalledWith(
-        patAgent.gitRepositories[0],
-        { username: "oauth2", accessToken: "pat-1" },
-        undefined,
-      );
+      const materializer = fakeMaterializer(false);
+      const gate = new GitAccessGate(materializer, fakeCredentialSets({ token: "tok" }));
+      const r = await gate.check(user, credAgent);
+      expect(r.ready).toBe(true);
+      expect(r.materializeItems[0]?.credential).toEqual({ username: "oauth2", accessToken: "tok" });
     });
 
     it("模板提供 username 键时优先用模板值", async () => {
-      const { gate } = setup({ credentialValues: { username: tester, token: "pat-1" } });
-      const result = await gate.check(user, patAgent);
-      expect(result.materializeItems[0]?.credential?.username).toBe(tester);
+      const gate = new GitAccessGate(
+        fakeMaterializer(false),
+        fakeCredentialSets({ token: "tok", username: "alice" }),
+      );
+      const r = await gate.check(user, credAgent);
+      expect(r.materializeItems[0]?.credential?.username).toBe("alice");
     });
 
     it("用户未填值：不硬阻断，放行待预检问询（item 无凭证、无 requirements）", async () => {
-      const { gate, credentialSets } = setup({ credentialValues: undefined });
-      const result = await gate.check(user, patAgent);
-      expect(result.ready).toBe(true);
-      expect(result.requirements).toEqual([]);
-      expect(result.materializeItems[0]?.credential).toBeUndefined();
-      expect(credentialSets.getFilledValues).toHaveBeenCalledWith("u1", ["jihulab-pat"]);
+      const gate = new GitAccessGate(fakeMaterializer(false), fakeCredentialSets(undefined));
+      const r = await gate.check(user, credAgent);
+      expect(r.ready).toBe(true);
+      expect(r.materializeItems[0]?.credential).toBeUndefined();
+      expect(r.requirements).toEqual([]);
     });
 
     it("已填值但远端拒绝：聚合 access_denied 要求", async () => {
-      const { gate } = setup({ credentialValues: { token: "bad" }, authenticated: false });
-      const result = await gate.check(user, patAgent);
-      expect(result.ready).toBe(false);
-      expect(result.requirements[0]?.reason).toBe("access_denied");
-      expect(result.requirements[0]?.provider).toBe("jihulab");
+      const gate = new GitAccessGate(
+        fakeMaterializer(false, { ok: false, reason: "access_denied", message: "403" }),
+        fakeCredentialSets({ token: "tok" }),
+      );
+      const r = await gate.check(user, credAgent);
+      expect(r.ready).toBe(false);
+      expect(r.requirements[0]?.reason).toBe("access_denied");
     });
   });
 });

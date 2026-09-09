@@ -42,39 +42,6 @@ export const AgentGitRepositorySchema = z
 
 export type AgentGitRepository = z.infer<typeof AgentGitRepositorySchema>;
 
-export type GitAuthType = "oauth" | "githubApp" | "pat";
-export type GitConnectionStatus = "active" | "expired" | "revoked";
-
-export interface GitConnection {
-  id: string;
-  userId: string;
-  provider: GitProvider;
-  accountId: string;
-  accountName: string;
-  avatarUrl?: string;
-  authType: GitAuthType;
-  scopes: string[];
-  expiresAt?: string;
-  status: GitConnectionStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface GitConnectionSecrets {
-  accessToken: string;
-  refreshToken?: string;
-}
-
-export interface GitRepositoryGrant {
-  userId: string;
-  agentId: string;
-  repositoryId: string;
-  repositoryFingerprint: string;
-  connectionId: string;
-  permission: "read" | "write";
-  grantedAt: string;
-}
-
 export type GitRemoteFailureReason =
   | "access_denied"
   | "repository_not_found"
@@ -84,12 +51,9 @@ export type GitRemoteAccessResult =
   | { ok: true }
   | { ok: false; reason: GitRemoteFailureReason; message: string };
 
-export type GitAccessFailureReason =
-  | "connection_missing"
-  | "token_expired"
-  | "token_revoked"
-  | "grant_missing"
-  | GitRemoteFailureReason;
+// 平台连接/grant 体系退役后，非公共仓库仅剩凭证桥链路：
+// 凭证无效/无权 → access_denied；仓库不存在 / 平台不可用语义不变
+export type GitAccessFailureReason = GitRemoteFailureReason;
 
 export interface GitAccessRequirement {
   provider: GitProvider;

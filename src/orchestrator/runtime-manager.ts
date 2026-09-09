@@ -123,7 +123,7 @@ export class RuntimeManager {
       : this.deps.config.llm;
     let allowedTools: string[] | undefined;
     let mcpServers: McpServerConfig[] | undefined;
-    let gitAllowShellGit: boolean | undefined;
+    let gitAllowShellGit = false;
     let extraPrompt: string | undefined = opts.systemPromptAppend;
     let additionalDirectories: string[] | undefined;
     let allowedWriteRoots: string[] | undefined;
@@ -139,7 +139,7 @@ export class RuntimeManager {
       if (preset) llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
       allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
       mcpServers = a.mcpServers;
-      // shell git 守卫按 agent 配置生效（防线 2）；无 agent 会话不注入=不启用
+      // shell git 守卫（防线 2）：全域缺省禁用，仅 agent 显式开启才放行
       gitAllowShellGit = a.gitAllowShellGit;
       if (a.systemPrompt) {
         extraPrompt = `${opts.systemPromptAppend ?? ""}\n\n${a.systemPrompt}`.trim();

@@ -45,7 +45,6 @@ const entries: NavEntry[] = [
     match: ["/settings"],
     children: [
       { to: "/settings/profile", label: "基本信息" },
-      { to: "/settings/git", label: "Git 配置" },
       { to: "/settings/models", label: "Models" },
       { to: "/settings/credentials", label: "凭证" },
     ],

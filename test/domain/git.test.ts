@@ -150,7 +150,7 @@ describe("多 host 支持（spec 2026-09-10）", () => {
 });
 
 describe("凭证仓库绑定一致性（spec 2026-09-10 §3.3）", () => {
-  const repo = (url: string, code: string) => ({
+  const repo = (url: string, code?: string) => ({
     id: "r1",
     name: "app",
     provider: "jihulab" as const,
@@ -185,8 +185,14 @@ describe("凭证仓库绑定一致性（spec 2026-09-10 §3.3）", () => {
       ["p1", {}],
       ["p2", { repoUrl: "https://JIHULAB.com/acme/app" }],
     ]);
-    expect(validateGitCredentialBindings([repo("https://jihulab.com/acme/app.git", "p1")], templates)).toEqual([]);
-    expect(validateGitCredentialBindings([repo("https://jihulab.com/acme/app.git", "p2")], templates)).toEqual([]);
-    expect(validateGitCredentialBindings([repo("https://jihulab.com/x/y.git", undefined)], templates)).toEqual([]);
+    expect(
+      validateGitCredentialBindings([repo("https://jihulab.com/acme/app.git", "p1")], templates),
+    ).toEqual([]);
+    expect(
+      validateGitCredentialBindings([repo("https://jihulab.com/acme/app.git", "p2")], templates),
+    ).toEqual([]);
+    expect(
+      validateGitCredentialBindings([repo("https://jihulab.com/x/y.git", undefined)], templates),
+    ).toEqual([]);
   });
 });

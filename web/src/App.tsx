@@ -9,7 +9,6 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
-import { GitSettingsPage } from "./pages/GitSettingsPage";
 import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
@@ -58,7 +57,6 @@ export function App() {
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/profile" element={<UserProfilePage />} />
-            <Route path="/settings/git" element={<GitSettingsPage />} />
             <Route path="/settings/models" element={<ModelsPage />} />
             <Route path="/settings/credentials" element={<CredentialsPage />} />
             <Route path="/credentials" element={<Navigate to="/settings/credentials" replace />} />

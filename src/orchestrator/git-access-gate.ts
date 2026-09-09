@@ -1,9 +1,13 @@
+// GitAccessGate：对话前仓库访问校验（凭证桥单轨）。
+// GitConnection 平台连接/grant 模型已退役（spec 2026-09-10 §8）：
+// 公共仓库匿名可读即通过；私有仓库走 credentialCode 凭证桥现取，
+// 用户未配值时 pendingCredential（由 Orchestrator 挂起凭证缺失问询）。
+
 import type { Agent } from "../domain/agent.js";
 import {
   type AgentGitRepository,
   type GitAccessFailureReason,
   type GitAccessRequirement,
-  type GitConnection,
   type GitProvider,
   gitRepositoryFingerprint,
   isBlockedHost,
@@ -11,7 +15,6 @@ import {
 } from "../domain/git.js";
 import type { User } from "../domain/user.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
-import type { GitConnectionStore } from "../ports/git-connection-store.js";
 import type {
   GitProcessCredential,
   RepositoryMaterializeItem,
@@ -26,10 +29,8 @@ export interface GitAccessCheck {
 
 export class GitAccessGate {
   private readonly anonymousCache = new Map<string, { public: boolean; expiresAt: number }>();
-  private readonly authorizedCache = new Map<string, number>();
 
   constructor(
-    private readonly connections: GitConnectionStore,
     private readonly materializer: RepositoryMaterializer,
     private readonly credentialSets?: CredentialSetStore,
     private readonly cacheTtlMs = 600_000,
@@ -68,41 +69,11 @@ export class GitAccessGate {
         else materializeItems.push({ repository, credential: authorized.credential });
         continue;
       }
-      const authorized = await this.checkPrivate(user, agent, repository, fingerprint, signal);
-      if ("reason" in authorized)
-        failures.push({ repository, fingerprint, reason: authorized.reason });
-      else materializeItems.push({ repository, credential: authorized.credential });
+      // 无 credentialCode 的非公共仓库：统一引导配置凭证（平台连接/grant 流程已退役）
+      failures.push({ repository, fingerprint, reason: "access_denied" });
     }
     const requirements = groupRequirements(failures);
     return { ready: requirements.length === 0, requirements, materializeItems };
-  }
-
-  async grantRepositories(
-    user: User,
-    agent: Agent,
-    repositoryIds: string[],
-    signal?: AbortSignal,
-  ): Promise<GitAccessCheck> {
-    const selected = new Set(repositoryIds);
-    for (const repository of agent.gitRepositories.filter((item) => selected.has(item.id))) {
-      const connection = await this.connections.getDefault(user.id, repository.provider);
-      if (!connection) throw new Error(`${repository.provider} 尚未授权`);
-      const secrets = await this.connections.getSecrets(connection.id);
-      if (!secrets) throw new Error(`${repository.provider} 授权凭证不存在`);
-      const credential = credentialFor(connection, secrets.accessToken);
-      const access = await this.materializer.checkRead(repository, credential, signal);
-      if (!access.ok) throw new Error(access.message);
-      await this.connections.saveGrant({
-        userId: user.id,
-        agentId: agent.id,
-        repositoryId: repository.id,
-        repositoryFingerprint: gitRepositoryFingerprint(repository),
-        connectionId: connection.id,
-        permission: "read",
-        grantedAt: new Date().toISOString(),
-      });
-    }
-    return this.check(user, agent, signal);
   }
 
   private async isPublic(
@@ -157,41 +128,6 @@ export class GitAccessGate {
       accessToken: token,
     };
   }
-
-  private async checkPrivate(
-    user: User,
-    agent: Agent,
-    repository: AgentGitRepository,
-    fingerprint: string,
-    signal?: AbortSignal,
-  ): Promise<{ credential: GitProcessCredential } | { reason: GitAccessFailureReason }> {
-    const connection = await this.connections.getDefault(user.id, repository.provider);
-    if (!connection) return { reason: "connection_missing" };
-    if (connection.status === "revoked") return { reason: "token_revoked" };
-    if (connection.status === "expired" || isExpired(connection))
-      return { reason: "token_expired" };
-    const grant = await this.connections.getGrant(user.id, agent.id, repository.id);
-    if (
-      !grant ||
-      grant.repositoryFingerprint !== fingerprint ||
-      grant.connectionId !== connection.id
-    ) {
-      return { reason: "grant_missing" };
-    }
-    const secrets = await this.connections.getSecrets(connection.id);
-    if (!secrets) return { reason: "token_revoked" };
-    const credential = credentialFor(connection, secrets.accessToken);
-    const cacheKey = `${user.id}:${agent.id}:${repository.id}:${fingerprint}:${connection.id}`;
-    if ((this.authorizedCache.get(cacheKey) ?? 0) > Date.now()) return { credential };
-    const access = await this.materializer.checkRead(repository, credential, signal);
-    if (!access.ok) return { reason: access.reason };
-    this.authorizedCache.set(cacheKey, Date.now() + this.cacheTtlMs);
-    return { credential };
-  }
-}
-
-function isExpired(connection: GitConnection): boolean {
-  return Boolean(connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now());
 }
 
 /** 凭证模板未提供 username 键时的平台默认 HTTP 认证用户名 */
@@ -204,16 +140,6 @@ export function defaultGitUsername(provider: GitProvider): string {
     case "gitee":
       return "x-token";
   }
-}
-
-function credentialFor(connection: GitConnection, accessToken: string): GitProcessCredential {
-  const username =
-    connection.provider === "github"
-      ? "x-access-token"
-      : connection.provider === "jihulab"
-        ? "oauth2"
-        : connection.accountName;
-  return { username, accessToken };
 }
 
 function groupRequirements(

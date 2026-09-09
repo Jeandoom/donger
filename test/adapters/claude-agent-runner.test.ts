@@ -265,14 +265,14 @@ describe("ClaudeAgentRunner", () => {
     );
     expect(allowed?.behavior).toBe("allow");
 
-    // undefined（无 agent 会话）：不启用守卫，保持现状
+    // undefined（未传）：全域缺省禁止（CLI/闲聊会话同样收口）
     await collect(runner.run(task, { ...opts }, async () => ({ approved: true })));
     const legacy = await captured?.canUseTool?.(
       "Bash",
       { command: "git status" },
       { toolUseID: "tu-legacy" },
     );
-    expect(legacy?.behavior).toBe("allow");
+    expect(legacy?.behavior).toBe("deny");
   });
 
   it("result 携带 usage（snake_case → camelCase）", async () => {

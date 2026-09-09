@@ -7,11 +7,6 @@ import Database from "better-sqlite3";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
-import {
-  GiteeAuthProvider,
-  GitHubAuthProvider,
-  JihuLabAuthProvider,
-} from "./adapters/git-auth-providers.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
@@ -23,7 +18,6 @@ import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
-import { SqliteGitConnectionStore } from "./adapters/sqlite-git-connection-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModelConfigStore } from "./adapters/sqlite-model-config-store.js";
@@ -112,8 +106,9 @@ async function main(): Promise<void> {
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
   agentShareStore.migrate();
-  const gitConnectionStore = new SqliteGitConnectionStore(db, secretCipher);
-  gitConnectionStore.migrate();
+  // GitConnection 体系已退役（spec 2026-09-10 §8）：平台连接表随之废弃
+  db.exec("DROP TABLE IF EXISTS git_connections");
+  db.exec("DROP TABLE IF EXISTS git_repository_grants");
   const repositoryMaterializer = new GitCliRepositoryMaterializer(cfg.gitCloneTimeoutMs);
   const extensionDirectoryResolver = new LocalExtensionDirectoryResolver();
   // 凭证集 store（Gate 的 PAT 桥与 RuntimeManager 注入共享同一实例）；须先于 GitAccessGate 构造
@@ -123,32 +118,11 @@ async function main(): Promise<void> {
   );
   credentialSets.migrate();
   const gitAccessGate = new GitAccessGate(
-    gitConnectionStore,
     repositoryMaterializer,
     credentialSets,
     cfg.gitAuthCacheTtlMs,
     cfg.gitAllowPrivateHosts,
   );
-  const gitAuthProviders = {
-    github: new GitHubAuthProvider({
-      ...cfg.gitOAuth.github,
-      redirectUri: cfg.publicBaseUrl
-        ? `${cfg.publicBaseUrl}/api/settings/git/oauth/github/callback`
-        : undefined,
-    }),
-    gitee: new GiteeAuthProvider({
-      ...cfg.gitOAuth.gitee,
-      redirectUri: cfg.publicBaseUrl
-        ? `${cfg.publicBaseUrl}/api/settings/git/oauth/gitee/callback`
-        : undefined,
-    }),
-    jihulab: new JihuLabAuthProvider({
-      ...cfg.gitOAuth.jihulab,
-      redirectUri: cfg.publicBaseUrl
-        ? `${cfg.publicBaseUrl}/api/settings/git/oauth/jihulab/callback`
-        : undefined,
-    }),
-  };
 
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
@@ -262,8 +236,6 @@ async function main(): Promise<void> {
     modelConfigStore,
     agentStore,
     agentShareStore,
-    gitConnectionStore,
-    gitAuthProviders,
     gitAccessGate,
     publicBaseUrl: cfg.publicBaseUrl,
     triggerStore,

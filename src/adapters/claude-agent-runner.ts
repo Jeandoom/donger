@@ -63,11 +63,11 @@ export class ClaudeAgentRunner implements AgentRunner {
               toolUseID: ctx.toolUseID,
             };
           }
-          // shell git 守卫（收口防线 2）：agent 会话默认禁止 Bash 直跑 git，
-          // 引导用 donger-git 工具；gitAllowShellGit=true 放行（undefined=无 agent 不启用）。
+          // shell git 守卫（收口防线 2）：所有会话默认禁止 Bash 直跑 git（含 CLI/闲聊），
+          // 引导用 donger-git 工具；gitAllowShellGit=true（agent 显式逃生门）才放行。
           if (
             toolName === "Bash" &&
-            opts.gitAllowShellGit === false &&
+            opts.gitAllowShellGit !== true &&
             typeof input.command === "string" &&
             matchesShellGit(input.command)
           ) {

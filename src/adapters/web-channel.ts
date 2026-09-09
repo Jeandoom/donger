@@ -59,8 +59,6 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
-import type { GitAuthProviderAdapter } from "../ports/git-auth-provider.js";
-import type { GitConnectionStore } from "../ports/git-connection-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
@@ -179,8 +177,6 @@ export interface WebChannelDeps {
   modelConfigStore?: UserModelConfigStore;
   agentStore?: AgentStore;
   agentShareStore?: AgentShareStore;
-  gitConnectionStore?: GitConnectionStore;
-  gitAuthProviders?: Partial<Record<GitProvider, GitAuthProviderAdapter>>;
   gitAccessGate?: GitAccessGate;
   /** 工作流模块（M14+M15+M6）—— 缺省=不支持 */
   triggerStore?: TriggerStore;
@@ -232,10 +228,6 @@ export class WebChannel implements Channel {
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
-  private readonly gitOAuthStates = new Map<
-    string,
-    { userId: string; provider: GitProvider; returnTo: string; expiresAt: number }
-  >();
 
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
@@ -946,7 +938,6 @@ export class WebChannel implements Channel {
       "/api/auth/dingtalk/callback",
       "/api/auth/exchange",
       "/api/agents/by-share",
-      "/api/settings/git/oauth/",
       "/api/health",
     ];
     const isPublic = publicRoutes.some((r) => url.startsWith(r));
@@ -961,78 +952,6 @@ export class WebChannel implements Channel {
       (req as HttpRequest & { userId?: string }).userId = authUserId;
     }
 
-    // === 用户 Git 配置 / OAuth 路由 ===
-    const gitCallbackMatch = url.match(
-      /^\/api\/settings\/git\/oauth\/(github|gitee|jihulab)\/callback(?:\?|$)/,
-    );
-    if (gitCallbackMatch && req.method === "GET") {
-      await this.handleGitOAuthCallback(req, res, gitCallbackMatch[1] as GitProvider);
-      return;
-    }
-
-    if (url === "/api/settings/git/connections" && req.method === "GET") {
-      const userId = this.requireRequestUser(req);
-      const connections = (await this.deps.gitConnectionStore?.listByUser(userId)) ?? [];
-      this.json(res, {
-        connections,
-        oauthConfigured: Object.fromEntries(
-          (["github", "gitee", "jihulab"] as GitProvider[]).map((provider) => [
-            provider,
-            this.deps.gitAuthProviders?.[provider]?.oauthConfigured ?? false,
-          ]),
-        ),
-      });
-      return;
-    }
-
-    const gitAuthorizeMatch = url.match(
-      /^\/api\/settings\/git\/(github|gitee|jihulab)\/authorize$/,
-    );
-    if (gitAuthorizeMatch && req.method === "POST") {
-      const userId = this.requireRequestUser(req);
-      const provider = gitAuthorizeMatch[1] as GitProvider;
-      const adapter = this.requireGitProvider(provider);
-      const body = JSON.parse(await this.readBody(req)) as { returnTo?: string };
-      const state = crypto.randomUUID();
-      const returnTo = body.returnTo?.startsWith("/") ? body.returnTo : "/settings/git";
-      this.gitOAuthStates.set(state, {
-        userId,
-        provider,
-        returnTo,
-        expiresAt: Date.now() + 10 * 60_000,
-      });
-      this.json(res, { authorizeUrl: adapter.getAuthorizationUrl(state) });
-      return;
-    }
-
-    const gitPatMatch = url.match(/^\/api\/settings\/git\/(github|gitee|jihulab)\/pat$/);
-    if (gitPatMatch && req.method === "POST") {
-      const userId = this.requireRequestUser(req);
-      const provider = gitPatMatch[1] as GitProvider;
-      const adapter = this.requireGitProvider(provider);
-      const body = JSON.parse(await this.readBody(req)) as { token?: string };
-      const authorization = await adapter.verifyPat(body.token ?? "");
-      const existing = await this.deps.gitConnectionStore?.getDefault(userId, provider);
-      const connection = await this.requireGitConnectionStore().save({
-        id: existing?.id,
-        userId,
-        provider,
-        ...authorization,
-      });
-      this.json(res, { connection }, 201);
-      return;
-    }
-
-    const gitDeleteMatch = url.match(/^\/api\/settings\/git\/connections\/([\w-]+)$/);
-    if (gitDeleteMatch && req.method === "DELETE") {
-      await this.requireGitConnectionStore().delete(
-        gitDeleteMatch[1] ?? "",
-        this.requireRequestUser(req),
-      );
-      this.json(res, { ok: true });
-      return;
-    }
-
     const preflightMatch = url.match(/^\/api\/conversations\/([\w-]+)\/preflight$/);
     if (preflightMatch && req.method === "GET") {
       const result = await this.checkConversationGitAccess(
@@ -1040,21 +959,6 @@ export class WebChannel implements Channel {
         preflightMatch[1] ?? "",
       );
       this.json(res, result ?? { ready: true, requirements: [] });
-      return;
-    }
-
-    const grantsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/git-grants$/);
-    if (grantsMatch && req.method === "POST") {
-      const userId = this.requireRequestUser(req);
-      const context = await this.resolveGitConversationContext(userId, grantsMatch[1] ?? "");
-      if (!context) throw new NotFoundError("AGENT_NOT_FOUND", "会话未绑定智能体");
-      const body = JSON.parse(await this.readBody(req)) as { repositoryIds?: string[] };
-      const result = await this.requireGitAccessGate().grantRepositories(
-        context.user,
-        context.agent,
-        body.repositoryIds ?? [],
-      );
-      this.json(res, result);
       return;
     }
 
@@ -2660,33 +2564,6 @@ export class WebChannel implements Channel {
     };
   }
 
-  private async handleGitOAuthCallback(
-    req: HttpRequest,
-    res: ServerResponse,
-    provider: GitProvider,
-  ): Promise<void> {
-    const requestUrl = new URL(req.url ?? "", "http://localhost");
-    const stateKey = requestUrl.searchParams.get("state") ?? "";
-    const code = requestUrl.searchParams.get("code") ?? "";
-    const state = this.gitOAuthStates.get(stateKey);
-    this.gitOAuthStates.delete(stateKey);
-    if (!state || state.provider !== provider || state.expiresAt <= Date.now() || !code) {
-      this.json(res, { error: "Git OAuth state 或 code 无效" }, 400);
-      return;
-    }
-    const authorization = await this.requireGitProvider(provider).exchangeCode(code);
-    const store = this.requireGitConnectionStore();
-    const existing = await store.getDefault(state.userId, provider);
-    await store.save({ id: existing?.id, userId: state.userId, provider, ...authorization });
-    const separator = state.returnTo.includes("?") ? "&" : "?";
-    const relative = `${state.returnTo}${separator}gitConnected=${provider}`;
-    const location = this.deps.publicBaseUrl
-      ? new URL(relative, `${this.deps.publicBaseUrl}/`).toString()
-      : relative;
-    res.writeHead(302, { Location: location });
-    res.end();
-  }
-
   private requireRequestUser(req: HttpRequest): string {
     const userId = (req as HttpRequest & { userId?: string }).userId;
     if (!userId) throw new ForbiddenError("AUTH_REQUIRED", "请先登录");
@@ -2700,12 +2577,6 @@ export class WebChannel implements Channel {
     const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
     const port = this.boundPort ?? this.deps.port;
     return `${this.deps.https ? "https" : "http"}://${host}:${port}`;
-  }
-
-  private requireGitProvider(provider: GitProvider): GitAuthProviderAdapter {
-    const adapter = this.deps.gitAuthProviders?.[provider];
-    if (!adapter) throw new NotFoundError("GIT_PROVIDER_MISSING", `${provider} 鉴权未装配`);
-    return adapter;
   }
 
   /** git 凭证绑定一致性：仓库级凭证（模板声明 repoUrl）必须与仓库地址一致（spec 2026-09-10 §3.3） */
@@ -2727,13 +2598,6 @@ export class WebChannel implements Channel {
     );
     const errors = validateGitCredentialBindings(repositories, byCode);
     return errors.length > 0 ? errors.join("；") : undefined;
-  }
-
-  private requireGitConnectionStore(): GitConnectionStore {
-    if (!this.deps.gitConnectionStore) {
-      throw new NotFoundError("GIT_STORE_MISSING", "Git 连接存储未装配");
-    }
-    return this.deps.gitConnectionStore;
   }
 
   private requireGitAccessGate(): GitAccessGate {
