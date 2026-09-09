@@ -26,6 +26,7 @@ import type { LLMConfig } from "../domain/llm-config.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
 import type { UserModelConfig } from "../domain/model-config.js";
 import { parseUserModelConfig } from "../domain/model-config.js";
+import { validateAgentAgainstPreset } from "../domain/scenario-preset.js";
 import { parseTriggerInput, type Trigger } from "../domain/trigger.js";
 import {
   type ApprovalCard,
@@ -1670,7 +1671,14 @@ export class WebChannel implements Channel {
       const input = parseAgentInput({ ...body, ownerId: me });
       const created = await this.agentStore?.create(input);
       if (!created) return this.json(res, { error: "agent store unavailable" }, 500);
-      return this.json(res, this.agentToDTO(created, true), 201);
+      return this.json(
+        res,
+        {
+          ...this.agentToDTO(created, true),
+          warnings: await this.agentEquipmentWarnings(me, created),
+        },
+        201,
+      );
     }
     if (url === "/api/agents/meta/options" && req.method === "GET") {
       const userId = this.requireUserId(req);
@@ -1736,7 +1744,10 @@ export class WebChannel implements Channel {
         const patch = JSON.parse(await this.readBody(req)) as Partial<Agent>;
         const updated = await this.agentStore?.update(id, this.mergeMaskedMcp(a, patch));
         if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
-        return this.json(res, this.agentToDTO(updated, true));
+        return this.json(res, {
+          ...this.agentToDTO(updated, true),
+          warnings: await this.agentEquipmentWarnings(me, updated),
+        });
       }
       if (req.method === "DELETE") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
@@ -2612,6 +2623,20 @@ export class WebChannel implements Channel {
   }
 
   /** 编辑器回传掩码占位时，用库内原密文值回填 */
+  /** agent 装备告警：场景 preset 规则 + 凭证值存在性（不含任何值本身；warning 级不阻断） */
+  private async agentEquipmentWarnings(actorId: string, agent: Agent): Promise<string[]> {
+    const warnings = validateAgentAgainstPreset(agent).map((w) => `[${w.presetKey}] ${w.message}`);
+    const csets = this.deps.credentialSets;
+    if (csets && agent.credentials.length > 0) {
+      const filled = await csets.getFilledValues(actorId, agent.credentials);
+      const have = new Set(filled.map((f) => f.code));
+      for (const code of agent.credentials) {
+        if (!have.has(code)) warnings.push(`凭证 ${code} 的值尚未配置（执行时将触发问询）`);
+      }
+    }
+    return warnings;
+  }
+
   private mergeMaskedMcp(a: Agent, patch: Partial<Agent>): Partial<Agent> {
     if (!patch.mcpServers) return patch;
     return {

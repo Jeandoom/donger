@@ -45,6 +45,7 @@ export function AgentEditorPage() {
   const [form, setForm] = useState<typeof empty>(empty);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [warnings, setWarnings] = useState<string[]>();
   const [readOnly, setReadOnly] = useState(false);
 
   useEffect(() => {
@@ -86,8 +87,15 @@ export function AgentEditorPage() {
   async function save() {
     setSaving(true);
     setError(undefined);
+    setWarnings(undefined);
     try {
       const saved = isNew ? await createAgent(form) : await updateAgent(id ?? "", form);
+      if (saved.warnings && saved.warnings.length > 0) {
+        // 装备告警不阻断：留在编辑页展示（场景校验/凭证缺值提示）
+        setWarnings(saved.warnings);
+        setSaving(false);
+        return;
+      }
       navigate(`/agents/${saved.id}`);
     } catch (e) {
       setError(String(e));
@@ -140,6 +148,16 @@ export function AgentEditorPage() {
         </div>
 
         {error ? <p className="text-destructive">{error}</p> : null}
+        {warnings && warnings.length > 0 ? (
+          <div className="space-y-1 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+            <p className="font-medium">装备提示（已保存，可稍后处理）</p>
+            <ul className="list-inside list-disc text-muted-foreground">
+              {warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         <Field label="名称">
           <input
@@ -195,8 +213,7 @@ export function AgentEditorPage() {
             onChange={(event) =>
               setForm({
                 ...form,
-                scenario:
-                  (event.target.value || undefined) as typeof form.scenario,
+                scenario: (event.target.value || undefined) as typeof form.scenario,
               })
             }
           >
@@ -207,7 +224,8 @@ export function AgentEditorPage() {
             <option value="ops">ops（运维操作）</option>
           </select>
           <p className="text-xs text-muted-foreground">
-            场景决定装配校验：code-dev 需绑定 git 仓库；kb-qa 要求只读白名单；research 需含 kb_write。
+            场景决定装配校验：code-dev 需绑定 git 仓库；kb-qa 要求只读白名单；research 需含
+            kb_write。
           </p>
         </Field>
 

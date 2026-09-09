@@ -85,17 +85,19 @@ export async function fetchAgentMeta(): Promise<AgentMeta> {
   return (await r.json()) as AgentMeta;
 }
 
-export async function createAgent(input: AgentInput): Promise<AgentDTO> {
+export type AgentSaveResult = AgentDTO & { warnings?: string[] };
+
+export async function createAgent(input: AgentInput): Promise<AgentSaveResult> {
   const r = await apiFetch("/api/agents", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
   });
   if (!r.ok) throw new Error(`create ${r.status}`);
-  return (await r.json()) as AgentDTO;
+  return (await r.json()) as AgentSaveResult;
 }
 
-export async function updateAgent(id: string, patch: Partial<AgentDTO>): Promise<AgentDTO> {
+export async function updateAgent(id: string, patch: Partial<AgentDTO>): Promise<AgentSaveResult> {
   const r = await apiFetch(`/api/agents/${id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },

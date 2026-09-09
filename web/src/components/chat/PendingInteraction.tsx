@@ -78,7 +78,7 @@ function MissingCredentialsCard({
         {items.map((item) => (
           <li key={item.code}>
             {item.name}（<span className="font-mono">{item.code}</span>）需要键：
-            {item.keys.join(", ")}
+            {(item.keys ?? []).join(", ")}
           </li>
         ))}
       </ul>
