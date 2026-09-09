@@ -130,7 +130,7 @@ export function gitRepositoryFingerprint(repository: AgentGitRepository): string
   return `${parsed.provider}:${parsed.repositoryPath}`;
 }
 
-function parseRepositoryUrl(
+export function parseRepositoryUrl(
   value: string,
 ): { provider: GitProvider; repositoryPath: string } | undefined {
   let url: URL;

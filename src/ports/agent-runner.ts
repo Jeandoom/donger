@@ -34,6 +34,8 @@ export interface RunOptions {
   mcpServers?: McpServerConfig[];
   /** in-process 平台工具 MCP server（assist 会话注入；instance 不可序列化，仅运行时使用） */
   platformTools?: McpSdkServerConfigWithInstance;
+  /** in-process git 平台元数据 MCP server（agent 绑定 git 仓库时注入） */
+  gitPlatformTools?: McpSdkServerConfigWithInstance;
 }
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */

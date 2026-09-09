@@ -35,6 +35,7 @@ import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
+import { createGitPlatformToolsServer } from "./git-platform-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import {
   acceptAsk,
@@ -250,7 +251,18 @@ export class Orchestrator {
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
         gitMaterializeItems: p.gitMaterializeItems,
       });
-      const base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+      let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+      // agent 绑定了 git 仓库时注入 git 平台元数据工具（donger-git，只读；凭证按访问者现取）
+      if (p.agent && p.agent.gitRepositories.length > 0) {
+        base = {
+          ...base,
+          gitPlatformTools: createGitPlatformToolsServer({
+            user: p.user,
+            agent: p.agent,
+            credentialSets: this.deps.credentialSets,
+          }),
+        };
+      }
       if (p.noResume) {
         return { ...base, resume: undefined, sessionStore: undefined };
       }

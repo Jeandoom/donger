@@ -21,6 +21,7 @@ export class ClaudeAgentRunner implements AgentRunner {
     const mcpServersSdk: Record<string, SdkMcpServerConfig> = {
       ...(opts.mcpServers?.length ? mcpServersToSdk(opts.mcpServers) : {}),
       ...(opts.platformTools ? { "donger-platform": opts.platformTools } : {}),
+      ...(opts.gitPlatformTools ? { "donger-git": opts.gitPlatformTools } : {}),
     };
 
     const stream = query({
