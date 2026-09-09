@@ -15,6 +15,7 @@ interface Draft {
   name: string;
   description: string;
   kind: "generic" | "git";
+  repoUrl: string;
   keysText: string;
   values: Record<string, string>;
 }
@@ -24,6 +25,7 @@ const emptyDraft: Draft = {
   name: "",
   description: "",
   kind: "generic",
+  repoUrl: "",
   keysText: "",
   values: {},
 };
@@ -68,6 +70,7 @@ export function CredentialsPage() {
           name: d.name || hit.name,
           description: d.description || hit.description || "",
           kind: hit.kind ?? "generic",
+          repoUrl: d.repoUrl || hit.repoUrl || "",
           keysText: hit.keySpecs.map((k) => k.key).join(","),
           values: {},
         }));
@@ -95,6 +98,7 @@ export function CredentialsPage() {
           name: draft.name.trim(),
           description: draft.description.trim() || undefined,
           kind: draft.kind,
+          repoUrl: draft.kind === "git" && draft.repoUrl.trim() ? draft.repoUrl.trim() : undefined,
           keySpecs: keyNames.map((key) => ({ key })),
         });
       }
@@ -267,6 +271,7 @@ export function CredentialsPage() {
               {t.kind === "git" ? (
                 <span className="rounded bg-blue-500/10 px-1 text-blue-600">git·不注入env</span>
               ) : null}
+              {t.repoUrl ? <span className="font-mono text-xs">{t.repoUrl}</span> : null}
               <button
                 type="button"
                 className="text-foreground hover:underline"

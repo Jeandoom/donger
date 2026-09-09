@@ -21,7 +21,7 @@ import {
   parseCredentialCode,
 } from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
-import type { GitProvider } from "../domain/git.js";
+import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
 import type { UserModelConfig } from "../domain/model-config.js";
@@ -1669,6 +1669,8 @@ export class WebChannel implements Channel {
       const me = this.requireUserId(req);
       const body = JSON.parse(await this.readBody(req));
       const input = parseAgentInput({ ...body, ownerId: me });
+      const bindingError = await this.validateGitBindings(input.gitRepositories ?? []);
+      if (bindingError) return this.json(res, { error: bindingError }, 400);
       const created = await this.agentStore?.create(input);
       if (!created) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(
@@ -1742,6 +1744,9 @@ export class WebChannel implements Channel {
       if (req.method === "PATCH") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
         const patch = JSON.parse(await this.readBody(req)) as Partial<Agent>;
+        const merged = { ...a, ...this.mergeMaskedMcp(a, patch) };
+        const bindingError = await this.validateGitBindings(merged.gitRepositories ?? []);
+        if (bindingError) return this.json(res, { error: bindingError }, 400);
         const updated = await this.agentStore?.update(id, this.mergeMaskedMcp(a, patch));
         if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
         return this.json(res, {
@@ -2701,6 +2706,27 @@ export class WebChannel implements Channel {
     const adapter = this.deps.gitAuthProviders?.[provider];
     if (!adapter) throw new NotFoundError("GIT_PROVIDER_MISSING", `${provider} 鉴权未装配`);
     return adapter;
+  }
+
+  /** git 凭证绑定一致性：仓库级凭证（模板声明 repoUrl）必须与仓库地址一致（spec 2026-09-10 §3.3） */
+  private async validateGitBindings(
+    repositories: Agent["gitRepositories"],
+  ): Promise<string | undefined> {
+    const codes = [
+      ...new Set(repositories.map((r) => r.credentialCode).filter((c): c is string => Boolean(c))),
+    ];
+    if (codes.length === 0 || !this.deps.credentialSets) return undefined;
+    const credentialSets = this.deps.credentialSets;
+    const templates = await Promise.all(codes.map((c) => credentialSets.getTemplate(c)));
+    const byCode = new Map(
+      codes
+        .map((c, i) => [c, templates[i]] as const)
+        .filter((entry): entry is [string, NonNullable<(typeof templates)[number]>] =>
+          Boolean(entry[1]),
+        ),
+    );
+    const errors = validateGitCredentialBindings(repositories, byCode);
+    return errors.length > 0 ? errors.join("；") : undefined;
   }
 
   private requireGitConnectionStore(): GitConnectionStore {

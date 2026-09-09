@@ -50,7 +50,7 @@ export function AgentEditorPage() {
   const [readOnly, setReadOnly] = useState(false);
   const [hostMismatch, setHostMismatch] = useState<Record<number, boolean>>({});
   const [gitCredentialOptions, setGitCredentialOptions] = useState<
-    Array<{ code: string; name: string }>
+    Array<{ code: string; name: string; repoUrl?: string }>
   >([]);
 
   useEffect(() => {
@@ -64,7 +64,9 @@ export function AgentEditorPage() {
     fetchCredentialTemplates()
       .then((templates) =>
         setGitCredentialOptions(
-          templates.filter((t) => t.kind === "git").map((t) => ({ code: t.code, name: t.name })),
+          templates
+            .filter((t) => t.kind === "git")
+            .map((t) => ({ code: t.code, name: t.name, repoUrl: t.repoUrl })),
         ),
       )
       .catch(() => {});
@@ -429,7 +431,8 @@ export function AgentEditorPage() {
                 />
                 {hostMismatch[index] ? (
                   <p className="text-xs text-destructive">
-                    地址域名与所选协议方言不匹配（github.com / gitee.com / jihulab.com 会自动识别方言）
+                    地址域名与所选协议方言不匹配（github.com / gitee.com / jihulab.com
+                    会自动识别方言）
                   </p>
                 ) : null}
                 {(() => {
@@ -537,7 +540,8 @@ export function AgentEditorPage() {
                     <option value="">凭证模板（私有仓库必选，git PAT 类）</option>
                     {gitCredentialOptions.map((t) => (
                       <option key={t.code} value={t.code}>
-                        {t.code}（{t.name}）
+                        {t.code}（{t.name}
+                        {t.repoUrl ? ` · ${t.repoUrl}` : " · 平台级"}）
                       </option>
                     ))}
                   </select>

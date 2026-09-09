@@ -808,7 +808,9 @@ describe("WebChannel Git 对话前置权限门", () => {
           {
             provider: "github",
             reason: "connection_missing",
-            repositories: [{ id: "repo-1", name: "private", fingerprint: "github.com/acme/private" }],
+            repositories: [
+              { id: "repo-1", name: "private", fingerprint: "github.com/acme/private" },
+            ],
           },
         ],
       })),

@@ -34,6 +34,23 @@ export const CredentialTemplateSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   kind: CredentialKindSchema,
+  /**
+   * kind=git 时的目标仓库声明（一凭一仓，spec 2026-09-10 §3.1）；缺省 = 平台级凭证
+   * （兼容存量宽松语义）。必须为无凭证内嵌的 HTTPS 地址。
+   */
+  repoUrl: z
+    .string()
+    .url()
+    .optional()
+    .refine((url) => {
+      if (!url) return true;
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+      } catch {
+        return false;
+      }
+    }, "repoUrl 必须为无凭证内嵌的 HTTPS 地址"),
   keySpecs: z.array(CredentialKeySpecSchema).min(1).max(32),
   createdBy: z.string(),
   createdAt: z.string(),

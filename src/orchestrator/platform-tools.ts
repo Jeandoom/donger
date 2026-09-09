@@ -88,7 +88,7 @@ const CreateAgentShape = {
     .array(AgentGitRepositorySchema)
     .optional()
     .describe(
-      "绑定的 git 仓库。三步：先选平台（github/gitee/jihulab）→ 再给 HTTPS 地址（不收 SSH，无凭证内嵌）→ 私有仓库配 credentialCode（kind=git 的凭证模板）。绑定后 donger-git 工具（git_clone/git_pull/git_push 等）自动挂载",
+      "绑定的 git 仓库。三步：先选平台方言（github/gitee/jihulab，支持自建 host）→ 再给 HTTPS 地址（不收 SSH，无凭证内嵌；官方域名自动识别方言）→ 私有仓库配 credentialCode（kind=git 且 repoUrl 与本仓库地址一致的凭证模板）。绑定后 donger-git 工具（git_clone/git_pull/git_push 等）自动挂载",
     ),
   /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具）；须与用户确认后再开 */
   gitAllowShellGit: z

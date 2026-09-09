@@ -7,6 +7,7 @@ import {
   isBlockedHost,
   normalizeRepositoryIdentity,
   parseRepositoryUrl,
+  validateGitCredentialBindings,
 } from "../../src/domain/git.js";
 
 const repository = {
@@ -145,5 +146,47 @@ describe("多 host 支持（spec 2026-09-10）", () => {
     expect(normalizeRepositoryIdentity("https://ghe.corp.io/acme/app")).toBe(
       "ghe.corp.io/acme/app",
     );
+  });
+});
+
+describe("凭证仓库绑定一致性（spec 2026-09-10 §3.3）", () => {
+  const repo = (url: string, code: string) => ({
+    id: "r1",
+    name: "app",
+    provider: "jihulab" as const,
+    url,
+    required: true,
+    shallow: true,
+    syncMode: "fastForward" as const,
+    credentialCode: code,
+  });
+
+  it("仓库级凭证地址一致通过；不一致报错并给出两个地址", () => {
+    const templates = new Map([
+      ["c1", { repoUrl: "https://jihulab.com/acme/app.git" }],
+      ["c2", { repoUrl: "https://gitlab.corp.io/team/other.git" }],
+    ]);
+    const ok = validateGitCredentialBindings(
+      [repo("https://jihulab.com/acme/app.git", "c1")],
+      templates,
+    );
+    expect(ok).toEqual([]);
+    const bad = validateGitCredentialBindings(
+      [repo("https://jihulab.com/acme/app.git", "c2")],
+      templates,
+    );
+    expect(bad).toHaveLength(1);
+    expect(bad[0]).toContain("c2");
+    expect(bad[0]).toContain("gitlab.corp.io");
+  });
+
+  it("平台级凭证（无 repoUrl）与凭证缺失不校验；.git 后缀/host 大写归一化", () => {
+    const templates = new Map([
+      ["p1", {}],
+      ["p2", { repoUrl: "https://JIHULAB.com/acme/app" }],
+    ]);
+    expect(validateGitCredentialBindings([repo("https://jihulab.com/acme/app.git", "p1")], templates)).toEqual([]);
+    expect(validateGitCredentialBindings([repo("https://jihulab.com/acme/app.git", "p2")], templates)).toEqual([]);
+    expect(validateGitCredentialBindings([repo("https://jihulab.com/x/y.git", undefined)], templates)).toEqual([]);
   });
 });

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { GitCliRepositoryMaterializer } from "../../src/adapters/git-cli-repository-materializer.js";
-import { buildCloneArgs, type AgentGitRepository } from "../../src/domain/git.js";
+import { type AgentGitRepository, buildCloneArgs } from "../../src/domain/git.js";
 
 const roots: string[] = [];
 

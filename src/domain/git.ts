@@ -142,6 +142,30 @@ export function normalizeRepositoryIdentity(value: string): string {
   return `${parsed.host.toLowerCase()}/${parsed.repositoryPath.toLowerCase()}`;
 }
 
+/**
+ * 绑定一致性校验（纯函数）：仓库级凭证（模板声明 repoUrl）必须与仓库地址归一化相等。
+ * 返回错误清单（空 = 通过）；平台级凭证（无 repoUrl）与凭证缺失不在此校验。
+ */
+export function validateGitCredentialBindings(
+  repositories: AgentGitRepository[],
+  templateByCode: ReadonlyMap<string, { repoUrl?: string }>,
+): string[] {
+  const errors: string[] = [];
+  for (const repository of repositories) {
+    if (!repository.credentialCode) continue;
+    const template = templateByCode.get(repository.credentialCode);
+    if (!template?.repoUrl) continue;
+    const repoIdentity = normalizeRepositoryIdentity(repository.url);
+    const credIdentity = normalizeRepositoryIdentity(template.repoUrl);
+    if (repoIdentity && credIdentity && repoIdentity !== credIdentity) {
+      errors.push(
+        `仓库 ${repository.name}（${repository.url}）绑定的凭证 ${repository.credentialCode} 声明的地址是 ${template.repoUrl}，两者不一致`,
+      );
+    }
+  }
+  return errors;
+}
+
 /** 内网/元数据 host 守门（纯函数）：多用户部署防 SSRF；本地部署可开关放行 */
 const BLOCKED_HOST_PATTERNS: RegExp[] = [
   /^localhost$/,
