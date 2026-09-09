@@ -245,7 +245,7 @@ export class Orchestrator {
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
     const prepareOnce = async (): Promise<RunOptions> => {
-      const { runOptions } = await this.deps.runtimeMgr.prepare(p.user, p.conversation, {
+      const { context, runOptions } = await this.deps.runtimeMgr.prepare(p.user, p.conversation, {
         systemPromptAppend: p.memoryAppend,
         abortSignal: p.runController.signal,
         agent: p.agent,
@@ -258,7 +258,8 @@ export class Orchestrator {
         ...base,
         kbTools: createKbToolsServer({ kbRoot: join(p.user.homeDir, "knowledge_base") }),
       };
-      // agent 绑定了 git 仓库时注入 git 平台元数据工具（donger-git，只读；凭证按访问者现取）
+      // agent 绑定了 git 仓库时注入 git 工具（donger-git）：CLI 工作区工具（reposRoot=
+      // 会话 repos 目录，与后台物化共享）+ 平台 API 工具；凭证按访问者现取
       if (p.agent && p.agent.gitRepositories.length > 0) {
         base = {
           ...base,
@@ -266,6 +267,7 @@ export class Orchestrator {
             user: p.user,
             agent: p.agent,
             credentialSets: this.deps.credentialSets,
+            reposRoot: join(context.runtimeDir, "repos"),
           }),
         };
       }

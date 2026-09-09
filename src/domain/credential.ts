@@ -41,13 +41,13 @@ export const CredentialTemplateSchema = z.object({
 });
 export type CredentialTemplate = z.infer<typeof CredentialTemplateSchema>;
 
-/** 模板入参（创建/编辑；createdBy 由服务端注入） */
+/** 模板入参（创建/编辑；createdBy 由服务端注入）。用 z.input：kind 等带 default 的字段入参可省略 */
 export const CredentialTemplateInputSchema = CredentialTemplateSchema.omit({
   createdBy: true,
   createdAt: true,
   updatedAt: true,
 });
-export type CredentialTemplateInput = z.infer<typeof CredentialTemplateInputSchema>;
+export type CredentialTemplateInput = z.input<typeof CredentialTemplateInputSchema>;
 
 /** 用户凭证值：引用模板 code，负载整体加密存储；任何 API 不回显 */
 export interface CredentialValueEntry {

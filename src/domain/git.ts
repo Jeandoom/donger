@@ -122,6 +122,18 @@ export function inferGitProvider(url: string): GitProvider | undefined {
   return parseRepositoryUrl(url)?.provider;
 }
 
+/** clone 参数组装（纯函数，便于单测）：shallow 时可选 shallowSince 收窄历史窗口 */
+export function buildCloneArgs(repository: AgentGitRepository, destination: string): string[] {
+  const args = ["clone", "--no-recurse-submodules"];
+  if (repository.shallow) {
+    args.push("--depth", "1");
+    if (repository.shallowSince) args.push("--shallow-since", repository.shallowSince);
+  }
+  if (repository.ref) args.push("--branch", repository.ref);
+  args.push(repository.url, destination);
+  return args;
+}
+
 export function gitRepositoryFingerprint(repository: AgentGitRepository): string {
   const parsed = parseRepositoryUrl(repository.url);
   if (!parsed || parsed.provider !== repository.provider) {

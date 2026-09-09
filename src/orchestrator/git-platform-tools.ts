@@ -14,25 +14,34 @@ import type { Agent } from "../domain/agent.js";
 import { type AgentGitRepository, parseRepositoryUrl } from "../domain/git.js";
 import type { User } from "../domain/user.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
+import { defaultGitUsername } from "./git-access-gate.js";
+import { gitWorkspaceToolDefinitions } from "./git-workspace-tools.js";
 
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
-const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
-const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
+export const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
+export const fail = (text: string): ToolResult => ({
+  content: [{ type: "text", text }],
+  isError: true,
+});
 
 /** 输出截断上限：分支/MR 列表与文件原文都可能很大，防单轮 token 爆炸 */
-const MAX_OUTPUT_CHARS = 40_000;
-const API_TIMEOUT_MS = 15_000;
+export const MAX_OUTPUT_CHARS = 40_000;
+export const API_TIMEOUT_MS = 15_000;
 
 export interface GitPlatformToolsDeps {
   user: User;
   agent: Agent;
   credentialSets?: CredentialSetStore;
+  /** 会话仓库工作区根（<runtimeDir>/repos）；CLI 工具通道（git-workspace-tools）依赖 */
+  reposRoot?: string;
+  /** git 子进程执行器（CLI 工具通道）；缺省 util/git-process.runGit，测试可注入 */
+  gitRunner?: typeof import("../util/git-process.js")["runGit"];
   /** 供测试注入；缺省全局 fetch */
   fetchImpl?: typeof fetch;
 }
 
-interface RepoTarget {
+export interface RepoTarget {
   repo: AgentGitRepository;
   baseUrl: string;
   projectPath: string;
@@ -47,20 +56,39 @@ export function resolveRepoTarget(agent: Agent, repoName: string): RepoTarget | 
   return { repo, baseUrl: `https://${host}/api/v4`, projectPath: parsed.repositoryPath };
 }
 
-async function tokenFor(
+/** 凭证桥现取：credentialCode → 当前用户 PAT（不落 prompt/审计/env）；username 缺省按平台 */
+export async function credentialFor(
   deps: GitPlatformToolsDeps,
   repo: AgentGitRepository,
-): Promise<string | undefined> {
+): Promise<{ username: string; accessToken: string } | undefined> {
   if (!repo.credentialCode || !deps.credentialSets) return undefined;
   const [filled] = await deps.credentialSets.getFilledValues(deps.user.id, [repo.credentialCode]);
-  return filled?.values.token;
+  const token = filled?.values.token;
+  if (!token) return undefined;
+  return {
+    username: filled.values.username || defaultGitUsername(repo.provider),
+    accessToken: token,
+  };
 }
 
-/** 统一前置：解析仓库 → 平台白名单 → 凭证现取（含缺失引导文案） */
-async function withTarget(
+/** 凭证缺失引导文案（引导填写模板值或绑定模板） */
+export function credentialMissingHint(repo: AgentGitRepository): string {
+  return repo.credentialCode
+    ? `请在「我的凭证」填写模板 ${repo.credentialCode} 的值（key: token）`
+    : `请为仓库 ${repo.name} 绑定凭证模板（credentialCode）`;
+}
+
+/**
+ * 通用前置：解析仓库 → 运行（凭证可选；公共仓库可匿名）。
+ * API 工具与 CLI 工具（git-workspace-tools）共用。
+ */
+export async function withRepo(
   deps: GitPlatformToolsDeps,
   repoName: string,
-  run: (target: RepoTarget, token: string) => Promise<ToolResult>,
+  run: (
+    target: RepoTarget,
+    credential?: { username: string; accessToken: string },
+  ) => Promise<ToolResult>,
 ): Promise<ToolResult> {
   const target = resolveRepoTarget(deps.agent, repoName);
   if (!target) {
@@ -69,19 +97,26 @@ async function withTarget(
       "（该智能体未绑定任何仓库）";
     return fail(`未找到绑定的仓库「${repoName}」。当前可用：${available}`);
   }
-  if (target.repo.provider !== "jihulab") {
-    return fail(
-      `git_platform_* 目前仅支持 GitLab 兼容平台（jihulab），仓库 ${target.repo.name} 是 ${target.repo.provider}`,
-    );
-  }
-  const token = await tokenFor(deps, target.repo);
-  if (!token) {
-    const hint = target.repo.credentialCode
-      ? `请在「我的凭证」填写模板 ${target.repo.credentialCode} 的值（key: token）`
-      : `请为仓库 ${target.repo.name} 绑定凭证模板（credentialCode）`;
-    return fail(`仓库 ${target.repo.name} 缺少访问凭证：${hint}`);
-  }
-  return run(target, token);
+  return run(target, await credentialFor(deps, target.repo));
+}
+
+/** API 工具前置：withRepo + token 必须存在（私有平台 API 调用必需） */
+async function withTarget(
+  deps: GitPlatformToolsDeps,
+  repoName: string,
+  run: (target: RepoTarget, token: string) => Promise<ToolResult>,
+): Promise<ToolResult> {
+  return withRepo(deps, repoName, async (target, credential) => {
+    if (target.repo.provider !== "jihulab") {
+      return fail(
+        `git_platform_* 目前仅支持 GitLab 兼容平台（jihulab），仓库 ${target.repo.name} 是 ${target.repo.provider}`,
+      );
+    }
+    if (!credential) {
+      return fail(`仓库 ${target.repo.name} 缺少访问凭证：${credentialMissingHint(target.repo)}`);
+    }
+    return run(target, credential.accessToken);
+  });
 }
 
 async function apiGet(
@@ -245,13 +280,14 @@ export function gitPlatformToolDefinitions(deps: GitPlatformToolsDeps): SdkMcpTo
   ];
 }
 
-/** 装配 donger-git SDK MCP server（agent 绑定了 git 仓库时由编排层挂载） */
+/** 装配 donger-git SDK MCP server（agent 绑定了 git 仓库时由编排层挂载）：
+ * CLI 工作区工具（git-workspace-tools，provider 无关）+ 平台 API 工具（当前 jihulab）。 */
 export function createGitPlatformToolsServer(
   deps: GitPlatformToolsDeps,
 ): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: "donger-git",
-    version: "1.0.0",
-    tools: gitPlatformToolDefinitions(deps),
+    version: "1.1.0",
+    tools: [...gitWorkspaceToolDefinitions(deps), ...gitPlatformToolDefinitions(deps)],
   });
 }
