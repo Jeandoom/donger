@@ -3,6 +3,7 @@ import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import { matchesShellGit } from "../domain/git-shell-guard.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 
@@ -59,6 +60,21 @@ export class ClaudeAgentRunner implements AgentRunner {
             return {
               behavior: "deny" as const,
               message: `工具 ${toolName} 不在该智能体的允许列表内（allowedTools）`,
+              toolUseID: ctx.toolUseID,
+            };
+          }
+          // shell git 守卫（收口防线 2）：agent 会话默认禁止 Bash 直跑 git，
+          // 引导用 donger-git 工具；gitAllowShellGit=true 放行（undefined=无 agent 不启用）。
+          if (
+            toolName === "Bash" &&
+            opts.gitAllowShellGit === false &&
+            typeof input.command === "string" &&
+            matchesShellGit(input.command)
+          ) {
+            return {
+              behavior: "deny" as const,
+              message:
+                "git 操作请使用 donger-git 工具（git_clone/git_pull/git_push 等）。如确需 shell git，请在智能体配置中开启「允许 shell git」。",
               toolUseID: ctx.toolUseID,
             };
           }

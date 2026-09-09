@@ -87,7 +87,14 @@ const CreateAgentShape = {
   gitRepositories: z
     .array(AgentGitRepositorySchema)
     .optional()
-    .describe("绑定的 git 仓库（无凭证 HTTPS 地址；私有仓库须配 credentialCode）"),
+    .describe(
+      "绑定的 git 仓库。三步：先选平台（github/gitee/jihulab）→ 再给 HTTPS 地址（不收 SSH，无凭证内嵌）→ 私有仓库配 credentialCode（kind=git 的凭证模板）。绑定后 donger-git 工具（git_clone/git_pull/git_push 等）自动挂载",
+    ),
+  /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具）；须与用户确认后再开 */
+  gitAllowShellGit: z
+    .boolean()
+    .optional()
+    .describe("允许 shell git（默认关；开启后绕过工具守卫，git push 仍走审批门）"),
   mcpServers: z.array(McpServerConfigSchema).optional(),
 };
 const UpdateAgentShape = {
@@ -100,6 +107,7 @@ const UpdateAgentShape = {
   scenario: z.enum(SCENARIO_KEYS).optional(),
   credentials: z.array(z.string()).optional(),
   gitRepositories: z.array(AgentGitRepositorySchema).optional(),
+  gitAllowShellGit: z.boolean().optional(),
   mcpServers: z.array(McpServerConfigSchema).optional(),
 };
 const WriteSkillShape = {
@@ -166,6 +174,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           scenario: a.scenario,
           credentials: a.credentials ?? [],
           gitRepositories: a.gitRepositories ?? [],
+          gitAllowShellGit: a.gitAllowShellGit ?? false,
           mcpServers: a.mcpServers ?? [],
           llm: {},
         });
@@ -197,6 +206,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
         if (a.scenario !== undefined) patch.scenario = a.scenario;
         if (a.credentials !== undefined) patch.credentials = a.credentials;
         if (a.gitRepositories !== undefined) patch.gitRepositories = a.gitRepositories;
+        if (a.gitAllowShellGit !== undefined) patch.gitAllowShellGit = a.gitAllowShellGit;
         if (a.mcpServers !== undefined) patch.mcpServers = a.mcpServers;
         // 合并视图供告警汇总（credentialCode → credentials 的归一化由 store 收口）
         const merged = normalizeAgentCredentialRefs({ ...agent, ...patch });

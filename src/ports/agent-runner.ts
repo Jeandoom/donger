@@ -30,6 +30,11 @@ export interface RunOptions {
   credentialsEnv?: Record<string, string>;
   /** 透传 SDK allowedTools（工具白名单） */
   allowedTools?: string[];
+  /**
+   * shell git 守卫（收口防线 2）：false=agent 会话禁止 Bash 跑 git（引导用 donger-git
+   * 工具）；true=放行（push 仍有 deploy 审批门）；undefined=无 agent 会话，不启用守卫。
+   */
+  gitAllowShellGit?: boolean;
   /** 透传 SDK mcpServers（已解密） */
   mcpServers?: McpServerConfig[];
   /** in-process 平台工具 MCP server（assist 会话注入；instance 不可序列化，仅运行时使用） */

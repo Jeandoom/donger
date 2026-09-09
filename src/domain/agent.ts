@@ -36,6 +36,11 @@ export const AgentSchema = z.object({
   /** 勾选的凭证模板 code（弱引用：执行时按当前用户解析，未配置的注入 _MISSING 标记） */
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,
+  /**
+   * 允许 agent 在 shell 中直接执行 git 命令（默认 false=只准走 donger-git 工具；
+   * 开态下 git push 等仍走 deploy 审批门兜底）。
+   */
+  gitAllowShellGit: z.boolean().default(false),
   extensionDirectories: AgentExtensionDirectoriesSchema,
   /** 所属场景（builder 创建时选定；缺省 = 不做场景校验） */
   scenario: z.enum(SCENARIO_KEYS).optional(),

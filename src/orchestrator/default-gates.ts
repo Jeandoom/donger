@@ -17,5 +17,16 @@ export function createDefaultGates(): GateRouter {
   for (const t of ["create_agent", "update_agent", "write_skill"]) {
     gates.add({ gateId: "authoring", toolName: `mcp__donger-platform__${t}` });
   }
+  // git 收口防线 3：donger-git 外发写操作人工确认（本地可撤销操作 commit/merge 不设门）
+  gates.describe({ id: "git-write", description: "Git 写操作审批（push/建仓/建分支/MR/合并）" });
+  for (const t of [
+    "git_push",
+    "git_create_repo",
+    "git_create_branch",
+    "git_create_mr",
+    "git_merge_mr",
+  ]) {
+    gates.add({ gateId: "git-write", toolName: `mcp__donger-git__${t}` });
+  }
   return gates;
 }

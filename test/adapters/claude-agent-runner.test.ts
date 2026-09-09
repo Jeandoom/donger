@@ -231,6 +231,50 @@ describe("ClaudeAgentRunner", () => {
     expect(ok?.behavior).toBe("allow");
   });
 
+  it("canUseTool：shell git 守卫矩阵（防线 2）", async () => {
+    mockStream([]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+
+    // gitAllowShellGit=false（agent 默认）：Bash 跑 git → deny 并引导工具
+    await collect(
+      runner.run(task, { ...opts, gitAllowShellGit: false }, async () => ({ approved: true })),
+    );
+    const denied = await captured?.canUseTool?.(
+      "Bash",
+      { command: "git push origin main" },
+      { toolUseID: "tu-git" },
+    );
+    expect(denied?.behavior).toBe("deny");
+    expect(denied?.message).toContain("donger-git");
+    // 非 git 命令不受影响
+    const other = await captured?.canUseTool?.(
+      "Bash",
+      { command: "ls -la" },
+      { toolUseID: "tu-ls" },
+    );
+    expect(other?.behavior).toBe("allow");
+
+    // gitAllowShellGit=true（逃生门）：放行（push 由 deploy 审批门在 gates.match 兜底）
+    await collect(
+      runner.run(task, { ...opts, gitAllowShellGit: true }, async () => ({ approved: true })),
+    );
+    const allowed = await captured?.canUseTool?.(
+      "Bash",
+      { command: "git status" },
+      { toolUseID: "tu-ok" },
+    );
+    expect(allowed?.behavior).toBe("allow");
+
+    // undefined（无 agent 会话）：不启用守卫，保持现状
+    await collect(runner.run(task, { ...opts }, async () => ({ approved: true })));
+    const legacy = await captured?.canUseTool?.(
+      "Bash",
+      { command: "git status" },
+      { toolUseID: "tu-legacy" },
+    );
+    expect(legacy?.behavior).toBe("allow");
+  });
+
   it("result 携带 usage（snake_case → camelCase）", async () => {
     mockStream([
       {
