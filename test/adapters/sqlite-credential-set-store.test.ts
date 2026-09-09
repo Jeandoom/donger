@@ -99,6 +99,23 @@ describe("SqliteCredentialSetStore", () => {
     expect((await store.getTemplate("git1"))?.kind).toBe("generic");
   });
 
+  it("repoUrl：git 模板仓库声明往返", async () => {
+    await store.createTemplate(
+      "git1",
+      { ...templateInput, kind: "git", repoUrl: "https://jihulab.com/acme/app.git" },
+      owner,
+    );
+    expect((await store.getTemplate("git1"))?.repoUrl).toBe("https://jihulab.com/acme/app.git");
+    await store.updateTemplate("git1", { ...templateInput, kind: "git", repoUrl: undefined });
+    expect((await store.getTemplate("git1"))?.repoUrl).toBeUndefined();
+    await store.updateTemplate("git1", {
+      ...templateInput,
+      kind: "git",
+      repoUrl: "https://gitlab.corp.io/t/a.git",
+    });
+    expect((await store.getTemplate("git1"))?.repoUrl).toBe("https://gitlab.corp.io/t/a.git");
+  });
+
   it("migrate：旧库无 kind 列时自动补列并回填 generic", async () => {
     const db = new Database(":memory:");
     db.exec(`
@@ -115,8 +132,13 @@ describe("SqliteCredentialSetStore", () => {
     const legacyStore = new SqliteCredentialSetStore(db, KEY_HEX);
     legacyStore.migrate();
     expect((await legacyStore.getTemplate("legacy"))?.kind).toBe("generic");
-    await legacyStore.createTemplate("fresh", { ...templateInput, kind: "git" }, owner);
-    expect((await legacyStore.getTemplate("fresh"))?.kind).toBe("git");
+    expect((await legacyStore.getTemplate("legacy"))?.repoUrl).toBeUndefined();
+    await legacyStore.createTemplate(
+      "fresh",
+      { ...templateInput, kind: "git", repoUrl: "https://ghe.corp.io/a/b.git" },
+      owner,
+    );
+    expect((await legacyStore.getTemplate("fresh"))?.repoUrl).toBe("https://ghe.corp.io/a/b.git");
     db.close();
   });
 });
