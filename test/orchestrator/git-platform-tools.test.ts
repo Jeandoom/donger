@@ -65,11 +65,15 @@ function fakeFetch(status: number, body: string) {
   return vi.fn(async () => ({ status, text: async () => body }) as Response);
 }
 
-function setup(agent: Agent, opts?: { values?: Record<string, string>; fetchImpl?: typeof fetch }) {
+function setup(
+  agent: Agent,
+  opts?: { values?: Record<string, string> | undefined; fetchImpl?: typeof fetch },
+) {
+  const values = opts && "values" in opts ? opts.values : { token: "pat-1" };
   return gitPlatformToolDefinitions({
     user: USER,
     agent,
-    credentialSets: fakeCredentialSets(opts?.values ?? { token: "pat-1" }),
+    credentialSets: fakeCredentialSets(values),
     fetchImpl: opts?.fetchImpl ?? fakeFetch(200, "[]"),
   });
 }
