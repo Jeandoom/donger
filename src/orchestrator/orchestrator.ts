@@ -36,6 +36,7 @@ import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
+import { createKbToolsServer } from "./kb-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import {
   acceptAsk,
@@ -252,6 +253,11 @@ export class Orchestrator {
         gitMaterializeItems: p.gitMaterializeItems,
       });
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+      // 业务知识库工具恒挂载（路径安全限制在 <用户工作区>/knowledge_base/ 内；可用性由白名单控制）
+      base = {
+        ...base,
+        kbTools: createKbToolsServer({ kbRoot: join(p.user.homeDir, "knowledge_base") }),
+      };
       // agent 绑定了 git 仓库时注入 git 平台元数据工具（donger-git，只读；凭证按访问者现取）
       if (p.agent && p.agent.gitRepositories.length > 0) {
         base = {

@@ -36,6 +36,8 @@ export interface RunOptions {
   platformTools?: McpSdkServerConfigWithInstance;
   /** in-process git 平台元数据 MCP server（agent 绑定 git 仓库时注入） */
   gitPlatformTools?: McpSdkServerConfigWithInstance;
+  /** in-process 业务知识库 MCP server（恒挂载，可用性由 agent tools 白名单控制） */
+  kbTools?: McpSdkServerConfigWithInstance;
 }
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */
