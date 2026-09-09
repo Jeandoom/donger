@@ -1,4 +1,4 @@
-import { parseAgent, type Agent } from "../domain/agent.js";
+import { type Agent, parseAgent } from "../domain/agent.js";
 import { renderAgentRegistry } from "../domain/dispatcher-registry.js";
 import { SCENARIO_KEYS, SCENARIO_PRESETS } from "../domain/scenario-preset.js";
 

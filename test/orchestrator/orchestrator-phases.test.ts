@@ -15,7 +15,6 @@ import type { SkillPack } from "../../src/domain/skill-pack.js";
 import type { ApprovalCard, RunnerEvent, Task } from "../../src/domain/types.js";
 import type { User, UserRole } from "../../src/domain/user.js";
 import { createDefaultGates } from "../../src/orchestrator/default-gates.js";
-import { ensureDispatcherKb } from "../../src/orchestrator/dispatch-kb.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../../src/ports/agent-runner.js";
@@ -200,6 +199,8 @@ function build(
   convStore: ConversationStore,
   skills: string[] = ["x-design", "x-execute", "x-accept"],
   agentOverrides: Partial<Agent> = {},
+  /** listByOwner 返回值：模拟 dispatcher 登记表的可见 agent 集合 */
+  visible: Agent[] = [],
 ): { orch: Orchestrator; store: InMemoryTaskStore } {
   const store = new InMemoryTaskStore();
   const agent: Agent = {
@@ -217,15 +218,14 @@ function build(
   };
   const agentStore = {
     get: async () => ({ ...agent, ...agentOverrides }),
-    listByOwner: async () => [],
+    listByOwner: async () => visible,
     listSharedWith: async () => [],
+    listAll: async () => visible,
     create: async () => agent,
     update: async () => agent,
     delete: async () => {},
   } as unknown as import("../../src/ports/agent-store.js").AgentStore;
   const { mgr: runtimeMgr, credentialSets, packStore, installer } = makeRuntimeMgr(convStore);
-  const kbDir = mkdtempSync(join(tmpdir(), "donger-kb-"));
-  ensureDispatcherKb(kbDir);
   const orch = new Orchestrator({
     store,
     userStore: mockUserStore(),
@@ -240,7 +240,6 @@ function build(
     agentStore,
     installer,
     skillPackStore: packStore,
-    kbDir,
   });
   return { orch, store };
 }
@@ -275,6 +274,41 @@ describe("三段式生命周期", () => {
     // 阶段间 resume 链：execute 轮 resume = design 轮 sessionId
     expect(runner.optsList[2]?.resume).toBe("sdk-2");
     expect(runner.optsList[3]?.resume).toBe("sdk-3");
+  });
+
+  it("dispatcher 登记表读时渲染：提示词只含当前用户可见的 agent", async () => {
+    // 可见集合含自有 agent a1：登记表进入 dispatcher 系统提示
+    const runner = new ScriptedRunner([{ result: ROUTING_JSON }, { result: "执行完成" }]);
+    const channel = seqChannel([]);
+    const { orch } = build(runner, channel, statefulConvStore(""), ["x-execute"], {}, [
+      {
+        id: "a1",
+        ownerId: "u-webu",
+        name: "A",
+        description: "演示智能体",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        credentials: [],
+        gitRepositories: [],
+        extensionDirectories: [],
+        llm: {},
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      },
+    ]);
+    await orch.handleMessage(MSG);
+    expect(runner.optsList[0]?.systemPromptAppend).toContain("a1");
+    expect(runner.optsList[0]?.systemPromptAppend).toContain("## 场景词表");
+
+    // 可见集合为空：登记表空表提示（非 chat 类任务转 builder 兜底）
+    const runner2 = new ScriptedRunner([
+      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+    ]);
+    const { orch: orch2 } = build(runner2, seqChannel([]), statefulConvStore(""));
+    await orch2.handleMessage(MSG);
+    expect(runner2.optsList[0]?.systemPromptAppend).toContain("当前暂无可用智能体");
   });
 
   it("方案驳回→重设计（带原因）→通过→…→done（rejectionCount 不增）", async () => {

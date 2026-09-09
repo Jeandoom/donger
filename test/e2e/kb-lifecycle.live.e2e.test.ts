@@ -1,12 +1,12 @@
 // 方案一 · 知识库的创建、查询与维护（真机 E2E，主题：A 股交易数据与交易行为分析）
 //
 // 全程真实：真实 GLM 驱动 dispatcher / Agent Builder / 执行智能体；平台工具（write_skill /
-// create_agent / update_kb_registry / finish_builder）真实落库；登记表真实写入。
-// 断言只看事实：登记表行、agent/技能入库、任务终态、分派反馈——不 mock 任何数据。
+// create_agent / finish_builder）真实落库；agent 入库即自动进入分发登记表（DB 动态渲染）。
+// 断言只看事实：agent/技能入库、任务终态、分派反馈——不 mock 任何数据。
 //
 // 运行条件：E2E_LIVE=1 且 .env 提供 LLM 密钥；单场景耗时以分钟计。
 //   set E2E_LIVE=1 && npx vitest run test/e2e/kb-lifecycle.live.e2e.test.ts
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApi } from "../../cli/src/api.js";
@@ -15,7 +15,6 @@ import {
   CLI_TOKEN,
   type LiveBackend,
   liveEnabled,
-  registerAgent,
   startLiveBackend,
 } from "./helpers/live-backend.js";
 
@@ -55,7 +54,7 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
     backend = await startLiveBackend("kb");
 
     // 既有知识库 agent：kb-keeper（挂只读 A 股知识库目录，真实 KB 文件）
-    const keeper = await backend.agentStore.create({
+    const _keeper = await backend.agentStore.create({
       ownerId: backend.user.id,
       name: "kb-keeper",
       description: "A 股交易知识库查询",
@@ -73,13 +72,6 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
         },
       ],
       llm: {},
-    });
-    registerAgent(backend.kbDir, {
-      agentId: keeper.id,
-      name: keeper.name,
-      duty: "A股知识库条目查询（价格规则/行为口径）",
-      skills: keeper.skills,
-      taskTypes: "知识查询",
     });
     mkdirSync(join(backend.kbDir, "a-share"), { recursive: true });
     writeFileSync(join(backend.kbDir, "a-share", "价格与交易规则.md"), KB_RULES, "utf8");
@@ -113,12 +105,14 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
     await cli.see("🔔", 300_000);
     await cli.approveAll("已解除绑定");
 
-    // ③ 事实断言：智能体/登记表是真实变更
-    const agents = (await backend.api.call("GET", "/api/agents")) as Array<{ name: string }>;
-    expect(agents.some((a) => a.name === "behaviour-analyst")).toBe(true);
-    const registry = readFileSync(join(backend.kbDir, "dispatcher", "agents.md"), "utf8");
-    expect(registry).toContain("behaviour-analyst");
-    expect(registry).toContain("北向资金与龙虎榜交易行为分析");
+    // ③ 事实断言：智能体是真实变更（入库即自动进入分发登记表）
+    const agents = (await backend.api.call("GET", "/api/agents")) as Array<{
+      name: string;
+      description?: string;
+    }>;
+    const created = agents.find((a) => a.name === "behaviour-analyst");
+    expect(created).toBeDefined();
+    expect(created?.description).toContain("北向资金");
 
     // ④ 同会话重发原任务 → dispatcher 路由到新智能体 → 真实执行 → done
     cli.type(task);
@@ -160,12 +154,12 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
     }
     await cli.exit();
 
-    // 任务层面的事实断言：至少一个 done 任务，且登记表仍完好（维护未破坏结构）
+    // 任务层面的事实断言：至少一个 done 任务，且 kb-keeper 仍在册（可继续被路由）
     const tasks = (await backend.api.call("GET", "/api/tasks?status=done")) as Array<{
       prompt: string;
     }>;
     expect(tasks.length).toBeGreaterThan(0);
-    const registry = readFileSync(join(backend.kbDir, "dispatcher", "agents.md"), "utf8");
-    expect(registry).toContain("kb-keeper");
+    const agents = (await backend.api.call("GET", "/api/agents")) as Array<{ name: string }>;
+    expect(agents.some((a) => a.name === "kb-keeper")).toBe(true);
   }, 900_000);
 });

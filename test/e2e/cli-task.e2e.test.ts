@@ -2,10 +2,9 @@
 //   后端 = 真实 WebChannel（HTTP + SSE）+ Orchestrator + SQLite 存储 + kb 分发知识库；
 //   CLI  = 真实 runChat REPL（in-process，stdin/stdout 注入流）+ 真实 createApi HTTP 客户端 + 真实 token exchange。
 // runner 用脚本队列替换真实 LLM：dispatcher 出路由 JSON、执行轮出文本/工具行/挂起，其余全链路保真。
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApi, type DongerApi } from "../../cli/src/api.js";
@@ -27,10 +26,8 @@ import { SqliteUsageStore } from "../../src/adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import type { Agent } from "../../src/domain/agent.js";
-import { appendDispatcherAgentRow } from "../../src/domain/dispatcher-registry.js";
 import type { RunnerEvent, Task } from "../../src/domain/types.js";
 import { createDefaultGates } from "../../src/orchestrator/default-gates.js";
-import { ensureDispatcherKb } from "../../src/orchestrator/dispatch-kb.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../../src/ports/agent-runner.js";
@@ -127,20 +124,6 @@ async function startBackend(): Promise<Backend> {
     mcpServers: [],
     llm: {},
   });
-  const kbDir = join(dir, "kb");
-  ensureDispatcherKb(kbDir);
-  const agentsMd = join(kbDir, "dispatcher", "agents.md");
-  writeFileSync(
-    agentsMd,
-    appendDispatcherAgentRow(readFileSync(agentsMd, "utf8"), {
-      agentId: agent.id,
-      name: agent.name,
-      duty: "E2E 演示任务",
-      skills: agent.skills,
-      taskTypes: "e2e-demo",
-    }),
-    "utf8",
-  );
 
   const installer: SkillInstaller = {
     installFromGit: async () => ({}) as never,
@@ -197,7 +180,6 @@ async function startBackend(): Promise<Backend> {
     credentialSets,
     agentStore,
     agentShareStore,
-    kbDir,
     installer,
     skillPackStore,
   });
@@ -440,7 +422,7 @@ describe("CLI task 能力 E2E（真实 HTTP+SSE 后端）", () => {
       expect(doneTask?.status).toBe("done");
 
       // tasks result <id> 需完整 id（chat 内 /result 支持前缀，命令族按精确 id）
-      await runCommand("result", ["tasks", "result", doneTask!.id]);
+      await runCommand("result", ["tasks", "result", doneTask?.id]);
       expect(captured.join("")).toContain("命令族回看输出");
     } finally {
       console.log = origLog;

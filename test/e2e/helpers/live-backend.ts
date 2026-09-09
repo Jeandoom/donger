@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -22,10 +22,8 @@ import { SqliteUsageStore } from "../../../src/adapters/sqlite-usage-store.js";
 import { SqliteUserStore } from "../../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../../src/adapters/web-channel.js";
 import { loadConfig } from "../../../src/config.js";
-import { appendDispatcherAgentRow } from "../../../src/domain/dispatcher-registry.js";
 import type { User } from "../../../src/domain/user.js";
 import { createDefaultGates } from "../../../src/orchestrator/default-gates.js";
-import { ensureDispatcherKb } from "../../../src/orchestrator/dispatch-kb.js";
 import { Orchestrator } from "../../../src/orchestrator/orchestrator.js";
 import { RuntimeManager } from "../../../src/orchestrator/runtime-manager.js";
 import { loadOrGenerateAppSecret } from "../../../src/util/app-secret.js";
@@ -111,7 +109,6 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
   const user = await userStore.getOrCreateByIdentity("internal", "cli-admin", "cli-admin");
 
   const kbDir = join(dir, "kb");
-  ensureDispatcherKb(kbDir);
 
   const installer = new LocalSkillInstaller({
     packStore: skillPackStore,
@@ -164,7 +161,6 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
     credentialSets,
     agentStore,
     agentShareStore,
-    kbDir,
     installer,
     skillPackStore,
   });
@@ -192,15 +188,6 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-}
-
-/** 向分发登记表追加一行（真实写 kb/dispatcher/agents.md） */
-export function registerAgent(
-  kbDir: string,
-  row: { agentId: string; name: string; duty: string; skills: string[]; taskTypes: string },
-): void {
-  const file = join(kbDir, "dispatcher", "agents.md");
-  writeFileSync(file, appendDispatcherAgentRow(readFileSync(file, "utf8"), row), "utf8");
 }
 
 /** 在 agent 共享工作区（V16）初始化一个真实 git 仓库；E2E_GIT_REMOTE 存在时挂为 origin */

@@ -11,7 +11,6 @@ import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store
 import type { RunnerEvent, Task } from "../../src/domain/types.js";
 import type { UserRole } from "../../src/domain/user.js";
 import { createDefaultGates } from "../../src/orchestrator/default-gates.js";
-import { ensureDispatcherKb } from "../../src/orchestrator/dispatch-kb.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { RuntimeManager } from "../../src/orchestrator/runtime-manager.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../../src/ports/agent-runner.js";
@@ -152,12 +151,12 @@ function mockTranscriptStore(): TranscriptStore {
   };
 }
 
-/** 精简装配；withKb=true 时装配 dispatcher 知识库（task-flow 入口生效） */
+/** 精简装配；withDispatch=true 时装配空 agentStore（任务分发入口生效） */
 function build(
   runner: AgentRunner,
   channel: Channel,
   auditStore = new InMemoryAuditStore(),
-  opts: { withKb?: boolean; agentId?: string } = {},
+  opts: { withDispatch?: boolean; agentId?: string } = {},
 ): { orch: Orchestrator; store: InMemoryTaskStore; auditStore: InMemoryAuditStore } {
   const store = new InMemoryTaskStore();
   const db = new Database(":memory:");
@@ -190,11 +189,6 @@ function build(
     installer: fakeInstaller,
     builtinSkillsDir: "",
   });
-  let kbDir: string | undefined;
-  if (opts.withKb) {
-    kbDir = mkdtempSync(join(tmpdir(), "donger-kb-"));
-    ensureDispatcherKb(kbDir);
-  }
   const orch = new Orchestrator({
     store,
     userStore: mockUserStore(),
@@ -206,9 +200,18 @@ function build(
     channel,
     runtimeMgr,
     credentialSets,
+    ...(opts.withDispatch
+      ? {
+          agentStore: {
+            get: async () => undefined,
+            listByOwner: async () => [],
+            listSharedWith: async () => [],
+            listAll: async () => [],
+          },
+        }
+      : {}),
     installer: fakeInstaller,
     skillPackStore: packStore,
-    ...(kbDir ? { kbDir } : {}),
   });
   return { orch, store, auditStore };
 }
@@ -310,7 +313,7 @@ describe("task flow steps", () => {
     const runner = new ScriptedRunner([routing, "你好呀，有什么可以帮你？"]);
     const channel = seqChannel();
     const { orch, store } = build(runner, channel, new InMemoryAuditStore(), {
-      withKb: true,
+      withDispatch: true,
     });
 
     await orch.handleMessage(MSG("在吗"));

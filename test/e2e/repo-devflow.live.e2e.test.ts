@@ -19,7 +19,6 @@ import {
   initAgentRepo,
   type LiveBackend,
   liveEnabled,
-  registerAgent,
   runIn,
   startLiveBackend,
 } from "./helpers/live-backend.js";
@@ -153,7 +152,7 @@ describe("方案二 · 代码仓库开发/测试/部署/bugfix（真机 GLM）",
   let backend: LiveBackend;
   let jwt: string;
   let repo: GitFixture;
-  let quantDevId = "";
+  let _quantDevId = "";
 
   beforeAll(async () => {
     if (!liveEnabled()) return;
@@ -185,14 +184,7 @@ describe("方案二 · 代码仓库开发/测试/部署/bugfix（真机 GLM）",
       mcpServers: [],
       llm: {},
     });
-    quantDevId = dev.id;
-    registerAgent(backend.kbDir, {
-      agentId: dev.id,
-      name: dev.name,
-      duty: "A股量化指标开发/测试/部署（a-share-quant 仓库）",
-      skills: dev.skills,
-      taskTypes: "quant-dev",
-    });
+    _quantDevId = dev.id;
 
     // 真实 git init 到 agent 共享工作区（V16：跨任务/跨会话延续）；E2E_GIT_REMOTE 可挂远程
     repo = initAgentRepo(

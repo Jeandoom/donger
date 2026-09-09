@@ -49,6 +49,14 @@ describe("SqliteAgentStore", () => {
     expect((await store.listByOwner("u1")).map((a) => a.name)).toEqual(["A"]);
   });
 
+  it("listAll 返回全量（不分 owner）", async () => {
+    const store = new SqliteAgentStore(db, cipher);
+    store.migrate();
+    await store.create(input);
+    await store.create({ ...input, name: "B", ownerId: "u2" });
+    expect((await store.listAll()).map((a) => a.name).sort()).toEqual(["A", "B"]);
+  });
+
   it("update 修改字段并刷新 updatedAt", async () => {
     const store = new SqliteAgentStore(db, cipher);
     store.migrate();

@@ -119,9 +119,9 @@ export class SqliteAgentStore implements AgentStore {
   }
 
   async listAll(): Promise<Agent[]> {
-    const rows = this.db
-      .prepare("SELECT data FROM agents ORDER BY updatedAt DESC")
-      .all() as { data: string }[];
+    const rows = this.db.prepare("SELECT data FROM agents ORDER BY updatedAt DESC").all() as {
+      data: string;
+    }[];
     return rows.map((r) => this.unmarshal(r.data));
   }
 
