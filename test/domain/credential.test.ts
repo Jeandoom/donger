@@ -83,4 +83,32 @@ describe("凭证 code 与结构校验", () => {
       CredentialTemplateInputSchema.safeParse({ code: "c1", name: "凭证", keySpecs: [] }).success,
     ).toBe(false);
   });
+
+  it("kind：缺省 generic；仅接受 generic/git", () => {
+    const parsed = CredentialTemplateInputSchema.safeParse({
+      code: "c1",
+      name: "凭证",
+      keySpecs: [{ key: "k" }],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.kind).toBe("generic");
+
+    const git = CredentialTemplateInputSchema.safeParse({
+      code: "c1",
+      name: "凭证",
+      kind: "git",
+      keySpecs: [{ key: "k" }],
+    });
+    expect(git.success).toBe(true);
+    if (git.success) expect(git.data.kind).toBe("git");
+
+    expect(
+      CredentialTemplateInputSchema.safeParse({
+        code: "c1",
+        name: "凭证",
+        kind: "ssh",
+        keySpecs: [{ key: "k" }],
+      }).success,
+    ).toBe(false);
+  });
 });

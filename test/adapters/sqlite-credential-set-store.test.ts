@@ -81,6 +81,43 @@ describe("SqliteCredentialSetStore", () => {
     const filled = await store.getFilledValues(owner, ["a", "b"]);
     expect(filled.map((f) => f.code)).toEqual(["b"]);
   });
+
+  it("kind：缺省 generic；git 往返与更新", async () => {
+    await store.createTemplate("g1", templateInput, owner);
+    await store.createTemplate("git1", { ...templateInput, kind: "git" }, owner);
+    expect((await store.getTemplate("g1"))?.kind).toBe("generic");
+    expect((await store.getTemplate("git1"))?.kind).toBe("git");
+
+    // updateTemplate 是整体覆写：显式带 kind 才变更；显式保持 git 的更新不受影响
+    await store.updateTemplate("g1", { ...templateInput, kind: "git" });
+    expect((await store.getTemplate("g1"))?.kind).toBe("git");
+    await store.updateTemplate("git1", { ...templateInput, name: "改名", kind: "git" });
+    expect((await store.getTemplate("git1"))?.kind).toBe("git");
+    // 不带 kind 的整体覆写回落 generic（REST 层经 zod default 同样显式传 generic）
+    await store.updateTemplate("git1", { ...templateInput, name: "改名2" });
+    expect((await store.getTemplate("git1"))?.kind).toBe("generic");
+  });
+
+  it("migrate：旧库无 kind 列时自动补列并回填 generic", async () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE credential_templates (
+        code TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT,
+        keySpecsJson TEXT NOT NULL, createdBy TEXT NOT NULL,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+      );
+    `);
+    db.prepare(
+      `INSERT INTO credential_templates (code,name,keySpecsJson,createdBy,createdAt,updatedAt)
+       VALUES ('legacy','旧模板','[]','u','t','t')`,
+    ).run();
+    const legacyStore = new SqliteCredentialSetStore(db, KEY_HEX);
+    legacyStore.migrate();
+    expect((await legacyStore.getTemplate("legacy"))?.kind).toBe("generic");
+    await legacyStore.createTemplate("fresh", { ...templateInput, kind: "git" }, owner);
+    expect((await legacyStore.getTemplate("fresh"))?.kind).toBe("git");
+    db.close();
+  });
 });
 
 function byCode(list: Array<{ code: string }>): string[] {

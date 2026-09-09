@@ -11,6 +11,7 @@ interface TemplateRow {
   code: string;
   name: string;
   description: string | null;
+  kind: string | null;
   keySpecsJson: string;
   createdBy: string;
   createdAt: string;
@@ -38,12 +39,22 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
         code        TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
         description TEXT,
+        kind        TEXT NOT NULL DEFAULT 'generic',
         keySpecsJson TEXT NOT NULL,
         createdBy   TEXT NOT NULL,
         createdAt   TEXT NOT NULL,
         updatedAt   TEXT NOT NULL
       );
     `);
+    // 旧库无 kind 列 → 补列（git 类凭证不注入 env，规格 2026-09-09-git-platform-tools-design）
+    const cols = this.db.prepare("PRAGMA table_info(credential_templates)").all() as Array<{
+      name: string;
+    }>;
+    if (!cols.some((c) => c.name === "kind")) {
+      this.db.exec(
+        "ALTER TABLE credential_templates ADD COLUMN kind TEXT NOT NULL DEFAULT 'generic'",
+      );
+    }
     // 用户值：按 (userId, code) 隔离；负载整体加密，仅注入链路解密
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS user_credential_values (
@@ -92,13 +103,14 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO credential_templates (code,name,description,keySpecsJson,createdBy,createdAt,updatedAt)
-         VALUES (?,?,?,?,?,?,?)`,
+        `INSERT INTO credential_templates (code,name,description,kind,keySpecsJson,createdBy,createdAt,updatedAt)
+         VALUES (?,?,?,?,?,?,?,?)`,
       )
       .run(
         code,
         input.name,
         input.description ?? null,
+        input.kind ?? "generic",
         JSON.stringify(input.keySpecs),
         createdBy,
         now,
@@ -110,12 +122,13 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     const res = this.db
       .prepare(
         `UPDATE credential_templates
-         SET name=?, description=?, keySpecsJson=?, updatedAt=?
+         SET name=?, description=?, kind=?, keySpecsJson=?, updatedAt=?
          WHERE code=?`,
       )
       .run(
         input.name,
         input.description ?? null,
+        input.kind ?? "generic",
         JSON.stringify(input.keySpecs),
         new Date().toISOString(),
         code,
@@ -197,6 +210,7 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
       code: r.code,
       name: r.name,
       description: r.description ?? undefined,
+      kind: r.kind === "git" ? "git" : "generic",
       keySpecs: JSON.parse(r.keySpecsJson),
       createdBy: r.createdBy,
       createdAt: r.createdAt,

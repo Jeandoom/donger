@@ -2211,6 +2211,7 @@ export class WebChannel implements Channel {
           code,
           name: tpl?.name ?? code,
           description: tpl?.description,
+          kind: tpl?.kind ?? "generic",
           keySpecs,
           filledKeys: keySpecs.filter((k) => values[k.key] !== undefined).map((k) => k.key),
           missingKeys: keySpecs.filter((k) => values[k.key] === undefined).map((k) => k.key),

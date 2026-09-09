@@ -222,6 +222,46 @@ describe("RuntimeManager", () => {
     expect(runOptions.sessionStore).toBeDefined();
   });
 
+  it("prepare：git 类凭证（kind=git）不注入 env，token 仅凭证桥现取", async () => {
+    await credStore.createTemplate(
+      "generic-ak",
+      { name: "普通凭证", keySpecs: [{ key: "K" }] },
+      "u1",
+    );
+    await credStore.createTemplate(
+      "git-pat",
+      { name: "git PAT", kind: "git", keySpecs: [{ key: "token" }] },
+      "u1",
+    );
+    await credStore.upsertValue("u1", "generic-ak", { K: "v" });
+    await credStore.upsertValue("u1", "git-pat", { token: "secret-token" });
+    const m = makeMgr(fakeConvStore([baseConv()]));
+    const agent = {
+      id: "a1",
+      ownerId: "u1",
+      name: "ag",
+      skills: [] as string[],
+      tools: { mode: "all" as const, whitelist: [] },
+      mcpServers: [],
+      credentials: ["generic-ak", "git-pat"],
+      gitRepositories: [],
+      extensionDirectories: [],
+      llm: {},
+      version: 1,
+      createdAt: "t",
+      updatedAt: "t",
+    };
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {
+      agent,
+    });
+    // generic 照常注入；git 类的任何形态（平铺/整体 JSON/_MISSING）都不出现
+    expect(runOptions.credentialsEnv?.GENERIC_AK_K).toBe("v");
+    expect(runOptions.credentialsEnv?.GIT_PAT_TOKEN).toBeUndefined();
+    expect(runOptions.credentialsEnv?.GIT_PAT).toBeUndefined();
+    expect(runOptions.credentialsEnv?.GIT_PAT_MISSING).toBeUndefined();
+    expect(JSON.stringify(runOptions.credentialsEnv)).not.toContain("secret-token");
+  });
+
   it("prepare：停用 pack → 不进 pluginPaths/白名单", async () => {
     await packStore.upsertPack(mkPack({ enabled: false }));
     await packStore.upsertSkills("u1", "p1", [mkSkill()]);

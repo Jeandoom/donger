@@ -94,16 +94,20 @@ export class RuntimeManager {
     }
     const resolved = resolveActiveSkills(packs, skillsByPack, (p) => this.resolvePackPath(user, p));
     // agent 勾选凭证：按当前用户解析（共享 agent 时即访问者自己的值）；未配置的由
-    // Orchestrator 预检问询，此处注入 <CODE>_MISSING=1 兜底，agent 可自检
+    // Orchestrator 预检问询，此处注入 <CODE>_MISSING=1 兜底，agent 可自检。
+    // git 类凭证（kind="git"）不注入 env——token 仅经凭证桥在 donger-git 工具/仓库
+    // 物化内现取，防止 agent 从环境拿到 token 绕过工具直连平台（防线 1）。
     let credentialsEnv: Record<string, string> = {};
     if (opts.agent?.credentials?.length) {
-      const filled = await this.deps.credentialSets.getFilledValues(
-        user.id,
-        opts.agent.credentials,
+      const picked = opts.agent.credentials;
+      const templates = await Promise.all(
+        picked.map((code) => this.deps.credentialSets.getTemplate(code)),
       );
+      const injectable = picked.filter((_, i) => templates[i]?.kind !== "git");
+      const filled = await this.deps.credentialSets.getFilledValues(user.id, injectable);
       credentialsEnv = resolveInjectionEnv(
         filled.map((f) => ({ code: f.code, values: f.values })),
-        opts.agent.credentials,
+        injectable,
       ).env;
     }
 

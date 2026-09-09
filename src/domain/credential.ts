@@ -6,6 +6,16 @@ import { z } from "zod";
 /** code 规范：小写字母/数字开头，小写字母数字--_，供环境变量命名空间映射 */
 export const CREDENTIAL_CODE_PATTERN = /^[a-z0-9][a-z0-9-_]{0,63}$/;
 
+/**
+ * 凭证用途：
+ * - generic：注入 SDK env（<CODE>_<KEY>），供 agent 进程直接读取；
+ * - git：git 平台 PAT 专用，不注入 env——token 仅经凭证桥在 donger-git 工具/
+ *   仓库物化内现取，防止 agent 拿到 token 后绕过工具直连平台（规格
+ *   2026-09-09-git-platform-tools-design.md 防线 1）。
+ */
+export const CredentialKindSchema = z.enum(["generic", "git"]).default("generic");
+export type CredentialKind = z.infer<typeof CredentialKindSchema>;
+
 export const CredentialKeySpecSchema = z.object({
   /** 键名（凭证信息结构里的 k），如 token；注入时映射为 <CODE>_<KEY> 环境变量 */
   key: z
@@ -23,6 +33,7 @@ export const CredentialTemplateSchema = z.object({
   code: z.string().regex(CREDENTIAL_CODE_PATTERN),
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
+  kind: CredentialKindSchema,
   keySpecs: z.array(CredentialKeySpecSchema).min(1).max(32),
   createdBy: z.string(),
   createdAt: z.string(),
@@ -63,6 +74,7 @@ export interface CredentialValueView {
   code: string;
   name: string;
   description?: string;
+  kind: CredentialKind;
   keySpecs: CredentialKeySpec[];
   /** 模板 keySpecs 中用户已填写/未填写的键名（部分填写提示用） */
   filledKeys: string[];
