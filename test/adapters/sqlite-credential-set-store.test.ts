@@ -16,6 +16,7 @@ describe("SqliteCredentialSetStore", () => {
   });
 
   const templateInput = {
+    code: "jihulab-pat",
     name: "极狐 PAT",
     description: "jihulab 访问令牌",
     keySpecs: [{ key: "token", label: "访问令牌" }],

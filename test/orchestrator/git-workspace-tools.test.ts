@@ -52,7 +52,18 @@ function buildAgent(
     version: 1,
     createdAt: "t",
     updatedAt: "t",
-  } as Agent;
+  } as unknown as Agent;
+}
+
+/** 测试用宽化 handler 签名：SDK 的 (args, extra) 双参 + 联合 content 收窄为断言友好的形态 */
+type ToolResultLike = { isError?: boolean; content: Array<{ text: string }> };
+function findTool(
+  tools: ReturnType<typeof gitWorkspaceToolDefinitions>,
+  name: string,
+): { handler: (args: unknown) => Promise<ToolResultLike> } {
+  const t = tools.find((d) => d.name === name);
+  if (!t) throw new Error(`tool 不存在: ${name}`);
+  return t as unknown as { handler: (args: unknown) => Promise<ToolResultLike> };
 }
 
 function fakeCredentialSets(values: Record<string, string> | undefined) {
@@ -119,12 +130,6 @@ function setup(
   };
   roots.push(deps.reposRoot);
   return { tools: gitWorkspaceToolDefinitions(deps), deps, runner };
-}
-
-function findTool(tools: ReturnType<typeof gitWorkspaceToolDefinitions>, name: string) {
-  const t = tools.find((d) => d.name === name);
-  if (!t) throw new Error(`tool 不存在: ${name}`);
-  return t;
 }
 
 describe("donger-git CLI 工作区工具", () => {

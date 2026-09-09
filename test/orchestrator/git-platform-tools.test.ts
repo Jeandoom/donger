@@ -78,10 +78,14 @@ function setup(
   });
 }
 
-function findTool(tools: ReturnType<typeof gitPlatformToolDefinitions>, name: string) {
+type ToolResultLike = { isError?: boolean; content: Array<{ text: string }> };
+function findTool(
+  tools: ReturnType<typeof gitPlatformToolDefinitions>,
+  name: string,
+): { handler: (args: unknown) => Promise<ToolResultLike> } {
   const t = tools.find((d) => d.name === name);
   if (!t) throw new Error(`tool 不存在: ${name}`);
-  return t;
+  return t as unknown as { handler: (args: unknown) => Promise<ToolResultLike> };
 }
 
 describe("donger-git 平台工具", () => {
