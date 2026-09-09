@@ -29,3 +29,4 @@ Thumbs.db
 
 # 工具自动生成（codex / codegraph 等）
 .codex/
+.mimosa/
