@@ -48,6 +48,8 @@ export interface AgentDTO {
   extensionDirectories: AgentExtensionDirectoryDTO[];
   /** 所属场景：code-dev / kb-qa / research / ops；缺省 = 不做场景校验 */
   scenario?: "code-dev" | "kb-qa" | "research" | "ops";
+  /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具） */
+  gitAllowShellGit?: boolean;
   llm: { presetId?: string };
   createdAt: string;
   updatedAt: string;

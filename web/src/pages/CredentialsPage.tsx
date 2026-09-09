@@ -14,11 +14,19 @@ interface Draft {
   code: string;
   name: string;
   description: string;
+  kind: "generic" | "git";
   keysText: string;
   values: Record<string, string>;
 }
 
-const emptyDraft: Draft = { code: "", name: "", description: "", keysText: "", values: {} };
+const emptyDraft: Draft = {
+  code: "",
+  name: "",
+  description: "",
+  kind: "generic",
+  keysText: "",
+  values: {},
+};
 
 export function CredentialsPage() {
   const [mine, setMine] = useState<CredentialValueViewDTO[]>([]);
@@ -59,6 +67,7 @@ export function CredentialsPage() {
           ...d,
           name: d.name || hit.name,
           description: d.description || hit.description || "",
+          kind: hit.kind ?? "generic",
           keysText: hit.keySpecs.map((k) => k.key).join(","),
           values: {},
         }));
@@ -85,6 +94,7 @@ export function CredentialsPage() {
           code: draft.code.trim(),
           name: draft.name.trim(),
           description: draft.description.trim() || undefined,
+          kind: draft.kind,
           keySpecs: keyNames.map((key) => ({ key })),
         });
       }
@@ -133,6 +143,18 @@ export function CredentialsPage() {
             value={draft.name}
             onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
           />
+          {draftExists ? null : (
+            <select
+              className="rounded-md border border-border px-2 py-1.5 text-sm"
+              value={draft.kind}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, kind: e.target.value as "generic" | "git" }))
+              }
+            >
+              <option value="generic">通用（注入环境变量）</option>
+              <option value="git">git PAT（工具专用，不注入环境变量）</option>
+            </select>
+          )}
           {draftExists ? null : (
             <input
               className="w-56 rounded-md border border-border px-2 py-1.5 text-sm"
@@ -242,6 +264,9 @@ export function CredentialsPage() {
               <span className="font-mono">{t.code}</span>
               <span>{t.name}</span>
               <span>keys=[{t.keySpecs.map((k) => k.key).join(",")}]</span>
+              {t.kind === "git" ? (
+                <span className="rounded bg-blue-500/10 px-1 text-blue-600">git·不注入env</span>
+              ) : null}
               <button
                 type="button"
                 className="text-foreground hover:underline"

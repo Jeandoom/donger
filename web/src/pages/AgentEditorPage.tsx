@@ -34,6 +34,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   gitRepositories: [],
   extensionDirectories: [],
   scenario: undefined,
+  gitAllowShellGit: false,
   llm: {},
 };
 
@@ -47,10 +48,25 @@ export function AgentEditorPage() {
   const [error, setError] = useState<string>();
   const [warnings, setWarnings] = useState<string[]>();
   const [readOnly, setReadOnly] = useState(false);
+  const [hostMismatch, setHostMismatch] = useState<Record<number, boolean>>({});
+  const [gitCredentialOptions, setGitCredentialOptions] = useState<
+    Array<{ code: string; name: string }>
+  >([]);
 
   useEffect(() => {
     fetchAgentMeta()
       .then(setMeta)
+      .catch(() => {});
+  }, []);
+
+  // git 用途凭证模板（kind=git）：仓库凭证下拉选项；值不注入 env，仅工具现取
+  useEffect(() => {
+    fetchCredentialTemplates()
+      .then((templates) =>
+        setGitCredentialOptions(
+          templates.filter((t) => t.kind === "git").map((t) => ({ code: t.code, name: t.name })),
+        ),
+      )
       .catch(() => {});
   }, []);
 
@@ -77,6 +93,7 @@ export function AgentEditorPage() {
             gitRepositories: a.gitRepositories ?? [],
             extensionDirectories: a.extensionDirectories ?? [],
             scenario: a.scenario,
+            gitAllowShellGit: a.gitAllowShellGit ?? false,
             llm: a.llm,
           });
         })
@@ -332,7 +349,30 @@ export function AgentEditorPage() {
           <div className="space-y-3">
             {form.gitRepositories.map((repository, index) => (
               <div key={repository.id} className="space-y-2 rounded border p-3">
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <select
+                    className="rounded border px-2 py-1 text-sm"
+                    value={repository.provider}
+                    onChange={(event) => {
+                      const provider = event.target.value as typeof repository.provider;
+                      const detected = inferProviderFromUrl(repository.url);
+                      // 用户已输入的地址与新平台 host 不匹配时提示（不强制清空）
+                      setForm({
+                        ...form,
+                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, provider } : item,
+                        ),
+                      });
+                      setHostMismatch((m) => ({
+                        ...m,
+                        [index]: Boolean(detected && detected !== provider),
+                      }));
+                    }}
+                  >
+                    <option value="github">GitHub</option>
+                    <option value="gitee">Gitee</option>
+                    <option value="jihulab">极狐 GitLab</option>
+                  </select>
                   <input
                     className="rounded border px-2 py-1 text-sm"
                     placeholder="目录名，如 backend"
@@ -364,23 +404,34 @@ export function AgentEditorPage() {
                 </div>
                 <input
                   className="w-full rounded border px-2 py-1 text-sm"
-                  placeholder="https://github.com/org/repo.git"
+                  placeholder={`https://${repository.provider === "gitee" ? "gitee.com" : repository.provider === "jihulab" ? "jihulab.com" : "github.com"}/org/repo.git（仅 HTTPS）`}
                   value={repository.url}
                   onChange={(event) => {
                     const url = event.target.value;
-                    const provider = url.includes("gitee.com")
-                      ? "gitee"
-                      : url.includes("jihulab.com")
-                        ? "jihulab"
-                        : "github";
+                    const detected = inferProviderFromUrl(url);
                     setForm({
                       ...form,
                       gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                        itemIndex === index ? { ...item, url, provider } : item,
+                        itemIndex === index
+                          ? {
+                              ...item,
+                              url,
+                              provider: detected ?? item.provider,
+                            }
+                          : item,
                       ),
                     });
+                    setHostMismatch((m) => ({
+                      ...m,
+                      [index]: Boolean(detected && detected !== repository.provider),
+                    }));
                   }}
                 />
+                {hostMismatch[index] ? (
+                  <p className="text-xs text-destructive">
+                    地址域名与所选平台不匹配（仅支持 HTTPS 的 github.com / gitee.com / jihulab.com）
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-4 text-xs">
                   <span>平台：{repository.provider}</span>
                   <label className="flex items-center gap-1">
@@ -451,9 +502,8 @@ export function AgentEditorPage() {
                   </button>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <input
+                  <select
                     className="rounded border px-2 py-1 text-sm"
-                    placeholder="凭证模板 code（私有仓库必配，如 jihulab-pat）"
                     value={repository.credentialCode ?? ""}
                     onChange={(event) =>
                       setForm({
@@ -465,7 +515,14 @@ export function AgentEditorPage() {
                         ),
                       })
                     }
-                  />
+                  >
+                    <option value="">凭证模板（私有仓库必选，git PAT 类）</option>
+                    {gitCredentialOptions.map((t) => (
+                      <option key={t.code} value={t.code}>
+                        {t.code}（{t.name}）
+                      </option>
+                    ))}
+                  </select>
                   <input
                     className="rounded border px-2 py-1 text-sm"
                     placeholder="浅克隆历史窗口（如 1 year ago，仅浅克隆生效）"
@@ -507,6 +564,15 @@ export function AgentEditorPage() {
             >
               添加仓库
             </button>
+            <label className="flex items-center gap-2 pt-1 text-sm">
+              <input
+                type="checkbox"
+                checked={form.gitAllowShellGit ?? false}
+                onChange={(event) => setForm({ ...form, gitAllowShellGit: event.target.checked })}
+              />
+              允许 shell git（默认关闭：git 操作只准走 donger-git 工具；开启后 agent 可绕过工具直跑
+              git 命令，git push 仍会弹审批卡。除非明确需要，请保持关闭）
+            </label>
           </div>
         </Field>
 
@@ -878,4 +944,19 @@ function CredentialPicker({
       )}
     </Field>
   );
+}
+
+/** 从 URL 推断平台（host 精确匹配三平台；非 HTTPS/未知域名返回 undefined） */
+function inferProviderFromUrl(url: string): "github" | "gitee" | "jihulab" | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return undefined;
+    const host = parsed.hostname.toLowerCase();
+    if (host === "github.com") return "github";
+    if (host === "gitee.com") return "gitee";
+    if (host === "jihulab.com") return "jihulab";
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
