@@ -115,7 +115,7 @@ describe("GitAccessGate", () => {
       {
         provider: "github",
         reason: "connection_missing",
-        repositories: [{ id: "r1", name: "private", fingerprint: "github:acme/private" }],
+        repositories: [{ id: "r1", name: "private", fingerprint: "github.com/acme/private" }],
       },
     ]);
   });
@@ -130,7 +130,7 @@ describe("GitAccessGate", () => {
       userId: "u1",
       agentId: "a1",
       repositoryId: "r1",
-      repositoryFingerprint: "github:acme/private",
+      repositoryFingerprint: "github.com/acme/private",
       connectionId: "c1",
       permission: "read",
       grantedAt: "t",

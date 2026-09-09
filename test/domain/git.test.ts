@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentGitRepositoriesSchema,
+  AgentGitRepositorySchema,
   gitRepositoryFingerprint,
   inferGitProvider,
+  isBlockedHost,
+  normalizeRepositoryIdentity,
+  parseRepositoryUrl,
 } from "../../src/domain/git.js";
 
 const repository = {
@@ -26,7 +30,7 @@ describe("Agent Git repository", () => {
   });
 
   it("生成不含凭证和 .git 后缀的仓库指纹", () => {
-    expect(gitRepositoryFingerprint(repository)).toBe("github:acme/backend");
+    expect(gitRepositoryFingerprint(repository)).toBe("github.com/acme/backend");
   });
 
   it("拒绝平台与 URL host 不匹配", () => {
@@ -84,5 +88,62 @@ describe("Agent Git repository", () => {
         },
       ]),
     ).toThrow();
+  });
+});
+
+describe("多 host 支持（spec 2026-09-10）", () => {
+  it("自建 host 合法且 knownProvider 为空；官方域名仍推断方言", () => {
+    const custom = parseRepositoryUrl("https://gitlab.corp.example.com/team/app.git");
+    expect(custom?.host).toBe("gitlab.corp.example.com");
+    expect(custom?.repositoryPath).toBe("team/app");
+    expect(custom?.knownProvider).toBeUndefined();
+    // 方言与官方域名冲突才报错；未知 host 不限制 provider 选择
+    expect(() =>
+      AgentGitRepositorySchema.parse({
+        id: "r",
+        name: "app",
+        provider: "jihulab",
+        url: "https://gitlab.corp.example.com/team/app.git",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      AgentGitRepositorySchema.parse({
+        id: "r",
+        name: "app",
+        provider: "gitee",
+        url: "https://github.com/acme/app.git",
+      }),
+    ).toThrow(/不匹配/);
+    expect(parseRepositoryUrl("https://ghe.corp.io/acme/app.git")?.host).toBe("ghe.corp.io");
+  });
+
+  it("isBlockedHost：多用户部署默认拒内网/元数据，开关放行", () => {
+    for (const host of [
+      "localhost",
+      "127.0.0.1",
+      "10.1.2.3",
+      "192.168.1.1",
+      "172.16.0.9",
+      "172.31.255.1",
+      "169.254.169.254",
+      "0.0.0.0",
+      "[::1]",
+      "metadata.google.internal",
+    ]) {
+      expect(isBlockedHost(host, false), host).toBe(true);
+      expect(isBlockedHost(host, true), host).toBe(false);
+    }
+    for (const host of ["github.com", "gitlab.corp.example.com", "8.8.8.8", "172.32.0.1"]) {
+      expect(isBlockedHost(host, false), host).toBe(false);
+    }
+  });
+
+  it("normalizeRepositoryIdentity：host 小写 + path 归一", () => {
+    expect(normalizeRepositoryIdentity("https://GitHub.com/Acme/App.git")).toBe(
+      "github.com/acme/app",
+    );
+    expect(normalizeRepositoryIdentity("https://ghe.corp.io/acme/app")).toBe(
+      "ghe.corp.io/acme/app",
+    );
   });
 });

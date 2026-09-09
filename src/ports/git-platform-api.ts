@@ -90,5 +90,8 @@ export interface GitPlatformApi {
   getFileRaw(input: GetFileRawInput, token: string): Promise<PlatformApiResult>;
 }
 
-/** provider → 平台 API 客户端（未绑定平台返回 undefined，供工具层过滤） */
-export type GitPlatformApiResolver = (provider: GitProvider) => GitPlatformApi | undefined;
+/** 方言 + host → 平台 API 客户端（同方言多自建 host 各自实例化；未绑定方言返回 undefined） */
+export type GitPlatformApiResolver = (
+  provider: GitProvider,
+  host: string,
+) => GitPlatformApi | undefined;

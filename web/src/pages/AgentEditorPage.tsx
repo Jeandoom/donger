@@ -369,9 +369,9 @@ export function AgentEditorPage() {
                       }));
                     }}
                   >
-                    <option value="github">GitHub</option>
-                    <option value="gitee">Gitee</option>
-                    <option value="jihulab">极狐 GitLab</option>
+                    <option value="github">GitHub（含 GHE）</option>
+                    <option value="gitee">Gitee（含私有化）</option>
+                    <option value="jihulab">GitLab 兼容（极狐/自建）</option>
                   </select>
                   <input
                     className="rounded border px-2 py-1 text-sm"
@@ -404,7 +404,7 @@ export function AgentEditorPage() {
                 </div>
                 <input
                   className="w-full rounded border px-2 py-1 text-sm"
-                  placeholder={`https://${repository.provider === "gitee" ? "gitee.com" : repository.provider === "jihulab" ? "jihulab.com" : "github.com"}/org/repo.git（仅 HTTPS）`}
+                  placeholder={`https://github.com|gitee.com|jihulab.com|自建host/org/repo.git（仅 HTTPS）`}
                   value={repository.url}
                   onChange={(event) => {
                     const url = event.target.value;
@@ -429,9 +429,27 @@ export function AgentEditorPage() {
                 />
                 {hostMismatch[index] ? (
                   <p className="text-xs text-destructive">
-                    地址域名与所选平台不匹配（仅支持 HTTPS 的 github.com / gitee.com / jihulab.com）
+                    地址域名与所选协议方言不匹配（github.com / gitee.com / jihulab.com 会自动识别方言）
                   </p>
                 ) : null}
+                {(() => {
+                  try {
+                    const u = new URL(repository.url);
+                    if (
+                      u.protocol === "https:" &&
+                      !["github.com", "gitee.com", "jihulab.com"].includes(u.hostname.toLowerCase())
+                    ) {
+                      return (
+                        <p className="text-xs text-muted-foreground">
+                          自建/私有化地址：将按上方所选协议方言访问（{u.hostname}）
+                        </p>
+                      );
+                    }
+                    return null;
+                  } catch {
+                    return null;
+                  }
+                })()}
                 <div className="flex flex-wrap items-center gap-4 text-xs">
                   <span>平台：{repository.provider}</span>
                   <label className="flex items-center gap-1">

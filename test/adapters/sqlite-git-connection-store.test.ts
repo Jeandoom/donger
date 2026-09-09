@@ -62,7 +62,7 @@ describe("SqliteGitConnectionStore", () => {
       userId: "u1",
       agentId: "a1",
       repositoryId: "r1",
-      repositoryFingerprint: "gitee:acme/repo",
+      repositoryFingerprint: "gitee.com/acme/repo",
       connectionId: connection.id,
       permission: "read",
       grantedAt: "t1",

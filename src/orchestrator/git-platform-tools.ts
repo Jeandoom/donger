@@ -49,7 +49,7 @@ export interface GitPlatformToolsDeps {
 
 export interface RepoTarget {
   repo: AgentGitRepository;
-  baseUrl: string;
+  host: string;
   projectPath: string;
 }
 
@@ -58,8 +58,7 @@ export function resolveRepoTarget(agent: Agent, repoName: string): RepoTarget | 
   if (!repo) return undefined;
   const parsed = parseRepositoryUrl(repo.url);
   if (!parsed) return undefined;
-  const host = new URL(repo.url).hostname;
-  return { repo, baseUrl: `https://${host}/api/v4`, projectPath: parsed.repositoryPath };
+  return { repo, host: parsed.host, projectPath: parsed.repositoryPath };
 }
 
 /** 凭证桥现取：credentialCode → 当前用户 PAT（不落 prompt/审计/env）；username 缺省按平台 */
@@ -121,7 +120,7 @@ async function withApiTarget(
     if (!credential) {
       return fail(`仓库 ${target.repo.name} 缺少访问凭证：${credentialMissingHint(target.repo)}`);
     }
-    const api = platformApiFor(deps)(target.repo.provider);
+    const api = platformApiFor(deps)(target.repo.provider, target.host);
     if (!api) return fail(`平台 ${target.repo.provider} 暂无 API 工具实现`);
     return run(api, target, credential.accessToken);
   });
@@ -277,7 +276,16 @@ export function gitPlatformToolDefinitions(deps: GitPlatformToolsDeps): SdkMcpTo
             `平台 ${a.provider} 不在该智能体绑定的平台集合（${[...bound].join("、") || "无"}）内：请先绑定该平台仓库`,
           );
         }
-        const api = platformApiFor(deps)(a.provider);
+        // git_create_repo 无既定仓库 host：取该方言已绑定仓库的 host（缺省官方域名）
+        const boundRepo = deps.agent.gitRepositories.find((r) => r.provider === a.provider);
+        const boundHost = boundRepo ? parseRepositoryUrl(boundRepo.url)?.host : undefined;
+        const officialHost =
+          a.provider === "github"
+            ? "github.com"
+            : a.provider === "gitee"
+              ? "gitee.com"
+              : "jihulab.com";
+        const api = platformApiFor(deps)(a.provider, boundHost ?? officialHost);
         if (!api) return fail(`平台 ${a.provider} 暂无 API 工具实现`);
         // 建仓凭证取任意同平台绑定仓库的凭证模板（同一平台账号）
         const repo = deps.agent.gitRepositories.find((r) => r.provider === a.provider);

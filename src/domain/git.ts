@@ -34,7 +34,8 @@ export const AgentGitRepositorySchema = z
       ctx.addIssue({ code: "custom", path: ["url"], message: "仅支持无凭证的 HTTPS 仓库地址" });
       return;
     }
-    if (parsed.provider !== repository.provider) {
+    // 官方三平台域名自动推断方言并校验；自建 host 合法，方言以用户选择为准
+    if (parsed.knownProvider && parsed.knownProvider !== repository.provider) {
       ctx.addIssue({ code: "custom", path: ["provider"], message: "仓库平台与 URL 不匹配" });
     }
   });
@@ -119,7 +120,7 @@ export const AgentGitRepositoriesSchema = z
   .default([]);
 
 export function inferGitProvider(url: string): GitProvider | undefined {
-  return parseRepositoryUrl(url)?.provider;
+  return parseRepositoryUrl(url)?.knownProvider;
 }
 
 /** clone 参数组装（纯函数，便于单测）：shallow 时可选 shallowSince 收窄历史窗口 */
@@ -134,17 +135,48 @@ export function buildCloneArgs(repository: AgentGitRepository, destination: stri
   return args;
 }
 
+/** 归一化仓库标识：host 小写 + path 去 .git 后缀（绑定一致性比对用） */
+export function normalizeRepositoryIdentity(value: string): string {
+  const parsed = parseRepositoryUrl(value);
+  if (!parsed) return "";
+  return `${parsed.host.toLowerCase()}/${parsed.repositoryPath.toLowerCase()}`;
+}
+
+/** 内网/元数据 host 守门（纯函数）：多用户部署防 SSRF；本地部署可开关放行 */
+const BLOCKED_HOST_PATTERNS: RegExp[] = [
+  /^localhost$/,
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^169\.254\./,
+  /^0\.0\.0\.0$/,
+  /^::1$/,
+  /^f[cd][0-9a-f]{2}:/,
+  /^fe80:/,
+];
+const BLOCKED_DOMAIN_PATTERNS: RegExp[] = [/^metadata\.google\.internal$/];
+
+export function isBlockedHost(host: string, allowPrivate: boolean): boolean {
+  if (allowPrivate) return false;
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    BLOCKED_HOST_PATTERNS.some((re) => re.test(h)) ||
+    BLOCKED_DOMAIN_PATTERNS.some((re) => re.test(h))
+  );
+}
+
 export function gitRepositoryFingerprint(repository: AgentGitRepository): string {
   const parsed = parseRepositoryUrl(repository.url);
-  if (!parsed || parsed.provider !== repository.provider) {
-    throw new Error("仓库 URL 与平台不匹配");
+  if (!parsed) {
+    throw new Error("仓库 URL 非法");
   }
-  return `${parsed.provider}:${parsed.repositoryPath}`;
+  return `${parsed.host}/${parsed.repositoryPath}`;
 }
 
 export function parseRepositoryUrl(
   value: string,
-): { provider: GitProvider; repositoryPath: string } | undefined {
+): { host: string; repositoryPath: string; knownProvider?: GitProvider } | undefined {
   let url: URL;
   try {
     url = new URL(value);
@@ -161,11 +193,13 @@ export function parseRepositoryUrl(
   ) {
     return undefined;
   }
-  const provider = (Object.keys(PROVIDER_HOSTS) as GitProvider[]).find(
-    (candidate) => PROVIDER_HOSTS[candidate] === url.hostname.toLowerCase(),
+  const host = url.hostname.toLowerCase();
+  // 官方三平台域名仍自动推断 API 方言；其余 host（自建 GitLab/Gitee 私有化/GHE）
+  // 合法，方言由用户显式选择（spec 2026-09-10-git-credential-repo-binding §3.2）
+  const knownProvider = (Object.keys(PROVIDER_HOSTS) as GitProvider[]).find(
+    (candidate) => PROVIDER_HOSTS[candidate] === host,
   );
-  if (!provider) return undefined;
   const repositoryPath = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
   if (repositoryPath.split("/").filter(Boolean).length < 2) return undefined;
-  return { provider, repositoryPath };
+  return { host, repositoryPath, knownProvider };
 }

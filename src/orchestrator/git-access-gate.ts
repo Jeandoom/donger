@@ -6,6 +6,8 @@ import {
   type GitConnection,
   type GitProvider,
   gitRepositoryFingerprint,
+  isBlockedHost,
+  parseRepositoryUrl,
 } from "../domain/git.js";
 import type { User } from "../domain/user.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
@@ -31,6 +33,8 @@ export class GitAccessGate {
     private readonly materializer: RepositoryMaterializer,
     private readonly credentialSets?: CredentialSetStore,
     private readonly cacheTtlMs = 600_000,
+    /** 内网 host 守门（spec 2026-09-10 §5 R1）：缺省允许（本地部署定位） */
+    private readonly allowPrivateHosts = true,
   ) {}
 
   async check(user: User, agent: Agent, signal?: AbortSignal): Promise<GitAccessCheck> {
@@ -41,6 +45,16 @@ export class GitAccessGate {
     }> = [];
     const materializeItems: RepositoryMaterializeItem[] = [];
     for (const repository of agent.gitRepositories) {
+      // host 守门：内网/元数据地址在多用户部署下默认拒绝（解析报错即视为不可用）
+      const parsed = parseRepositoryUrl(repository.url);
+      if (!parsed || isBlockedHost(parsed.host, this.allowPrivateHosts)) {
+        failures.push({
+          repository,
+          fingerprint: gitRepositoryFingerprint(repository),
+          reason: "provider_unavailable",
+        });
+        continue;
+      }
       const fingerprint = gitRepositoryFingerprint(repository);
       if (await this.isPublic(repository, fingerprint, signal)) {
         materializeItems.push({ repository });

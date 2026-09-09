@@ -51,6 +51,11 @@ const EnvSchema = z.object({
   JIHULAB_CLIENT_SECRET: z.string().optional(),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
+  /** 允许仓库地址指向内网/回环 host（本地部署缺省允许；多用户部署建议 false 防 SSRF） */
+  GIT_ALLOW_PRIVATE_HOSTS: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */
@@ -112,6 +117,7 @@ export interface AppConfig {
   gitOAuth: Record<"github" | "gitee" | "jihulab", { clientId?: string; clientSecret?: string }>;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
+  gitAllowPrivateHosts: boolean;
 }
 
 /**
@@ -155,6 +161,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     },
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
+    gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {

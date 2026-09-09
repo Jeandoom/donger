@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createGitPlatformApiResolver } from "../../src/adapters/git-platform-api-resolver.js";
+import {
+  createGitPlatformApiResolver,
+  resolveApiBase,
+} from "../../src/adapters/git-platform-api-resolver.js";
 import { GiteePlatformApi } from "../../src/adapters/gitee-platform-api.js";
 import { GitHubPlatformApi } from "../../src/adapters/github-platform-api.js";
 import { GitLabPlatformApi } from "../../src/adapters/gitlab-platform-api.js";
@@ -112,5 +115,12 @@ describe("GitPlatformApi 三平台契约", () => {
     expect(resolve("jihulab")).toBe(resolve("jihulab"));
     expect(resolve("github")?.provider).toBe("github");
     expect(resolve("gitee")?.provider).toBe("gitee");
+  });
+
+  it("resolveApiBase：GHE 走 host/api/v3，官方域名走平台惯用根", () => {
+    expect(resolveApiBase("github", "github.com")).toBe("https://api.github.com");
+    expect(resolveApiBase("github", "ghe.corp.io")).toBe("https://ghe.corp.io/api/v3");
+    expect(resolveApiBase("jihulab", "gitlab.corp.io")).toBe("https://gitlab.corp.io/api/v4");
+    expect(resolveApiBase("gitee", "gitee.com")).toBe("https://gitee.com/api/v5");
   });
 });

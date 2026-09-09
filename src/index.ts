@@ -127,6 +127,7 @@ async function main(): Promise<void> {
     repositoryMaterializer,
     credentialSets,
     cfg.gitAuthCacheTtlMs,
+    cfg.gitAllowPrivateHosts,
   );
   const gitAuthProviders = {
     github: new GitHubAuthProvider({
