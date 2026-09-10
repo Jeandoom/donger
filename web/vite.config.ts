@@ -1,10 +1,37 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv } from "vite";
+import { type Plugin, defineConfig, loadEnv } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { PWA_OPTIONS } from "./pwa.config";
+
+// 构建产物指纹：写入 git hash 与构建时间，后端启动时比对源码版本发现 dist 脱节。
+// 无 git 环境（如 CI 导出包）时 gitHash 留空，后端跳过比对。
+function buildMetaPlugin(projectRoot: string): Plugin {
+  return {
+    name: "write-build-meta",
+    apply: "build",
+    closeBundle() {
+      let gitHash = "";
+      try {
+        gitHash = execSync("git rev-parse --short HEAD", {
+          cwd: projectRoot,
+          stdio: ["ignore", "pipe", "ignore"],
+        })
+          .toString()
+          .trim();
+      } catch {
+        // 非 git 环境
+      }
+      writeFileSync(
+        resolve(projectRoot, "web/dist/.build-meta.json"),
+        JSON.stringify({ gitHash, builtAt: new Date().toISOString() }, null, 2),
+      );
+    },
+  };
+}
 
 // 端口从项目根 .env 读取（与后端共用一份 .env，需从 web/ 子目录运行 vite）：
 //   PORT     后端端口（默认 3330）— 同时决定 dev proxy 目标
@@ -40,7 +67,7 @@ export default defineConfig(({ mode }) => {
   const backendHost = !env.HOST || env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
   const backend = `${https ? "https" : "http"}://${backendHost}:${backendPort}`;
   return {
-    plugins: [react(), VitePWA(PWA_OPTIONS)],
+    plugins: [react(), VitePWA(PWA_OPTIONS), buildMetaPlugin(projectRoot)],
     server: {
       // 监听全网卡（0.0.0.0）以支持局域网/远程访问；可经 HOST 覆盖。
       host: env.HOST ?? "0.0.0.0",

@@ -40,17 +40,23 @@ import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
+import { warnIfWebDistStale } from "./util/build-fingerprint.js";
 import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
+import { acquireSingleInstanceLock } from "./util/single-instance.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
   const cfg = loadConfig(process.env);
   const log = createLogger(cfg.logLevel, "app");
+  // 单实例互斥：第二实例等待宽限后退出（崩溃残留锁经 pid 存活探测自动接管）
+  acquireSingleInstanceLock(join(dirname(cfg.dbPath), "donger.lock"), log);
   log.info(
     { model: cfg.llm.model, dingtalk: !!cfg.dingtalk, builtin: !!cfg.builtinSkillsDir },
     "donger 启动",
   );
+  // 前端构建指纹比对：dist 与源码脱节仅告警（dev 常态化重建由 CI/发布流程保障）
+  warnIfWebDistStale(join(process.cwd(), "web", "dist"), log);
 
   // 自动迁移旧 data/ → ~/.donger/（幂等）
   const oldDataDir = join(process.cwd(), "data");

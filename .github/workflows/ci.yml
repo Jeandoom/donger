@@ -23,6 +23,13 @@ jobs:
         run: npm test
       - name: 构建后端
         run: npm run build
+      - name: 前端依赖
+        run: npm --prefix web install
+      - name: 前端 Lint + 测试 + 构建
+        run: |
+          npm --prefix web run lint
+          npm --prefix web run test
+          npm --prefix web run build
       - name: CLI 依赖
         run: npm --prefix cli install
       - name: CLI 类型检查
