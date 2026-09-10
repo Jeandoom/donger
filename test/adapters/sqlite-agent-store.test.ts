@@ -120,4 +120,24 @@ describe("SqliteAgentStore", () => {
     expect(versions.map((v) => v.version)).toEqual([1]);
     expect(versions[0]?.name).toBe("A");
   });
+
+  it("落库兜底：create/update 遇非法 gitRepositories 拒绝且不写库", async () => {
+    const store = new SqliteAgentStore(db, cipher);
+    store.migrate();
+    const badRepo = {
+      id: "r1",
+      name: "",
+      provider: "gitee" as const,
+      url: "https://gitee.com/org/repo",
+    };
+    // create / update 均在写库前 parseAgent 校验（空目录名不匹配正则）
+    await expect(store.create({ ...input, gitRepositories: [badRepo] })).rejects.toThrow();
+    const a = await store.create(input);
+    await expect(store.update(a.id, { gitRepositories: [badRepo] })).rejects.toThrow();
+    // 失败的 update 不落库：版本未自增、数据未被污染
+    const cur = await store.get(a.id);
+    expect(cur?.version).toBe(1);
+    expect(cur?.gitRepositories).toEqual([]);
+    expect((await store.listVersions(a.id)).map((v) => v.version)).toEqual([1]);
+  });
 });

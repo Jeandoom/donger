@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import { ZodError } from "zod";
 import type { LlmPreset } from "../config.js";
-import { type Agent, parseAgentInput } from "../domain/agent.js";
+import { type Agent, parseAgent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import {
   CredentialTemplateInputSchema,
@@ -1675,9 +1675,12 @@ export class WebChannel implements Channel {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
         const patch = JSON.parse(await this.readBody(req)) as Partial<Agent>;
         const merged = { ...a, ...this.mergeMaskedMcp(a, patch) };
-        const bindingError = await this.validateGitBindings(merged.gitRepositories ?? []);
+        // 合并结果必须过 AgentSchema（ZodError → 400）：PATCH 是唯一不走 parseAgentInput 的写入口，
+        // 不校验会让非法数据（如空仓库名）落库，毒化读路径使整个 agent 列表 500
+        const validated = parseAgent(merged);
+        const bindingError = await this.validateGitBindings(validated.gitRepositories);
         if (bindingError) return this.json(res, { error: bindingError }, 400);
-        const updated = await this.agentStore?.update(id, this.mergeMaskedMcp(a, patch));
+        const updated = await this.agentStore?.update(id, validated);
         if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
         return this.json(res, {
           ...this.agentToDTO(updated, true),

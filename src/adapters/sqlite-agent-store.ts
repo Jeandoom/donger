@@ -66,17 +66,20 @@ export class SqliteAgentStore implements AgentStore {
 
   async create(input: AgentInput): Promise<Agent> {
     const now = new Date().toISOString();
-    // credentialCode 归一化并入 credentials（store 层收口，REST/builder/rollback 各入口共用）
-    const agent: Agent = normalizeAgentCredentialRefs({
-      ...input,
-      gitRepositories: input.gitRepositories ?? [],
-      extensionDirectories: input.extensionDirectories ?? [],
-      credentials: input.credentials ?? [],
-      id: crypto.randomUUID(),
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    });
+    // credentialCode 归一化并入 credentials（store 层收口，REST/builder/rollback 各入口共用）；
+    // parseAgent 在落库前兜底校验——非法数据一旦写入，读路径 unmarshal 会让整个列表 500
+    const agent: Agent = parseAgent(
+      normalizeAgentCredentialRefs({
+        ...input,
+        gitRepositories: input.gitRepositories ?? [],
+        extensionDirectories: input.extensionDirectories ?? [],
+        credentials: input.credentials ?? [],
+        id: crypto.randomUUID(),
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
     const data = this.marshal(agent);
     this.db.transaction(() => {
       this.db
@@ -128,16 +131,19 @@ export class SqliteAgentStore implements AgentStore {
   async update(id: string, patch: Partial<Agent>): Promise<Agent> {
     const cur = await this.get(id);
     if (!cur) throw new Error(`agent 不存在: ${id}`);
-    const next: Agent = normalizeAgentCredentialRefs({
-      ...cur,
-      ...patch,
-      id: cur.id,
-      ownerId: cur.ownerId,
-      createdAt: cur.createdAt,
-      // version 由 store 独占管理：每次 update 自增（patch 无法注入），rollback 亦计入
-      version: cur.version + 1,
-      updatedAt: new Date().toISOString(),
-    });
+    // parseAgent 在落库前兜底校验（web PATCH 等调用方的 patch 可能未经 schema 校验）
+    const next: Agent = parseAgent(
+      normalizeAgentCredentialRefs({
+        ...cur,
+        ...patch,
+        id: cur.id,
+        ownerId: cur.ownerId,
+        createdAt: cur.createdAt,
+        // version 由 store 独占管理：每次 update 自增（patch 无法注入），rollback 亦计入
+        version: cur.version + 1,
+        updatedAt: new Date().toISOString(),
+      }),
+    );
     const data = this.marshal(next);
     this.db.transaction(() => {
       this.db
