@@ -234,6 +234,13 @@ export function AgentEditorPage() {
         <CredentialPicker
           value={form.credentials ?? []}
           onChange={(credentials) => setForm({ ...form, credentials })}
+          lockedCodes={[
+            ...new Set(
+              form.gitRepositories
+                .map((r) => r.credentialCode)
+                .filter((c): c is string => Boolean(c)),
+            ),
+          ]}
         />
 
         <Field label="场景">
@@ -911,9 +918,12 @@ function SharePanel({ agentId }: { agentId: string }) {
 function CredentialPicker({
   value,
   onChange,
+  lockedCodes = [],
 }: {
   value: string[];
   onChange: (codes: string[]) => void;
+  /** 被 git 仓库绑定 credentialCode 引用的模板：后端会强制并入 credentials，UI 锁定为勾选并标注来源 */
+  lockedCodes?: string[];
 }) {
   const [options, setOptions] = useState<
     Array<{ code: string; name: string; keys: string[]; configured: boolean }>
@@ -962,8 +972,10 @@ function CredentialPicker({
     })();
   }, []);
 
-  const toggle = (code: string) =>
+  const toggle = (code: string) => {
+    if (lockedCodes.includes(code)) return;
     onChange(value.includes(code) ? value.filter((c) => c !== code) : [...value, code]);
+  };
 
   return (
     <Field label="凭证（勾选后运行时按当前用户已配置的值注入）">
@@ -973,26 +985,37 @@ function CredentialPicker({
         </div>
       ) : (
         <div className="space-y-1">
-          {options.map((o) => (
-            <label key={o.code} className="flex items-center gap-2 overflow-hidden text-sm">
-              <input
-                type="checkbox"
-                className="shrink-0"
-                checked={value.includes(o.code)}
-                onChange={() => toggle(o.code)}
-              />
-              <span className="shrink-0 whitespace-nowrap font-mono">{o.code}</span>
-              <span className="min-w-0 flex-1 truncate" title={o.name}>
-                {o.name}
-              </span>
-              <span
-                className="min-w-0 shrink truncate text-xs text-muted-foreground"
-                title={`keys=[${o.keys.join(",")}]${o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}`}
-              >
-                keys=[{o.keys.join(",")}]{o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}
-              </span>
-            </label>
-          ))}
+          {options.map((o) => {
+            const locked = lockedCodes.includes(o.code);
+            const checked = locked || value.includes(o.code);
+            return (
+              <label key={o.code} className="flex items-center gap-2 overflow-hidden text-sm">
+                <input
+                  type="checkbox"
+                  className="shrink-0"
+                  checked={checked}
+                  disabled={locked}
+                  onChange={() => toggle(o.code)}
+                />
+                <span className="shrink-0 whitespace-nowrap font-mono">{o.code}</span>
+                <span className="min-w-0 flex-1 truncate" title={o.name}>
+                  {o.name}
+                </span>
+                <span
+                  className="min-w-0 shrink truncate text-xs text-muted-foreground"
+                  title={
+                    locked
+                      ? "由 git 仓库绑定的凭证引用强制勾选；如需移除请在下方「git 仓库」绑定的凭证下拉中改选"
+                      : `keys=[${o.keys.join(",")}]${o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}`
+                  }
+                >
+                  {locked
+                    ? "由仓库绑定引入（在下方 git 仓库绑定中修改）"
+                    : `keys=[${o.keys.join(",")}]${o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}`}
+                </span>
+              </label>
+            );
+          })}
         </div>
       )}
     </Field>
