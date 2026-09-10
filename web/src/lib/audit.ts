@@ -104,3 +104,10 @@ export function formatTokens(n: number | undefined): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return `${n}`;
 }
+
+/** ISO 时间 → 本地可读；无效值原样返回。 */
+export function formatDateTime(iso: string | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}

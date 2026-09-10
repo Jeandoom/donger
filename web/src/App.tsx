@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AuthGuard } from "./components/auth/AuthGuard";
 import { Shell } from "./components/layout/Shell";
 import { OfflineBanner } from "./components/pwa/OfflineBanner";
@@ -37,7 +37,7 @@ export function App() {
         {/* 合并流程已废弃：旧链接重定向到登录页 */}
         <Route path="/login/merge" element={<Navigate to="/login" replace />} />
 
-        {/* 需要登录的路由 */}
+        {/* 需要登录的路由（页面级崩溃由 Shell 内的 PageErrorBoundary 兜底） */}
         <Route element={<AuthGuard />}>
           <Route element={<Shell />}>
             <Route path="/" element={<ChatPage />} />
@@ -63,10 +63,25 @@ export function App() {
             <Route path="/audit" element={<Navigate to="/audit/history" replace />} />
             <Route path="/audit/history" element={<AuditPage />} />
             <Route path="/audit/llm" element={<LlmSessionsPage />} />
+            {/* 未匹配路由兜底：避免渲染空白页 */}
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Route>
       </Routes>
     </>
+  );
+}
+
+/** 404 兜底页：给出导航出口而非空白 */
+function NotFoundPage() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+      <div className="text-4xl font-semibold text-foreground">404</div>
+      <div>页面不存在或已下线</div>
+      <Link to="/" className="rounded-md border px-3 py-1.5 hover:bg-accent">
+        返回会话
+      </Link>
+    </div>
   );
 }
 

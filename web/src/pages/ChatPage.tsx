@@ -30,6 +30,8 @@ export function ChatPage() {
         conversations={conversations}
         activeConversationId={wc.activeConversationId}
         activeConversationIsDraft={
+          // 未选中任何会话（初始空态）时输入内容同样属于未保存草稿
+          wc.activeConversationId == null ||
           wc.conversations.find((item) => item.id === wc.activeConversationId)?.isDraft
         }
         onSelectConversation={wc.switchConversation}

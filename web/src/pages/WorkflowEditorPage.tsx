@@ -32,6 +32,7 @@ export function WorkflowEditorPage() {
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch("/api/triggers")
@@ -59,12 +60,17 @@ export function WorkflowEditorPage() {
   }, [id]);
 
   const save = async () => {
+    setError(null);
+    if (!name.trim()) {
+      setError("请填写名称");
+      return;
+    }
     if (!triggerId) {
-      window.alert("请选择 trigger");
+      setError("请选择 Trigger");
       return;
     }
     if (!agentId) {
-      window.alert("请选择 agent");
+      setError("请选择 Agent");
       return;
     }
     setSaving(true);
@@ -82,8 +88,19 @@ export function WorkflowEditorPage() {
           outputSubdir,
         }),
       });
-      if (r.ok) nav("/workflows");
-      else window.alert(await r.text());
+      if (r.ok) {
+        nav("/workflows");
+        return;
+      }
+      let msg = await r.text();
+      try {
+        msg = (JSON.parse(msg) as { error?: string }).error ?? msg;
+      } catch {
+        // 非 JSON 响应保持原文
+      }
+      setError(`保存失败：${msg}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSaving(false);
     }
@@ -159,6 +176,9 @@ export function WorkflowEditorPage() {
           className="block w-full rounded border px-2 py-1"
         />
       </label>
+      {error ? (
+        <div className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>
+      ) : null}
       <Button type="button" onClick={save} disabled={saving}>
         保存
       </Button>

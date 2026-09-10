@@ -283,8 +283,11 @@ export function useWebChat() {
 
   const send = useCallback(
     async (text: string, files?: FileInfo[]): Promise<void> => {
-      const active = state.conversations.find((item) => item.id === state.activeConversationId);
-      if (!active) return;
+      let active = state.conversations.find((item) => item.id === state.activeConversationId);
+      if (!active) {
+        // 初始空态（尚未选中任何会话）直接发送：先落一个草稿，避免消息被静默丢弃
+        active = await newConversation();
+      }
       const conversationId = await persistDraftConversation(active);
       if (!conversationId) {
         dispatch({ type: "set_error", key: "messages", message: "会话保存失败，请重试" });
@@ -309,7 +312,7 @@ export function useWebChat() {
         dispatch({ type: "message_delivery", id, delivery: "failed" });
       }
     },
-    [persistDraftConversation, state.activeConversationId, state.conversations],
+    [newConversation, persistDraftConversation, state.activeConversationId, state.conversations],
   );
 
   const cancel = useCallback(async () => {

@@ -4,6 +4,7 @@ import {
   type AuditDetail,
   fetchAuditConversations,
   fetchAuditDetail,
+  formatDateTime,
   formatDurationMs,
   formatTokens,
 } from "../lib/audit";
@@ -67,7 +68,7 @@ export function AuditPage() {
                 <div key={t.taskId} className="rounded-lg border border-border p-3">
                   <div className="mb-2 text-xs text-muted-foreground">
                     {t.status} · {formatDurationMs(t.durationMs)} · {formatTokens(tok)} tok ·{" "}
-                    {t.createdAt}
+                    {formatDateTime(t.createdAt)}
                   </div>
                   <div className="space-y-1.5">
                     {t.events.map((e) => (

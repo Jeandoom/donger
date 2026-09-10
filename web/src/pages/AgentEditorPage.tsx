@@ -949,15 +949,21 @@ function CredentialPicker({
       ) : (
         <div className="space-y-1">
           {options.map((o) => (
-            <label key={o.code} className="flex items-center gap-2 text-sm">
+            <label key={o.code} className="flex items-center gap-2 overflow-hidden text-sm">
               <input
                 type="checkbox"
+                className="shrink-0"
                 checked={value.includes(o.code)}
                 onChange={() => toggle(o.code)}
               />
-              <span className="font-mono">{o.code}</span>
-              <span>{o.name}</span>
-              <span className="text-xs text-muted-foreground">
+              <span className="shrink-0 whitespace-nowrap font-mono">{o.code}</span>
+              <span className="min-w-0 flex-1 truncate" title={o.name}>
+                {o.name}
+              </span>
+              <span
+                className="min-w-0 shrink truncate text-xs text-muted-foreground"
+                title={`keys=[${o.keys.join(",")}]${o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}`}
+              >
                 keys=[{o.keys.join(",")}]{o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}
               </span>
             </label>

@@ -7,6 +7,7 @@ import {
   debugLlmInput,
   fetchAuditConversations,
   fetchAuditDetail,
+  formatDateTime,
 } from "../lib/audit";
 
 export function LlmSessionsPage() {
@@ -85,7 +86,7 @@ export function LlmSessionsPage() {
           >
             <div className="truncate font-medium">{item.title || "(无标题)"}</div>
             <div className="text-xs text-muted-foreground">
-              {item.turnCount} 轮 · {item.lastAt}
+              {item.turnCount} 轮 · {formatDateTime(item.lastAt)}
             </div>
           </button>
         ))}
@@ -103,7 +104,7 @@ export function LlmSessionsPage() {
             {detail.turns.map((turn) => (
               <section key={turn.taskId} className="space-y-3 rounded-lg border border-border p-3">
                 <div className="text-xs text-muted-foreground">
-                  {turn.createdAt} · {turn.status}
+                  {formatDateTime(turn.createdAt)} · {turn.status}
                 </div>
                 <div>
                   <div className="mb-1 text-xs font-medium text-muted-foreground">用户 Query</div>

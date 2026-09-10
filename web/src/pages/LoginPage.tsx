@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { setLoginNext, setToken } from "../lib/auth";
+import { getToken, setLoginNext, setToken } from "../lib/auth";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -36,6 +36,11 @@ export function LoginPage() {
       setError(decodeURIComponent(err));
     }
   }, [searchParams]);
+
+  // 已登录用户访问登录页直接回跳目标页（replace 避免历史残留登录页）
+  useEffect(() => {
+    if (getToken()) navigate(next, { replace: true });
+  }, [navigate, next]);
 
   // 获取钉钉扫码 URL
   useEffect(() => {

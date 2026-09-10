@@ -35,7 +35,8 @@ export interface SkillPackDTO {
   installedPath: string;
   enabled: boolean;
   builtin: boolean;
-  credentials: SkillCredentialSpecDTO[];
+  // pack 声明式凭证体系已退役，后端可能不再返回该字段
+  credentials?: SkillCredentialSpecDTO[];
   skills: PackSkillDTO[];
 }
 
@@ -216,13 +217,16 @@ async function safeErr(res: Response): Promise<string | undefined> {
 }
 
 /** 凭证状态：区分已配置 / 缺失（用于徽章展示）。 */
-export function credentialStatus(pack: { credentials: SkillCredentialSpecDTO[] }): {
+export function credentialStatus(pack: {
+  // pack 声明式凭证体系已退役，后端 DTO 可能不再返回该字段
+  credentials?: SkillCredentialSpecDTO[] | null;
+}): {
   configured: string[];
   missing: string[];
 } {
   const configured: string[] = [];
   const missing: string[] = [];
-  for (const c of pack.credentials) {
+  for (const c of pack.credentials ?? []) {
     (c.configured ? configured : missing).push(c.key);
   }
   return { configured, missing };
