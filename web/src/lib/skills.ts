@@ -107,7 +107,8 @@ export async function updateCredentialTemplate(
   const res = await apiFetch(`/api/credential-templates/${encodeURIComponent(code)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
+    // 后端 CredentialTemplateInputSchema 必填 code（含格式校验），需随体回传
+    body: JSON.stringify({ code, ...input }),
   });
   if (!res.ok) throw new Error((await safeErr(res)) ?? `update template ${res.status}`);
 }
