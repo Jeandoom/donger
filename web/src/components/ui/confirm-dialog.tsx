@@ -28,12 +28,14 @@ export function ConfirmDialog(props: {
       role="dialog"
       aria-modal="true"
       aria-label={props.title}
-      onClick={props.onCancel}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) props.onCancel();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onCancel();
+      }}
     >
-      <div
-        className="mx-4 w-full max-w-sm rounded-lg border bg-card p-5 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="mx-4 w-full max-w-sm rounded-lg border bg-card p-5 shadow-lg">
         <h2 className="text-base font-semibold">{props.title}</h2>
         {props.description ? (
           <p className="mt-1.5 text-sm text-muted-foreground">{props.description}</p>

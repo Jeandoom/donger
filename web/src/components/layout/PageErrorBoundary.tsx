@@ -1,6 +1,6 @@
+import type { ReactNode } from "react";
 import { ErrorBoundary } from "react-error-boundary";
 import { Link } from "react-router-dom";
-import type { ReactNode } from "react";
 
 /** 页面级渲染崩溃兜底：包住 Outlet，页面异常不再整树卸载白屏（如 /skills 事故）。 */
 export function PageErrorBoundary({ children }: { children: ReactNode }) {

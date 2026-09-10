@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { type AgentListDTO, deleteAgent, fetchAgents } from "../lib/agents";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
-import { ConfirmDialog } from "../components/ui/confirm-dialog";
 
 export function AgentsPage() {
   const navigate = useNavigate();
@@ -13,14 +13,11 @@ export function AgentsPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const reload = () =>
+  useEffect(() => {
     fetchAgents()
       .then(setAgents)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-
-  useEffect(() => {
-    reload();
   }, []);
 
   const confirmDelete = async (): Promise<void> => {

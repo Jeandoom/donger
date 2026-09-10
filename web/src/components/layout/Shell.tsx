@@ -1,7 +1,7 @@
 import { Outlet } from "react-router-dom";
-import { PageErrorBoundary } from "./PageErrorBoundary";
 import { MobileNavigationDrawer } from "./MobileNavigationDrawer";
 import { NavigationSidebar } from "./NavigationSidebar";
+import { PageErrorBoundary } from "./PageErrorBoundary";
 
 export function Shell() {
   return (
