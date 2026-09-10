@@ -2576,6 +2576,11 @@ export class WebChannel implements Channel {
       credentials: a.credentials,
       gitRepositories: a.gitRepositories,
       extensionDirectories: a.extensionDirectories,
+      // 编辑器需要的完整配置字段：漏传会让表单读到 undefined，保存时把默认值覆盖回库
+      scenario: a.scenario,
+      gitAllowShellGit: a.gitAllowShellGit,
+      acceptanceGate: a.acceptanceGate,
+      version: a.version,
       llm: a.llm,
     };
   }

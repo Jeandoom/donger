@@ -1113,6 +1113,35 @@ describe("WebChannel /api/agents", () => {
     expect(r.status).toBe(403);
   });
 
+  it("详情 DTO 返回 scenario/acceptanceGate/gitAllowShellGit/version（漏传会让表单把默认值覆盖回库）", async () => {
+    const { port, token, agentStore, userId } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "SC",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      scenario: "code-dev",
+      acceptanceGate: true,
+      gitAllowShellGit: true,
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const dto = (await r.json()) as {
+      scenario?: string;
+      acceptanceGate?: boolean;
+      gitAllowShellGit?: boolean;
+      version?: number;
+    };
+    expect(dto.scenario).toBe("code-dev");
+    expect(dto.acceptanceGate).toBe(true);
+    expect(dto.gitAllowShellGit).toBe(true);
+    expect(dto.version).toBe(1);
+  });
+
   it("PATCH/DELETE 仅 owner 可用（非 owner → 403）", async () => {
     const { port, token, agentStore } = await startWebWithAgents();
     const a = await agentStore.create({
