@@ -1,20 +1,42 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { type AgentListDTO, fetchAgents } from "../lib/agents";
+import { type AgentListDTO, deleteAgent, fetchAgents } from "../lib/agents";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 
 export function AgentsPage() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<AgentListDTO | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const reload = () =>
     fetchAgents()
       .then(setAgents)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+
+  useEffect(() => {
+    reload();
   }, []);
+
+  const confirmDelete = async (): Promise<void> => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAgent(pendingDelete.id);
+      setAgents((list) => list.filter((a) => a.id !== pendingDelete.id));
+      setPendingDelete(null);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const mine = agents.filter((a) => a._mine);
   const shared = agents.filter((a) => !a._mine);
@@ -44,13 +66,36 @@ export function AgentsPage() {
       {loading ? <p className="text-muted-foreground">加载中…</p> : null}
       {error ? <p className="text-destructive">{error}</p> : null}
 
-      <Section title="我创建的" items={mine} />
+      <Section title="我创建的" items={mine} onDelete={(a) => setPendingDelete(a)} />
       <Section title="分享给我的" items={shared} />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`删除智能体「${pendingDelete?.name ?? ""}」？`}
+        description="删除后不可恢复；历史会话与分享链接将保留但不再可用。"
+        confirmText="删除"
+        destructive
+        busy={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          setPendingDelete(null);
+          setDeleteError(null);
+        }}
+      />
     </div>
   );
 }
 
-function Section({ title, items }: { title: string; items: AgentListDTO[] }) {
+function Section({
+  title,
+  items,
+  onDelete,
+}: {
+  title: string;
+  items: AgentListDTO[];
+  onDelete?: (a: AgentListDTO) => void;
+}) {
   if (!items.length) return null;
   return (
     <div className="space-y-2">
@@ -64,12 +109,23 @@ function Section({ title, items }: { title: string; items: AgentListDTO[] }) {
                 {a.description ?? "—"}
               </div>
             </Link>
-            <Link
-              to={`/agents/${a.id}/chat`}
-              className="ml-2 shrink-0 rounded border px-2 py-1 text-xs hover:bg-accent"
-            >
-              对话
-            </Link>
+            <div className="ml-2 flex shrink-0 items-center gap-1.5">
+              <Link
+                to={`/agents/${a.id}/chat`}
+                className="rounded border px-2 py-1 text-xs hover:bg-accent"
+              >
+                对话
+              </Link>
+              {onDelete ? (
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-destructive"
+                  onClick={() => onDelete(a)}
+                >
+                  删除
+                </button>
+              ) : null}
+            </div>
           </div>
         ))}
       </div>

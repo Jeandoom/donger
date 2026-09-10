@@ -124,4 +124,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async delete(id: string): Promise<void> {
     this.db.prepare("DELETE FROM workflows WHERE id = ?").run(id);
   }
+
+  async countByAgentId(agentId: string): Promise<number> {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM workflows WHERE agentId = ?")
+      .get(agentId) as { n: number };
+    return row.n;
+  }
 }

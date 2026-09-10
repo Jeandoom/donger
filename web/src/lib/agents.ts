@@ -111,7 +111,16 @@ export async function updateAgent(id: string, patch: Partial<AgentDTO>): Promise
 
 export async function deleteAgent(id: string): Promise<void> {
   const r = await apiFetch(`/api/agents/${id}`, { method: "DELETE" });
-  if (!r.ok && r.status !== 204) throw new Error(`delete ${r.status}`);
+  if (r.ok || r.status === 204) return;
+  // 透出后端业务错误（如 409 被工作流引用），其余给通用文案
+  let message = `delete ${r.status}`;
+  try {
+    const body = (await r.json()) as { error?: string };
+    if (body.error) message = body.error;
+  } catch {
+    // 非 JSON 响应保持通用文案
+  }
+  throw new Error(message);
 }
 
 export async function getOrCreateAgentConversation(agentId: string): Promise<{ id: string }> {

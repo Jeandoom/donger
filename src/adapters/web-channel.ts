@@ -1660,6 +1660,11 @@ export class WebChannel implements Channel {
       }
       if (req.method === "DELETE") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+        // 被 workflow 引用时拒绝删除，避免运行时悬空引用（与触发器删除防护同款）
+        const wfCount = (await this.deps.workflowStore?.countByAgentId(id)) ?? 0;
+        if (wfCount > 0) {
+          return this.json(res, { error: `被 ${wfCount} 个工作流引用，无法删除` }, 409);
+        }
         await this.agentStore?.delete(id);
         res.writeHead(204);
         res.end();
