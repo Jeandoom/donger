@@ -15,6 +15,7 @@ import type { LlmPreset } from "../config.js";
 import { type Agent, parseAgent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import {
+  CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
   CredentialValueInputSchema,
   type CredentialValueView,
@@ -2148,23 +2149,40 @@ export class WebChannel implements Channel {
       const views: CredentialValueView[] = [];
       for (const code of codes) {
         const tpl = await csets.getTemplate(code);
-        const values = byCode.get(code)?.values ?? {};
+        const entry = byCode.get(code);
+        const values = entry?.values ?? {};
         const keySpecs = tpl?.keySpecs ?? [];
         views.push({
           code,
-          name: tpl?.name ?? code,
+          name: entry?.name ?? tpl?.name ?? code,
+          alias: entry?.name,
           description: tpl?.description,
           kind: tpl?.kind ?? "generic",
           keySpecs,
           filledKeys: keySpecs.filter((k) => values[k.key] !== undefined).map((k) => k.key),
           missingKeys: keySpecs.filter((k) => values[k.key] === undefined).map((k) => k.key),
-          updatedAt: byCode.get(code)?.updatedAt ?? "",
+          updatedAt: entry?.updatedAt ?? "",
         });
       }
       send({ status: 200, json: { credentials: views } });
       return true;
     }
     const valMatch = match(/^\/api\/credential-values\/([^/]+)$/);
+    // PATCH /api/credential-values/:code —— 仅改本人显示名（别名）；values 是加密负载且
+    // 前端永不持有，改名走独立端点避免要求重传值
+    if (valMatch && req.method === "PATCH") {
+      const code = decodeURIComponent(valMatch[1] ?? "");
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = CredentialRenameInputSchema.safeParse(b);
+      if (!parsed.success) {
+        send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
+        return true;
+      }
+      const ok = await csets.renameValue(uid, code, parsed.data.name);
+      if (!ok) return notFound(`凭证 ${code} `);
+      send({ status: 200, json: { ok: true } });
+      return true;
+    }
     if (valMatch && (req.method === "PUT" || req.method === "DELETE")) {
       const code = decodeURIComponent(valMatch[1] ?? "");
       if (req.method === "DELETE") {

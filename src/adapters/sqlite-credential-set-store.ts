@@ -22,6 +22,7 @@ interface TemplateRow {
 interface ValueRow {
   userId: string;
   code: string;
+  name: string | null;
   valuesCipher: string;
   createdAt: string;
   updatedAt: string;
@@ -72,6 +73,13 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
       );
       CREATE INDEX IF NOT EXISTS idx_ucv_code ON user_credential_values(code);
     `);
+    // 旧库无 name 列 → 补列（用户自定显示名/别名，明文非敏感，不进密文）
+    const valueCols = this.db.prepare("PRAGMA table_info(user_credential_values)").all() as Array<{
+      name: string;
+    }>;
+    if (!valueCols.some((c) => c.name === "name")) {
+      this.db.exec("ALTER TABLE user_credential_values ADD COLUMN name TEXT");
+    }
     // 旧单值凭证体系（pack 声明式）已移除；表为空，直接删除
     this.db.exec("DROP TABLE IF EXISTS user_credentials;");
   }
@@ -179,6 +187,7 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
         out.push({
           userId: r.userId,
           code: r.code,
+          name: r.name ?? undefined,
           values: JSON.parse(decryptValue(this.keyHex, r.valuesCipher)) as Record<string, string>,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
@@ -190,16 +199,31 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     return out;
   }
 
-  async upsertValue(userId: string, code: string, values: Record<string, string>): Promise<void> {
+  async upsertValue(
+    userId: string,
+    code: string,
+    values: Record<string, string>,
+    name?: string,
+  ): Promise<void> {
     const ct = encryptValue(this.keyHex, JSON.stringify(values));
     this.db
       .prepare(
-        `INSERT INTO user_credential_values (userId,code,valuesCipher,createdAt,updatedAt)
-         VALUES (?,?,?,?,?)
+        `INSERT INTO user_credential_values (userId,code,name,valuesCipher,createdAt,updatedAt)
+         VALUES (?,?,?,?,?,?)
          ON CONFLICT(userId,code) DO UPDATE SET
-           valuesCipher=excluded.valuesCipher, updatedAt=excluded.updatedAt`,
+           valuesCipher=excluded.valuesCipher, updatedAt=excluded.updatedAt,
+           name=COALESCE(excluded.name, name)`,
       )
-      .run(userId, code, ct, new Date().toISOString(), new Date().toISOString());
+      .run(userId, code, name ?? null, ct, new Date().toISOString(), new Date().toISOString());
+  }
+
+  async renameValue(userId: string, code: string, name: string): Promise<boolean> {
+    const res = this.db
+      .prepare(
+        "UPDATE user_credential_values SET name = ?, updatedAt = ? WHERE userId = ? AND code = ?",
+      )
+      .run(name, new Date().toISOString(), userId, code);
+    return res.changes > 0;
   }
 
   async deleteValue(userId: string, code: string): Promise<void> {

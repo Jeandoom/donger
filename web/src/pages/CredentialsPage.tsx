@@ -9,6 +9,7 @@ import {
   deleteCredentialValue,
   fetchCredentialTemplates,
   fetchMyCredentials,
+  renameCredentialValue,
   updateCredentialTemplate,
   upsertCredentialValue,
 } from "../lib/skills";
@@ -51,6 +52,11 @@ export function CredentialsPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // 我的凭证行内改名（个人别名；只改名称不触碰加密 values）
+  const [renamingCode, setRenamingCode] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const myId = getUserId();
 
   const reload = useCallback(async () => {
@@ -196,6 +202,25 @@ export function CredentialsPage() {
     }
   };
 
+  const saveRename = async (code: string) => {
+    const name = renameText.trim();
+    if (!name) {
+      setRenameError("名称不能为空");
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await renameCredentialValue(code, name);
+      setRenamingCode(null);
+      await reload();
+    } catch (e) {
+      setRenameError((e as Error).message);
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const mineFiltered = mine.filter(
     (c) =>
       !mineQuery ||
@@ -310,13 +335,61 @@ export function CredentialsPage() {
         <div className="mb-4 space-y-2">
           {mineFiltered.map((c) => (
             <div key={c.code} className="rounded-lg border border-border p-3">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-sm">{c.code}</span>
-                <span className="text-sm">{c.name}</span>
+                {renamingCode === c.code ? (
+                  <span className="flex flex-wrap items-center gap-2">
+                    <input
+                      className="w-56 rounded-md border border-border px-2 py-1 text-sm"
+                      value={renameText}
+                      onChange={(e) => setRenameText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void saveRename(c.code);
+                        if (e.key === "Escape") setRenamingCode(null);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                      disabled={renameBusy}
+                      onClick={() => void saveRename(c.code)}
+                    >
+                      {renameBusy ? "保存中…" : "保存"}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-1 text-xs hover:bg-accent"
+                      onClick={() => {
+                        setRenamingCode(null);
+                        setRenameError(null);
+                      }}
+                    >
+                      取消
+                    </button>
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-sm">{c.name}</span>
+                    <button
+                      type="button"
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => {
+                        setRenamingCode(c.code);
+                        setRenameText(c.alias ?? c.name);
+                        setRenameError(null);
+                      }}
+                    >
+                      改名
+                    </button>
+                  </>
+                )}
                 {c.missingKeys.length > 0 && (
                   <span className="text-xs text-amber-600">缺填: {c.missingKeys.join(", ")}</span>
                 )}
               </div>
+              {renamingCode === c.code && renameError ? (
+                <div className="mt-1 text-xs text-destructive">{renameError}</div>
+              ) : null}
               {c.description && (
                 <div className="text-xs text-muted-foreground">{c.description}</div>
               )}

@@ -31,8 +31,15 @@ export interface CredentialSetStore {
   listValueCodes(userId: string): Promise<string[]>;
   /** 解密取回；缺失的 code 不出现在结果中 */
   getFilledValues(userId: string, codes: string[]): Promise<CredentialValueEntry[]>;
-  /** 创建/整体覆写 */
-  upsertValue(userId: string, code: string, values: Record<string, string>): Promise<void>;
+  /** 创建/整体覆写 values；name 缺省时保留既有别名（COALESCE 语义） */
+  upsertValue(
+    userId: string,
+    code: string,
+    values: Record<string, string>,
+    name?: string,
+  ): Promise<void>;
+  /** 仅改本人显示名（别名）；凭证项不存在返回 false */
+  renameValue(userId: string, code: string, name: string): Promise<boolean>;
   deleteValue(userId: string, code: string): Promise<void>;
   /** 某模板下已填值的用户数（模板删除保护提示用） */
   countUsersByTemplate(code: string): Promise<number>;

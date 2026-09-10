@@ -60,7 +60,10 @@ export interface CredentialTemplateDTO {
 
 export interface CredentialValueViewDTO {
   code: string;
+  /** 展示名：用户别名优先，缺省回退模板名 */
   name: string;
+  /** 用户自定显示名（未设置时 undefined） */
+  alias?: string;
   description?: string;
   kind?: "generic" | "git";
   keySpecs: CredentialKeySpecDTO[];
@@ -147,6 +150,16 @@ export async function deleteCredentialValue(code: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(`delete credential ${res.status}`);
+}
+
+/** 改本人凭证显示名（别名）；只改名称，不触碰加密 values */
+export async function renameCredentialValue(code: string, name: string): Promise<void> {
+  const res = await apiFetch(`/api/credential-values/${encodeURIComponent(code)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `rename credential ${res.status}`);
 }
 
 export async function fetchPacks(): Promise<SkillPackDTO[]> {

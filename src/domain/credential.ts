@@ -70,11 +70,19 @@ export type CredentialTemplateInput = z.input<typeof CredentialTemplateInputSche
 export interface CredentialValueEntry {
   userId: string;
   code: string;
+  /** 用户自定显示名（个人别名；缺省展示回退模板名） */
+  name?: string;
   /** 已解密负载；仅在注入/内部链路出现，REST 永不返回 */
   values: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
+
+/** 凭证项改名入参（仅改本人显示名，不触碰加密 values） */
+export const CredentialRenameInputSchema = z.object({
+  name: z.string().trim().min(1, "名称不能为空").max(100, "名称最长 100 字"),
+});
+export type CredentialRenameInput = z.infer<typeof CredentialRenameInputSchema>;
 
 /** 用户凭证值入参（PUT；整体覆写） */
 export const CredentialValueInputSchema = z.object({
@@ -89,7 +97,10 @@ export type CredentialValueInput = z.infer<typeof CredentialValueInputSchema>;
 /** 用户凭证视图（列表/详情展示用；仅键名，无值） */
 export interface CredentialValueView {
   code: string;
+  /** 展示名：用户别名优先，缺省回退模板名 */
   name: string;
+  /** 用户自定显示名（未设置时 undefined，展示名即模板名） */
+  alias?: string;
   description?: string;
   kind: CredentialKind;
   keySpecs: CredentialKeySpec[];

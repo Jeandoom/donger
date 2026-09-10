@@ -141,6 +141,45 @@ describe("SqliteCredentialSetStore", () => {
     expect((await legacyStore.getTemplate("fresh"))?.repoUrl).toBe("https://ghe.corp.io/a/b.git");
     db.close();
   });
+
+  it("改名：renameValue 只改本人别名，覆写 values 不丢别名", async () => {
+    await store.createTemplate("jihulab-pat", templateInput, owner);
+    await store.upsertValue(owner, "jihulab-pat", { token: "v1" });
+    // 未命名时 entry.name 为 undefined
+    expect((await store.getFilledValues(owner, ["jihulab-pat"]))[0]?.name).toBeUndefined();
+
+    // 改名生效，values 不受影响
+    expect(await store.renameValue(owner, "jihulab-pat", "我的极狐令牌")).toBe(true);
+    const renamed = (await store.getFilledValues(owner, ["jihulab-pat"]))[0];
+    expect(renamed?.name).toBe("我的极狐令牌");
+    expect(renamed?.values.token).toBe("v1");
+
+    // 再次 upsert 不带 name：别名保留（COALESCE）
+    await store.upsertValue(owner, "jihulab-pat", { token: "v2" });
+    expect((await store.getFilledValues(owner, ["jihulab-pat"]))[0]?.name).toBe("我的极狐令牌");
+
+    // userId 隔离：他人/不存在的凭证项不可改名
+    expect(await store.renameValue(other, "jihulab-pat", "偷改")).toBe(false);
+    expect(await store.renameValue(owner, "nope", "x")).toBe(false);
+    expect((await store.getFilledValues(owner, ["jihulab-pat"]))[0]?.name).toBe("我的极狐令牌");
+  });
+
+  it("migrate：旧库 user_credential_values 无 name 列时自动补列", async () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE user_credential_values (
+        userId TEXT NOT NULL, code TEXT NOT NULL, valuesCipher TEXT NOT NULL,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, PRIMARY KEY (userId, code)
+      );
+    `);
+    const legacyStore = new SqliteCredentialSetStore(db, KEY_HEX);
+    legacyStore.migrate();
+    await legacyStore.createTemplate("legacy", templateInput, owner);
+    await legacyStore.upsertValue(owner, "legacy", { token: "v" });
+    expect(await legacyStore.renameValue(owner, "legacy", "旧库改名")).toBe(true);
+    expect((await legacyStore.getFilledValues(owner, ["legacy"]))[0]?.name).toBe("旧库改名");
+    db.close();
+  });
 });
 
 function byCode(list: Array<{ code: string }>): string[] {
