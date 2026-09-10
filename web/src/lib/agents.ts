@@ -50,6 +50,8 @@ export interface AgentDTO {
   scenario?: "code-dev" | "kb-qa" | "research" | "ops";
   /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具） */
   gitAllowShellGit?: boolean;
+  /** 执行完成后弹验收门（人工验收）；requiresDesign=true 的任务恒弹 */
+  acceptanceGate?: boolean;
   llm: { presetId?: string };
   createdAt: string;
   updatedAt: string;

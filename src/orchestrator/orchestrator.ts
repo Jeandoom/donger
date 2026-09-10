@@ -28,6 +28,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { makeApprovalResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
@@ -44,7 +45,8 @@ import {
   designRejected,
   executeAfterDesign,
   executeRejected,
-  resolvePhases,
+  MAX_ACCEPTANCE_REJECTIONS,
+  MAX_DESIGN_REJECTIONS,
 } from "./phase-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
@@ -81,6 +83,14 @@ export interface OrchestratorDeps {
 export class Orchestrator {
   // conversationId → taskId（该会话当前活跃任务，用于独立并发控制）
   private readonly busyConversations = new Map<string, string>();
+  // 会话实时执行状态（SDK 事件流推导；观测态，不落库）
+  private readonly activityTracker = new ActivityTracker();
+
+  /** 查询会话实时执行状态（正在思考/输出/执行什么工具）；无活跃执行时 undefined */
+  getActivity(conversationId: string): ActivitySnapshot | undefined {
+    return this.activityTracker.get(conversationId);
+  }
+
   // userId → 活跃任务数（并发限制）
   private readonly userActiveCounts = new Map<string, number>();
   private readonly abortControllers = new Map<string, AbortController>();
@@ -228,7 +238,7 @@ export class Orchestrator {
     threadId: string;
     channelId: string;
     memoryAppend?: string;
-    /** 覆盖 prepare 得到的 skills（阶段循环按 phase 指定）；缺省用 prepare 结果 */
+    /** 覆盖 prepare 得到的 skills（如 dispatcher 的专用技能集）；缺省用 prepare 结果 */
     skills?: string[];
     agent?: Agent;
     sharedAgentSkillOwner?: User;
@@ -366,56 +376,63 @@ export class Orchestrator {
     let seq = 0;
     const toolStartMs = new Map<string, number>();
     const wrappedEvents = async function* (this: Orchestrator) {
-      // 流首：user_message（仅审计，不入流）
       try {
-        await this.deps.auditStore.record(
-          userMessageAudit(taskPrompt, {
-            conversationId: p.conversation.id,
-            userId: p.user.id,
-            taskId,
-            seq,
-            recordedAt: new Date().toISOString(),
-          }),
-        );
-      } catch (e) {
-        console.error("[orchestrator] 审计记录失败", e);
-      }
-      seq++;
-
-      for await (const e of rawEvents) {
-        if (e.type === "session_init") capturedSessionId = e.sessionId;
-        // 先落审计再推送：历史（audit）永远 ≥ 实时流，按会话回放不缺事件；审计失败不阻塞推送
-        if (e.type !== "text_delta" && e.type !== "thinking_delta") {
-          const extra: { durationMs?: number; model?: string } = {};
-          if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
-          if (e.type === "tool_result") {
-            const start = toolStartMs.get(e.toolUseId);
-            if (start !== undefined) extra.durationMs = Date.now() - start;
-          }
-          if (e.type === "result") {
-            extra.durationMs = Date.now() - turnStartMs;
-            extra.model = opts.llm.model;
-          }
-          try {
-            await this.deps.auditStore.record(
-              toAuditEvent(
-                e,
-                {
-                  conversationId: p.conversation.id,
-                  userId: p.user.id,
-                  taskId: taskId,
-                  seq,
-                  recordedAt: new Date().toISOString(),
-                },
-                extra,
-              ),
-            );
-          } catch (err) {
-            console.error("[orchestrator] 审计记录失败", err);
-          }
-          seq++;
+        // 流首：user_message（仅审计，不入流）
+        try {
+          await this.deps.auditStore.record(
+            userMessageAudit(taskPrompt, {
+              conversationId: p.conversation.id,
+              userId: p.user.id,
+              taskId,
+              seq,
+              recordedAt: new Date().toISOString(),
+            }),
+          );
+        } catch (e) {
+          console.error("[orchestrator] 审计记录失败", e);
         }
-        yield e;
+        seq++;
+
+        for await (const e of rawEvents) {
+          if (e.type === "session_init") capturedSessionId = e.sessionId;
+          // 实时执行状态（SDK 事件推导，观测态）
+          this.activityTracker.observe(p.conversation.id, e);
+          // 先落审计再推送：历史（audit）永远 ≥ 实时流，按会话回放不缺事件；审计失败不阻塞推送
+          if (e.type !== "text_delta" && e.type !== "thinking_delta") {
+            const extra: { durationMs?: number; model?: string } = {};
+            if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
+            if (e.type === "tool_result") {
+              const start = toolStartMs.get(e.toolUseId);
+              if (start !== undefined) extra.durationMs = Date.now() - start;
+            }
+            if (e.type === "result") {
+              extra.durationMs = Date.now() - turnStartMs;
+              extra.model = opts.llm.model;
+            }
+            try {
+              await this.deps.auditStore.record(
+                toAuditEvent(
+                  e,
+                  {
+                    conversationId: p.conversation.id,
+                    userId: p.user.id,
+                    taskId: taskId,
+                    seq,
+                    recordedAt: new Date().toISOString(),
+                  },
+                  extra,
+                ),
+              );
+            } catch (err) {
+              console.error("[orchestrator] 审计记录失败", err);
+            }
+            seq++;
+          }
+          yield e;
+        }
+      } finally {
+        // 回合结束清除活动状态（result 事件已自清；此处兜底 abort/异常路径）
+        this.activityTracker.end(p.conversation.id);
       }
     }.call(this);
 
@@ -566,9 +583,10 @@ export class Orchestrator {
   }
 
   /**
-   * agent 绑定任务的三段式生命周期（spec §5）：
-   * design（可选）→ 方案门 → execute → accept（可选）→ 验收门 → done。
-   * 门在阶段边界直调 channel.requestApproval；驳回用同 task 续跑（resume 链经 runTurn 逐轮回写）。
+   * agent 绑定任务的生命周期（三段式技能约定已退役）：
+   * 方案门（requiresDesign，dispatcher 判定）→ 执行 → [自验轮（agent.acceptanceGate）] → 验收门（agent.acceptanceGate 或 requiresDesign）→ done。
+   * 各轮恒用 agent 全量 skills（SDK 按需调用）；自验轮的输出作验收卡摘要，未配置自验时用执行结果；
+   * 驳回用同 task 续跑（resume 链经 runTurn 逐轮回写），驳回达上限熔断终止。
    */
   private async runPhases(p: {
     task: Task;
@@ -587,16 +605,12 @@ export class Orchestrator {
     runController: AbortController;
   }): Promise<string | undefined> {
     const { store, channel, gates } = this.deps;
-    const plan = resolvePhases(p.agent.skills, p.requiresDesign);
-    const hasDesign = plan.steps[0]?.phase === "design";
-    const execStep = plan.steps.find((s) => s.phase === "execute");
-    const acceptStep = plan.steps.find((s) => s.phase === "accept");
-    if (!execStep) {
-      // 契约上 resolvePhases 恒有 execute；防御性兜底
-      await store.updateStatus(p.task.id, "failed", { error: "阶段解析缺失 execute" });
-      return p.conversation.id;
-    }
-    const turn = (prompt: string, skills: string[], quietTurn = false) =>
+    const skills = p.agent.skills;
+    // 验收门触发：agent 配置显式开启，或任务需方案确认（重任务必验收）
+    const acceptanceGate = p.agent.acceptanceGate === true || p.requiresDesign === true;
+    // 自验轮仅在 agent 显式配置验收工作流时跑（requiresDesign 强制的门直接用执行结果做摘要）
+    const selfVerifyTurn = p.agent.acceptanceGate === true;
+    const turn = (prompt: string, quietTurn = false) =>
       this.runTurn({
         task: { ...p.task, prompt },
         user: p.user,
@@ -612,14 +626,14 @@ export class Orchestrator {
         quietResult: quietTurn,
         titleText: p.task.prompt,
       });
+    // 门路径（acceptanceGate）的轮次全部静默：成功/失败终态都由此收束前端/CLI 回合
     const finishTask = async (ok: boolean, error?: string, resultText = "") => {
       await store.updateStatus(
         p.task.id,
         ok ? nextStatus("running", "finish") : nextStatus("running", "fail"),
         { error },
       );
-      // acceptanceGate 路径的轮次全部静默，回合终态由此统一收束（前端/CLI 的回合在此结束）
-      if (plan.acceptanceGate) {
+      if (acceptanceGate) {
         channel.pushResult?.(
           p.conversation.id,
           ok ? "success" : "error",
@@ -640,24 +654,26 @@ export class Orchestrator {
       }
       return p.conversation.id;
     };
+    /** 门路径中途失败：落 failed 并收束回合（finishTask 只覆盖 running 起点的终态） */
+    const failMidway = async (error?: string) => {
+      await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error });
+      if (acceptanceGate) {
+        channel.pushResult?.(p.conversation.id, "error", error || "任务失败");
+      }
+      return p.conversation.id;
+    };
 
     // —— 方案设计 + 方案门（requiresDesign=true）——
-    if (hasDesign) {
-      await store.updateStatus(p.task.id, "planning", { phase: "design" });
-      await channel.send(p.threadId, {
-        text: `📋 方案设计阶段（skills: ${plan.steps[0]?.skills.join("、") || "无，按系统提示出方案"}）`,
-      });
+    if (p.requiresDesign) {
+      await channel.send(p.threadId, { text: "📋 方案设计阶段（先出方案，确认后执行）" });
       let prompt = designFirstAsk(p.task.prompt);
+      let designRejections = 0;
       for (;;) {
         // 方案轮非末轮：静默 result（后续还有 execute/accept）
-        const r = await turn(prompt, plan.steps[0]?.skills ?? [], true);
+        const r = await turn(prompt, true);
         if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
-        if (!r.ok) {
-          await store.updateStatus(p.task.id, "failed", { error: r.error });
-          return p.conversation.id;
-        }
+        if (!r.ok) return await failMidway(r.error);
         await store.updateStatus(p.task.id, nextStatus("planning", "request_approval"), {
-          phase: "design",
           pendingGate: {
             gateId: "design",
             title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
@@ -675,61 +691,56 @@ export class Orchestrator {
           });
           break;
         }
+        designRejections += 1;
+        if (designRejections >= MAX_DESIGN_REJECTIONS) {
+          const error = `方案驳回次数达上限（${MAX_DESIGN_REJECTIONS}），任务终止`;
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "fail"), {
+            error,
+            pendingGate: undefined,
+          });
+          channel.pushResult?.(p.conversation.id, "error", error);
+          return p.conversation.id;
+        }
         await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "redesign"), {
-          phase: "design",
           pendingGate: undefined,
         });
         prompt = designRejected(decision.reason ?? "未提供原因");
       }
     }
 
-    // —— 执行 + 自验 + 验收门（驳回重跑循环）——
+    // —— 执行 + 自验 + 验收门（驳回重跑循环，达上限熔断）——
     let rejectionCount = p.task.rejectionCount ?? 0;
     let lastRejectionReason: string | undefined;
     for (let round = 0; ; round++) {
-      if (round === 0 && !hasDesign) {
-        await store.updateStatus(p.task.id, nextStatus("planning", "start"));
-      }
-      await store.updateStatus(p.task.id, "running", { phase: "execute" });
       if (round === 0) {
-        await channel.send(p.threadId, {
-          text: `🔨 执行阶段（skills: ${execStep.skills.join("、") || "默认"}）`,
-        });
+        // 有方案门时状态已在门通过时 resume 为 running；无方案门时 planning --start--> running
+        if (!p.requiresDesign) await store.updateStatus(p.task.id, nextStatus("planning", "start"));
+        await channel.send(p.threadId, { text: "🔨 执行阶段" });
       }
       const execPrompt =
         round === 0
-          ? hasDesign
+          ? p.requiresDesign
             ? executeAfterDesign()
             : (p.firstTurnPrompt ?? p.task.prompt)
           : executeRejected(lastRejectionReason ?? "未提供原因");
-      // 验收门存在时 execute/accept 轮都静默：回合贯穿到验收门决议，不在中途提前结束
-      const re = await turn(execPrompt, execStep.skills, plan.acceptanceGate);
+      // 验收门存在时 execute/自验轮都静默：回合贯穿到验收门决议，不在中途提前结束
+      const re = await turn(execPrompt, acceptanceGate);
       if (re.aborted) return await this.finishCanceled(p.task, p.conversation);
-      if (!re.ok) {
-        await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: re.error });
-        return p.conversation.id;
-      }
+      if (!re.ok) return await failMidway(re.error);
 
       let summary = re.resultText;
-      if (acceptStep) {
-        await store.updateStatus(p.task.id, "running", { phase: "accept" });
-        await channel.send(p.threadId, {
-          text: `🔍 验收阶段（skills: ${acceptStep.skills.join("、") || "默认"}）`,
-        });
-        const ra = await turn(acceptAsk(), acceptStep.skills, true);
+      if (selfVerifyTurn) {
+        await channel.send(p.threadId, { text: "🔍 验收阶段" });
+        const ra = await turn(acceptAsk(), true);
         if (ra.aborted) return await this.finishCanceled(p.task, p.conversation);
-        if (!ra.ok) {
-          await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: ra.error });
-          return p.conversation.id;
-        }
+        if (!ra.ok) return await failMidway(ra.error);
         summary = ra.resultText;
       }
 
-      if (!plan.acceptanceGate) {
+      if (!acceptanceGate) {
         return await finishTask(true, undefined, summary);
       }
       await store.updateStatus(p.task.id, nextStatus("running", "request_approval"), {
-        phase: "accept",
         pendingGate: {
           gateId: "acceptance",
           title: `审批门：${gates.getGate("acceptance")?.description ?? "验收确认"}`,
@@ -748,6 +759,16 @@ export class Orchestrator {
         return await finishTask(true, undefined, summary);
       }
       rejectionCount += 1;
+      if (rejectionCount >= MAX_ACCEPTANCE_REJECTIONS) {
+        const error = `验收驳回次数达上限（${MAX_ACCEPTANCE_REJECTIONS}），任务终止`;
+        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "fail"), {
+          error,
+          rejectionCount,
+          pendingGate: undefined,
+        });
+        channel.pushResult?.(p.conversation.id, "error", error);
+        return p.conversation.id;
+      }
       lastRejectionReason = decision.reason ?? "";
       await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
         rejectionCount,

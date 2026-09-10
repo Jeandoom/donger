@@ -31,11 +31,9 @@ export const TaskSchema = z.object({
   // —— 多 agent 任务平台（P1）——
   /** dispatcher 路由或显式指定的执行 agent */
   agentId: z.string().optional(),
-  /** 是否需要方案设计人工确认（P2 消费；dispatcher 判定，默认 false） */
+  /** 是否需要方案设计人工确认（dispatcher 判定，默认 false） */
   requiresDesign: z.boolean().optional(),
-  /** 细粒度进度：design | execute | accept（P2 消费） */
-  phase: z.enum(["design", "execute", "accept"]).optional(),
-  /** 验收驳回次数（P2 消费） */
+  /** 验收驳回次数（≥上限时熔断终止） */
   rejectionCount: z.number().int().nonnegative().optional(),
   /** dispatcher 路由理由（观测/优化用） */
   routingRationale: z.string().optional(),

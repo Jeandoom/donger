@@ -26,8 +26,6 @@ export interface ScenarioPreset {
   recommendedTools: { whitelist: string[] };
   /** systemPrompt 骨架要点（builder 起草时拼入） */
   promptSkeleton: string;
-  /** 技能命名法：triad = *-design/-execute/-accept；single = 仅 *-execute */
-  skillNaming: "triad" | "single";
 }
 
 /** donger-kb 只读三件（kb-qa 场景的最低检索装备） */
@@ -47,7 +45,6 @@ export const SCENARIO_PRESETS: Record<ScenarioKey, ScenarioPreset> = {
     },
     promptSkeleton:
       "只读优先：分析任务不修改代码；确需修改先说明计划征得同意；高危操作（deploy/push）须经用户确认，不主动执行。",
-    skillNaming: "triad",
   },
   "kb-qa": {
     key: "kb-qa",
@@ -56,7 +53,6 @@ export const SCENARIO_PRESETS: Record<ScenarioKey, ScenarioPreset> = {
     recommendedTools: { whitelist: [...KB_READ_TOOLS] },
     promptSkeleton:
       "只读场景：不修改任何文件；回答引用知识库文件路径与行号，检索不到就明说，不编造。",
-    skillNaming: "single",
   },
   research: {
     key: "research",
@@ -67,7 +63,6 @@ export const SCENARIO_PRESETS: Record<ScenarioKey, ScenarioPreset> = {
     },
     promptSkeleton:
       "调研结论必须交叉验证并标注来源；沉淀到知识库的内容写明主题、来源与日期，便于后续问答场景引用。",
-    skillNaming: "triad",
   },
   ops: {
     key: "ops",
@@ -76,7 +71,6 @@ export const SCENARIO_PRESETS: Record<ScenarioKey, ScenarioPreset> = {
     recommendedTools: { whitelist: [] },
     promptSkeleton:
       "高危操作（deploy/restart/删除）须经用户确认并通过审批门，不主动执行；凭证从环境变量读取，不写死。",
-    skillNaming: "triad",
   },
 };
 

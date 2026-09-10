@@ -39,6 +39,7 @@ import { checkUnattendedSafety } from "../domain/unattended-guard.js";
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
@@ -185,6 +186,8 @@ export interface WebChannelDeps {
   loopRunner?: LoopRunner;
   scheduler?: SchedulerService;
   hookRegistry?: HookRegistry;
+  /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
+  activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
@@ -1323,6 +1326,29 @@ export class WebChannel implements Channel {
       const mem = new MemoryStore(join(user.homeDir, "memory"));
       res.writeHead(200);
       res.end(JSON.stringify(mem.list()));
+      return;
+    }
+
+    // GET /api/conversations/:id/activity — 会话实时执行状态（SDK 事件流推导；owner/admin 可见）
+    const activityMatch = url.match(/^\/api\/conversations\/([\w-]+)\/activity$/);
+    if (activityMatch && req.method === "GET") {
+      if (!this.deps.activityGetter) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "activity 服务未启用" }));
+        return;
+      }
+      const conversationId = activityMatch[1] ?? "";
+      const uid = this.requireRequestUser(req);
+      const conv = await this.deps.conversationStore?.get(conversationId);
+      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
+      if (conv && viewer && conv.userId !== viewer.id && viewer.role !== "admin") {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主或管理员可查看执行状态" }));
+        return;
+      }
+      const activity = this.deps.activityGetter(conversationId);
+      res.writeHead(activity ? 200 : 204);
+      res.end(activity ? JSON.stringify({ activity }) : "");
       return;
     }
 

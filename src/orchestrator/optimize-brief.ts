@@ -20,7 +20,7 @@ export function buildOptimizeBrief(input: OptimizeBriefInput): string {
   const lines: string[] = [];
   lines.push(`请对任务 ${task.id} 做优化分析（task-optimize）。`);
   lines.push(`任务内容：${task.prompt}`);
-  lines.push(`任务状态：${task.status}${task.phase ? ` / 阶段 ${task.phase}` : ""}`);
+  lines.push(`任务状态：${task.status}`);
   if (agent) {
     lines.push(`执行智能体：${agent.name}（${agent.id}）`);
     lines.push(`skills 清单：${agent.skills.join("、") || "无"}`);

@@ -176,6 +176,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           gitRepositories: a.gitRepositories ?? [],
           gitAllowShellGit: a.gitAllowShellGit ?? false,
           mcpServers: a.mcpServers ?? [],
+          acceptanceGate: false,
           llm: {},
         });
         const toolsNote =

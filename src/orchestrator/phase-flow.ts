@@ -1,35 +1,10 @@
-/** 三段式生命周期阶段编排的纯逻辑（spec §5；无 IO，供 orchestrator 调用）。 */
+/** 门编排的纯逻辑（无 IO，供 orchestrator 调用）。
+ * 三段式技能约定已退役：执行轮恒用 agent 全量 skills（SDK 按需调用），
+ * 编排层只负责方案门/验收门的边界提示词与驳回熔断。 */
 
-export type PhaseKind = "design" | "execute" | "accept";
-
-export interface PhaseStep {
-  phase: PhaseKind;
-  skills: string[];
-}
-
-export interface PhasePlan {
-  steps: PhaseStep[];
-  /** 验收门轻量规则（spec §5.3 修订）：有 *-accept skill 或 requiresDesign=true 才弹 */
-  acceptanceGate: boolean;
-}
-
-/**
- * 按命名约定解析阶段：`*-design` / `*-execute` / `*-accept` 后缀匹配。
- * execute 无后缀匹配时回退全量 skills（兼容存量 agent）；
- * design 阶段在 requiresDesign=true 时始终存在（无 design skill 则空 skills，靠 agent 系统提示出方案）。
- */
-export function resolvePhases(skills: string[], requiresDesign: boolean): PhasePlan {
-  const design = skills.filter((s) => s.endsWith("-design"));
-  const execute = skills.filter((s) => s.endsWith("-execute"));
-  const accept = skills.filter((s) => s.endsWith("-accept"));
-
-  const steps: PhaseStep[] = [];
-  if (requiresDesign) steps.push({ phase: "design", skills: design });
-  steps.push({ phase: "execute", skills: execute.length > 0 ? execute : skills });
-  if (accept.length > 0) steps.push({ phase: "accept", skills: accept });
-
-  return { steps, acceptanceGate: accept.length > 0 || requiresDesign };
-}
+/** 驳回熔断上限：方案门/验收门各自驳回达到上限后任务终止（防无限重跑烧 token） */
+export const MAX_DESIGN_REJECTIONS = 3;
+export const MAX_ACCEPTANCE_REJECTIONS = 3;
 
 export function designFirstAsk(prompt: string): string {
   return `${prompt}\n\n请先给出实施方案（不要执行）：目标、步骤、涉及文件、风险。方案经人工确认后才会执行。`;

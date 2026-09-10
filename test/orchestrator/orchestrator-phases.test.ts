@@ -212,7 +212,9 @@ function build(
     mcpServers: [],
     credentials: [],
     gitRepositories: [],
+    gitAllowShellGit: false,
     extensionDirectories: [],
+    acceptanceGate: false,
     llm: {},
     version: 1,
     createdAt: "",
@@ -255,10 +257,18 @@ describe("三段式生命周期", () => {
       { result: ROUTING_JSON }, // dispatcher
       { result: "方案：三步走" }, // design
       { result: "执行完成" }, // execute
-      { result: "自验通过" }, // accept
+      { result: "自验通过" }, // accept（acceptanceGate=true 配置的自验轮）
     ]);
     const channel = seqChannel([{ approved: true }, { approved: true }]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""));
+    const { orch, store } = build(
+      runner,
+      channel,
+      statefulConvStore(""),
+      ["x-design", "x-execute", "x-accept"],
+      {
+        acceptanceGate: true,
+      },
+    );
 
     await orch.handleMessage(MSG);
 
@@ -294,7 +304,9 @@ describe("三段式生命周期", () => {
         mcpServers: [],
         credentials: [],
         gitRepositories: [],
+        gitAllowShellGit: false,
         extensionDirectories: [],
+        acceptanceGate: false,
         llm: {},
         version: 1,
         createdAt: "",
@@ -327,7 +339,9 @@ describe("三段式生命周期", () => {
       { approved: true },
       { approved: true },
     ]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""));
+    const { orch, store } = build(runner, channel, statefulConvStore(""), ["x-execute"], {
+      acceptanceGate: true,
+    });
 
     await orch.handleMessage(MSG);
 
@@ -353,7 +367,9 @@ describe("三段式生命周期", () => {
       { approved: false, reason: "还有乱码用例" },
       { approved: true },
     ]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""));
+    const { orch, store } = build(runner, channel, statefulConvStore(""), ["x-execute"], {
+      acceptanceGate: true,
+    });
 
     await orch.handleMessage(MSG);
 
@@ -470,6 +486,77 @@ describe("三段式生命周期", () => {
     expect(await store.listByStatus("done")).toHaveLength(1);
     expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
     expect(runner.optsList[0]?.systemPromptAppend).toContain("构建助手");
+  });
+
+  it("acceptanceGate=true 且 requiresDesign=false：单方案轮无门，验收门仍弹（agent 配置触发）", async () => {
+    const runner = new ScriptedRunner([
+      { result: '{"agentId":"a1","requiresDesign":false,"taskType":"dev","rationale":"简单任务"}' },
+      { result: "执行完成" }, // execute
+      { result: "自验通过" }, // accept
+    ]);
+    const channel = seqChannel([{ approved: true }]);
+    const { orch, store } = build(runner, channel, statefulConvStore(""), ["x-execute"], {
+      acceptanceGate: true,
+    });
+
+    await orch.handleMessage(MSG);
+
+    const done = await store.listByStatus("done");
+    expect(done).toHaveLength(1);
+    // 无方案门：只有验收卡；执行轮 prompt 是任务原文（无方案引导）
+    expect(channel.cards.map((c) => c.gateId)).toEqual(["acceptance"]);
+    expect(runner.prompts[1]).toBe(MSG.text);
+    expect(runner.prompts[2]).toContain("自验");
+  });
+
+  it("验收驳回达上限（3 次）→ 熔断 failed，不再执行", async () => {
+    const runner = new ScriptedRunner([
+      { result: ROUTING_JSON }, // dispatcher（requiresDesign=true）
+      { result: "方案" },
+      { result: "执行 v1" },
+      { result: "执行 v2" },
+      { result: "执行 v3" },
+    ]);
+    const channel = seqChannel([
+      { approved: true },
+      { approved: false, reason: "r1" },
+      { approved: false, reason: "r2" },
+      { approved: false, reason: "r3" },
+    ]);
+    const { orch, store } = build(runner, channel, statefulConvStore(""));
+
+    await orch.handleMessage(MSG);
+
+    const failed = await store.listByStatus("failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.error).toContain("验收驳回次数达上限");
+    expect(failed[0]?.rejectionCount).toBe(3);
+    // 未配置 acceptanceGate：无自验轮，验收卡摘要用执行结果；三轮执行后熔断
+    expect(runner.prompts).toHaveLength(5);
+    expect(runner.prompts[3]).toContain("验收被驳回");
+  });
+
+  it("方案驳回达上限（3 次）→ 熔断 failed，不进入执行", async () => {
+    const runner = new ScriptedRunner([
+      { result: ROUTING_JSON },
+      { result: "方案 v1" },
+      { result: "方案 v2" },
+      { result: "方案 v3" },
+    ]);
+    const channel = seqChannel([
+      { approved: false, reason: "r1" },
+      { approved: false, reason: "r2" },
+      { approved: false, reason: "r3" },
+    ]);
+    const { orch, store } = build(runner, channel, statefulConvStore(""));
+
+    await orch.handleMessage(MSG);
+
+    const failed = await store.listByStatus("failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.error).toContain("方案驳回次数达上限");
+    // dispatcher + 三轮方案后熔断，无执行轮
+    expect(runner.prompts).toHaveLength(4);
   });
 });
 

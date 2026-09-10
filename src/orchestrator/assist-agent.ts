@@ -14,7 +14,7 @@ const ASSIST_SYSTEM_PROMPT = `你是 donger 平台的智能体/技能创作助�
 4. 汇报：落盘完成后汇总创建了什么、如何使用、如何验证。
 
 约束：
-- skill 命名遵循三段式后缀：*-design（方案）/ *-execute（执行）/ *-accept（验收）；简单查询类可只建 *-execute。
+- skill 命名见名知义即可（如 code-review、report-gen）；执行阶段不再区分方案/验收后缀，agent 执行时全量技能由模型按需调用。
 - 写操作前用一句话告知将写什么内容。
 - 工具失败时向用户转述错误原因并提出修正方案，不要静默重试。`;
 
@@ -30,8 +30,9 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   mcpServers: [],
   credentials: [],
   gitRepositories: [],
-      gitAllowShellGit: false,
+  gitAllowShellGit: false,
   extensionDirectories: [],
+  acceptanceGate: false,
   llm: {},
   version: 1,
   createdAt: "",

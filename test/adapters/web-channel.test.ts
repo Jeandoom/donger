@@ -384,6 +384,92 @@ describe("WebChannel auth", () => {
     expect(res.status).toBe(403);
   });
 
+  /** 实时执行状态专用通道：带 sessionStore + conversationStore + 可配置 activityGetter */
+  async function createActivityChannel(
+    getter?: (conversationId: string) => unknown,
+  ): Promise<{ port: number; token: string; convId: string; otherToken: string }> {
+    db = new Database(":memory:");
+    const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
+    const sessionStore = new JwtSessionStore(db, "test-secret");
+    sessionStore.migrate();
+    const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
+    const userStore = new SqliteUserStore(db, {
+      adminExternalIds: new Set(),
+      usersDir: mkdtempSync(join(tmpdir(), "web-activity-users-")),
+    });
+    userStore.migrate();
+    const owner = await userStore.getOrCreateByIdentity("internal", "activity-owner", "属主");
+    const { token } = await sessionStore.create(owner.id);
+    const other = await userStore.getOrCreateByIdentity("internal", "activity-other", "旁人");
+    const otherToken = (await sessionStore.create(other.id)).token;
+
+    const { SqliteConversationStore } = await import(
+      "../../src/adapters/sqlite-conversation-store.js"
+    );
+    const convStore = new SqliteConversationStore(db);
+    convStore.migrate();
+    await convStore.create(owner.id, "web", "执行状态");
+    const convId = (await convStore.listByUser(owner.id))[0]?.id;
+    if (!convId) throw new Error("no conversation");
+
+    const tmp = mkdtempSync(join(tmpdir(), "web-activity-"));
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: tmp,
+      sessionStore,
+      userStore,
+      conversationStore: convStore,
+      ...(getter ? { activityGetter: getter as never } : {}),
+    });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("no port");
+    return { port, token, convId, otherToken };
+  }
+
+  it("GET /api/conversations/:id/activity 未装配 activityGetter → 503", async () => {
+    const { port, convId, token } = await createActivityChannel();
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/activity`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it("GET /api/conversations/:id/activity 属主可见快照，空闲 204", async () => {
+    const { port, token, convId } = await createActivityChannel((id) =>
+      id ? { state: "tool", toolName: "Bash", startedAt: "t", lastEventAt: "t" } : undefined,
+    );
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/activity`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { activity: { state: string; toolName?: string } };
+    expect(body.activity.state).toBe("tool");
+    expect(body.activity.toolName).toBe("Bash");
+
+    const { port: port2, token: token2, convId: convId2 } = await createActivityChannel(() => undefined);
+    const idle = await fetch(`http://127.0.0.1:${port2}/api/conversations/${convId2}/activity`, {
+      headers: { Authorization: `Bearer ${token2}` },
+    });
+    expect(idle.status).toBe(204);
+  });
+
+  it("GET /api/conversations/:id/activity 非属主 → 403；无 token → 401", async () => {
+    const { port, convId, otherToken } = await createActivityChannel(() => ({
+      state: "text",
+      startedAt: "t",
+      lastEventAt: "t",
+    }));
+    const forbidden = await fetch(
+      `http://127.0.0.1:${port}/api/conversations/${convId}/activity`,
+      { headers: { Authorization: `Bearer ${otherToken}` } },
+    );
+    expect(forbidden.status).toBe(403);
+    const unauthorized = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/activity`);
+    expect(unauthorized.status).toBe(401);
+  });
+
   it("POST /api/auth/exchange 未配置 CLI_TOKEN → 403", async () => {
     const port = await createAuthChannel();
     const res = await fetch(`http://127.0.0.1:${port}/api/auth/exchange`, {

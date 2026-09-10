@@ -287,6 +287,7 @@ async function main(): Promise<void> {
   webChannelDeps.loopRunner = loopRunner;
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
+  webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
   await scheduler.restore();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 

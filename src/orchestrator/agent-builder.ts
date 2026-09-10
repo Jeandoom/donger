@@ -14,7 +14,7 @@ const BUILDER_SYSTEM_PROMPT = `你是 donger 平台的智能体构建助手。�
    - ops：确认目标系统与凭证模板；高危操作走审批门。
 3. 起草：给出将创建的 agent / skill 清单（name、description、场景、职责、工具范围），与用户确认后再调用工具。
 4. 落盘（每次写操作会弹出审批卡，用户确认后才生效）：
-   - 先 write_skill 写技能（SKILL.md 含 frontmatter：name/description；技能命名遵循场景命名法：code-dev/research/ops 用 *-design/-execute/-accept 三段式，kb-qa 用单 *-execute）
+   - 先 write_skill 写技能（SKILL.md 含 frontmatter：name/description；命名见名知义即可，如 code-review、report-gen）
    - 再 create_agent 创建智能体（scenario 填场景 key；skills 引用刚写的技能名，必须是 list_skills 里存在的名称；tools 按确认的范围收敛；gitRepositories/credentials 按场景装备清单填写；创建后留意返回的「装备提示」并转述给用户）。创建后即自动进入任务分发路由表，无需登记
 5. 收尾：创建完成或用户放弃创建时，调用 finish_builder 解除本会话绑定（否则用户后续消息无法正常分发），然后汇总创建了什么、如何使用、如何验证，提醒用户重发原任务即可被分发到新智能体。
 
@@ -35,8 +35,9 @@ export const AGENT_BUILDER_AGENT: Agent = {
   mcpServers: [],
   credentials: [],
   gitRepositories: [],
-      gitAllowShellGit: false,
+  gitAllowShellGit: false,
   extensionDirectories: [],
+  acceptanceGate: false,
   llm: {},
   version: 1,
   createdAt: "",
