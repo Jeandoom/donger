@@ -8,6 +8,7 @@ import {
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { ArrowUp, Bot, Paperclip, Square, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import remarkGfm from "remark-gfm";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
 import { cn } from "../../lib/utils";
@@ -128,7 +129,8 @@ function UserMessage() {
 }
 
 function AssistantText() {
-  return <MarkdownTextPrimitive />;
+  // 启用 GFM：支持表格/删除线/任务列表（否则表格以竖线纯文本显示）
+  return <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} />;
 }
 
 function AssistantMessage() {

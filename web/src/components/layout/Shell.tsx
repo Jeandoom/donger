@@ -1,4 +1,5 @@
 import { Outlet } from "react-router-dom";
+import { PageErrorBoundary } from "./PageErrorBoundary";
 import { MobileNavigationDrawer } from "./MobileNavigationDrawer";
 import { NavigationSidebar } from "./NavigationSidebar";
 
@@ -12,7 +13,9 @@ export function Shell() {
           <span className="ml-2 text-sm font-semibold">🤖 donger</span>
         </header>
         <main className="flex min-h-0 min-w-0 flex-1">
-          <Outlet />
+          <PageErrorBoundary>
+            <Outlet />
+          </PageErrorBoundary>
         </main>
       </div>
     </div>
