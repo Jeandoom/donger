@@ -106,6 +106,15 @@ export function AgentEditorPage() {
   }, [id, isNew, navigate]);
 
   async function save() {
+    // 与后端 AgentGitRepositorySchema 同源校验：非法目录名一旦落库，读路径会让整个 agent 列表 500
+    for (const r of form.gitRepositories) {
+      if (!REPO_NAME_PATTERN.test(r.name)) {
+        setError(
+          `仓库目录名「${r.name || "（空）"}」不合法：需以字母/数字开头，仅含字母数字 . _ -，长度 1-64`,
+        );
+        return;
+      }
+    }
     setSaving(true);
     setError(undefined);
     setWarnings(undefined);
@@ -278,8 +287,8 @@ export function AgentEditorPage() {
               checked={form.acceptanceGate ?? false}
               onChange={(event) => setForm({ ...form, acceptanceGate: event.target.checked })}
             />
-            执行后先自验再弹验收卡等人工确认（默认关闭；dispatcher 判定需要方案确认的任务也会弹验收门；启用
-            定时/钩子无人值守任务前需关闭）
+            执行后先自验再弹验收卡等人工确认（默认关闭；dispatcher
+            判定需要方案确认的任务也会弹验收门；启用 定时/钩子无人值守任务前需关闭）
           </label>
         </Field>
 
@@ -433,6 +442,8 @@ export function AgentEditorPage() {
                               ...item,
                               url,
                               provider: detected ?? item.provider,
+                              // 目录名未填时从 URL 尾段预填，避免留空保存被拒
+                              name: item.name || inferRepoNameFromUrl(url),
                             }
                           : item,
                       ),
@@ -988,6 +999,9 @@ function CredentialPicker({
   );
 }
 
+/** 仓库目录名约束（与后端 src/domain/git.ts AgentGitRepositorySchema 同源） */
+const REPO_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+
 /** 从 URL 推断平台（host 精确匹配三平台；非 HTTPS/未知域名返回 undefined） */
 function inferProviderFromUrl(url: string): "github" | "gitee" | "jihulab" | undefined {
   try {
@@ -1000,5 +1014,19 @@ function inferProviderFromUrl(url: string): "github" | "gitee" | "jihulab" | und
     return undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** 从 URL 路径尾段推断默认目录名（非法字符转 -、掐掉头部符号；解析失败返回空串） */
+function inferRepoNameFromUrl(url: string): string {
+  try {
+    const last = new URL(url).pathname
+      .replace(/\.git$/i, "")
+      .split("/")
+      .filter(Boolean)
+      .pop();
+    return last?.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^[._-]+/, "") ?? "";
+  } catch {
+    return "";
   }
 }
