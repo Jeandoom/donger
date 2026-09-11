@@ -76,10 +76,12 @@ export type AgentInput = Omit<
   | "gitRepositories"
   | "extensionDirectories"
   | "credentials"
+  | "connectorIds"
 > & {
   gitRepositories?: Agent["gitRepositories"];
   extensionDirectories?: Agent["extensionDirectories"];
   credentials?: string[];
+  connectorIds?: string[];
   version?: number;
 };
 export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true });

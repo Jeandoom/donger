@@ -1108,9 +1108,13 @@ export class Orchestrator {
         }
       }
 
-      // 凭证缺失预检：agent 勾选但当前用户未配置 → 三选问询（继续执行/暂停/重试）。
-      // code 按执行者用户空间解析：owner 勾选只声明需求，访问者用自己的同名凭证。
-      if (agent?.credentials?.length) {
+      // 凭证缺失预检：agent 勾选 + 连接器 headers 引用，当前用户未配置 → 三选问询
+      // （继续执行/暂停/重试）。code 按执行者用户空间解析：owner 勾选只声明需求，访问者用自己的同名凭证。
+      const connectorCodes = agent?.connectorIds?.length
+        ? await this.deps.runtimeMgr.connectorCredentialCodes(user.id, agent.connectorIds)
+        : [];
+      const credentialCodes = [...new Set([...(agent?.credentials ?? []), ...connectorCodes])];
+      if (credentialCodes.length > 0) {
         const currentTask: Task = task;
         const proceed = await promptMissingCredentials({
           task: currentTask,
@@ -1118,7 +1122,7 @@ export class Orchestrator {
           conversation,
           channel,
           threadId: msg.threadId,
-          codes: agent.credentials,
+          codes: credentialCodes,
           inspect: (userId, codes) => this.deps.runtimeMgr.inspectCredentials(userId, codes),
           updateTask: async (status, patch) => {
             await store.updateStatus(currentTask.id, status as TaskStatus, patch);

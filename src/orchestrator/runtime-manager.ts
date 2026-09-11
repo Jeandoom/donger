@@ -2,6 +2,11 @@ import { isAbsolute, join } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { LlmPreset } from "../config.js";
 import type { Agent, McpServerConfig } from "../domain/agent.js";
+import { collectCredentialRefs } from "../domain/connector.js";
+import {
+  mergeConnectorMcpServers,
+  substituteCredentialRefs,
+} from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
 import type { LLMConfig } from "../domain/llm-config.js";
@@ -11,6 +16,7 @@ import { resolveActiveSkills } from "../domain/skill-resolution.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
 import type { MissingCredentialItem } from "../ports/channel.js";
+import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
@@ -52,6 +58,8 @@ interface RuntimeManagerDeps {
   skillPackStore: SkillPackStore;
   /** 凭证集存储：agent 勾选的模板 code → 当前用户已配置值（解密仅此链路） */
   credentialSets: CredentialSetStore;
+  /** 连接器注册表：agent.connectorIds → http McpServerConfig（headers 按访问者解析） */
+  connectorStore?: ConnectorStore;
   modelConfigStore?: UserModelConfigStore;
   installer: SkillInstaller;
   builtinSkillsDir: string;
@@ -139,6 +147,11 @@ export class RuntimeManager {
       if (preset) llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
       allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
       mcpServers = a.mcpServers;
+      // 连接器注入：勾选的 HTTP MCP 按访问者解析后并入（重名连接器优先，防工具命名空间幻觉）
+      if ((a.connectorIds?.length ?? 0) > 0 && this.deps.connectorStore) {
+        const connectors = await this.resolveAgentConnectors(a.connectorIds ?? [], user.id);
+        mcpServers = mergeConnectorMcpServers(mcpServers, connectors.servers);
+      }
       // shell git 守卫（防线 2）：全域缺省禁用，仅 agent 显式开启才放行
       gitAllowShellGit = a.gitAllowShellGit;
       if (a.systemPrompt) {
@@ -266,6 +279,53 @@ export class RuntimeManager {
     };
 
     return { context, runOptions };
+  }
+
+  /**
+   * 解析 agent 引用的连接器 → 可注入的 http McpServerConfig：
+   * 可见性（private 仅 owner / global 人人）与 enabled 过滤 + headers 凭证引用按访问者解析。
+   * 解析失败的引用头置空剔除（缺失预检已由 inspectCredentials 前置问询）。
+   */
+  private async resolveAgentConnectors(
+    connectorIds: string[],
+    userId: string,
+  ): Promise<{ servers: McpServerConfig[]; missing: string[] }> {
+    const cstore = this.deps.connectorStore;
+    if (!cstore) return { servers: [], missing: [] };
+    const connectors = (await cstore.listByIds(connectorIds)).filter(
+      (c) => c.enabled && (c.shareScope === "global" || c.ownerId === userId),
+    );
+    const codes = [...new Set(connectors.flatMap((c) => collectCredentialRefs(c.headers)))];
+    const valuesByCode = new Map<string, Record<string, string>>();
+    if (codes.length > 0) {
+      for (const f of await this.deps.credentialSets.getFilledValues(userId, codes)) {
+        valuesByCode.set(f.code, f.values);
+      }
+    }
+    const servers: McpServerConfig[] = [];
+    const missing = new Set<string>();
+    for (const c of connectors) {
+      const sub = substituteCredentialRefs(c.headers, valuesByCode);
+      for (const m of sub.missing) missing.add(m);
+      const headers = Object.fromEntries(Object.entries(sub.resolved).filter(([, v]) => v !== ""));
+      servers.push({
+        name: c.name,
+        type: "http",
+        url: c.url,
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      });
+    }
+    return { servers, missing: [...missing] };
+  }
+
+  /** 连接器 headers 引用的凭证 code（可见+enabled 过滤后；缺失预检与 agent.credentials 并集用）。 */
+  async connectorCredentialCodes(userId: string, connectorIds: string[]): Promise<string[]> {
+    const cstore = this.deps.connectorStore;
+    if (!cstore || connectorIds.length === 0) return [];
+    const connectors = (await cstore.listByIds(connectorIds)).filter(
+      (c) => c.enabled && (c.shareScope === "global" || c.ownerId === userId),
+    );
+    return [...new Set(connectors.flatMap((c) => collectCredentialRefs(c.headers)))];
   }
 
   /** 凭证缺失预检：agent 勾选但当前用户未配置的模板元数据（问询卡/日志用，不含值）。 */

@@ -1,6 +1,7 @@
 // 连接器 headers 的凭证引用解析（纯函数）：web 测试端点与运行时注入共用同一条语义，
 // 保证「测试连接」测到的就是运行时会发出的请求头。
 
+import type { McpServerConfig } from "./agent.js";
 import { CREDENTIAL_REF_PATTERN } from "./connector.js";
 
 /** 凭证值映射：code → 该访问者的凭证值集合（getFilledValues 结果按 code 索引） */
@@ -52,4 +53,18 @@ export function substituteCredentialRefs(
     );
   }
   return { resolved, missing: [...missing].sort() };
+}
+
+/**
+ * 合并内联 mcpServers 与连接器派生的 server：**连接器优先**——同名内联配置被丢弃。
+ * 这是重名硬拦（保存时校验）的运行时兜底，防御存量数据/并发改名的边角，
+ * 确保 LLM 看到的工具命名空间永无重名（spec 2026-09-11-connectors §6.2）。
+ */
+export function mergeConnectorMcpServers(
+  inline: McpServerConfig[],
+  connectors: McpServerConfig[],
+): McpServerConfig[] {
+  if (connectors.length === 0) return inline;
+  const connectorNames = new Set(connectors.map((s) => s.name));
+  return [...connectors, ...inline.filter((s) => !connectorNames.has(s.name))];
 }

@@ -249,4 +249,39 @@ describe("WebChannel /api/connectors", () => {
     expect(badBody.ok).toBe(false);
     expect(badBody.error).toBeTruthy();
   });
+
+  it("agent 保存校验：连接器不存在/他人私有/与内联重名 → 400（spec §3.3）", async () => {
+    const base = `http://127.0.0.1:${web.boundPort}`;
+    const good = await cstore.create({ name: "ok-conn", url: "https://ok/mcp" }, uid);
+    const othersPrivate = await cstore.create({ name: "deny", url: "https://d/mcp" }, "other");
+    const post = (connectorIds: string[], mcpServers: unknown[] = []) =>
+      fetch(`${base}/api/agents`, {
+        method: "POST",
+        headers: auth(),
+        body: JSON.stringify({
+          name: "ag",
+          tools: { mode: "all" },
+          llm: {},
+          gitRepositories: [],
+          extensionDirectories: [],
+          connectorIds,
+          mcpServers,
+        }),
+      });
+
+    let res = await post(["conn_missing"]);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("不存在");
+
+    res = await post([othersPrivate.id]);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("不可用");
+
+    res = await post([good.id], [{ name: "ok-conn", type: "http", url: "https://x/mcp" }]);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("重名");
+
+    const ok = await post([good.id]);
+    expect(ok.status).toBe(201);
+  });
 });

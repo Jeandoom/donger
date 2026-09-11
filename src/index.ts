@@ -156,6 +156,7 @@ async function main(): Promise<void> {
       },
       skillPackStore,
       credentialSets,
+      connectorStore,
       modelConfigStore,
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,

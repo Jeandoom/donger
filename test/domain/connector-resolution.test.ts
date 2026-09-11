@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { collectCredentialRefs } from "../../src/domain/connector.js";
-import { substituteCredentialRefs } from "../../src/domain/connector-resolution.js";
+import {
+  mergeConnectorMcpServers,
+  substituteCredentialRefs,
+} from "../../src/domain/connector-resolution.js";
 
 describe("substituteCredentialRefs", () => {
   const values = new Map<string, Record<string, string>>([
@@ -61,5 +64,23 @@ describe("collectCredentialRefs", () => {
       Plain: "no-ref",
     });
     expect(refs).toEqual(["pat"]);
+  });
+});
+
+describe("mergeConnectorMcpServers", () => {
+  const inline = [
+    { name: "amap", type: "http" as const, url: "https://inline/mcp" },
+    { name: "kb", type: "http" as const, url: "https://kb/mcp" },
+  ];
+  const connectors = [{ name: "amap", type: "http" as const, url: "https://connector/mcp" }];
+
+  it("连接器优先：同名内联配置被丢弃，其余保留", () => {
+    const merged = mergeConnectorMcpServers(inline, connectors);
+    expect(merged.map((s) => s.name)).toEqual(["amap", "kb"]);
+    expect(merged.find((s) => s.name === "amap")?.url).toBe("https://connector/mcp");
+  });
+
+  it("无连接器时原样返回内联", () => {
+    expect(mergeConnectorMcpServers(inline, [])).toEqual(inline);
   });
 });

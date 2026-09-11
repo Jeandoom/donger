@@ -74,6 +74,7 @@ export class SqliteAgentStore implements AgentStore {
         gitRepositories: input.gitRepositories ?? [],
         extensionDirectories: input.extensionDirectories ?? [],
         credentials: input.credentials ?? [],
+        connectorIds: input.connectorIds ?? [],
         id: crypto.randomUUID(),
         version: 1,
         createdAt: now,

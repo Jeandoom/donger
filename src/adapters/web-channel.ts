@@ -1645,6 +1645,8 @@ export class WebChannel implements Channel {
       const input = parseAgentInput({ ...body, ownerId: me });
       const bindingError = await this.validateGitBindings(input.gitRepositories ?? []);
       if (bindingError) return this.json(res, { error: bindingError }, 400);
+      const connectorError = await this.validateAgentConnectorRefs(me, input);
+      if (connectorError) return this.json(res, { error: connectorError }, 400);
       const created = await this.agentStore?.create(input);
       if (!created) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(
@@ -1724,6 +1726,8 @@ export class WebChannel implements Channel {
         const validated = parseAgent(merged);
         const bindingError = await this.validateGitBindings(validated.gitRepositories);
         if (bindingError) return this.json(res, { error: bindingError }, 400);
+        const connectorError = await this.validateAgentConnectorRefs(me, validated);
+        if (connectorError) return this.json(res, { error: connectorError }, 400);
         const updated = await this.agentStore?.update(id, validated);
         if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
         return this.json(res, {
@@ -2186,7 +2190,7 @@ export class WebChannel implements Channel {
         return { ok: false, error: truncate(`initialize 失败 (HTTP ${init.status})`, 300) };
       }
       const session = init.headers.get("mcp-session-id");
-      const extra = session ? { "Mcp-Session-Id": session } : {};
+      const extra: Record<string, string> = session ? { "Mcp-Session-Id": session } : {};
       // initialized 通知失败不阻断探活结果
       await call({ jsonrpc: "2.0", method: "notifications/initialized" }, extra).catch(
         () => undefined,
@@ -2969,6 +2973,40 @@ export class WebChannel implements Channel {
     const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
     const port = this.boundPort ?? this.deps.port;
     return `${this.deps.https ? "https" : "http"}://${host}:${port}`;
+  }
+
+  /**
+   * agent.connectorIds 保存校验（spec 2026-09-11-connectors §3.3）：
+   * 存在性 + 可见性（private 仅创建人）+ 引用集内无重名（连接器之间、与内联 mcpServers 之间）。
+   * 返回错误信息（400）或 undefined。
+   */
+  private async validateAgentConnectorRefs(
+    uid: string,
+    input: Pick<Agent, "mcpServers"> & { connectorIds?: string[] },
+  ): Promise<string | undefined> {
+    const cstore = this.connectorStore;
+    const ids = input.connectorIds ?? [];
+    if (!cstore || ids.length === 0) return undefined;
+    const connectors = await cstore.listByIds(ids);
+    const missing = ids.filter((id) => !connectors.some((c) => c.id === id));
+    if (missing.length > 0) return `连接器不存在: ${missing.join(", ")}`;
+    const denied = connectors.filter((c) => c.shareScope !== "global" && c.ownerId !== uid);
+    if (denied.length > 0) {
+      return `连接器不可用（私有且非创建人）: ${denied.map((c) => c.name).join(", ")}`;
+    }
+    const seen = new Set<string>();
+    const conflicts = new Set<string>();
+    for (const c of connectors) {
+      if (seen.has(c.name)) conflicts.add(c.name);
+      seen.add(c.name);
+    }
+    for (const s of input.mcpServers) {
+      if (seen.has(s.name)) conflicts.add(s.name);
+    }
+    if (conflicts.size > 0) {
+      return `MCP 名称冲突（连接器/内联配置不可重名）: ${[...conflicts].join(", ")}`;
+    }
+    return undefined;
   }
 
   /** git 凭证绑定一致性：仓库级凭证（模板声明 repoUrl）必须与仓库地址一致（spec 2026-09-10 §3.3） */
