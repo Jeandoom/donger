@@ -138,7 +138,10 @@ export function NavigationSidebar({
     <nav
       className={cn("flex h-full w-48 flex-col border-r border-border bg-muted/40 p-2", className)}
     >
-      <div className="px-2 py-3 text-sm font-semibold">🤖 donger</div>
+      <div className="flex items-center gap-2 px-2 py-3 text-sm font-semibold">
+        <img src="/pwa-icon.svg" alt="donger logo" className="h-5 w-5" />
+        donger
+      </div>
       {entries.map((e) =>
         isParent(e) ? (
           <div key={e.key} className="mb-0.5">

@@ -71,7 +71,7 @@ export function LoginPage() {
   return (
     <div className="flex h-screen flex-col items-center justify-center bg-gradient-to-b from-background to-muted/50">
       <div className="w-full max-w-sm rounded-lg border bg-card p-8 text-center shadow-sm">
-        <div className="mb-6 text-5xl">🤖</div>
+        <img src="/pwa-icon.svg" alt="donger logo" className="mx-auto mb-6 h-16 w-16" />
         <h1 className="mb-2 text-xl font-semibold">donger</h1>
         <p className="mb-6 text-sm text-muted-foreground">使用钉钉扫码登录</p>
 
