@@ -38,29 +38,45 @@ export function ShareLandingPage() {
   }, [info, token, navigate]);
 
   return (
-    <div className="flex h-screen items-center justify-center">
-      <div className="text-center">
+    <div className="flex h-screen items-center justify-center bg-sidebar px-6">
+      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-xl">
+        <div className="mb-5 flex items-center gap-2.5">
+          <img src="/pwa-icon.svg" alt="donger logo" className="h-8 w-8 rounded-lg" />
+          <span className="text-base font-bold">donger</span>
+        </div>
         {error ? (
-          <p className="text-destructive">{error}</p>
+          <>
+            <h1 className="text-lg font-bold">分享链接无效</h1>
+            <p className="mt-1.5 text-sm text-destructive">{error}</p>
+            <Link
+              to="/login"
+              className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              去登录
+            </Link>
+          </>
         ) : info ? (
           <>
-            <div className="mb-2 text-lg font-medium">{info.name}</div>
+            <h1 className="text-lg font-bold">「{info.name}」被分享给你</h1>
             {info.description ? (
-              <p className="mb-4 text-sm text-muted-foreground">{info.description}</p>
+              <p className="mt-1.5 text-sm leading-6 text-muted-foreground">{info.description}</p>
             ) : null}
             {getToken() ? (
-              <p className="text-muted-foreground">正在进入…</p>
+              <p className="mt-6 text-sm text-muted-foreground">正在进入…</p>
             ) : (
               <Link
                 to={`/login?next=/share/${token}`}
-                className="rounded bg-primary px-4 py-2 text-primary-foreground"
+                className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
                 登录后进入该智能体
               </Link>
             )}
+            <p className="mt-4 text-[11px] text-muted-foreground/80">
+              登录将自动完成分享授权，你只会看到分享给你的智能体。
+            </p>
           </>
         ) : (
-          <p className="text-muted-foreground">加载中…</p>
+          <p className="text-sm text-muted-foreground">加载中…</p>
         )}
       </div>
     </div>

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
@@ -121,6 +122,7 @@ function PackCard({
   onUpdate?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmUninstall, setConfirmUninstall] = useState(false);
   const cs = credentialStatus(pack);
   return (
     <Card className={cn("p-4", !pack.enabled && "opacity-60")}>
@@ -173,9 +175,7 @@ function PackCard({
             <button
               type="button"
               className="text-xs text-muted-foreground hover:text-destructive"
-              onClick={() => {
-                if (window.confirm(`卸载技能套装 ${pack.name}？`)) onUninstall();
-              }}
+              onClick={() => setConfirmUninstall(true)}
               disabled={disabled}
             >
               删除
@@ -198,6 +198,19 @@ function PackCard({
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmUninstall}
+        title={`卸载技能套装 ${pack.name}？`}
+        description="卸载后引用它的智能体将失去对应技能。"
+        confirmText="卸载"
+        destructive
+        onConfirm={() => {
+          setConfirmUninstall(false);
+          onUninstall();
+        }}
+        onCancel={() => setConfirmUninstall(false)}
+      />
     </Card>
   );
 }
@@ -247,7 +260,7 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[520px] rounded-lg bg-background p-4 shadow-lg">
+      <div className="w-[520px] rounded-xl border border-border bg-card p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-semibold">安装技能</h2>
           <button type="button" onClick={onClose} className="text-muted-foreground">
@@ -262,7 +275,7 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
               onClick={() => setTab(t)}
               className={cn(
                 "rounded-md px-3 py-1",
-                tab === t ? "bg-accent text-accent-foreground" : "hover:bg-accent",
+                tab === t ? "bg-muted text-accent-foreground" : "hover:bg-muted",
               )}
             >
               {t === "git" ? "Git 仓库" : t === "upload" ? "上传文件" : "黏贴文本"}
@@ -327,7 +340,7 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-sm hover:bg-accent"
+            className="rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             取消
           </button>

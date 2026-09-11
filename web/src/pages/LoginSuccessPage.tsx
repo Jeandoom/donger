@@ -29,21 +29,27 @@ export function LoginSuccessPage() {
     }
   }, [searchParams]);
 
-  if (status === "error") {
-    return (
-      <div className="flex h-screen items-center justify-center text-sm text-destructive">
-        登录信息不完整，请关闭此窗口重新登录
-      </div>
-    );
-  }
-
   return (
-    <div className="flex h-screen items-center justify-center">
-      <div className="text-center">
-        <div className="mb-4 text-4xl">✅</div>
-        <div className="text-sm text-muted-foreground">
-          {status === "done" ? "登录成功，窗口即将关闭…" : "正在处理…"}
-        </div>
+    <div className="flex h-screen items-center justify-center bg-sidebar px-6">
+      <div className="w-full max-w-xs rounded-2xl border border-border bg-card p-8 text-center shadow-xl">
+        {status === "error" ? (
+          <>
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-destructive-soft text-2xl text-destructive">
+              ✕
+            </div>
+            <p className="text-sm text-destructive">登录信息不完整，请关闭此窗口重新登录</p>
+          </>
+        ) : (
+          <>
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success-soft text-2xl font-bold text-success">
+              ✓
+            </div>
+            <p className="text-[15px] font-semibold">登录成功</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {status === "done" ? "窗口即将关闭…" : "正在处理…"}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

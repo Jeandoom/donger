@@ -83,8 +83,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         headerExtra={props.sidebarHeaderExtra}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-border px-2 py-1 text-xs lg:px-4 lg:py-2">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between border-b border-border bg-card px-3 py-2 lg:px-4">
+          <div className="flex min-w-0 items-center gap-2.5">
             <MobileConversationSheet
               title={props.sidebarTitle}
               items={sidebarItems}
@@ -94,17 +94,36 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onNew={props.onNewConversation}
               headerExtra={props.sidebarHeaderExtra}
             />
-            <span>
-              {props.activeConversationIsDraft
-                ? "● 未保存"
-                : props.connection === "open"
-                  ? "● 已连接"
-                  : props.connection === "closed"
-                    ? "● 未连接"
-                    : "● 连接中"}
+            <span className="truncate text-sm font-semibold">
+              {sidebarItems.find((i) => i.id === props.activeConversationId)?.title}
             </span>
+            {props.activeConversationIsDraft ? (
+              <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                ● 未保存
+              </span>
+            ) : (
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  props.connection === "open"
+                    ? "bg-success-soft text-success"
+                    : props.connection === "closed"
+                      ? "bg-destructive-soft text-destructive"
+                      : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {props.connection === "open"
+                  ? "已连接"
+                  : props.connection === "closed"
+                    ? "未连接"
+                    : "连接中"}
+              </span>
+            )}
           </div>
-          <button type="button" onClick={() => setDrawerOpen(true)}>
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            className="shrink-0 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted"
+          >
             文件
           </button>
         </div>

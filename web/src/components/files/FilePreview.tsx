@@ -62,7 +62,7 @@ export function FilePreview(props: { scope: FileScope; path: string; conversatio
     if (loading) return <div className="p-3 text-sm text-muted-foreground">加载中…</div>;
     if (error) return <div className="p-3 text-sm text-destructive">加载失败：{error}</div>;
     return (
-      <pre className="max-h-[60vh] overflow-auto bg-muted/30 p-3 text-xs leading-relaxed">
+      <pre className="max-h-[60vh] overflow-auto rounded-lg bg-muted p-3 text-xs leading-relaxed">
         <code>{text}</code>
       </pre>
     );

@@ -75,7 +75,7 @@ export function ModelsPage() {
         <div className="rounded bg-green-50 p-3 text-sm text-green-700">已保存。</div>
       ) : null}
 
-      <section className="space-y-4 rounded-lg border bg-background p-5">
+      <section className="space-y-4 rounded-xl border border-border bg-card p-5">
         <label className="block space-y-1">
           <span className="text-sm font-medium">URL</span>
           <input

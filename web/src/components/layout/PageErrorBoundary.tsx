@@ -15,12 +15,15 @@ export function PageErrorBoundary({ children }: { children: ReactNode }) {
           <div className="flex gap-2">
             <button
               type="button"
-              className="rounded-md border px-3 py-1.5 hover:bg-accent"
+              className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-muted"
               onClick={resetErrorBoundary}
             >
               重试
             </button>
-            <Link to="/" className="rounded-md border px-3 py-1.5 hover:bg-accent">
+            <Link
+              to="/"
+              className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
               返回会话
             </Link>
           </div>

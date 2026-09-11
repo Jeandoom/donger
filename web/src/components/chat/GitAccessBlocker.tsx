@@ -15,7 +15,7 @@ export function GitAccessBlocker(props: {
 }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
-      <div className="w-full max-w-xl space-y-4 rounded-xl border bg-background p-5 shadow-sm">
+      <div className="w-full max-w-xl space-y-4 rounded-xl border border-border bg-card p-5 shadow-sm">
         <div>
           <h2 className="font-semibold">需要配置 Git 仓库凭证</h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -34,12 +34,12 @@ export function GitAccessBlocker(props: {
         {props.requirements.map((requirement) => (
           <section
             key={`${requirement.provider}:${requirement.reason}`}
-            className="space-y-2 rounded border p-3"
+            className="space-y-2 rounded-lg border border-border bg-muted/40 p-3"
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{PROVIDER_NAMES[requirement.provider]}</span>
               <Link
-                className="rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground"
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
                 to="/credentials"
               >
                 前往配置凭证
@@ -56,7 +56,7 @@ export function GitAccessBlocker(props: {
         <div className="flex gap-2">
           <button
             type="button"
-            className="rounded border px-3 py-2 text-sm"
+            className="rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium hover:bg-muted"
             onClick={props.onRetry}
           >
             重新检查

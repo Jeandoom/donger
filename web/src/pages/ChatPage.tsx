@@ -16,7 +16,7 @@ export function ChatPage() {
           <span>没有能处理该任务的智能体？让 AI 协助创建一个。</span>
           <button
             type="button"
-            className="shrink-0 rounded border px-2 py-1 hover:bg-accent"
+            className="shrink-0 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-muted"
             onClick={() => {
               sessionStorage.setItem(ASSIST_DRAFT_STORAGE_KEY, hint);
               navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`);

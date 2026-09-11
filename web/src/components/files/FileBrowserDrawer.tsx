@@ -72,46 +72,37 @@ export function FileBrowserDrawer(props: {
         aria-modal="true"
         aria-label="文件浏览"
         className={cn(
-          "fixed right-0 top-0 z-50 flex h-full w-full flex-col border-l border-border bg-background shadow-xl transition-transform sm:w-80",
+          "fixed right-0 top-0 z-50 flex h-full w-full flex-col border-l border-border bg-card shadow-xl transition-transform sm:w-80",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
         {/* 顶栏 */}
-        <div className="flex items-center gap-1 border-b border-border px-2 py-2">
-          <button
-            type="button"
-            className={cn(
-              "rounded px-2 py-1 text-xs",
-              scope === "user" ? "bg-accent font-medium" : "text-muted-foreground",
-            )}
-            onClick={() => switchScope("user")}
-          >
-            user
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "rounded px-2 py-1 text-xs",
-              scope === "runtime" ? "bg-accent font-medium" : "text-muted-foreground",
-            )}
-            onClick={() => switchScope("runtime")}
-          >
-            runtime
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "rounded px-2 py-1 text-xs",
-              scope === "extension" ? "bg-accent font-medium" : "text-muted-foreground",
-            )}
-            onClick={() => switchScope("extension")}
-          >
-            扩展
-          </button>
+        <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-2">
+          {(
+            [
+              ["user", "user"],
+              ["runtime", "runtime"],
+              ["extension", "扩展"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={cn(
+                "rounded-lg px-2.5 py-1 text-xs",
+                scope === value
+                  ? "bg-primary-soft font-semibold text-primary"
+                  : "text-muted-foreground hover:bg-muted",
+              )}
+              onClick={() => switchScope(value)}
+            >
+              {label}
+            </button>
+          ))}
           <div className="flex-1" />
           <button
             type="button"
-            className="inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground sm:min-h-8 sm:min-w-8"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground sm:min-h-8 sm:min-w-8"
             onClick={() => void reload()}
             title="刷新"
           >
@@ -119,7 +110,7 @@ export function FileBrowserDrawer(props: {
           </button>
           <button
             type="button"
-            className="inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground sm:min-h-8 sm:min-w-8"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground sm:min-h-8 sm:min-w-8"
             onClick={onClose}
             title="关闭"
           >

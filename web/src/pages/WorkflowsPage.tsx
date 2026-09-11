@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
@@ -31,10 +32,13 @@ export function WorkflowsPage() {
     refresh();
   }, [refresh]);
 
+  const [pendingDelete, setPendingDelete] = useState<Workflow | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
   const del = async (id: string) => {
-    if (!window.confirm("删除该工作流？")) return;
     const r = await apiFetch(`/api/workflows/${id}`, { method: "DELETE" });
-    if (!r.ok) window.alert(`删除失败：HTTP ${r.status}`);
+    if (!r.ok) setNotice(`删除失败：HTTP ${r.status}`);
+    setPendingDelete(null);
     refresh();
   };
 
@@ -46,6 +50,11 @@ export function WorkflowsPage() {
         actions={<Button onClick={() => navigate("/workflows/new")}>+ 新建工作流</Button>}
       />
 
+      {notice ? (
+        <div className="rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">
+          {notice}
+        </div>
+      ) : null}
       {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
 
       {items.length ? (
@@ -72,7 +81,7 @@ export function WorkflowsPage() {
                       编辑
                     </Button>
                   </Link>
-                  <Button variant="danger" size="sm" onClick={() => void del(w.id)}>
+                  <Button variant="danger" size="sm" onClick={() => setPendingDelete(w)}>
                     删除
                   </Button>
                 </div>
@@ -87,6 +96,16 @@ export function WorkflowsPage() {
           </div>
         )
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`删除工作流「${pendingDelete?.name ?? ""}」？`}
+        description="删除后不可恢复。"
+        confirmText="删除"
+        destructive
+        onConfirm={() => void del(pendingDelete?.id ?? "")}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

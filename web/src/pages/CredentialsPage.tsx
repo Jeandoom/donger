@@ -51,8 +51,11 @@ export function CredentialsPage() {
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingValueDelete, setPendingValueDelete] = useState<string | null>(null);
+  const [deleteValueError, setDeleteValueError] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteValueBusy, setDeleteValueBusy] = useState(false);
   // 我的凭证行内改名（个人别名；只改名称不触碰加密 values）
   const [renamingCode, setRenamingCode] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -363,7 +366,7 @@ export function CredentialsPage() {
                     </button>
                     <button
                       type="button"
-                      className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted hover:bg-accent"
+                      className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted"
                       onClick={() => {
                         setRenamingCode(null);
                         setRenameError(null);
@@ -404,11 +407,9 @@ export function CredentialsPage() {
               <button
                 type="button"
                 className="mt-1 text-xs text-muted-foreground hover:text-destructive"
-                onClick={async () => {
-                  if (window.confirm(`删除凭证 ${c.code}？（不影响全局模板与他人）`)) {
-                    await deleteCredentialValue(c.code);
-                    await reload();
-                  }
+                onClick={() => {
+                  setPendingValueDelete(c.code);
+                  setDeleteValueError(null);
                 }}
               >
                 删除我的凭证
@@ -480,6 +481,33 @@ export function CredentialsPage() {
           }}
         />
       )}
+      <ConfirmDialog
+        open={pendingValueDelete !== null}
+        title={`删除凭证 ${pendingValueDelete ?? ""}？`}
+        description="仅删除你个人填写的内容，不影响全局模板与他人。"
+        confirmText="删除"
+        destructive
+        busy={deleteValueBusy}
+        error={deleteValueError}
+        onConfirm={async () => {
+          if (!pendingValueDelete) return;
+          setDeleteValueBusy(true);
+          try {
+            await deleteCredentialValue(pendingValueDelete);
+            setPendingValueDelete(null);
+            await reload();
+          } catch (e) {
+            setDeleteValueError(e instanceof Error ? e.message : String(e));
+          } finally {
+            setDeleteValueBusy(false);
+          }
+        }}
+        onCancel={() => {
+          setPendingValueDelete(null);
+          setDeleteValueError(null);
+        }}
+      />
+
       <ConfirmDialog
         open={confirmDelete}
         title={`删除模板 ${editing?.code ?? ""}`}
@@ -610,7 +638,7 @@ function TemplateEditDialog(props: {
           <div className="flex gap-2">
             <button
               type="button"
-              className="rounded border px-3 py-1.5 text-sm hover:bg-accent"
+              className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
               onClick={onCancel}
             >
               取消

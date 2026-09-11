@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
@@ -29,13 +30,17 @@ export function TriggersPage() {
     refresh();
   }, [refresh]);
 
+  const [pendingDelete, setPendingDelete] = useState<Trigger | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
   const del = async (id: string) => {
-    if (!window.confirm("删除该触发器？")) return;
     const r = await apiFetch(`/api/triggers/${id}`, { method: "DELETE" });
     if (r.status === 409) {
-      window.alert("该触发器被工作流引用，请先解绑");
-      return;
+      setNotice("该触发器被工作流引用，请先解绑");
+    } else if (!r.ok) {
+      setNotice(`删除失败：HTTP ${r.status}`);
     }
+    setPendingDelete(null);
     refresh();
   };
 
@@ -47,6 +52,11 @@ export function TriggersPage() {
         actions={<Button onClick={() => navigate("/triggers/new")}>+ 新建触发器</Button>}
       />
 
+      {notice ? (
+        <div className="rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">
+          {notice}
+        </div>
+      ) : null}
       {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
 
       <Card className="overflow-hidden">
@@ -77,7 +87,7 @@ export function TriggersPage() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => void del(t.id)}
+                    onClick={() => setPendingDelete(t)}
                     className="text-xs text-destructive hover:underline"
                   >
                     删除
@@ -93,6 +103,16 @@ export function TriggersPage() {
           </div>
         ) : null}
       </Card>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`删除触发器「${pendingDelete?.name ?? ""}」？`}
+        description="删除后不可恢复；被工作流引用时会被拒绝。"
+        confirmText="删除"
+        destructive
+        onConfirm={() => void del(pendingDelete?.id ?? "")}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }
