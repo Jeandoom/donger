@@ -8,6 +8,7 @@ import { AgentSessionsPage } from "./pages/AgentSessionsPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
+import { ConnectorsPage } from "./pages/ConnectorsPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
 import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -55,6 +56,7 @@ export function App() {
             <Route path="/loops" element={<LoopsPage />} />
             <Route path="/loops/:id" element={<LoopDetailPage />} />
             <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/profile" element={<UserProfilePage />} />
             <Route path="/settings/models" element={<ModelsPage />} />

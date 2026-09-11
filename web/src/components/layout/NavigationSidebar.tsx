@@ -39,6 +39,7 @@ const entries: NavEntry[] = [
   },
   { to: "/loops", label: "LOOPs" },
   { to: "/skills", label: "技能" },
+  { to: "/connectors", label: "连接器" },
   {
     key: "settings",
     label: "用户配置",
