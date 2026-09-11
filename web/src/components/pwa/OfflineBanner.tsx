@@ -18,7 +18,7 @@ export function OfflineBanner() {
   return (
     <div
       role="status"
-      className="fixed inset-x-0 top-0 z-[70] bg-yellow-500 px-3 py-2 text-center text-sm text-black"
+      className="fixed inset-x-0 top-0 z-[70] bg-warning-soft px-3 py-2 text-center text-sm font-medium text-amber-800"
     >
       当前离线，聊天功能需要联网
     </div>

@@ -39,7 +39,7 @@ export function MobileNavigationDrawer() {
             role="dialog"
             aria-modal="true"
             aria-label="主导航"
-            className="relative h-full w-[min(84vw,20rem)] bg-background shadow-xl"
+            className="relative h-full w-[min(84vw,20rem)] bg-card shadow-xl"
           >
             <button
               type="button"

@@ -36,7 +36,7 @@ describe("ChatWorkspace", () => {
 
     expect(screen.getByText("会话（0）")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "添加附件" })).toBeInTheDocument();
-    expect(screen.getByText("● 已连接")).toBeInTheDocument();
+    expect(screen.getByText("已连接")).toBeInTheDocument();
   });
 
   it("shows the assistant-ui welcome state before the first message", () => {

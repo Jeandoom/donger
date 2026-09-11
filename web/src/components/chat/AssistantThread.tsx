@@ -94,13 +94,13 @@ function MessageFiles() {
             key={file.path}
             href={url}
             download={file.name}
-            className="rounded bg-muted px-2 py-1 text-xs underline"
+            className="rounded-lg bg-muted px-2 py-1 text-xs underline"
           >
-            📄 {file.name}
+            {file.name}
           </a>
         ) : (
-          <span key={file.path} className="rounded bg-muted px-2 py-1 text-xs">
-            📄 {file.name}
+          <span key={file.path} className="rounded-lg bg-muted px-2 py-1 text-xs">
+            {file.name}
           </span>
         );
       })}
@@ -189,7 +189,7 @@ function ComposerAttachment() {
       <AttachmentPrimitive.Name />
       <AttachmentPrimitive.Remove
         aria-label="移除附件"
-        className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         <X aria-hidden="true" size={14} />
       </AttachmentPrimitive.Remove>

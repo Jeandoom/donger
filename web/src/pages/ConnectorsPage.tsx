@@ -361,7 +361,7 @@ export function ConnectorsPage() {
                 />
                 <button
                   type="button"
-                  className="rounded border px-2 text-xs hover:bg-accent"
+                  className="rounded-lg border border-border bg-card px-2 text-xs hover:bg-muted"
                   onClick={() =>
                     setDraft((d) => ({ ...d, rows: d.rows.filter((r) => r.id !== row.id) }))
                   }
@@ -372,7 +372,7 @@ export function ConnectorsPage() {
             ))}
             <button
               type="button"
-              className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted hover:bg-accent"
+              className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted"
               onClick={() =>
                 setDraft((d) => ({
                   ...d,
@@ -396,7 +396,7 @@ export function ConnectorsPage() {
           {editing && (
             <button
               type="button"
-              className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+              className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
               onClick={() => {
                 setEditing(null);
                 setDraft(emptyDraft);
@@ -408,7 +408,7 @@ export function ConnectorsPage() {
           )}
           <button
             type="button"
-            className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
             disabled={testBusy || !draft.url.trim()}
             onClick={() => void runTest()}
           >

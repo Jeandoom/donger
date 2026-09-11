@@ -74,7 +74,7 @@ function Row(props: {
       <div>
         <button
           type="button"
-          className="flex w-full items-center gap-1 py-0.5 pr-2 text-left hover:bg-accent"
+          className="flex w-full items-center gap-1 rounded-md py-0.5 pr-2 text-left hover:bg-muted"
           style={pad}
           onClick={() => onToggle(node.path)}
         >
@@ -106,7 +106,9 @@ function Row(props: {
       tabIndex={0}
       className={cn(
         "group flex cursor-pointer items-center gap-1 py-0.5 pr-2",
-        selectedPath === node.path ? "bg-accent" : "hover:bg-accent",
+        selectedPath === node.path
+          ? "rounded-md bg-primary-soft font-medium text-primary"
+          : "rounded-md hover:bg-muted",
       )}
       style={pad}
       onClick={() => onSelect(node.path)}

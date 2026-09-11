@@ -9,7 +9,7 @@ export function AssistDraftBanner(props: {
 }) {
   const [text, setText] = useState(props.draft);
   return (
-    <div className="mx-auto mb-2 w-full max-w-3xl rounded-xl border bg-background p-2 shadow-sm">
+    <div className="mx-auto mb-2 w-full max-w-3xl rounded-xl border border-border bg-card p-2 shadow-sm">
       <textarea
         aria-label="协助创建草稿"
         className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-6 outline-none"

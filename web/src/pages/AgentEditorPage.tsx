@@ -448,7 +448,9 @@ export function AgentEditorPage() {
                           </span>
                         )}
                         {!c.enabled && (
-                          <span className="text-xs text-amber-600">⚠已停用（运行时跳过）</span>
+                          <span className="text-xs font-medium text-amber-600">
+                            已停用（运行时跳过）
+                          </span>
                         )}
                       </label>
                     );
@@ -906,7 +908,7 @@ function SkillPicker({
             <button
               key={id}
               type="button"
-              className="rounded bg-accent px-2 py-0.5 text-xs hover:bg-accent/80"
+              className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
               onClick={() => toggle(id)}
               title="点击移除"
             >
@@ -916,7 +918,7 @@ function SkillPicker({
         </div>
       ) : null}
       {open ? (
-        <div className="absolute z-30 mt-1 w-full rounded border bg-background p-2 shadow-lg">
+        <div className="absolute z-30 mt-1 w-full rounded-lg border border-border bg-card p-2 shadow-lg">
           <input
             className="mb-2 w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none text-sm"
             placeholder="搜索技能名称、ID或描述"
@@ -928,7 +930,7 @@ function SkillPicker({
               filteredOptions.map((option) => (
                 <label
                   key={option.id}
-                  className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+                  className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
                 >
                   <input
                     type="checkbox"

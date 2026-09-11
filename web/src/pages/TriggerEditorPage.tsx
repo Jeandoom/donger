@@ -67,6 +67,7 @@ export function TriggerEditorPage() {
   const [matcherKind, setMatcherKind] = useState<MatcherKind>("always");
   const [matcher, setMatcher] = useState<MatcherFields>({});
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -139,12 +140,13 @@ export function TriggerEditorPage() {
 
   const save = async () => {
     setLoading(true);
+    setSaveError(null);
     try {
       const url = id ? `/api/triggers/${id}` : "/api/triggers";
       const method = id ? "PUT" : "POST";
       const r = await apiFetch(url, { method, body: JSON.stringify(buildPayload()) });
       if (r.ok) nav("/triggers");
-      else window.alert(await r.text());
+      else setSaveError(await r.text());
     } finally {
       setLoading(false);
     }
@@ -152,7 +154,7 @@ export function TriggerEditorPage() {
 
   const test = async () => {
     if (!id) {
-      window.alert("先保存后再测试");
+      setSaveError("先保存后再测试");
       return;
     }
     const r = await apiFetch(`/api/triggers/${id}/test`, { method: "POST" });
@@ -162,6 +164,11 @@ export function TriggerEditorPage() {
   return (
     <div className="mx-auto max-w-2xl flex-1 overflow-y-auto p-7">
       <PageHeader className="mb-4" title={id ? "编辑触发器" : "新建触发器"} />
+      {saveError ? (
+        <div className="mb-3 rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">
+          {saveError}
+        </div>
+      ) : null}
       <label className="mb-2 block">
         名称
         <input

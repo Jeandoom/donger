@@ -48,6 +48,7 @@ export function LoopDetailPage() {
   const [runs, setRuns] = useState<LoopRun[]>([]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
 
   const refresh = useCallback(() => {
     if (!id) return;
@@ -76,7 +77,7 @@ export function LoopDetailPage() {
     const action = next ? "enable" : "disable";
     const r = await apiFetch(`/api/loops/${loop.id}/${action}`, { method: "POST" });
     if (!r.ok) {
-      window.alert(`操作失败：HTTP ${r.status}`);
+      setNotice({ type: "error", text: `操作失败：HTTP ${r.status}` });
       if (loop) setLoop({ ...loop, enabled: !next });
     }
   };
@@ -88,9 +89,9 @@ export function LoopDetailPage() {
       const r = await apiFetch(`/api/loops/${loop.id}/run`, { method: "POST" });
       if (!r.ok) {
         const body = await r.text();
-        window.alert(`运行失败：${r.status} ${body}`);
+        setNotice({ type: "error", text: `运行失败：${r.status} ${body}` });
       } else {
-        window.alert("已触发，几秒后刷新查看新 run");
+        setNotice({ type: "success", text: "已触发，几秒后刷新查看新 run" });
         setTimeout(refresh, 2000);
       }
     } finally {
@@ -122,6 +123,18 @@ export function LoopDetailPage() {
           </>
         }
       />
+
+      {notice ? (
+        <div
+          className={`rounded-lg px-4 py-2.5 text-sm ${
+            notice.type === "error"
+              ? "bg-destructive-soft text-destructive"
+              : "bg-success-soft text-success"
+          }`}
+        >
+          {notice.text}
+        </div>
+      ) : null}
 
       {loop.lastError ? (
         <div className="rounded-lg bg-destructive-soft px-4 py-3 text-sm text-destructive">

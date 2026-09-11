@@ -51,7 +51,7 @@ export function MobileConversationSheet(props: MobileConversationSheetProps) {
             role="dialog"
             aria-modal="true"
             aria-label="历史会话"
-            className="absolute right-0 top-0 h-full w-[min(90vw,22rem)] bg-background shadow-xl"
+            className="absolute right-0 top-0 h-full w-[min(90vw,22rem)] bg-card shadow-xl"
           >
             <button
               type="button"

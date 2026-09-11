@@ -12,7 +12,7 @@ export function PwaUpdatePrompt() {
   return (
     <div
       role="status"
-      className="fixed bottom-4 right-4 z-[70] max-w-sm rounded-lg border border-border bg-background p-4 shadow-xl"
+      className="fixed bottom-4 right-4 z-[70] max-w-sm rounded-xl border border-border bg-card p-4 shadow-xl"
     >
       <p className="text-sm">
         {needRefresh ? "发现新版本，确认后刷新应用。" : "应用外壳已可离线启动，聊天仍需联网。"}

@@ -132,7 +132,7 @@ function Section({
               </div>
               <Link
                 to={`/agents/${a.id}`}
-                className="line-clamp-2 min-h-8 text-xs text-muted-foreground hover:bg-accent/50"
+                className="line-clamp-2 min-h-8 text-xs text-muted-foreground hover:bg-muted/60"
               >
                 {a.description ?? "—"}
               </Link>
