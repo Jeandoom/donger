@@ -33,6 +33,8 @@ export const AgentSchema = z.object({
   defaultSkill: z.string().min(1).optional(),
   tools: AgentToolsSchema,
   mcpServers: z.array(McpServerConfigSchema).default([]),
+  /** 勾选的连接器 id（弱引用：连接器模块注册的 HTTP MCP；运行时解析为 mcpServers，重名在保存时硬拦） */
+  connectorIds: z.array(z.string()).default([]),
   /** 勾选的凭证模板 code（弱引用：执行时按当前用户解析，未配置的注入 _MISSING 标记） */
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,

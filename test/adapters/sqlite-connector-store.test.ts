@@ -52,8 +52,8 @@ describe("SqliteConnectorStore", () => {
   });
 
   it("listForUser：我的 private + 他人 global，不含他人 private", async () => {
-    const mine = await store.create(input({ name: "mine" }), owner);
-    const otherPrivate = await store.create(input({ name: "other-private" }), other);
+    await store.create(input({ name: "mine" }), owner);
+    await store.create(input({ name: "other-private" }), other);
     const global = await store.create(input({ name: "shared", shareScope: "global" }), other);
 
     const visible = await store.listForUser(owner);
@@ -64,7 +64,6 @@ describe("SqliteConnectorStore", () => {
 
     // global 创建者自己也可见（去重：仅一行）
     expect((await store.listForUser(other)).filter((c) => c.id === global.id)).toHaveLength(1);
-    expect(mine.id).toBeTruthy();
   });
 
   it("listByIds：跨 owner 原样返回（可见性校验由调用方负责）", async () => {
@@ -81,7 +80,9 @@ describe("SqliteConnectorStore", () => {
       owner,
     );
     const db = (store as unknown as { db: Database }).db;
-    const row = db.prepare("SELECT data FROM connectors WHERE id = ?").get(c.id) as { data: string };
+    const row = db.prepare("SELECT data FROM connectors WHERE id = ?").get(c.id) as {
+      data: string;
+    };
     expect(row.data).not.toContain("plain-secret-token");
     // 读路径解密还原
     expect((await store.getById(c.id))?.headers.Authorization).toBe("Bearer plain-secret-token");

@@ -16,6 +16,7 @@ import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
+import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
@@ -123,6 +124,9 @@ async function main(): Promise<void> {
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
   credentialSets.migrate();
+  // 连接器注册表（HTTP MCP）：与 agent 密钥共用同一加密器
+  const connectorStore = new SqliteConnectorStore(db, secretCipher);
+  connectorStore.migrate();
   const gitAccessGate = new GitAccessGate(
     repositoryMaterializer,
     credentialSets,
@@ -239,6 +243,7 @@ async function main(): Promise<void> {
     skillPackStore,
     installer: skillInstaller,
     credentialSets,
+    connectorStore,
     modelConfigStore,
     agentStore,
     agentShareStore,

@@ -197,6 +197,7 @@ export class SqliteAgentStore implements AgentStore {
       defaultSkill: snap.defaultSkill,
       tools: snap.tools,
       mcpServers: snap.mcpServers,
+      connectorIds: snap.connectorIds,
       gitRepositories: snap.gitRepositories,
       extensionDirectories: snap.extensionDirectories,
       llm: snap.llm,

@@ -1,8 +1,8 @@
 import type { Database } from "better-sqlite3";
 import type { Connector, ConnectorInput } from "../domain/connector.js";
 import { ConnectorInputSchema, parseConnector } from "../domain/connector.js";
-import { NotFoundError } from "../util/errors.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
+import { NotFoundError } from "../util/errors.js";
 import type { SecretCipher } from "../util/secret-cipher.js";
 
 /** 持久化形态：headers 是加密后的字符串（而非 Record） */

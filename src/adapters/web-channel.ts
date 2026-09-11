@@ -15,6 +15,12 @@ import type { LlmPreset } from "../config.js";
 import { type Agent, parseAgent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import {
+  type Connector,
+  ConnectorInputSchema,
+  collectCredentialRefs,
+} from "../domain/connector.js";
+import { substituteCredentialRefs } from "../domain/connector-resolution.js";
+import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
   CredentialValueInputSchema,
@@ -58,6 +64,7 @@ import type {
   MissingCredentialsRequest,
 } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
+import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
@@ -101,6 +108,38 @@ function latestConversationFor<T extends { agentId: string; updatedAt: string }>
   return list
     .filter((c) => c.agentId === agentId)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
+/** JSON-RPC over HTTP 响应解析：application/json 直取；text/event-stream 从 data: 行找匹配 id 的信封 */
+export function extractRpcResult(body: string, id: number): Record<string, unknown> | undefined {
+  const candidates: unknown[] = [];
+  const trimmed = body.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      candidates.push(JSON.parse(trimmed) as unknown);
+    } catch {
+      // fallthrough 到 SSE data: 行解析
+    }
+  }
+  for (const line of body.split("\n")) {
+    const m = line.match(/^\s*data:\s*(.+)$/);
+    if (!m?.[1]) continue;
+    try {
+      candidates.push(JSON.parse(m[1]) as unknown);
+    } catch {
+      // 跳过非 JSON 行
+    }
+  }
+  for (const c of candidates) {
+    if (c && typeof c === "object" && (c as { id?: unknown }).id === id) {
+      return c as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
 export type StaticTarget = { kind: "file"; absPath: string } | null;
@@ -176,6 +215,8 @@ export interface WebChannelDeps {
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
   credentialSets?: CredentialSetStore;
+  /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
+  connectorStore?: ConnectorStore;
   modelConfigStore?: UserModelConfigStore;
   agentStore?: AgentStore;
   agentShareStore?: AgentShareStore;
@@ -229,6 +270,7 @@ export class WebChannel implements Channel {
   private readonly fileBrowser?: FileBrowser;
   private readonly agentStore?: AgentStore;
   private readonly agentShareStore?: AgentShareStore;
+  private readonly connectorStore?: ConnectorStore;
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
@@ -241,6 +283,7 @@ export class WebChannel implements Channel {
     this.fileBrowser = deps.fileBrowser;
     this.agentStore = deps.agentStore;
     this.agentShareStore = deps.agentShareStore;
+    this.connectorStore = deps.connectorStore;
     this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
   }
@@ -1833,6 +1876,8 @@ export class WebChannel implements Channel {
 
     if (await this.handleWorkflowApi(url, req, res)) return;
 
+    if (await this.handleConnectorApi(url, req, res)) return;
+
     res.writeHead(404);
     res.end(JSON.stringify({ error: "unknown endpoint" }));
   }
@@ -1871,6 +1916,295 @@ export class WebChannel implements Channel {
     else if (e instanceof ZodError) status = 400;
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // 连接器（HTTP MCP 注册表）
+  // ---------------------------------------------------------------------------
+
+  private async handleConnectorApi(
+    url: string,
+    req: HttpRequest,
+    res: ServerResponse,
+  ): Promise<boolean> {
+    const cstore = this.connectorStore;
+    if (!cstore) return false;
+    const basePath = url.split("?")[0] ?? url;
+    const uid = this.requireRequestUser(req);
+    const send = (r: { status: number; json: unknown }) => {
+      res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(r.json));
+    };
+    const bad = (msg: string) => send({ status: 400, json: { error: msg } });
+
+    // POST /api/connectors/test —— 未保存也可测（body 即表单）；用发起者的凭证解析 {{credential:*}}
+    if (basePath === "/api/connectors/test" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = ConnectorInputSchema.pick({ url: true, headers: true }).safeParse(b);
+      if (!parsed.success) {
+        bad(parsed.error.issues[0]?.message ?? "参数非法");
+        return true;
+      }
+      const { resolved, missing } = await this.resolveConnectorHeaders(
+        uid,
+        parsed.data.headers ?? {},
+      );
+      if (missing.length > 0) {
+        send({ status: 200, json: { ok: false, error: `凭证未配置: ${missing.join(", ")}` } });
+        return true;
+      }
+      send({ status: 200, json: await this.probeMcpHttp(parsed.data.url, resolved) });
+      return true;
+    }
+
+    if (basePath === "/api/connectors" && req.method === "GET") {
+      const [list, refMap] = await Promise.all([cstore.listForUser(uid), this.connectorRefs()]);
+      send({
+        status: 200,
+        json: {
+          connectors: list.map((c) => this.connectorToDTO(c, uid, refMap.get(c.id)?.length ?? 0)),
+        },
+      });
+      return true;
+    }
+
+    if (basePath === "/api/connectors" && req.method === "POST") {
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = ConnectorInputSchema.safeParse(b);
+      if (!parsed.success) {
+        bad(parsed.error.issues[0]?.message ?? "参数非法");
+        return true;
+      }
+      if (await cstore.getByOwnerAndName(uid, parsed.data.name)) {
+        send({ status: 409, json: { error: `连接器名称已存在: ${parsed.data.name}` } });
+        return true;
+      }
+      const created = await cstore.create(parsed.data, uid);
+      send({ status: 201, json: this.connectorToDTO(created, uid, 0) });
+      return true;
+    }
+
+    const m = basePath.match(/^\/api\/connectors\/([\w-]+)$/);
+    if (!m) return false;
+    const c = await cstore.getById(m[1] ?? "");
+    if (!c) {
+      send({ status: 404, json: { error: "连接器不存在" } });
+      return true;
+    }
+    const isOwner = c.ownerId === uid;
+
+    if (req.method === "GET") {
+      if (!isOwner && c.shareScope !== "global") {
+        send({ status: 403, json: { error: "forbidden: 私有连接器仅创建人可见" } });
+        return true;
+      }
+      const refMap = await this.connectorRefs();
+      send({ status: 200, json: this.connectorToDTO(c, uid, refMap.get(c.id)?.length ?? 0) });
+      return true;
+    }
+
+    // 写操作仅创建人（裁决②：global 人人可用，管理权仍归创建人）
+    if (!isOwner) {
+      send({ status: 403, json: { error: "forbidden: 仅创建人可管理" } });
+      return true;
+    }
+
+    if (req.method === "DELETE") {
+      const refs = (await this.connectorRefs()).get(c.id) ?? [];
+      if (refs.length > 0) {
+        send({
+          status: 409,
+          json: {
+            error: `已被 ${refs.length} 个智能体引用，先解除引用后再删除`,
+            agents: refs.map((a) => ({ id: a.id, name: a.name })),
+          },
+        });
+        return true;
+      }
+      await cstore.delete(c.id);
+      send({ status: 200, json: { ok: true } });
+      return true;
+    }
+
+    if (req.method === "PATCH" || req.method === "PUT") {
+      const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const parsed = ConnectorInputSchema.safeParse(b);
+      if (!parsed.success) {
+        bad(parsed.error.issues[0]?.message ?? "参数非法");
+        return true;
+      }
+      const input = {
+        ...parsed.data,
+        headers: this.mergeMaskedHeaders(c.headers, parsed.data.headers ?? {}),
+      };
+      if (input.name !== c.name) {
+        const taken = await cstore.getByOwnerAndName(c.ownerId, input.name);
+        if (taken && taken.id !== c.id) {
+          send({ status: 409, json: { error: `连接器名称已存在: ${input.name}` } });
+          return true;
+        }
+        // 改名反向校验：不得让已引用 agent 产生 MCP 重名（spec §3.4）
+        const conflicts = await this.connectorRenameConflicts(c, input.name);
+        if (conflicts.length > 0) {
+          send({
+            status: 409,
+            json: {
+              error: `改名将与引用它的智能体产生 MCP 重名: ${input.name}`,
+              agents: conflicts.map((a) => ({ id: a.id, name: a.name })),
+            },
+          });
+          return true;
+        }
+      }
+      const updated = await cstore.update(c.id, input);
+      const refMap = await this.connectorRefs();
+      send({ status: 200, json: this.connectorToDTO(updated, uid, refMap.get(c.id)?.length ?? 0) });
+      return true;
+    }
+
+    return false;
+  }
+
+  /** connectorId → 引用它的 agent 清单（agents 量级小，全量扫；usedBy/删除保护/改名反校验共用） */
+  private async connectorRefs(): Promise<Map<string, Agent[]>> {
+    const map = new Map<string, Agent[]>();
+    if (!this.agentStore) return map;
+    for (const a of await this.agentStore.listAll()) {
+      for (const cid of a.connectorIds) {
+        const list = map.get(cid) ?? [];
+        list.push(a);
+        map.set(cid, list);
+      }
+    }
+    return map;
+  }
+
+  /** 改名反向校验：新名与引用者的内联 mcpServers 或其引用的其他连接器重名 → 冲突 agent 清单 */
+  private async connectorRenameConflicts(
+    c: Connector,
+    newName: string,
+  ): Promise<Array<{ id: string; name: string }>> {
+    const cstore = this.connectorStore;
+    if (!cstore || newName === c.name) return [];
+    const conflicts: Array<{ id: string; name: string }> = [];
+    for (const a of (await this.connectorRefs()).get(c.id) ?? []) {
+      const inlineNames = new Set(a.mcpServers.map((s) => s.name));
+      const otherNames = new Set(
+        (await cstore.listByIds(a.connectorIds.filter((x) => x !== c.id))).map((o) => o.name),
+      );
+      if (inlineNames.has(newName) || otherNames.has(newName)) {
+        conflicts.push({ id: a.id, name: a.name });
+      }
+    }
+    return conflicts;
+  }
+
+  private connectorToDTO(c: Connector, uid: string, usedBy: number): Record<string, unknown> {
+    return {
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      transport: c.transport,
+      url: c.url,
+      // 字面量值掩码；{{credential:*}} 引用本身不含密钥，保持可读以便编辑
+      headers: Object.fromEntries(
+        Object.entries(c.headers).map(([k, v]) => [k, v.includes("{{credential:") ? v : "••••"]),
+      ),
+      enabled: c.enabled,
+      shareScope: c.shareScope,
+      ownerId: c.ownerId,
+      createdByMe: c.ownerId === uid,
+      usedBy,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+    };
+  }
+
+  /** 连接器 headers 回传掩码占位（••••）时按 key 用库内原值回填；新增/改动的引用值直通 */
+  private mergeMaskedHeaders(
+    orig: Record<string, string>,
+    next: Record<string, string>,
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(next)) {
+      out[k] = v === "••••" ? (orig[k] ?? v) : v;
+    }
+    return out;
+  }
+
+  /** 按访问者解析 headers 中的 {{credential:*}}（测试端点用；运行时注入在 runtime-manager 同语义复用） */
+  private async resolveConnectorHeaders(
+    uid: string,
+    headers: Record<string, string>,
+  ): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    const codes = collectCredentialRefs(headers);
+    const valuesByCode = new Map<string, Record<string, string>>();
+    const csets = this.deps.credentialSets;
+    if (codes.length > 0 && csets) {
+      for (const f of await csets.getFilledValues(uid, codes)) valuesByCode.set(f.code, f.values);
+    }
+    return substituteCredentialRefs(headers, valuesByCode);
+  }
+
+  /** MCP streamable HTTP 探活：initialize → notifications/initialized → tools/list（无状态）。错误信息不回显请求头。 */
+  private async probeMcpHttp(
+    url: string,
+    headers: Record<string, string>,
+  ): Promise<{
+    ok: boolean;
+    latencyMs?: number;
+    toolCount?: number;
+    tools?: string[];
+    error?: string;
+  }> {
+    const started = Date.now();
+    const call = (body: unknown, extra: Record<string, string> = {}): Promise<Response> =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          ...headers,
+          ...extra,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5000),
+      });
+    try {
+      const init = await call({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "donger-connector-test", version: "1.0.0" },
+        },
+      });
+      const initEnv = extractRpcResult(await init.text(), 1);
+      if (!init.ok || !initEnv || initEnv.error) {
+        return { ok: false, error: truncate(`initialize 失败 (HTTP ${init.status})`, 300) };
+      }
+      const session = init.headers.get("mcp-session-id");
+      const extra = session ? { "Mcp-Session-Id": session } : {};
+      // initialized 通知失败不阻断探活结果
+      await call({ jsonrpc: "2.0", method: "notifications/initialized" }, extra).catch(
+        () => undefined,
+      );
+      const tools = await call({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, extra);
+      const toolsEnv = extractRpcResult(await tools.text(), 2);
+      if (!tools.ok || !toolsEnv || toolsEnv.error) {
+        return { ok: false, error: truncate(`tools/list 失败 (HTTP ${tools.status})`, 300) };
+      }
+      const names = (
+        (toolsEnv.result as { tools?: Array<{ name?: string }> } | undefined)?.tools ?? []
+      )
+        .map((t) => t.name ?? "")
+        .filter(Boolean);
+      return { ok: true, latencyMs: Date.now() - started, toolCount: names.length, tools: names };
+    } catch (e) {
+      return { ok: false, error: truncate(e instanceof Error ? e.message : String(e), 300) };
+    }
   }
 
   /** POST /hooks/<slug> —— Hook 触发器入口，免认证。 */
@@ -2573,6 +2907,7 @@ export class WebChannel implements Channel {
       defaultSkill: a.defaultSkill,
       tools: a.tools,
       mcpServers: maskedMcp,
+      connectorIds: a.connectorIds,
       credentials: a.credentials,
       gitRepositories: a.gitRepositories,
       extensionDirectories: a.extensionDirectories,

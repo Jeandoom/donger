@@ -59,10 +59,9 @@ export function parseConnectorInput(raw: unknown): ConnectorInput {
 export function collectCredentialRefs(headers: Record<string, string>): string[] {
   const codes = new Set<string>();
   for (const value of Object.values(headers)) {
-    CREDENTIAL_REF_PATTERN.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = CREDENTIAL_REF_PATTERN.exec(value)) !== null) {
-      codes.add(m[1]);
+    // matchAll 克隆正则，不受 lastIndex 状态影响
+    for (const m of value.matchAll(CREDENTIAL_REF_PATTERN)) {
+      codes.add(m[1] as string);
     }
   }
   return [...codes];
