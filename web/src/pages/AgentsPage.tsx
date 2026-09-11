@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
@@ -58,7 +59,8 @@ export function AgentsPage() {
               variant="secondary"
               onClick={() => navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
             >
-              ✨ AI 生成
+              <Sparkles aria-hidden="true" size={14} className="inline" />
+              AI 生成
             </Button>
             <Button onClick={() => navigate("/agents/new")}>+ 新建智能体</Button>
           </>

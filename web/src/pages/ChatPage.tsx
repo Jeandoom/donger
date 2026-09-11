@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID, noneAssistHint } from "../lib/assist";
@@ -22,7 +23,7 @@ export function ChatPage() {
               navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`);
             }}
           >
-            ✨ 让 AI 协助创建
+            <Sparkles aria-hidden="true" size={13} className="inline" />让 AI 协助创建
           </button>
         </div>
       ) : null}
