@@ -30,6 +30,7 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   mcpServers: [],
   credentials: [],
   gitRepositories: [],
+  connectorIds: [],
   gitAllowShellGit: false,
   extensionDirectories: [],
   acceptanceGate: false,

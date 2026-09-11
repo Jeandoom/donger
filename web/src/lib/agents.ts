@@ -43,6 +43,8 @@ export interface AgentDTO {
   defaultSkill?: string;
   tools: { mode: "all" | "whitelist"; whitelist: string[] };
   mcpServers: McpServerDTO[];
+  /** 勾选的连接器 id（连接器模块注册的 HTTP MCP；保存时后端校验重名） */
+  connectorIds?: string[];
   credentials?: string[];
   gitRepositories: AgentGitRepositoryDTO[];
   extensionDirectories: AgentExtensionDirectoryDTO[];

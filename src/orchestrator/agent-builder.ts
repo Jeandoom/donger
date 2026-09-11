@@ -35,6 +35,7 @@ export const AGENT_BUILDER_AGENT: Agent = {
   mcpServers: [],
   credentials: [],
   gitRepositories: [],
+  connectorIds: [],
   gitAllowShellGit: false,
   extensionDirectories: [],
   acceptanceGate: false,

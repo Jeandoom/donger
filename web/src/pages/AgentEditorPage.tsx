@@ -8,6 +8,7 @@ import {
   fetchAgentMeta,
   updateAgent,
 } from "../lib/agents";
+import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
 import {
   fetchShareStatus,
   removeShareGrant,
@@ -30,6 +31,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   defaultSkill: undefined,
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
+  connectorIds: [],
   credentials: [],
   gitRepositories: [],
   extensionDirectories: [],
@@ -53,6 +55,7 @@ export function AgentEditorPage() {
   const [gitCredentialOptions, setGitCredentialOptions] = useState<
     Array<{ code: string; name: string; repoUrl?: string }>
   >([]);
+  const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
 
   useEffect(() => {
     fetchAgentMeta()
@@ -70,6 +73,13 @@ export function AgentEditorPage() {
             .map((t) => ({ code: t.code, name: t.name, repoUrl: t.repoUrl })),
         ),
       )
+      .catch(() => {});
+  }, []);
+
+  // 连接器列表：MCP 工具区域的勾选项
+  useEffect(() => {
+    fetchConnectors()
+      .then(setConnectors)
       .catch(() => {});
   }, []);
 
@@ -92,6 +102,7 @@ export function AgentEditorPage() {
             defaultSkill: a.defaultSkill,
             tools: a.tools,
             mcpServers: a.mcpServers,
+            connectorIds: a.connectorIds ?? [],
             credentials: a.credentials ?? [],
             gitRepositories: a.gitRepositories ?? [],
             extensionDirectories: a.extensionDirectories ?? [],
@@ -359,22 +370,108 @@ export function AgentEditorPage() {
           </select>
         </Field>
 
-        <Field label="MCP Servers（JSON）">
-          <textarea
-            className="w-full rounded border px-2 py-1 font-mono text-xs"
-            rows={5}
-            value={JSON.stringify(form.mcpServers, null, 2)}
-            onChange={(e) => {
-              try {
-                setForm({ ...form, mcpServers: JSON.parse(e.target.value) });
-              } catch {
-                /* 编辑中，忽略解析错误 */
-              }
-            }}
-          />
-          <p className="text-xs text-muted-foreground">
-            env/headers 中的密钥会加密入库；编辑时显示为掩码，留掩码即保留原值。
-          </p>
+        <Field label="MCP 工具">
+          <div className="space-y-3 rounded border p-3">
+            {/* 内置：随配置自动挂载，只读标注（spec 2026-09-11-connectors §7.2） */}
+            <div>
+              <div className="mb-1 text-xs text-muted-foreground">
+                内置（随配置自动挂载，不可编辑）
+              </div>
+              <div className="space-y-0.5 text-xs">
+                <div className="flex items-center gap-2">
+                  <span>🔒 donger-kb</span>
+                  <span className="text-muted-foreground">知识库读写检索 · 恒挂载</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span>🔒 donger-git</span>
+                  <span className="text-muted-foreground">Git 工作区/平台 · 绑定仓库后挂载</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span>🔒 donger-platform</span>
+                  <span className="text-muted-foreground">平台元工具 · 仅内置智能体</span>
+                </div>
+              </div>
+            </div>
+            {/* 连接器勾选：连接器模块注册的 HTTP MCP */}
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">连接器（勾选启用）</span>
+                <Link to="/connectors" className="text-xs text-primary hover:underline">
+                  管理连接器 →
+                </Link>
+              </div>
+              {connectors.length === 0 ? (
+                <div className="text-xs text-muted-foreground">
+                  暂无可用连接器，可到「连接器」页创建。
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  {connectors.map((c) => {
+                    const checked = (form.connectorIds ?? []).includes(c.id);
+                    let host = c.url;
+                    try {
+                      host = new URL(c.url).host;
+                    } catch {
+                      // 非法 URL 原样展示
+                    }
+                    return (
+                      <label
+                        key={c.id}
+                        className={`flex items-center gap-2 text-sm ${c.enabled ? "" : "opacity-50"}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              connectorIds: e.target.checked
+                                ? [...(form.connectorIds ?? []), c.id]
+                                : (form.connectorIds ?? []).filter((x) => x !== c.id),
+                            })
+                          }
+                        />
+                        <span className="font-mono">{c.name}</span>
+                        <span className="text-xs text-muted-foreground">{host}</span>
+                        {c.shareScope === "global" && (
+                          <span className="rounded bg-emerald-500/10 px-1 text-xs text-emerald-600">
+                            全局
+                          </span>
+                        )}
+                        {!c.enabled && (
+                          <span className="text-xs text-amber-600">⚠已停用（运行时跳过）</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {/* 高级：内联 mcpServers JSON（与连接器重名会被后端硬拦） */}
+            <details>
+              <summary className="cursor-pointer text-xs text-muted-foreground">
+                高级：内联 MCP Servers（JSON）
+              </summary>
+              <div className="mt-1 space-y-1">
+                <textarea
+                  className="w-full rounded border px-2 py-1 font-mono text-xs"
+                  rows={5}
+                  value={JSON.stringify(form.mcpServers, null, 2)}
+                  onChange={(e) => {
+                    try {
+                      setForm({ ...form, mcpServers: JSON.parse(e.target.value) });
+                    } catch {
+                      /* 编辑中，忽略解析错误 */
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  env/headers 中的密钥会加密入库；编辑时显示为掩码，留掩码即保留原值。
+                  与连接器重名时保存会被拒绝（LLM 工具命名空间不可重名）。
+                </p>
+              </div>
+            </details>
+          </div>
         </Field>
 
         <Field label="Git 仓库">
