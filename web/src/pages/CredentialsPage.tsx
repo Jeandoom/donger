@@ -363,7 +363,7 @@ export function CredentialsPage() {
                     </button>
                     <button
                       type="button"
-                      className="rounded border px-2 py-1 text-xs hover:bg-accent"
+                      className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted hover:bg-accent"
                       onClick={() => {
                         setRenamingCode(null);
                         setRenameError(null);
@@ -553,7 +553,9 @@ function TemplateEditDialog(props: {
           编辑模板 <span className="font-mono text-sm">{template.code}</span>
         </h2>
         {error ? (
-          <div className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>
+          <div className="mt-3 rounded bg-destructive-soft p-2 text-sm text-destructive">
+            {error}
+          </div>
         ) : null}
         <div className="mt-3 space-y-2">
           <input
@@ -600,7 +602,7 @@ function TemplateEditDialog(props: {
         <div className="mt-4 flex items-center justify-between">
           <button
             type="button"
-            className="rounded px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
+            className="rounded px-3 py-1.5 text-sm text-destructive hover:bg-destructive-soft"
             onClick={onDelete}
           >
             删除

@@ -115,7 +115,7 @@ export function WorkflowEditorPage() {
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </label>
       <label className="mb-2 block">
@@ -123,7 +123,7 @@ export function WorkflowEditorPage() {
         <input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </label>
       <label className="mb-2 block">
@@ -131,7 +131,7 @@ export function WorkflowEditorPage() {
         <select
           value={triggerId}
           onChange={(e) => setTriggerId(e.target.value)}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         >
           <option value="">— 选择 —</option>
           {triggers.map((t) => (
@@ -146,7 +146,7 @@ export function WorkflowEditorPage() {
         <select
           value={agentId}
           onChange={(e) => setAgentId(e.target.value)}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         >
           <option value="">— 选择 —</option>
           {agents.map((a) => (
@@ -163,7 +163,7 @@ export function WorkflowEditorPage() {
           value={promptTemplate}
           onChange={(e) => setPromptTemplate(e.target.value)}
           rows={4}
-          className="block w-full rounded border px-2 py-1 font-mono text-sm"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none font-mono text-sm"
         />
       </label>
       <small className="text-muted-foreground">
@@ -174,11 +174,11 @@ export function WorkflowEditorPage() {
         <input
           value={outputSubdir}
           onChange={(e) => setOutputSubdir(e.target.value)}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </label>
       {error ? (
-        <div className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>
+        <div className="mb-3 rounded bg-destructive-soft p-2 text-sm text-destructive">{error}</div>
       ) : null}
       <Button type="button" onClick={save} disabled={saving}>
         保存

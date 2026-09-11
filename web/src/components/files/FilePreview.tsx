@@ -51,7 +51,7 @@ export function FilePreview(props: { scope: FileScope; path: string; conversatio
   }
   if (kind === "markdown") {
     if (loading) return <div className="p-3 text-sm text-muted-foreground">加载中…</div>;
-    if (error) return <div className="p-3 text-sm text-red-600">加载失败：{error}</div>;
+    if (error) return <div className="p-3 text-sm text-destructive">加载失败：{error}</div>;
     return (
       <div className="markdown p-3 text-sm">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
@@ -60,7 +60,7 @@ export function FilePreview(props: { scope: FileScope; path: string; conversatio
   }
   if (kind === "text") {
     if (loading) return <div className="p-3 text-sm text-muted-foreground">加载中…</div>;
-    if (error) return <div className="p-3 text-sm text-red-600">加载失败：{error}</div>;
+    if (error) return <div className="p-3 text-sm text-destructive">加载失败：{error}</div>;
     return (
       <pre className="max-h-[60vh] overflow-auto bg-muted/30 p-3 text-xs leading-relaxed">
         <code>{text}</code>

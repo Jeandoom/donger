@@ -167,7 +167,7 @@ export function TriggerEditorPage() {
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </label>
       <label className="mb-2 block">
@@ -175,7 +175,7 @@ export function TriggerEditorPage() {
         <select
           value={type}
           onChange={(e) => setType(e.target.value as "scheduler" | "hook")}
-          className="block w-full rounded border px-2 py-1"
+          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
         >
           <option value="scheduler">定时（scheduler）</option>
           <option value="hook">回调（hook）</option>
@@ -188,7 +188,7 @@ export function TriggerEditorPage() {
             <input
               value={cron}
               onChange={(e) => setCron(e.target.value)}
-              className="block w-full rounded border px-2 py-1 font-mono"
+              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none font-mono"
             />
           </label>
           <small className="text-muted-foreground">
@@ -199,7 +199,7 @@ export function TriggerEditorPage() {
             <select
               value={sourceType}
               onChange={(e) => setSourceType(e.target.value as "http" | "file")}
-              className="block w-full rounded border px-2 py-1"
+              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
             >
               <option value="http">HTTP 请求</option>
               <option value="file">文件读取</option>
@@ -211,7 +211,7 @@ export function TriggerEditorPage() {
                 value={httpUrl}
                 onChange={(e) => setHttpUrl(e.target.value)}
                 placeholder="https://..."
-                className="mb-2 block w-full rounded border px-2 py-1"
+                className="mb-2 block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
               />
               <select
                 value={httpMethod}
@@ -228,7 +228,7 @@ export function TriggerEditorPage() {
               value={filePath}
               onChange={(e) => setFilePath(e.target.value)}
               placeholder="/path/to/file"
-              className="mb-2 block w-full rounded border px-2 py-1"
+              className="mb-2 block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
             />
           )}
         </div>
@@ -240,7 +240,7 @@ export function TriggerEditorPage() {
             <input
               value={hookPath}
               onChange={(e) => setHookPath(e.target.value)}
-              className="block w-full rounded border px-2 py-1 font-mono"
+              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none font-mono"
             />
           </label>
           <small className="text-muted-foreground">
@@ -252,7 +252,7 @@ export function TriggerEditorPage() {
             <input
               value={hookResponse}
               onChange={(e) => setHookResponse(e.target.value)}
-              className="block w-full rounded border px-2 py-1"
+              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
             />
           </label>
         </div>
@@ -362,11 +362,11 @@ export function TriggerEditorPage() {
         <div className="mt-4 rounded border p-3">
           <div>
             matched:{" "}
-            <span className={testResult.matched ? "text-green-600" : "text-red-600"}>
+            <span className={testResult.matched ? "text-green-600" : "text-destructive"}>
               {String(testResult.matched)}
             </span>
           </div>
-          {testResult.error && <div className="text-red-600">error: {testResult.error}</div>}
+          {testResult.error && <div className="text-destructive">error: {testResult.error}</div>}
           <pre className="mt-2 max-h-40 overflow-auto bg-muted p-2 text-xs">
             {testResult.sourceOutput}
           </pre>
