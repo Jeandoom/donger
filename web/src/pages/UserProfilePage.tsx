@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
 interface UserInfo {
@@ -46,10 +47,7 @@ export function UserProfilePage() {
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
-      <div>
-        <h1 className="text-xl font-semibold">基本信息</h1>
-        <p className="mt-1 text-sm text-muted-foreground">当前登录用户的身份与登录渠道。</p>
-      </div>
+      <PageHeader title="个人设置" description="当前登录用户的身份与登录渠道" />
       {error ? <div className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
 
       {user ? (

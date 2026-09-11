@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { PageHeader } from "../components/ui/page-header";
 import {
   type ConnectorDTO,
   type ConnectorInput,
@@ -240,22 +242,26 @@ export function ConnectorsPage() {
   );
 
   return (
-    <div className="h-full overflow-y-auto p-4">
-      <h1 className="mb-4 text-lg font-semibold">连接器</h1>
+    <div className="mx-auto h-full max-w-5xl overflow-y-auto p-7">
+      <PageHeader
+        className="mb-5"
+        title="连接器"
+        description="MCP / API 外部工具接入，供智能体调用"
+      />
       <p className="mb-4 text-xs text-muted-foreground">
         连接器是 HTTP MCP 服务注册：配置一次，多个智能体勾选复用。鉴权头支持引用
-        <span className="font-medium">凭证模板</span>（{"{{credential:code}}"}
+        <span className="font-medium text-foreground">凭证模板</span>（{"{{credential:code}}"}
         ）——共享连接器执行时使用
-        <span className="font-medium">访问者自己的</span>凭证值。
+        <span className="font-medium text-foreground">访问者自己的</span>凭证值。
       </p>
       {error && (
-        <div className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
           {error}
         </div>
       )}
 
       {/* 新建 / 编辑表单 */}
-      <div className="mb-4 rounded-lg border border-border p-3">
+      <Card className="mb-4 p-4">
         <div className="mb-2 text-sm font-medium">
           {editing ? `编辑连接器 ${editing.name}` : "新建连接器"}
         </div>
@@ -420,17 +426,19 @@ export function ConnectorsPage() {
               <span className="text-xs text-destructive">✕ {testResult.error}</span>
             ))}
         </div>
-      </div>
+      </Card>
 
       {/* 双区列表 */}
-      <div className="mb-2 text-sm font-medium">我的连接器</div>
+      <div className="mb-2 text-sm font-semibold text-muted-foreground">我的连接器</div>
       {mine.length === 0 ? (
         <div className="mb-4 text-sm text-muted-foreground">暂无连接器，用上方表单创建。</div>
       ) : (
         <div className="mb-4 space-y-2">{mine.map(renderCard)}</div>
       )}
 
-      <div className="mb-2 text-sm font-medium">全局连接器（人人可用；仅创建人可管理）</div>
+      <div className="mb-2 text-sm font-semibold text-muted-foreground">
+        全局连接器（人人可用；仅创建人可管理）
+      </div>
       {global.length === 0 ? (
         <div className="text-sm text-muted-foreground">暂无他人共享的全局连接器。</div>
       ) : (

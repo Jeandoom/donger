@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { PageHeader } from "../components/ui/page-header";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
   credentialStatus,
@@ -47,33 +51,32 @@ export function SkillsPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">技能管理</h1>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
-            className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
-          >
-            ✨ AI 生成
-          </button>
-          <button
-            type="button"
-            onClick={() => setInstallOpen(true)}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
-          >
-            + 安装技能
-          </button>
-        </div>
-      </div>
+    <div className="mx-auto h-full max-w-5xl overflow-y-auto p-7">
+      <PageHeader
+        className="mb-5"
+        title="技能包"
+        description="为智能体安装可插拔的技能能力"
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
+            >
+              ✨ AI 生成
+            </Button>
+            <Button onClick={() => setInstallOpen(true)}>+ 安装技能包</Button>
+          </>
+        }
+      />
       {error && (
-        <div className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
           {error}
         </div>
       )}
       {packs.length === 0 ? (
-        <div className="text-sm text-muted-foreground">暂无技能。点击“安装技能”添加。</div>
+        <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+          暂无技能包，点击「安装技能包」添加
+        </div>
       ) : (
         <div className="space-y-3">
           {packs.map((p) => (
@@ -120,32 +123,22 @@ function PackCard({
   const [expanded, setExpanded] = useState(false);
   const cs = credentialStatus(pack);
   return (
-    <div className={cn("rounded-lg border border-border p-3", !pack.enabled && "opacity-60")}>
+    <Card className={cn("p-4", !pack.enabled && "opacity-60")}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{pack.name}</span>
-            {pack.builtin && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                预装
-              </span>
-            )}
-            <span className="text-xs text-muted-foreground">{pack.source.kind}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold">{pack.name}</span>
+            {pack.builtin && <Badge tone="info">内置</Badge>}
+            <Badge>{pack.source.kind}</Badge>
             {pack.version && <span className="text-xs text-muted-foreground">v{pack.version}</span>}
           </div>
           {pack.description && (
             <div className="mt-0.5 text-xs text-muted-foreground">{pack.description}</div>
           )}
-          <div className="mt-1 flex flex-wrap gap-1">
-            {cs.missing.length > 0 && (
-              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600">
-                缺凭证：{cs.missing.join(", ")}
-              </span>
-            )}
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {cs.missing.length > 0 && <Badge tone="warning">缺凭证：{cs.missing.join(", ")}</Badge>}
             {cs.configured.length > 0 && (
-              <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-600">
-                已配：{cs.configured.join(", ")}
-              </span>
+              <Badge tone="success">已配：{cs.configured.join(", ")}</Badge>
             )}
           </div>
         </div>
@@ -205,7 +198,7 @@ function PackCard({
           ))}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 

@@ -2,37 +2,56 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * donger 设计体系 · 2026 重设计（与 Penpot 「01 · 设计体系」一致）
+ * 品牌墨黑侧边栏 + 靛蓝主色 + 浅板岩内容区
+ */
 :root {
-  --background: 0 0% 100%;
-  --foreground: 240 10% 3.9%;
-  --muted: 240 4.8% 95.9%;
-  --muted-foreground: 240 3.8% 46.1%;
-  --primary: 240 5.9% 10%;
-  --primary-foreground: 0 0% 98%;
-  --accent: 240 4.8% 95.9%;
-  --accent-foreground: 240 5.9% 10%;
-  --border: 240 5.9% 90%;
-  --radius: 0.5rem;
+  --background: 210 40% 98%; /* #F8FAFC */
+  --foreground: 222 47% 11%; /* #0F172A */
+  --card: 0 0% 100%; /* #FFFFFF */
+  --muted: 210 40% 96%; /* #F1F5F9 */
+  --muted-foreground: 215 16% 47%; /* #64748B */
+  --primary: 244 76% 59%; /* #4F46E5 */
+  --primary-foreground: 0 0% 100%;
+  --primary-soft: 236 100% 97%; /* #EEF2FF */
+  --accent: 236 100% 97%; /* #EEF2FF */
+  --accent-foreground: 244 76% 59%;
+  --border: 214 32% 91%; /* #E2E8F0 */
+  --radius: 0.75rem; /* 12px */
+
+  --success: 160 84% 39%; /* #10B981 */
+  --success-soft: 152 95% 96%; /* #ECFDF5 */
+  --warning: 38 92% 50%; /* #FBBF24 */
+  --warning-soft: 48 100% 96%; /* #FFFBEB */
+  --destructive: 0 84% 60%; /* #EF4444 */
+  --destructive-soft: 0 86% 98%; /* #FEF2F2 */
+
+  --sidebar: 222 47% 11%; /* #0F172A */
+  --sidebar-hover: 217 33% 14%; /* #1E293B */
+  --sidebar-active: 244 76% 59%; /* #4F46E5 */
+  --sidebar-foreground: 210 25% 80%; /* #CBD5E1 */
 }
 
 /* 暗色模式仅预留（阶段 0 不实装） */
 .dark {
-  --background: 240 10% 3.9%;
-  --foreground: 0 0% 98%;
-  --muted: 240 3.7% 15.9%;
-  --muted-foreground: 240 5% 64.9%;
-  --primary: 0 0% 98%;
-  --primary-foreground: 240 5.9% 10%;
-  --accent: 240 3.7% 15.9%;
-  --accent-foreground: 0 0% 98%;
-  --border: 240 3.7% 15.9%;
+  --background: 222 47% 11%;
+  --foreground: 210 40% 98%;
+  --muted: 217 33% 14%;
+  --muted-foreground: 215 20% 65%;
+  --primary: 244 76% 59%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 217 33% 14%;
+  --accent-foreground: 210 40% 98%;
+  --border: 217 33% 20%;
 }
 
 body {
   margin: 0;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
-  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    "Inter Tight", "Inter", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 /* Markdown 预览最小样式（FilePreview） */

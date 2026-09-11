@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { PageHeader } from "../components/ui/page-header";
 import { fetchModelSettings, type ModelSettingsDTO, saveModelSettings } from "../lib/modelSettings";
 
 export function ModelsPage() {
@@ -62,12 +63,10 @@ export function ModelsPage() {
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
-      <div>
-        <h1 className="text-xl font-semibold">Models</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          配置 Claude Agent 使用的 Anthropic 兼容服务。配置只对当前用户生效。
-        </p>
-      </div>
+      <PageHeader
+        title="模型配置"
+        description="配置 Claude Agent 使用的 Anthropic 兼容服务。配置只对当前用户生效。"
+      />
 
       {error ? <div className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
       {saved ? (

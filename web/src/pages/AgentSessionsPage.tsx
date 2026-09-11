@@ -130,7 +130,7 @@ export function AgentSessionsPage() {
       sidebarTitle={agent ? `智能体：${agent.name}` : "智能体会话"}
       sidebarHeaderExtra={
         <select
-          className="w-full rounded border bg-background px-2 py-1 text-xs"
+          className="h-8 w-full rounded-lg border border-border bg-card px-2 text-xs focus:border-primary focus:outline-none"
           value={agentId}
           onChange={(event) => setAgentId(event.target.value)}
         >

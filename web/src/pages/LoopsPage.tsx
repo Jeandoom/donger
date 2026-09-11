@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { PageHeader } from "../components/ui/page-header";
 import { Switch } from "../components/ui/switch";
 import { apiFetch } from "../lib/auth";
 
@@ -23,6 +27,7 @@ export function LoopsPage() {
   const [loops, setLoops] = useState<Loop[]>([]);
   const [wfMap, setWfMap] = useState<Record<string, string>>({});
   const [showCreate, setShowCreate] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(() => {
     Promise.all([
@@ -38,7 +43,8 @@ export function LoopsPage() {
       .catch(() => {
         setLoops([]);
         setWfMap({});
-      });
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -63,58 +69,79 @@ export function LoopsPage() {
   };
 
   return (
-    <div className="p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">LOOPs</h1>
-        <Button type="button" onClick={() => setShowCreate(true)}>
-          新建
-        </Button>
-      </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr>
-            <th className="text-left">名称</th>
-            <th className="text-left">Workflow</th>
-            <th className="text-left">启用</th>
-            <th className="text-left">上次运行</th>
-            <th className="text-left">标签</th>
-            <th aria-label="actions"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {loops.map((l) => (
-            <tr key={l.id} className="border-t">
-              <td className="py-2">
-                <Link to={`/loops/${l.id}`} className="hover:underline">
-                  {l.name}
-                </Link>
-              </td>
-              <td className="text-muted-foreground">{wfMap[l.workflowId] ?? l.workflowId}</td>
-              <td>
-                <Switch checked={l.enabled} onCheckedChange={(v) => toggle(l, v)} />
-              </td>
-              <td className="text-muted-foreground">
-                {l.lastRunAt ? new Date(l.lastRunAt).toLocaleString() : "—"}
-                {l.lastError && (
-                  <span className="ml-2 text-destructive" title={l.lastError}>
-                    ⚠
-                  </span>
-                )}
-              </td>
-              <td className="text-xs text-muted-foreground">{(l.tags ?? []).join(", ")}</td>
-              <td className="text-right">
-                <button
-                  type="button"
-                  onClick={() => del(l.id)}
-                  className="text-destructive hover:underline"
-                >
-                  删除
-                </button>
-              </td>
+    <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-5 overflow-y-auto p-7">
+      <PageHeader
+        title="LOOP 循环任务"
+        description="周期性自我驱动的任务循环"
+        actions={<Button onClick={() => setShowCreate(true)}>+ 新建 LOOP</Button>}
+      />
+
+      {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
+
+      <Card className="overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+              <th className="px-4 py-2.5 font-medium">名称</th>
+              <th className="px-4 py-2.5 font-medium">Workflow</th>
+              <th className="px-4 py-2.5 font-medium">启用</th>
+              <th className="px-4 py-2.5 font-medium">上次运行</th>
+              <th className="px-4 py-2.5 font-medium">标签</th>
+              <th className="px-4 py-2.5 font-medium">操作</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {loops.map((l) => (
+              <tr key={l.id} className="border-t border-border">
+                <td className="px-4 py-3">
+                  <Link to={`/loops/${l.id}`} className="font-medium hover:underline">
+                    {l.name}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 text-muted-foreground">
+                  {wfMap[l.workflowId] ?? l.workflowId}
+                </td>
+                <td className="px-4 py-3">
+                  <Switch checked={l.enabled} onCheckedChange={(v) => void toggle(l, v)} />
+                </td>
+                <td className="px-4 py-3 text-muted-foreground">
+                  {l.lastRunAt ? new Date(l.lastRunAt).toLocaleString() : "—"}
+                  {l.lastError && (
+                    <span className="ml-1.5 text-destructive" title={l.lastError}>
+                      ⚠
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-1">
+                    {(l.tags ?? []).map((t) => (
+                      <Badge key={t}>{t}</Badge>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <Link to={`/loops/${l.id}`} className="mr-2 text-xs hover:underline">
+                    详情
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => void del(l.id)}
+                    className="text-xs text-destructive hover:underline"
+                  >
+                    删除
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!loading && !loops.length ? (
+          <div className="p-10 text-center text-sm text-muted-foreground">
+            暂无 LOOP，点击右上角「新建 LOOP」
+          </div>
+        ) : null}
+      </Card>
+
       {showCreate && (
         <CreateLoopDialog
           workflows={Object.entries(wfMap).map(([id, name]) => ({ id, name }))}
@@ -170,22 +197,18 @@ function CreateLoopDialog({
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-black/40">
-      <div className="w-96 rounded bg-background p-4 shadow-lg">
-        <h2 className="mb-3 text-lg font-semibold">新建 LOOP</h2>
-        <label className="mb-2 block">
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="block w-full rounded border px-2 py-1"
-          />
-        </label>
-        <label className="mb-2 block">
-          Workflow
+      <div className="w-96 rounded-xl bg-card p-5 shadow-xl">
+        <h2 className="mb-4 text-base font-semibold">新建 LOOP</h2>
+        <div className="mb-3">
+          <span className="mb-1.5 block text-xs font-medium">名称</span>
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="mb-3">
+          <span className="mb-1.5 block text-xs font-medium">Workflow</span>
           <select
             value={workflowId}
             onChange={(e) => setWorkflowId(e.target.value)}
-            className="block w-full rounded border px-2 py-1"
+            className="h-9 w-full rounded-lg border border-border bg-card px-3 text-sm focus:border-primary focus:outline-none"
           >
             <option value="">— 选择 —</option>
             {workflows.map((w) => (
@@ -194,18 +217,13 @@ function CreateLoopDialog({
               </option>
             ))}
           </select>
-        </label>
-        <label className="mb-3 block">
-          标签（逗号分隔）
-          <input
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="ops,daily"
-            className="block w-full rounded border px-2 py-1"
-          />
-        </label>
+        </div>
+        <div className="mb-5">
+          <span className="mb-1.5 block text-xs font-medium">标签（逗号分隔）</span>
+          <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="ops,daily" />
+        </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button type="button" variant="secondary" onClick={onClose}>
             取消
           </Button>
           <Button type="button" onClick={submit} disabled={saving}>

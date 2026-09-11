@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
 type MatcherKind =
@@ -159,8 +160,8 @@ export function TriggerEditorPage() {
   };
 
   return (
-    <div className="max-w-2xl p-4">
-      <h1 className="mb-4 text-xl font-semibold">{id ? "编辑触发器" : "新建触发器"}</h1>
+    <div className="mx-auto max-w-2xl flex-1 overflow-y-auto p-7">
+      <PageHeader className="mb-4" title={id ? "编辑触发器" : "新建触发器"} />
       <label className="mb-2 block">
         名称
         <input

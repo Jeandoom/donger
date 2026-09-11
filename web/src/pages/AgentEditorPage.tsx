@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { PageHeader } from "../components/ui/page-header";
 import {
   type AgentDTO,
   type AgentMeta,
@@ -149,15 +150,17 @@ export function AgentEditorPage() {
     return (
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl space-y-4 p-6">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-semibold">{form.name}</h1>
-            <Link
-              to={`/agents/${id}/chat`}
-              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground"
-            >
-              对话
-            </Link>
-          </div>
+          <PageHeader
+            title={form.name}
+            actions={
+              <Link
+                to={`/agents/${id}/chat`}
+                className="rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:opacity-90"
+              >
+                对话
+              </Link>
+            }
+          />
           {form.description ? (
             <p className="text-sm text-muted-foreground">{form.description}</p>
           ) : null}
@@ -179,14 +182,20 @@ export function AgentEditorPage() {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto max-w-2xl space-y-4 p-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold">{isNew ? "新建智能体" : "编辑智能体"}</h1>
-          {!isNew && id ? (
-            <Link to={`/agents/${id}/chat`} className="rounded border px-3 py-1.5 text-sm">
-              对话
-            </Link>
-          ) : null}
-        </div>
+        <PageHeader
+          title={isNew ? "新建智能体" : "编辑智能体"}
+          description={isNew ? undefined : form.name}
+          actions={
+            !isNew && id ? (
+              <Link
+                to={`/agents/${id}/chat`}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
+              >
+                对话
+              </Link>
+            ) : undefined
+          }
+        />
 
         {error ? <p className="text-destructive">{error}</p> : null}
         {warnings && warnings.length > 0 ? (

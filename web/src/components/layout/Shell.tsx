@@ -8,9 +8,10 @@ export function Shell() {
     <div className="flex h-[100dvh] min-w-0 overflow-hidden">
       <NavigationSidebar className="hidden lg:flex" />
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center border-b border-border px-2 lg:hidden">
+        <header className="flex h-12 shrink-0 items-center border-b border-border bg-card px-2 lg:hidden">
           <MobileNavigationDrawer />
-          <span className="ml-2 text-sm font-semibold">🤖 donger</span>
+          <img src="/pwa-icon.svg" alt="donger logo" className="ml-2 h-5 w-5 rounded" />
+          <span className="ml-1.5 text-sm font-bold">donger</span>
         </header>
         <main className="flex min-h-0 min-w-0 flex-1">
           <PageErrorBoundary>
