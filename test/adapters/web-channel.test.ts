@@ -69,6 +69,25 @@ describe("resolveStaticFile", () => {
     expect(r).toBeNull();
   });
 
+  it("有 dist 时，public 图标等真实文件直返", () => {
+    write(root, "dist/index.html", "built");
+    write(root, "dist/favicon.ico", "ico");
+    write(root, "dist/pwa-icon.svg", "svg");
+    write(root, "dist/icons/nested.png", "png");
+    expect(resolveStaticFile(root, "/favicon.ico")?.absPath).toBe(join(root, "dist", "favicon.ico"));
+    expect(resolveStaticFile(root, "/pwa-icon.svg")?.absPath).toBe(join(root, "dist", "pwa-icon.svg"));
+    expect(resolveStaticFile(root, "/icons/nested.png")?.absPath).toBe(
+      join(root, "dist", "icons", "nested.png"),
+    );
+  });
+
+  it("有 dist 时，路径穿越被拦截并走 SPA fallback", () => {
+    write(root, "dist/index.html", "built");
+    write(root, "secret.txt", "top-secret");
+    const r = resolveStaticFile(root, "/../secret.txt");
+    expect(r?.absPath).toBe(join(root, "dist", "index.html"));
+  });
+
   it("无 dist 时，/ 返回 null（未构建）", () => {
     const r = resolveStaticFile(root, "/");
     expect(r).toBeNull();

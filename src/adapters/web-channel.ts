@@ -107,8 +107,8 @@ export type StaticTarget = { kind: "file"; absPath: string } | null;
 
 /**
  * 决定静态文件如何托管（纯函数，便于单测）。
- * 仅当 web/dist 存在时托管：/ 与未知路径 → dist/index.html（SPA fallback）；
- * /assets/ 下真实文件直返，缺失 → null；无 dist → null。
+ * 仅当 web/dist 存在时托管：dist 内真实文件（public 图标、hash 资产等）直返；
+ * 其余未知路径 → dist/index.html（SPA fallback）；无 dist → null。
  */
 export function resolveStaticFile(webRoot: string, urlPath: string): StaticTarget {
   const distRoot = join(webRoot, "dist");
@@ -117,11 +117,21 @@ export function resolveStaticFile(webRoot: string, urlPath: string): StaticTarge
   if (urlPath === "/" || urlPath === "/index.html") {
     return { kind: "file", absPath: join(distRoot, "index.html") };
   }
+  // hash 资产缺失保持 404（暴露构建脱节），不走 SPA fallback
   if (urlPath.startsWith("/assets/")) {
-    const candidate = join(distRoot, urlPath);
-    return existsSync(candidate) ? { kind: "file", absPath: candidate } : null;
+    const file = resolveRealFile(distRoot, urlPath);
+    return file ? { kind: "file", absPath: file } : null;
   }
+  const file = resolveRealFile(distRoot, urlPath);
+  if (file) return { kind: "file", absPath: file };
   return { kind: "file", absPath: join(distRoot, "index.html") };
+}
+
+/** 解析 dist 内真实文件；防路径穿越（必须仍落在 dist 内），不存在返回 null */
+function resolveRealFile(distRoot: string, urlPath: string): string | null {
+  // join 会把开头的 "/" 当普通段拼接（resolve 则会当绝对路径跳出 dist）
+  const resolved = resolve(join(distRoot, urlPath));
+  return resolved.startsWith(distRoot + sep) && existsSync(resolved) ? resolved : null;
 }
 
 function contentType(absPath: string): string {
@@ -129,6 +139,11 @@ function contentType(absPath: string): string {
   if (absPath.endsWith(".js")) return "application/javascript; charset=utf-8";
   if (absPath.endsWith(".css")) return "text/css; charset=utf-8";
   if (absPath.endsWith(".svg")) return "image/svg+xml";
+  if (absPath.endsWith(".png")) return "image/png";
+  if (absPath.endsWith(".ico")) return "image/x-icon";
+  if (absPath.endsWith(".webmanifest")) return "application/manifest+json";
+  if (absPath.endsWith(".json")) return "application/json; charset=utf-8";
+  if (absPath.endsWith(".woff2")) return "font/woff2";
   return "application/octet-stream";
 }
 
