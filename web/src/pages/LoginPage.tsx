@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { Button } from "../components/ui/button";
 import { getToken, setLoginNext, setToken } from "../lib/auth";
 
 export function LoginPage() {
@@ -17,7 +18,7 @@ export function LoginPage() {
     setLoginNext(next);
   }, [next]);
 
-  // @新增：监听弹窗 postMessage
+  // 监听弹窗 postMessage
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
       if (ev.data?.type === "login-success" && typeof ev.data.token === "string") {
@@ -42,86 +43,102 @@ export function LoginPage() {
     if (getToken()) navigate(next, { replace: true });
   }, [navigate, next]);
 
-  // 获取钉钉扫码 URL
-  useEffect(() => {
+  const loadQr = useCallback(() => {
+    setLoading(true);
+    setError(null);
     fetch("/api/auth/qrcode-url")
       .then((r) => r.json())
       .then((data) => {
-        if (data.url) {
-          setQrUrl(data.url);
-        } else {
-          setError("无法获取登录二维码");
-        }
+        if (data.url) setQrUrl(data.url);
+        else setError("无法获取登录二维码");
       })
       .catch(() => setError("无法连接到服务器"))
       .finally(() => setLoading(false));
   }, []);
 
+  // 获取钉钉扫码 URL
+  useEffect(() => {
+    loadQr();
+  }, [loadQr]);
+
+  const openQr = () => {
+    if (!qrUrl) return;
+    const w = window.open(qrUrl, "dingtalk-login", "width=500,height=600");
+    if (!w) setError("弹窗被拦截，请允许弹出窗口或手动复制链接到浏览器打开");
+  };
+
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center">
+      <div className="flex h-screen items-center justify-center bg-sidebar">
         <div className="text-center">
-          <div className="mb-4 text-4xl">📱</div>
-          <div className="text-muted-foreground">正在准备登录…</div>
+          <img src="/pwa-icon.svg" alt="donger logo" className="mx-auto mb-4 h-12 w-12" />
+          <div className="text-sm text-sidebar-foreground">正在准备登录…</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center bg-gradient-to-b from-background to-muted/50">
-      <div className="w-full max-w-sm rounded-lg border bg-card p-8 text-center shadow-sm">
-        <img src="/pwa-icon.svg" alt="donger logo" className="mx-auto mb-6 h-16 w-16" />
-        <h1 className="mb-2 text-xl font-semibold">donger</h1>
-        <p className="mb-6 text-sm text-muted-foreground">使用钉钉扫码登录</p>
+    <div className="flex min-h-screen bg-sidebar">
+      {/* 左：品牌区 */}
+      <div className="hidden flex-1 flex-col justify-center gap-6 px-16 lg:flex">
+        <div className="flex items-center gap-3">
+          <img src="/pwa-icon.svg" alt="donger logo" className="h-10 w-10 rounded-xl" />
+          <span className="text-2xl font-bold text-white">donger</span>
+        </div>
+        <h1 className="max-w-md text-[34px] font-bold leading-snug text-white">
+          技能驱动的通用自动化
+          <br />
+          Agent 服务
+        </h1>
+        <p className="max-w-md text-sm text-[#94A3B8]">
+          可插拔 LLM · 钉钉 / Web 远程管理 · 高危操作 IM 审批门
+        </p>
+        <div className="flex flex-wrap gap-4">
+          {["10+ 技能包", "5 类自动化", "IM 审批门"].map((t) => (
+            <span key={t} className="rounded-lg bg-[#1E293B] px-3.5 py-2 text-xs text-[#CBD5E1]">
+              {t}
+            </span>
+          ))}
+        </div>
+      </div>
 
-        {error && (
-          <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
-            <button
-              type="button"
-              className="ml-2 underline"
-              onClick={() => {
-                setError(null);
-                setLoading(true);
-                fetch("/api/auth/qrcode-url")
-                  .then((r) => r.json())
-                  .then((data) => {
-                    if (data.url) setQrUrl(data.url);
-                    else setError("无法获取登录二维码");
-                  })
-                  .catch(() => setError("无法连接到服务器"))
-                  .finally(() => setLoading(false));
-              }}
-            >
-              重试
-            </button>
+      {/* 右：登录卡 */}
+      <div className="flex flex-1 items-center justify-center bg-background px-6 lg:flex-none lg:w-[560px]">
+        <div className="w-full max-w-sm">
+          <div className="mb-8 flex items-center gap-2 lg:hidden">
+            <img src="/pwa-icon.svg" alt="donger logo" className="h-8 w-8 rounded-lg" />
+            <span className="text-lg font-bold">donger</span>
           </div>
-        )}
+          <h2 className="text-[22px] font-bold">登录</h2>
+          <p className="mt-1 mb-6 text-[13px] text-muted-foreground">使用钉钉扫码或访问令牌登录</p>
 
-        {qrUrl && !error && (
-          <div className="space-y-4">
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-lg bg-[#1677FF] px-6 py-3 text-white shadow-lg transition-colors hover:bg-[#1677FF]/90"
-              onClick={() => {
-                const w = window.open(qrUrl, "dingtalk-login", "width=500,height=600");
-                if (!w) {
-                  setError("弹窗被拦截，请允许弹出窗口或手动复制链接到浏览器打开");
-                }
-              }}
-            >
-              <span className="text-xl">🔵</span>
-              <span className="font-medium">钉钉扫码登录</span>
-            </button>
-
-            <p className="text-xs text-muted-foreground">点击按钮后，使用钉钉扫描二维码完成登录</p>
-
-            <div className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
-              扫码后请耐心等待，页面会自动跳转…
+          {error ? (
+            <div className="mb-4 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
+              {error}
+              <button type="button" className="ml-2 underline" onClick={loadQr}>
+                重试
+              </button>
             </div>
-          </div>
-        )}
+          ) : null}
+
+          {!error && (
+            <div className="space-y-4">
+              <div className="flex h-44 flex-col items-center justify-center gap-2 rounded-xl border border-border bg-muted">
+                <div className="flex h-24 w-24 items-center justify-center rounded-lg border border-border bg-card text-4xl text-muted-foreground/50">
+                  口
+                </div>
+                <span className="text-xs text-muted-foreground">打开钉钉「扫一扫」</span>
+              </div>
+              <Button className="w-full" onClick={openQr} disabled={!qrUrl}>
+                钉钉扫码登录
+              </Button>
+              <p className="text-center text-[11px] text-muted-foreground/80">
+                首次登录将自动创建账号并绑定钉钉身份
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

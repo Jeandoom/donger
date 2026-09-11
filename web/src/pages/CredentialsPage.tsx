@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { PageHeader } from "../components/ui/page-header";
 import { getUserId } from "../lib/auth";
 import {
   type CredentialTemplateDTO,
@@ -230,8 +231,12 @@ export function CredentialsPage() {
   );
 
   return (
-    <div className="h-full overflow-y-auto p-4">
-      <h1 className="mb-4 text-lg font-semibold">凭证管理</h1>
+    <div className="mx-auto h-full max-w-5xl overflow-y-auto p-7">
+      <PageHeader
+        className="mb-4"
+        title="凭证"
+        description="个人凭证管理，值加密存储且永不再显示"
+      />
       <p className="mb-4 text-xs text-muted-foreground">
         凭证是个人数据，仅本人可见与使用；值加密存储且永不再显示。共享智能体执行时使用的是
         <span className="font-medium">你自己的</span>同名凭证。

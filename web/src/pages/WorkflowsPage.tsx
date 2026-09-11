@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
 interface Workflow {
@@ -12,13 +15,16 @@ interface Workflow {
 }
 
 export function WorkflowsPage() {
+  const navigate = useNavigate();
   const [items, setItems] = useState<Workflow[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(() => {
     apiFetch("/api/workflows")
       .then((r) => r.json() as Promise<{ workflows?: Workflow[] }>)
       .then((data) => setItems(data.workflows ?? []))
-      .catch(() => setItems([]));
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -33,43 +39,54 @@ export function WorkflowsPage() {
   };
 
   return (
-    <div className="p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">工作流管理</h1>
-        <Link to="/workflows/new">
-          <Button type="button">新建</Button>
-        </Link>
-      </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr>
-            <th className="text-left">名称</th>
-            <th className="text-left">描述</th>
-            <th aria-label="actions"></th>
-          </tr>
-        </thead>
-        <tbody>
+    <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-5 overflow-y-auto p-7">
+      <PageHeader
+        title="工作流"
+        description="多步骤任务编排，串联智能体与审批"
+        actions={<Button onClick={() => navigate("/workflows/new")}>+ 新建工作流</Button>}
+      />
+
+      {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
+
+      {items.length ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {items.map((w) => (
-            <tr key={w.id} className="border-t">
-              <td className="py-2">
-                <Link to={`/workflows/${w.id}`} className="hover:underline">
+            <Card key={w.id} className="flex flex-col gap-2.5 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <Link
+                  to={`/workflows/${w.id}`}
+                  className="truncate text-sm font-semibold hover:underline"
+                >
                   {w.name}
                 </Link>
-              </td>
-              <td className="text-muted-foreground">{w.description ?? ""}</td>
-              <td className="text-right">
-                <button
-                  type="button"
-                  onClick={() => del(w.id)}
-                  className="text-destructive hover:underline"
-                >
-                  删除
-                </button>
-              </td>
-            </tr>
+                <Badge tone="info">编排</Badge>
+              </div>
+              <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
+                {w.description || "—"}
+              </p>
+              <div className="mt-auto flex items-center justify-between">
+                <Badge tone="primary">触发 → Agent</Badge>
+                <div className="flex gap-1.5">
+                  <Link to={`/workflows/${w.id}`}>
+                    <Button variant="secondary" size="sm">
+                      编辑
+                    </Button>
+                  </Link>
+                  <Button variant="danger" size="sm" onClick={() => void del(w.id)}>
+                    删除
+                  </Button>
+                </div>
+              </div>
+            </Card>
           ))}
-        </tbody>
-      </table>
+        </div>
+      ) : (
+        !loading && (
+          <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+            暂无工作流，点击右上角「新建工作流」开始编排
+          </div>
+        )
+      )}
     </div>
   );
 }

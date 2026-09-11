@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { PageHeader } from "../components/ui/page-header";
 import { Switch } from "../components/ui/switch";
 import { apiFetch } from "../lib/auth";
 
@@ -31,11 +34,11 @@ interface LoopRun {
   finishedAt?: string | null;
 }
 
-const STATUS_COLORS: Record<LoopRun["status"], string> = {
-  running: "text-blue-600",
-  success: "text-green-600",
-  failed: "text-destructive",
-  stopped: "text-muted-foreground",
+const STATUS_TONE: Record<LoopRun["status"], "info" | "success" | "danger" | "neutral"> = {
+  running: "info",
+  success: "success",
+  failed: "danger",
+  stopped: "neutral",
 };
 
 export function LoopDetailPage() {
@@ -95,90 +98,126 @@ export function LoopDetailPage() {
     }
   };
 
-  if (!loop) return <div className="p-4 text-muted-foreground">加载中…</div>;
+  if (!loop) return <div className="p-7 text-sm text-muted-foreground">加载中…</div>;
+
+  const successCount = runs.filter((r) => r.status === "success").length;
+  const failedCount = runs.filter((r) => r.status === "failed").length;
 
   return (
-    <div className="p-4">
-      <div className="mb-4 flex items-center gap-3">
-        <h1 className="text-xl font-semibold">{loop.name}</h1>
-        <Switch checked={loop.enabled} onCheckedChange={toggle} />
-        <Button type="button" variant="outline" onClick={runNow} disabled={running}>
-          立即运行
-        </Button>
-      </div>
-      <div className="mb-4 text-sm text-muted-foreground">
-        <div>
-          Workflow:{" "}
-          {workflow ? (
-            <Link to={`/workflows/${workflow.id}`} className="hover:underline">
-              {workflow.name}
-            </Link>
-          ) : (
-            loop.workflowId
-          )}
+    <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-5 overflow-y-auto p-7">
+      <PageHeader
+        title={loop.name}
+        description={`Workflow：${
+          workflow ? workflow.name : loop.workflowId
+        } · 上次运行 ${loop.lastRunAt ? new Date(loop.lastRunAt).toLocaleString() : "—"}`}
+        actions={
+          <>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              启用
+              <Switch checked={loop.enabled} onCheckedChange={toggle} />
+            </div>
+            <Button variant="secondary" onClick={runNow} disabled={running}>
+              立即运行一轮
+            </Button>
+          </>
+        }
+      />
+
+      {loop.lastError ? (
+        <div className="rounded-lg bg-destructive-soft px-4 py-3 text-sm text-destructive">
+          {loop.lastError}
         </div>
-        <div>
-          上次运行：{loop.lastRunAt ? new Date(loop.lastRunAt).toLocaleString() : "—"}
-          {loop.lastError && <span className="ml-2 text-destructive">{loop.lastError}</span>}
-        </div>
-        {(loop.tags?.length ?? 0) > 0 && <div>标签：{loop.tags?.join(", ")}</div>}
+      ) : null}
+
+      {/* 统计卡 */}
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        {[
+          { v: String(runs.length), l: "总轮次", cls: "text-primary" },
+          { v: String(successCount), l: "成功", cls: "text-success" },
+          { v: String(failedCount), l: "失败", cls: "text-destructive" },
+          {
+            v: loop.enabled ? "运行中" : "已暂停",
+            l: "状态",
+            cls: loop.enabled ? "text-success" : "text-muted-foreground",
+          },
+        ].map((s) => (
+          <Card key={s.l} className="flex flex-col gap-1.5 p-4">
+            <span className={`text-[22px] font-bold leading-7 ${s.cls}`}>{s.v}</span>
+            <span className="text-xs text-muted-foreground">{s.l}</span>
+          </Card>
+        ))}
       </div>
 
-      <h2 className="mb-2 text-sm font-semibold">运行历史（最近 50）</h2>
-      <table className="w-full text-sm">
-        <thead>
-          <tr>
-            <th className="text-left">开始时间</th>
-            <th className="text-left">状态</th>
-            <th className="text-left">触发输出</th>
-            <th aria-label="actions"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((r) => (
-            <>
-              <tr
-                key={r.id}
-                className="cursor-pointer border-t"
-                onClick={() => setExpandedRun((cur) => (cur === r.id ? null : r.id))}
-              >
-                <td className="py-2">{new Date(r.startedAt).toLocaleString()}</td>
-                <td className={STATUS_COLORS[r.status]}>{r.status}</td>
-                <td className="max-w-md truncate text-muted-foreground">
-                  {r.error ?? r.triggerOutput ?? ""}
-                </td>
-                <td className="text-right">
-                  {r.agentConversationId && (
-                    <Link
-                      to={`/?conv=${r.agentConversationId}`}
-                      className="text-primary hover:underline"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      跳会话
-                    </Link>
-                  )}
-                </td>
-              </tr>
-              {expandedRun === r.id && (
-                <tr key={`${r.id}-detail`} className="border-t bg-muted/30">
-                  <td colSpan={4} className="p-3">
-                    {r.error && (
-                      <div className="mb-2 text-destructive">
-                        <strong>错误：</strong>
-                        {r.error}
-                      </div>
+      {(loop.tags?.length ?? 0) > 0 ? (
+        <div className="flex gap-1.5">
+          {loop.tags?.map((t) => (
+            <Badge key={t}>{t}</Badge>
+          ))}
+        </div>
+      ) : null}
+
+      <h2 className="text-base font-semibold">最近轮次</h2>
+      <Card className="overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+              <th className="px-4 py-2.5 font-medium">开始时间</th>
+              <th className="px-4 py-2.5 font-medium">状态</th>
+              <th className="px-4 py-2.5 font-medium">触发输出</th>
+              <th className="px-4 py-2.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((r) => (
+              <>
+                <tr
+                  key={r.id}
+                  className="cursor-pointer border-t border-border hover:bg-muted/40"
+                  onClick={() => setExpandedRun((cur) => (cur === r.id ? null : r.id))}
+                >
+                  <td className="px-4 py-3">{new Date(r.startedAt).toLocaleString()}</td>
+                  <td className="px-4 py-3">
+                    <Badge tone={STATUS_TONE[r.status]}>{r.status}</Badge>
+                  </td>
+                  <td className="max-w-md truncate px-4 py-3 text-muted-foreground">
+                    {r.error ?? r.triggerOutput ?? ""}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {r.agentConversationId && (
+                      <Link
+                        to={`/?conv=${r.agentConversationId}`}
+                        className="text-xs text-primary hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        跳会话
+                      </Link>
                     )}
-                    <div className="mb-1 text-xs text-muted-foreground">renderedPrompt:</div>
-                    <pre className="max-h-60 overflow-auto bg-background p-2 text-xs">
-                      {r.renderedPrompt ?? ""}
-                    </pre>
                   </td>
                 </tr>
-              )}
-            </>
-          ))}
-        </tbody>
-      </table>
+                {expandedRun === r.id && (
+                  <tr key={`${r.id}-detail`} className="border-t border-border bg-muted/30">
+                    <td colSpan={4} className="p-4">
+                      {r.error && (
+                        <div className="mb-2 text-sm text-destructive">
+                          <strong>错误：</strong>
+                          {r.error}
+                        </div>
+                      )}
+                      <div className="mb-1 text-xs text-muted-foreground">renderedPrompt:</div>
+                      <pre className="max-h-60 overflow-auto rounded-lg bg-card p-3 text-xs">
+                        {r.renderedPrompt ?? ""}
+                      </pre>
+                    </td>
+                  </tr>
+                )}
+              </>
+            ))}
+          </tbody>
+        </table>
+        {!runs.length ? (
+          <div className="p-10 text-center text-sm text-muted-foreground">还没有运行记录</div>
+        ) : null}
+      </Card>
     </div>
   );
 }
