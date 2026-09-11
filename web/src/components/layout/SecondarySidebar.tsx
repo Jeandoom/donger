@@ -35,13 +35,13 @@ export function SecondarySidebar({
     <div
       className={cn("flex w-64 shrink-0 flex-col border-r border-border bg-background", className)}
     >
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <span className="text-xs font-medium text-muted-foreground">{title}</span>
+      <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+        <span className="text-xs font-semibold text-muted-foreground">{title}</span>
         {onNew && (
           <button
             type="button"
             onClick={onNew}
-            className="rounded px-2 py-0.5 text-xs text-primary hover:bg-accent"
+            className="rounded-md bg-primary-soft px-2 py-0.5 text-xs font-medium text-primary hover:opacity-80"
           >
             + {newLabel ?? "新建"}
           </button>
@@ -50,7 +50,7 @@ export function SecondarySidebar({
       {headerExtra && <div className="border-b border-border px-2 py-1.5">{headerExtra}</div>}
       <div className="flex-1 overflow-y-auto p-1.5">
         {items.map((item) => (
-          <div key={item.id} className="group mb-0.5 flex items-center rounded-md">
+          <div key={item.id} className="group mb-0.5 flex items-center rounded-lg">
             <button
               type="button"
               aria-label={`打开会话：${item.title}`}
@@ -59,8 +59,10 @@ export function SecondarySidebar({
                 onItemSelected?.();
               }}
               className={cn(
-                "flex-1 rounded-md px-3 py-2 text-left text-sm",
-                selectedId === item.id ? "bg-accent" : "hover:bg-accent",
+                "flex-1 rounded-lg px-3 py-2 text-left text-sm",
+                selectedId === item.id
+                  ? "bg-primary-soft font-medium text-primary"
+                  : "hover:bg-muted",
               )}
             >
               <div className="truncate font-medium">{item.title || "(无标题)"}</div>

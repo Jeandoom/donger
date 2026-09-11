@@ -23,10 +23,10 @@ export function PendingInteraction({
       {approval ? (
         <fieldset
           aria-label="审批请求"
-          className="rounded-lg border border-yellow-400 bg-yellow-50 p-3"
+          className="rounded-xl border border-warning/50 bg-warning-soft p-4"
         >
-          <div className="font-semibold text-yellow-800">{approval.title}</div>
-          <div className="mt-1 text-sm text-yellow-700">{approval.summary}</div>
+          <div className="text-sm font-semibold text-amber-800">{approval.title}</div>
+          <div className="mt-1 text-sm text-amber-700">{approval.summary}</div>
           <div className="mt-2 flex gap-2">
             <Button size="sm" onClick={() => onResolveApproval(true)}>
               通过
@@ -40,7 +40,7 @@ export function PendingInteraction({
             </Button>
           </div>
           {approvalError ? (
-            <p role="alert" className="mt-2 text-sm text-red-700">
+            <p role="alert" className="mt-2 text-sm text-destructive">
               {approvalError}
             </p>
           ) : null}
@@ -69,7 +69,7 @@ function MissingCredentialsCard({
   onDecide: (decision: string) => void;
 }) {
   return (
-    <div className="rounded-lg border border-blue-400 bg-blue-50 p-3">
+    <div className="rounded-xl border border-primary/40 bg-primary-soft p-4">
       <div className="font-semibold text-blue-800">缺少凭证</div>
       <div className="mt-1 text-sm text-blue-700">
         当前智能体需要以下凭证，但你的账号尚未配置（值仅存你个人账号）：
@@ -98,14 +98,14 @@ function MissingCredentialsCard({
         <Button
           size="sm"
           variant="ghost"
-          className="text-red-700"
+          className="text-destructive"
           onClick={() => onDecide("cancel")}
         >
           取消任务
         </Button>
       </div>
       {error ? (
-        <p role="alert" className="mt-2 text-sm text-red-700">
+        <p role="alert" className="mt-2 text-sm text-destructive">
           {error}
         </p>
       ) : null}

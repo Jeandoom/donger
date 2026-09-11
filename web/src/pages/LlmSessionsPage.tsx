@@ -73,15 +73,17 @@ export function LlmSessionsPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="w-64 shrink-0 overflow-y-auto border-r border-border p-2">
-        <div className="px-2 py-1 text-xs text-muted-foreground">LLM 会话（{list.length}）</div>
+      <div className="w-72 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
+        <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+          LLM 会话（{list.length}）
+        </div>
         {list.map((item) => (
           <button
             key={item.conversationId}
             type="button"
             onClick={() => setSelected(item.conversationId)}
-            className={`mb-1 block w-full rounded-md px-3 py-2 text-left text-sm ${
-              selected === item.conversationId ? "bg-accent" : "hover:bg-accent"
+            className={`mb-0.5 block w-full rounded-lg px-3 py-2 text-left text-sm ${
+              selected === item.conversationId ? "bg-primary-soft text-primary" : "hover:bg-muted"
             }`}
           >
             <div className="truncate font-medium">{item.title || "(无标题)"}</div>
@@ -94,21 +96,26 @@ export function LlmSessionsPage() {
 
       <main className="min-w-0 flex-1 overflow-y-auto p-4">
         {!detail ? (
-          <div className="text-sm text-muted-foreground">选择左侧会话查看 LLM inputs / outputs</div>
+          <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">
+            选择左侧会话查看 LLM inputs / outputs
+          </div>
         ) : (
           <div className="space-y-4">
             <div>
-              <h1 className="text-lg font-semibold">{detail.conversation?.title || "LLM 会话"}</h1>
+              <h1 className="text-lg font-bold">{detail.conversation?.title || "LLM 会话"}</h1>
               <p className="text-xs text-muted-foreground">{llmEventCount} 条 SDK 原始消息</p>
             </div>
             {detail.turns.map((turn) => (
-              <section key={turn.taskId} className="space-y-3 rounded-lg border border-border p-3">
+              <section
+                key={turn.taskId}
+                className="space-y-3 rounded-xl border border-border bg-card p-4 shadow-[0_2px_8px_rgba(15,23,42,0.06)]"
+              >
                 <div className="text-xs text-muted-foreground">
                   {formatDateTime(turn.createdAt)} · {turn.status}
                 </div>
                 <div>
                   <div className="mb-1 text-xs font-medium text-muted-foreground">用户 Query</div>
-                  <pre className="overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-3 text-sm">
+                  <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-sm">
                     {turn.prompt}
                   </pre>
                 </div>
@@ -139,7 +146,7 @@ export function LlmSessionsPage() {
               id="debug-model"
               value={presetId}
               onChange={(event) => setPresetId(event.target.value)}
-              className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2 py-1 text-sm focus:border-primary focus:outline-none"
             >
               {presets.map((preset) => (
                 <option key={preset.id} value={preset.id}>
@@ -153,13 +160,13 @@ export function LlmSessionsPage() {
             aria-label="可编辑的 LLM input"
             value={debugInput}
             onChange={(event) => setDebugInput(event.target.value)}
-            className="min-h-64 flex-1 resize-none rounded border border-border bg-background p-3 font-mono text-xs"
+            className="min-h-64 flex-1 resize-none rounded-lg border border-border bg-card p-3 font-mono text-xs focus:border-primary focus:outline-none"
           />
           <button
             type="button"
             disabled={debugging || !debugInput.trim()}
             onClick={() => void submitDebug()}
-            className="mt-3 rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+            className="mt-3 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {debugging ? "调用中…" : "发送"}
           </button>
@@ -205,13 +212,13 @@ function LlmEvent({
 }) {
   if (event.type === "llm_input") {
     return (
-      <div className="rounded border border-blue-500/30 bg-blue-500/5 p-3">
+      <div className="rounded-lg border border-primary/30 bg-primary-soft/60 p-3">
         <div className="mb-2 flex items-center justify-between text-xs font-medium">
           <span>LLM Input</span>
           <button
             type="button"
             onClick={() => onDebug(event)}
-            className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+            className="rounded-lg border border-border bg-card px-2.5 py-1 text-xs hover:bg-muted"
           >
             调试
           </button>
@@ -223,7 +230,7 @@ function LlmEvent({
     );
   }
   return (
-    <details open className="rounded border border-green-500/30 bg-green-500/5 p-3">
+    <details open className="rounded border border-success/30 bg-success-soft p-3">
       <summary className="cursor-pointer text-xs font-medium">
         LLM Output · {event.recordedAt}
       </summary>

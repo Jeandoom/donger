@@ -39,10 +39,10 @@ function ThreadWelcome({ hidden }: { hidden: boolean }) {
             "flex min-h-[50vh] flex-col items-center justify-center text-center",
           )}
         >
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border bg-background shadow-sm">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-soft text-primary shadow-sm">
             <Bot aria-hidden="true" size={24} />
           </div>
-          <h1 className="mt-5 text-xl font-semibold tracking-tight">开始新的对话</h1>
+          <h1 className="mt-5 text-[22px] font-bold tracking-tight">开始新的对话</h1>
           <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
             发送消息或添加附件，开始一个新的任务。
           </p>
@@ -144,7 +144,7 @@ function AssistantMessage() {
       aria-label="助手消息"
       className={cn(THREAD_CONTENT_WIDTH, "flex items-start gap-3 py-5")}
     >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-background shadow-sm">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
         <Bot aria-hidden="true" size={16} />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">

@@ -78,9 +78,12 @@ export function App() {
 function NotFoundPage() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-      <div className="text-4xl font-semibold text-foreground">404</div>
+      <div className="text-5xl font-bold text-primary">404</div>
       <div>页面不存在或已下线</div>
-      <Link to="/" className="rounded-md border px-3 py-1.5 hover:bg-accent">
+      <Link
+        to="/"
+        className="rounded-lg bg-primary px-4 py-2 text-[13px] font-medium text-primary-foreground hover:opacity-90"
+      >
         返回会话
       </Link>
     </div>

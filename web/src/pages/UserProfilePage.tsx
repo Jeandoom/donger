@@ -48,7 +48,9 @@ export function UserProfilePage() {
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
       <PageHeader title="个人设置" description="当前登录用户的身份与登录渠道" />
-      {error ? <div className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
+      {error ? (
+        <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{error}</div>
+      ) : null}
 
       {user ? (
         <section className="flex items-center gap-4 rounded-lg border bg-background p-5">

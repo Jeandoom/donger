@@ -35,26 +35,28 @@ export function ConfirmDialog(props: {
         if (e.key === "Escape") props.onCancel();
       }}
     >
-      <div className="mx-4 w-full max-w-sm rounded-lg border bg-card p-5 shadow-lg">
+      <div className="mx-4 w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-xl">
         <h2 className="text-base font-semibold">{props.title}</h2>
         {props.description ? (
           <p className="mt-1.5 text-sm text-muted-foreground">{props.description}</p>
         ) : null}
         {props.error ? (
-          <div className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{props.error}</div>
+          <div className="mt-3 rounded-lg bg-destructive-soft p-2 text-sm text-destructive">
+            {props.error}
+          </div>
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
-            className="rounded border px-3 py-1.5 text-sm hover:bg-accent"
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
             onClick={props.onCancel}
           >
             取消
           </button>
           <button
             type="button"
-            className={`rounded px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50 ${
-              props.destructive ? "bg-red-600 hover:bg-red-700" : "bg-primary hover:bg-primary/90"
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 ${
+              props.destructive ? "bg-destructive hover:opacity-90" : "bg-primary hover:opacity-90"
             }`}
             disabled={props.busy}
             onClick={props.onConfirm}

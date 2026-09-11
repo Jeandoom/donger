@@ -27,7 +27,9 @@ export function GitAccessBlocker(props: {
           <div className="text-sm text-muted-foreground">正在检查仓库权限…</div>
         ) : null}
         {props.error ? (
-          <div className="rounded bg-red-50 p-2 text-sm text-red-700">{props.error}</div>
+          <div className="rounded bg-destructive-soft p-2 text-sm text-destructive">
+            {props.error}
+          </div>
         ) : null}
         {props.requirements.map((requirement) => (
           <section

@@ -68,7 +68,9 @@ export function ModelsPage() {
         description="配置 Claude Agent 使用的 Anthropic 兼容服务。配置只对当前用户生效。"
       />
 
-      {error ? <div className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
+      {error ? (
+        <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{error}</div>
+      ) : null}
       {saved ? (
         <div className="rounded bg-green-50 p-3 text-sm text-green-700">已保存。</div>
       ) : null}

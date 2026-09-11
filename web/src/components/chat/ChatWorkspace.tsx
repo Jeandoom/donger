@@ -109,14 +109,14 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           </button>
         </div>
         {props.errors.stream ? (
-          <div role="status" className="bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+          <div role="status" className="bg-warning-soft px-3 py-2 text-sm text-amber-800">
             {props.errors.stream}
           </div>
         ) : null}
         {props.errors.messages ? (
           <div
             role="alert"
-            className="flex items-center justify-between bg-red-50 px-3 py-2 text-sm text-red-700"
+            className="flex items-center justify-between bg-destructive-soft px-3 py-2 text-sm text-destructive"
           >
             <span>{props.errors.messages}</span>
             <button type="button" onClick={props.onReloadMessages}>
@@ -127,7 +127,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         {props.errors.conversations ? (
           <div
             role="alert"
-            className="flex items-center justify-between bg-red-50 px-3 py-2 text-sm text-red-700"
+            className="flex items-center justify-between bg-destructive-soft px-3 py-2 text-sm text-destructive"
           >
             <span>{props.errors.conversations}</span>
             <button type="button" onClick={props.onReloadConversations}>

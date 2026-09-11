@@ -372,7 +372,7 @@ export function ConnectorsPage() {
             ))}
             <button
               type="button"
-              className="rounded border px-2 py-1 text-xs hover:bg-accent"
+              className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted hover:bg-accent"
               onClick={() =>
                 setDraft((d) => ({
                   ...d,

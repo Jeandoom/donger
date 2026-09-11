@@ -211,7 +211,7 @@ export function AgentEditorPage() {
 
         <Field label="名称">
           <input
-            className="w-full rounded border px-2 py-1"
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
@@ -219,7 +219,7 @@ export function AgentEditorPage() {
 
         <Field label="描述">
           <input
-            className="w-full rounded border px-2 py-1"
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             value={form.description ?? ""}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
@@ -227,7 +227,7 @@ export function AgentEditorPage() {
 
         <Field label="System Prompt（追加到默认之后）">
           <textarea
-            className="w-full rounded border px-2 py-1"
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             rows={4}
             value={form.systemPrompt ?? ""}
             onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
@@ -265,7 +265,7 @@ export function AgentEditorPage() {
 
         <Field label="场景">
           <select
-            className="w-full rounded border px-2 py-1"
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             value={form.scenario ?? ""}
             onChange={(event) =>
               setForm({
@@ -288,7 +288,7 @@ export function AgentEditorPage() {
 
         <Field label="默认 Skill（可选）">
           <select
-            className="w-full rounded border px-2 py-1"
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             value={form.defaultSkill ?? ""}
             onChange={(event) =>
               setForm({ ...form, defaultSkill: event.target.value || undefined })
@@ -366,7 +366,7 @@ export function AgentEditorPage() {
 
         <Field label="LLM 预设">
           <select
-            className="w-full rounded border px-2 py-1"
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             value={form.llm.presetId ?? ""}
             onChange={(e) => setForm({ ...form, llm: { presetId: e.target.value || undefined } })}
           >
@@ -463,7 +463,7 @@ export function AgentEditorPage() {
               </summary>
               <div className="mt-1 space-y-1">
                 <textarea
-                  className="w-full rounded border px-2 py-1 font-mono text-xs"
+                  className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none font-mono text-xs"
                   rows={5}
                   value={JSON.stringify(form.mcpServers, null, 2)}
                   onChange={(e) => {
@@ -541,7 +541,7 @@ export function AgentEditorPage() {
                   />
                 </div>
                 <input
-                  className="w-full rounded border px-2 py-1 text-sm"
+                  className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none text-sm"
                   placeholder={`https://github.com|gitee.com|jihulab.com|自建host/org/repo.git（仅 HTTPS）`}
                   value={repository.url}
                   onChange={(event) => {
@@ -918,7 +918,7 @@ function SkillPicker({
       {open ? (
         <div className="absolute z-30 mt-1 w-full rounded border bg-background p-2 shadow-lg">
           <input
-            className="mb-2 w-full rounded border px-2 py-1 text-sm"
+            className="mb-2 w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none text-sm"
             placeholder="搜索技能名称、ID或描述"
             value={query}
             onChange={(event) => setQuery(event.target.value)}

@@ -127,7 +127,9 @@ export function FileBrowserDrawer(props: {
           </button>
         </div>
 
-        {error && <div className="bg-red-50 px-3 py-1 text-xs text-red-700">{error}</div>}
+        {error && (
+          <div className="bg-destructive-soft px-3 py-1 text-xs text-destructive">{error}</div>
+        )}
 
         {/* 树区 */}
         <div className="flex-1 overflow-y-auto">
