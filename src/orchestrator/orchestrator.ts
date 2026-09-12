@@ -28,6 +28,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { makeApprovalResolver } from "./approval-flow.js";
@@ -658,7 +659,8 @@ export class Orchestrator {
     const failMidway = async (error?: string) => {
       await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error });
       if (acceptanceGate) {
-        channel.pushResult?.(p.conversation.id, "error", error || "任务失败");
+        // 展示文案走友好映射，库存原始错误供诊断
+        channel.pushResult?.(p.conversation.id, "error", friendlyRunnerError(error) || "任务失败");
       }
       return p.conversation.id;
     };
@@ -1234,8 +1236,9 @@ export class Orchestrator {
         }
       }
       try {
-        await this.deps.channel.send(msg.threadId, { text: `❌ 处理出错：${errMsg}` });
-        this.deps.channel.pushResult?.(conversation.id, "error", `❌ 处理出错：${errMsg}`);
+        const display = friendlyRunnerError(errMsg);
+        await this.deps.channel.send(msg.threadId, { text: `❌ 处理出错：${display}` });
+        this.deps.channel.pushResult?.(conversation.id, "error", `❌ 处理出错：${display}`);
       } catch {
         // ignore
       }
