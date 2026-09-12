@@ -31,7 +31,10 @@ export const AGENT_BUILDER_AGENT: Agent = {
   description: "对话式补建缺失的 agent / skill（分发兜底智能体）",
   systemPrompt: BUILDER_SYSTEM_PROMPT,
   skills: [],
-  tools: { mode: "whitelist", whitelist: ["mcp__donger-platform"] },
+  // AskUserQuestion 是工作流第 1 步「信息不足先提问」的依赖；缺失会让提问退化成
+  // 纯文本往返（一周内 3 次触发「不在允许列表」错误，2026-09-12 复盘 P1-4）。
+  // mcp__donger-platform 为 server 级白名单，SDK 对其下工具自动放行不进 canUseTool。
+  tools: { mode: "whitelist", whitelist: ["mcp__donger-platform", "AskUserQuestion"] },
   mcpServers: [],
   credentials: [],
   gitRepositories: [],

@@ -11,8 +11,12 @@ describe("agent-builder 内置智能体", () => {
     expect(AGENT_BUILDER_AGENT.id).toBe(AGENT_BUILDER_ID);
     expect(AGENT_BUILDER_AGENT.tools).toEqual({
       mode: "whitelist",
-      whitelist: ["mcp__donger-platform"],
+      whitelist: ["mcp__donger-platform", "AskUserQuestion"],
     });
+  });
+
+  it("白名单含 AskUserQuestion（工作流第 1 步提问依赖，复盘 P1-4）", () => {
+    expect(AGENT_BUILDER_AGENT.tools.whitelist).toContain("AskUserQuestion");
   });
 
   it("builderCreationAsk 拼接缺口分析与原始任务", () => {
