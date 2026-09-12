@@ -87,11 +87,17 @@ export function inferGitProvider(url: string): GitProvider | undefined {
   return parseRepositoryUrl(url)?.knownProvider;
 }
 
-/** clone 参数组装（纯函数，便于单测）：shallow 时可选 shallowSince 收窄历史窗口 */
+/**
+ * clone 参数组装（纯函数，便于单测）。
+ * shallow=true 走 blobless partial clone（--filter=blob:none）：完整提交历史 + 全部分支，
+ * 仅按需拉取文件内容——修复 depth=1 隐含 single-branch 导致「git branch -r 只见单分支、
+ * 变更查询误报零变更」的问题（spec 2026-09-12 agent 执行复盘 P0-1）。
+ * shallowSince 仍可叠加收窄提交窗口；显式 --no-single-branch 保证窗口模式下不丢其余分支。
+ */
 export function buildCloneArgs(repository: AgentGitRepository, destination: string): string[] {
   const args = ["clone", "--no-recurse-submodules"];
   if (repository.shallow) {
-    args.push("--depth", "1");
+    args.push("--filter=blob:none", "--no-single-branch");
     if (repository.shallowSince) args.push("--shallow-since", repository.shallowSince);
   }
   if (repository.ref) args.push("--branch", repository.ref);
@@ -104,6 +110,22 @@ export function normalizeRepositoryIdentity(value: string): string {
   const parsed = parseRepositoryUrl(value);
   if (!parsed) return "";
   return `${parsed.host.toLowerCase()}/${parsed.repositoryPath.toLowerCase()}`;
+}
+
+/**
+ * 归一化 git remote URL 指纹（宽松版，物化器 fast-forward 比对用）。
+ * 与 normalizeRepositoryIdentity 的差异：容忍 URL 内嵌凭证（oauth2:token@host）、
+ * file:// 本地路径与非 https 协议——只比对 host + 仓库路径；完全解析失败时回退原文。
+ */
+export function normalizeRemoteUrlIdentity(value: string): string {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    const path = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+    return `${url.hostname.toLowerCase()}/${path.toLowerCase()}`;
+  } catch {
+    return trimmed;
+  }
 }
 
 /**
