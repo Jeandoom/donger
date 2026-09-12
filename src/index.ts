@@ -151,7 +151,12 @@ async function main(): Promise<void> {
       config: {
         workspaceDir: cfg.workspaceDir,
         llm: cfg.llm,
-        defaultSystemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+        // 临时文件指引：一周内 3 个不同任务各自踩中「bash /tmp 写、原生 python 读不到」
+        // 的 MSYS 路径映射坑（复盘 P2-11）；env 无法修复字面 /tmp，只能靠约定引导
+        defaultSystemPromptAppend: [
+          "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+          "临时文件一律放当前工作目录的 .tmp/ 下并用相对路径引用，不要用 /tmp（Windows 原生 python 看不到 Git Bash 的 /tmp）。",
+        ].join("\n"),
         agentLlmPresets: cfg.agentLlmPresets,
       },
       skillPackStore,
