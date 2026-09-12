@@ -421,6 +421,23 @@ describe("ClaudeAgentRunner", () => {
     await collect(runner.run(task, opts, async () => ({ approved: true })));
     expect(captured?.sessionStore).toBeUndefined();
   });
+
+  it("pythonPaths 并入子进程 PYTHONPATH（插件共享运行库桥，复盘 P2-10）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    process.env.PYTHONPATH = "D:\\existing\\libs";
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        { ...opts, pythonPaths: ["C:\\ws\\.skills\\copilot-skills\\.donger-sdk-plugin\\scripts"] },
+        async () => ({ approved: true }),
+      ),
+    );
+    const env = (captured as unknown as { env: Record<string, string> })?.env;
+    expect(env.PYTHONPATH).toContain("copilot-skills");
+    expect(env.PYTHONPATH).toContain("D:\\existing\\libs");
+    delete process.env.PYTHONPATH;
+  });
 });
 
 describe("ClaudeAgentRunner agent options 透传", () => {

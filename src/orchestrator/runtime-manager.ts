@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { LlmPreset } from "../config.js";
@@ -177,6 +178,9 @@ export class RuntimeManager {
           )
         : []),
     ];
+    // 插件共享运行库（<plugin>/scripts，如 copilot-skills 的 credentials 包）→
+    // PYTHONPATH 注入清单；存在才注入，交给 runner 并 env（specs/2026-09-12-copilot-skills-packaging.md）
+    const pythonPaths = pluginPaths.map((p) => join(p, "scripts")).filter((p) => existsSync(p));
 
     const capabilities: CapabilitySet = {
       skills,
@@ -273,6 +277,7 @@ export class RuntimeManager {
       sessionStore,
       capabilityVersion: 1,
       credentialsEnv,
+      ...(pythonPaths.length ? { pythonPaths } : {}),
       ...(allowedTools ? { allowedTools } : {}),
       gitAllowShellGit,
       ...(mcpServers?.length ? { mcpServers } : {}),

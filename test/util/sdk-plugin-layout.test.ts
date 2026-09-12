@@ -36,6 +36,40 @@ describe("ensureSdkPluginLayout", () => {
     expect(ensureSdkPluginLayout(root, "alibabacloud-aiops-skills")).toBe(pluginPath);
   });
 
+  it("多级 pack 顶层 scripts/ 共享运行库随插件物化（复盘 P2-10）", () => {
+    const root = mkdtempSync(join(tmpdir(), "sdk-plugin-"));
+    writeSkill(
+      root,
+      "skills/tools/gitlaber/SKILL.md",
+      "---\nname: gitlaber\ndescription: x\n---\n",
+    );
+    const credDir = join(root, "scripts", "credentials");
+    mkdirSync(credDir, { recursive: true });
+    writeFileSync(join(credDir, "__init__.py"), "");
+    writeFileSync(
+      join(credDir, "store.py"),
+      "def get_credential(prefix, key):\n    raise NotImplementedError\n",
+    );
+
+    const pluginPath = ensureSdkPluginLayout(root, "copilot-skills");
+    expect(existsSync(join(pluginPath, "scripts", "credentials", "store.py"))).toBe(true);
+    // marker 升版后重复调用仍命中缓存且不被删除
+    expect(ensureSdkPluginLayout(root, "copilot-skills")).toBe(pluginPath);
+    expect(existsSync(join(pluginPath, "scripts", "credentials", "store.py"))).toBe(true);
+  });
+
+  it("共享访问者目录同样物化 scripts/ 共享运行库", () => {
+    const source = mkdtempSync(join(tmpdir(), "sdk-plugin-source-"));
+    const target = mkdtempSync(join(tmpdir(), "sdk-plugin-target-"));
+    writeSkill(source, "skills/keep/SKILL.md", "---\nname: keep\ndescription: x\n---\n");
+    mkdirSync(join(source, "scripts", "credentials"), { recursive: true });
+    writeFileSync(join(source, "scripts", "credentials", "__init__.py"), "");
+
+    const pluginPath = materializeSharedSkillPlugin(source, "demo", ["keep"], target);
+    expect(pluginPath).toBe(target);
+    expect(existsSync(join(target, "scripts", "credentials", "__init__.py"))).toBe(true);
+  });
+
   it("标准单级 plugin 直接复用原目录", () => {
     const root = mkdtempSync(join(tmpdir(), "sdk-plugin-"));
     writeSkill(root, "skills/demo/SKILL.md");

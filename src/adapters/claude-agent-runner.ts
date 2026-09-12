@@ -1,4 +1,4 @@
-import { isAbsolute, resolve, sep } from "node:path";
+import { delimiter, isAbsolute, resolve, sep } from "node:path";
 import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
@@ -156,6 +156,15 @@ export class ClaudeAgentRunner implements AgentRunner {
           ANTHROPIC_BASE_URL: opts.llm.baseUrl,
           ANTHROPIC_AUTH_TOKEN: opts.llm.authToken,
           ...opts.credentialsEnv,
+          // 插件共享运行库桥：技能脚本 `from credentials import ...` 等共享包导入依赖
+          ...(opts.pythonPaths?.length
+            ? {
+                PYTHONPATH: [
+                  ...opts.pythonPaths,
+                  ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : []),
+                ].join(delimiter),
+              }
+            : {}),
         },
       },
     });
