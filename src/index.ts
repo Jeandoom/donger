@@ -37,6 +37,7 @@ import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { HookRegistry } from "./orchestrator/hook-registry.js";
 import { LoopRunner } from "./orchestrator/loop-runner.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import type { Channel } from "./ports/channel.js";
@@ -78,12 +79,6 @@ async function main(): Promise<void> {
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
   store.migrate();
-  // 僵尸清扫：上次进程遗留的 running 任务标记为中断（任务并发视图不被污染）
-  const stale = await store.failStaleRunning("服务重启中断");
-  if (stale > 0) log.warn({ count: stale }, "已将遗留 running 任务标记为中断");
-  // 挂起门清扫：审批/凭证的 resolve 通道在进程内存，重启后 awaiting_* 必然无人应答 → 标记失败
-  const staleAwaiting = await store.failStaleAwaiting("服务重启中断（审批/凭证挂起态随进程丢失）");
-  if (staleAwaiting > 0) log.warn({ count: staleAwaiting }, "已将遗留挂起门任务标记为失败");
   const usersDir = join(cfg.workspaceDir, "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {
@@ -103,6 +98,17 @@ async function main(): Promise<void> {
   messageStore.migrate();
   const transcriptStore = new SqliteTranscriptStore(db);
   transcriptStore.migrate();
+
+  // 僵尸/挂起门清扫（在 message/audit store 就绪后执行，顺带给所属会话补收尾消息，
+  // 修复「重启后会话永远停在🔨执行阶段」——复盘 P1-5 体验切片）
+  const swept = await sweepInterruptedTasks({
+    taskStore: store,
+    messageStore,
+    auditStore,
+  });
+  if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
+  if (swept.awaiting > 0) log.warn({ count: swept.awaiting }, "已将遗留挂起门任务标记为失败");
+  if (swept.notified > 0) log.info({ count: swept.notified }, "已为中断任务补发会话收尾消息");
 
   // Agent 密钥加密器 + Agent/分享 store
   if (!cfg.secretKeySeed) {
