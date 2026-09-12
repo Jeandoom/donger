@@ -17,6 +17,38 @@ type AuditCtx = {
   recordedAt: string;
 };
 
+/**
+ * 凭证脱敏（纯函数，审计入库前统一过一遍）。
+ * 背景（2026-09-12 复盘 P2-12）：jihulab token、TB userToken、Langfuse secret key
+ * 曾以明文持久化在审计 toolInput/toolOutput/转写里（git remote -v 输出、clone 命令、
+ * MCP URL query）。模式取自本周真实泄露样本；原则是保结构留诊断、值一律打码。
+ */
+const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  // URL 内嵌凭证：https://oauth2:<token>@host、https://user:pass@host
+  { pattern: /(https?:\/\/[^\s/@]+:)([^\s@/]{4})[^\s@/]*@/g, replacement: "$1****@" },
+  // 已知 query 参数形态：userToken=…、access_token=…、token=…
+  {
+    pattern: /((?:user_?token|access_?token|api_?key|secret_?key|token)=)([^&\s"']{4})[^&\s"']*/gi,
+    replacement: "$1****",
+  },
+  // 显式标注：access token[:：]值、PRIVATE-TOKEN: 值、Bearer 值
+  {
+    pattern:
+      /((?:access[ _]?token|private-token|bearer)[:=]\s*)([A-Za-z0-9._~+/=-]{4})[A-Za-z0-9._~+/=-]*/gi,
+    replacement: "$1****",
+  },
+  // Langfuse 风格密钥字面量：pk-lf-… / sk-lf-…
+  { pattern: /\b(pk|sk)-[a-z0-9-]{6,}/gi, replacement: "$1-****" },
+];
+
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const { pattern, replacement } of SECRET_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
 /** 把一条 RunnerEvent 映射成待持久化的 AuditEvent（不含 id，由 store 生成）。 */
 export function toAuditEvent(
   e: AuditableRunnerEvent,
@@ -34,17 +66,17 @@ export function toAuditEvent(
     case "session_init":
       return { ...base, type: "session_init" };
     case "llm_input":
-      return { ...base, type: "llm_input", llmInput: e.input };
+      return { ...base, type: "llm_input", llmInput: redactSecrets(e.input) };
     case "llm_output":
-      return { ...base, type: "llm_output", llmOutput: e.output };
+      return { ...base, type: "llm_output", llmOutput: redactSecrets(e.output) };
     case "text":
-      return { ...base, type: "text", text: e.text };
+      return { ...base, type: "text", text: redactSecrets(e.text) };
     case "tool_use":
       return {
         ...base,
         type: "tool_use",
         toolName: e.tool,
-        toolInput: truncate(JSON.stringify(e.input)),
+        toolInput: truncate(redactSecrets(JSON.stringify(e.input))),
         toolUseId: e.toolUseId,
       };
     case "tool_result":
@@ -52,7 +84,7 @@ export function toAuditEvent(
         ...base,
         type: "tool_result",
         toolUseId: e.toolUseId,
-        toolOutput: truncate(e.content),
+        toolOutput: truncate(redactSecrets(e.content)),
         isError: e.isError,
         durationMs: extra.durationMs,
       };
@@ -61,7 +93,7 @@ export function toAuditEvent(
         ...base,
         type: "result",
         resultSubtype: e.subtype,
-        text: e.result ?? e.error,
+        text: redactSecrets(e.result ?? e.error ?? ""),
         usage: e.usage,
         model: extra.model,
         durationMs: extra.durationMs,
@@ -78,6 +110,6 @@ export function userMessageAudit(prompt: string, ctx: AuditCtx): Omit<AuditEvent
     seq: ctx.seq,
     recordedAt: ctx.recordedAt,
     type: "user_message",
-    text: prompt,
+    text: redactSecrets(prompt),
   };
 }

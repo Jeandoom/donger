@@ -309,7 +309,27 @@ export class Orchestrator {
         }),
       };
     };
-    const opts = await prepareOnce();
+    let opts: RunOptions;
+    try {
+      opts = await prepareOnce();
+    } catch (error) {
+      // 准备阶段失败（仓库物化/平台工具装配等）此前零审计痕迹，复盘 P2-12 补记；
+      // seq=-1 沿用 credential_prompt 的「执行前事件」约定。审计失败不阻断错误上抛。
+      try {
+        await this.deps.auditStore.record({
+          conversationId: p.conversation.id,
+          taskId: p.task.id,
+          userId: p.user.id,
+          seq: -1,
+          type: "prepare_error",
+          text: error instanceof Error ? error.message : String(error),
+          recordedAt: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+      throw error;
+    }
 
     const resolver = makeApprovalResolver(
       this.deps.store,

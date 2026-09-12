@@ -126,7 +126,9 @@ export interface AuditEvent {
     | "tool_result"
     | "result"
     /** 凭证缺失问询（text=人读提示；toolInput=JSON {codes:[{code,name,keys}]}，不含值） */
-    | "credential_prompt";
+    | "credential_prompt"
+    /** 执行前准备失败（仓库物化/平台工具装配等；text=失败原因。复盘 P2-12：此前零审计痕迹） */
+    | "prepare_error";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;
