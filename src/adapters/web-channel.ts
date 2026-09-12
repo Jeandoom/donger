@@ -245,6 +245,18 @@ export interface WebChannelDeps {
   hookRegistry?: HookRegistry;
   /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
+  /** 持久化门决议续跑回调（specs/2026-09-12-durable-gate-design.md）：
+   *  respond 回退路径写入 pendingGate.decision 后触发；缺省=决议仅持久化，待重启清扫续跑 */
+  onGatedDecision?: (
+    taskId: string,
+    decision: {
+      approved: boolean;
+      reason?: string;
+      comment?: string;
+      responderId?: string;
+      respondedAt: string;
+    },
+  ) => Promise<unknown>;
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
@@ -821,9 +833,53 @@ export class WebChannel implements Channel {
       });
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true }));
-    } else {
+      return;
+    }
+
+    // 回退路径（specs/2026-09-12-durable-gate-design.md）：无内存 resolver（进程重启后）
+    // 时把决议持久化到 pendingGate.decision 并触发续跑；决议已存在的重复 respond 幂等返回
+    const taskStore = this.deps.taskStore;
+    if (!taskStore) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: "approval not found or expired" }));
+      return;
+    }
+    const gated = (await taskStore.listByStatus("awaiting_approval")).find(
+      (t) => t.pendingGate?.gateId === approvalId,
+    );
+    if (!gated?.pendingGate) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: "approval not found or expired" }));
+      return;
+    }
+    const conv = await this.deps.conversationStore?.get(gated.threadId);
+    if (conv && authUserId && conv.userId !== authUserId) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
+      return;
+    }
+    if (gated.pendingGate.decision) {
+      // 幂等：已决议的门不接受二次决议
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true, duplicated: true }));
+      return;
+    }
+    const decision = {
+      approved: body.approved,
+      reason: body.reason,
+      comment: body.comment?.trim() || undefined,
+      responderId: authUserId,
+      respondedAt: new Date().toISOString(),
+    };
+    await taskStore.updateStatus(gated.id, "awaiting_approval", {
+      pendingGate: { ...gated.pendingGate, decision },
+    });
+    res.writeHead(200);
+    res.end(JSON.stringify({ ok: true, resumed: false }));
+    try {
+      await this.deps.onGatedDecision?.(gated.id, decision);
+    } catch (e) {
+      console.error("[web-channel] 持久决议续跑失败（决议已保留，重启后可再续）", e);
     }
   }
 

@@ -99,17 +99,6 @@ async function main(): Promise<void> {
   const transcriptStore = new SqliteTranscriptStore(db);
   transcriptStore.migrate();
 
-  // 僵尸/挂起门清扫（在 message/audit store 就绪后执行，顺带给所属会话补收尾消息，
-  // 修复「重启后会话永远停在🔨执行阶段」——复盘 P1-5 体验切片）
-  const swept = await sweepInterruptedTasks({
-    taskStore: store,
-    messageStore,
-    auditStore,
-  });
-  if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
-  if (swept.awaiting > 0) log.warn({ count: swept.awaiting }, "已将遗留挂起门任务标记为失败");
-  if (swept.notified > 0) log.info({ count: swept.notified }, "已为中断任务补发会话收尾消息");
-
   // Agent 密钥加密器 + Agent/分享 store
   if (!cfg.secretKeySeed) {
     log.warn("SECRET_KEY 与 JWT_SECRET 均为空，agent MCP 密钥将使用不安全默认密钥");
@@ -275,6 +264,7 @@ async function main(): Promise<void> {
   const webOrch = createOrch(webChannel, skillPackStore, credentialSets, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
+  const orchestrators = new Map<string, Orchestrator>([["web", webOrch]]);
 
   // 工作流运行时：loopRunner / scheduler / hookRegistry（依赖 webOrch，构造后回填 webChannel.deps）
   const loopRunner = new LoopRunner({
@@ -305,6 +295,8 @@ async function main(): Promise<void> {
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
+  // 持久化门决议回退路径：重启后 respond 无内存 resolver 时落决议并触发本渠道续跑
+  webChannelDeps.onGatedDecision = (taskId) => webOrch.resumeGatedTask(taskId);
   await scheduler.restore();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 
@@ -329,8 +321,21 @@ async function main(): Promise<void> {
     const dtChannel = new DingTalkChannel(cfg.dingtalk);
     const dtOrch = createOrch(dtChannel, skillPackStore, credentialSets, skillInstaller);
     dtChannel.onMessage((m) => void dtOrch.handleMessage(m));
+    orchestrators.set("dingtalk", dtOrch);
     log.info({ channel: "dingtalk" }, "就绪");
   }
+
+  // 启动清扫（需编排实例就绪：持久化门决议按渠道续跑，specs/2026-09-12-durable-gate-design.md）
+  const swept = await sweepInterruptedTasks({
+    taskStore: store,
+    messageStore,
+    auditStore,
+    resumeGatedTask: (taskId, channelId) =>
+      orchestrators.get(channelId)?.resumeGatedTask(taskId) ?? Promise.resolve("not_found"),
+  });
+  if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
+  if (swept.resumed > 0) log.info({ count: swept.resumed }, "已按持久化决议续跑挂起审批任务");
+  if (swept.rearmed > 0) log.info({ count: swept.rearmed }, "挂起审批任务保留等待决议");
 }
 
 /** 从 DB 读取或自动生成 JWT 密钥并持久化 */

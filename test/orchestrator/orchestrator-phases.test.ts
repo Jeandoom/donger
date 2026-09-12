@@ -582,3 +582,172 @@ describe("dispatch 权限降级", () => {
     expect(runner.prompts).toEqual([MSG.text]);
   });
 });
+
+describe("持久化门决议续跑（specs/2026-09-12-durable-gate-design.md）", () => {
+  function gatedTask(overrides: Partial<Task> = {}): Task {
+    return {
+      id: "t-gate",
+      channelId: "test",
+      threadId: "conv-agent",
+      requesterId: "u-webu",
+      prompt: "做一个功能",
+      status: "awaiting_approval",
+      skillChain: [],
+      agentId: "a1",
+      requiresDesign: true,
+      createdAt: "t",
+      updatedAt: "t",
+      ...overrides,
+    };
+  }
+
+  it("design 门 approved 决议重启后续跑：不重跑方案轮，直接执行到 done", async () => {
+    const channel = seqChannel([]);
+    const runner = new ScriptedRunner([{ result: "执行完成" }]);
+    const convStore = statefulConvStore("a1");
+    const { orch, store } = build(runner, channel, convStore);
+    await store.create(
+      gatedTask({
+        pendingGate: {
+          gateId: "design",
+          title: "审批门：方案设计确认",
+          requestedAt: "t",
+          decision: { approved: true, respondedAt: "t" },
+        },
+      }),
+    );
+
+    const result = await orch.resumeGatedTask("t-gate");
+
+    expect(result).toBe("resumed");
+    expect(runner.prompts).toEqual(["方案已确认，开始按方案执行。"]);
+    expect(channel.texts.join("\n")).not.toContain("方案设计阶段");
+    expect((await store.get("t-gate"))?.status).toBe("done");
+  });
+
+  it("design 门 rejected 决议续跑：按原因进修订轮，过门后执行", async () => {
+    const channel = seqChannel([{ approved: true }]);
+    const runner = new ScriptedRunner([{ result: "修订后的方案" }, { result: "执行完成" }]);
+    const convStore = statefulConvStore("a1");
+    const { orch, store } = build(runner, channel, convStore);
+    await store.create(
+      gatedTask({
+        pendingGate: {
+          gateId: "design",
+          title: "审批门：方案设计确认",
+          requestedAt: "t",
+          designRejections: 1,
+          decision: { approved: false, reason: "方案太粗", respondedAt: "t" },
+        },
+      }),
+    );
+
+    const result = await orch.resumeGatedTask("t-gate");
+
+    expect(result).toBe("resumed");
+    expect(runner.prompts[0]).toContain("方案太粗");
+    expect(runner.prompts).toHaveLength(2);
+    expect((await store.get("t-gate"))?.status).toBe("done");
+  });
+
+  it("design 门 rejected 续跑达熔断上限：直接 failed，不再执行", async () => {
+    const channel = seqChannel([]);
+    const runner = new ScriptedRunner([]);
+    const convStore = statefulConvStore("a1");
+    const { orch, store } = build(runner, channel, convStore);
+    await store.create(
+      gatedTask({
+        pendingGate: {
+          gateId: "design",
+          title: "审批门：方案设计确认",
+          requestedAt: "t",
+          designRejections: 2,
+          decision: { approved: false, reason: "仍不行", respondedAt: "t" },
+        },
+      }),
+    );
+
+    const result = await orch.resumeGatedTask("t-gate");
+
+    expect(result).toBe("resumed");
+    expect(runner.prompts).toHaveLength(0);
+    expect((await store.get("t-gate"))?.status).toBe("failed");
+  });
+
+  it("acceptance 门 approved 决议续跑：凭持久化摘要直接收尾，不重跑执行/自验轮", async () => {
+    const channel = seqChannel([]);
+    const runner = new ScriptedRunner([]);
+    const convStore = statefulConvStore("a1");
+    const { orch, store } = build(
+      runner,
+      channel,
+      convStore,
+      ["x-design", "x-execute", "x-accept"],
+      { acceptanceGate: true },
+    );
+    await store.create(
+      gatedTask({
+        requiresDesign: false,
+        pendingGate: {
+          gateId: "acceptance",
+          title: "审批门：验收确认",
+          requestedAt: "t",
+          summary: "已完成的执行结果",
+          decision: { approved: true, respondedAt: "t" },
+        },
+      }),
+    );
+
+    const result = await orch.resumeGatedTask("t-gate");
+
+    expect(result).toBe("resumed");
+    expect(runner.prompts).toHaveLength(0);
+    expect((await store.get("t-gate"))?.status).toBe("done");
+  });
+
+  it("acceptance 门 rejected 决议续跑：按原因重跑执行+自验，再过门收尾", async () => {
+    const channel = seqChannel([{ approved: true }]);
+    const runner = new ScriptedRunner([{ result: "重跑执行完成" }, { result: "自验通过" }]);
+    const convStore = statefulConvStore("a1");
+    const { orch, store } = build(
+      runner,
+      channel,
+      convStore,
+      ["x-design", "x-execute", "x-accept"],
+      { acceptanceGate: true },
+    );
+    await store.create(
+      gatedTask({
+        requiresDesign: false,
+        rejectionCount: 1,
+        pendingGate: {
+          gateId: "acceptance",
+          title: "审批门：验收确认",
+          requestedAt: "t",
+          summary: "旧执行结果",
+          decision: { approved: false, reason: "缺测试", respondedAt: "t" },
+        },
+      }),
+    );
+
+    const result = await orch.resumeGatedTask("t-gate");
+
+    expect(result).toBe("resumed");
+    expect(runner.prompts[0]).toContain("缺测试");
+    expect(runner.prompts).toHaveLength(2);
+    expect((await store.get("t-gate"))?.rejectionCount).toBe(2);
+    expect((await store.get("t-gate"))?.status).toBe("done");
+  });
+
+  it("无决议/不存在/会话忙时不动任务", async () => {
+    const channel = seqChannel([]);
+    const runner = new ScriptedRunner([]);
+    const convStore = statefulConvStore("a1");
+    const { orch, store } = build(runner, channel, convStore);
+    await store.create(gatedTask({ id: "t-nodecision" }));
+
+    expect(await orch.resumeGatedTask("t-nodecision")).toBe("no_decision");
+    expect(await orch.resumeGatedTask("t-missing")).toBe("not_found");
+    expect((await store.get("t-nodecision"))?.status).toBe("awaiting_approval");
+  });
+});
