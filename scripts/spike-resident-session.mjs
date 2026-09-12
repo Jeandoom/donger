@@ -6,6 +6,7 @@
 // 环境变量与主服务一致（ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / LLM_MODEL）。
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 if (process.env.E2E_LIVE !== "1") {
   console.error("需要真实 LLM 端点：E2E_LIVE=1 node scripts/spike-resident-session.mjs");
@@ -23,14 +24,14 @@ const now = () => performance.now();
  * 逐事件驱动一轮直到 result，返回 {ttft, total, sessionId}。
  * next() 由调用方提供（per-turn 模式传 null：SDK 自迭代）。
  */
-async function runTurn(makeIter, getText, label) {
+async function runTurn(makeIter, label) {
   const iter = makeIter();
   const t0 = now();
   let ttft = null;
   let sessionId;
   for await (const m of iter) {
     if (m.type === "system" && m.subtype === "init") sessionId = m.session_id;
-    if (m.type === "stream_event" && m.event?.type === "message_start" && ttft === null) {
+    if (ttft === null && (m.type === "stream_event" || m.type === "assistant" || m.type === "user")) {
       ttft = now() - t0;
     }
     if (m.type === "result") {
@@ -50,10 +51,9 @@ console.log(`== A. per-turn 模式（现行架构）model=${model} ==`);
     const r = await runTurn(
       () =>
         query({
-          prompt: getText(text),
+          prompt: text,
           options: { cwd, model, maxTurns: 4, env: { ...process.env }, ...(sessionId ? { resume: sessionId } : {}) },
         }),
-      () => text,
       `turn${i + 1}`,
     );
     sessionId = r.sessionId;
@@ -83,19 +83,28 @@ console.log(`== B. resident 模式（单进程常驻）==`);
   };
   const q = query({ prompt: stream, options: { cwd, model, maxTurns: 4, env: { ...process.env } } });
   const sharedIter = q[Symbol.asyncIterator]();
-  for (const [i, text] of TURNS.entries()) {
-    const t0 = now();
-    push(text);
+  // 显式拉取直到本轮 result。不用 for-await+break：break 会触发迭代器 return() 语义，
+  // 实测会把常驻输出流提前关掉（turn2 next() 返回 undefined）
+  const pullUntilResult = async (label, t0) => {
     let ttft = null;
-    for await (const m of { [Symbol.asyncIterator]: () => sharedIter }) {
-      if (m.type === "stream_event" && m.event?.type === "message_start" && ttft === null) {
+    for (let i = 0; i < 200; i++) {
+      const r = await sharedIter.next();
+      if (r?.done === true || r?.value === undefined) throw new Error(`${label}: 输出流提前结束`);
+      const m = r.value;
+      if (ttft === null && (m.type === "stream_event" || m.type === "assistant")) {
         ttft = now() - t0;
       }
       if (m.type === "result") {
-        console.log(`  turn${i + 1}: ttft=${ttft?.toFixed(0) ?? "?"}ms total=${(now() - t0).toFixed(0)}ms`);
-        break;
+        console.log(`  ${label}: ttft=${ttft?.toFixed(0) ?? "?"}ms total=${(now() - t0).toFixed(0)}ms`);
+        return;
       }
     }
+    throw new Error(`${label}: 拉取上限内未收到 result`);
+  };
+  for (const [i, text] of TURNS.entries()) {
+    const t0 = now();
+    push(text);
+    await pullUntilResult(`turn${i + 1}`, t0);
   }
   q.close();
 }
