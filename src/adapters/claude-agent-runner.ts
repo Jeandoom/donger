@@ -4,6 +4,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { matchesShellGit } from "../domain/git-shell-guard.js";
+import { isReadOnlyShellCommand } from "../domain/read-only-shell-command.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 
@@ -113,6 +114,15 @@ export class ClaudeAgentRunner implements AgentRunner {
                 };
               }
             }
+          }
+          // 只读命令豁免审批门：deploy 门关键词会把 git fetch / 平台 API GET 误拦为
+          // 部署/发布（60s 审批超时即任务失败），且诱导 agent 拆分字符串绕过（P2-9）
+          if (
+            toolName === "Bash" &&
+            typeof input.command === "string" &&
+            isReadOnlyShellCommand(input.command)
+          ) {
+            return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
           }
           const gated = this.gates.match(toolName, input);
           if (!gated) {

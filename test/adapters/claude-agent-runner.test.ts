@@ -216,6 +216,36 @@ describe("ClaudeAgentRunner", () => {
     expect(seen).toEqual(["deploy"]);
   });
 
+  it("canUseTool：只读命令豁免审批门（不调 resolver，复盘 P2-9）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /release/ });
+    const runner = new ClaudeAgentRunner(gates);
+    const seen: string[] = [];
+    // 事故路径：aix-py 类开发型 agent 开启了 shell git 逃生门，fetch 直跑才可能抵达审批门
+    await collect(
+      runner.run(task, { ...opts, gitAllowShellGit: true }, async (req) => {
+        seen.push(req.gateId);
+        return { approved: true };
+      }),
+    );
+    const r = await captured?.canUseTool?.(
+      "Bash",
+      { command: "git fetch origin release-202608-1" },
+      { toolUseID: "tu" },
+    );
+    expect(r?.behavior).toBe("allow");
+    expect(seen).toEqual([]);
+    // 写操作不豁免：仍咨询审批门
+    const gated = await captured?.canUseTool?.(
+      "Bash",
+      { command: "git push origin release-202608-1" },
+      { toolUseID: "tu2" },
+    );
+    expect(gated?.behavior).toBe("allow");
+    expect(seen).toEqual(["deploy"]);
+  });
+
   it("canUseTool：allowedTools 白名单外的工具 → deny（约束只读 agent 不放行 Bash）", async () => {
     mockStream([]);
     const runner = new ClaudeAgentRunner(new GateRouter());
