@@ -1500,6 +1500,7 @@ export class WebChannel implements Channel {
         id: m.id,
         role: m.role,
         text: m.text,
+        createdAt: m.createdAt,
         files: JSON.parse(m.files) as Array<{
           path: string;
           name: string;
