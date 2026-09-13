@@ -1,5 +1,5 @@
 // 技能页数据获取 + 纯函数。后端契约见 skill-api.ts。
-import { apiFetch } from "./auth";
+import { apiFetch, apiFetchRetry } from "./auth";
 
 export interface SkillCredentialSpecDTO {
   key: string;
@@ -75,7 +75,7 @@ export interface CredentialValueViewDTO {
 /** 模糊查询全局凭证模板（code/名称/描述） */
 export async function fetchCredentialTemplates(q?: string): Promise<CredentialTemplateDTO[]> {
   const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-  const res = await apiFetch(`/api/credential-templates${qs}`);
+  const res = await apiFetchRetry(`/api/credential-templates${qs}`);
   if (!res.ok) throw new Error(`list templates ${res.status}`);
   const data = (await res.json()) as { templates: CredentialTemplateDTO[] };
   return data.templates;
@@ -126,7 +126,7 @@ export async function deleteCredentialTemplate(code: string): Promise<void> {
 
 /** 我的凭证（键名视图，值永不回显） */
 export async function fetchMyCredentials(): Promise<CredentialValueViewDTO[]> {
-  const res = await apiFetch("/api/credential-values");
+  const res = await apiFetchRetry("/api/credential-values");
   if (!res.ok) throw new Error(`list credentials ${res.status}`);
   const data = (await res.json()) as { credentials: CredentialValueViewDTO[] };
   return data.credentials;

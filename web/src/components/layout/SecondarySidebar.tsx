@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { cn } from "../../lib/utils";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 
 export interface SecondarySidebarItem {
   id: string;
@@ -31,6 +33,12 @@ export function SecondarySidebar({
   className?: string;
   onItemSelected?: () => void;
 }) {
+  const [pendingDelete, setPendingDelete] = useState<SecondarySidebarItem | null>(null);
+  const [keyword, setKeyword] = useState("");
+  // 列表较长时提供站内过滤；大小写不敏感的标题包含匹配
+  const showSearch = items.length >= 8;
+  const kw = keyword.trim().toLowerCase();
+  const visibleItems = kw ? items.filter((item) => item.title.toLowerCase().includes(kw)) : items;
   return (
     <div
       className={cn("flex w-64 shrink-0 flex-col border-r border-border bg-background", className)}
@@ -47,10 +55,24 @@ export function SecondarySidebar({
           </button>
         )}
       </div>
+      {showSearch && (
+        <div className="border-b border-border px-2 py-1.5">
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索…"
+            aria-label={`${title}搜索`}
+            className="w-full rounded-md border border-border bg-card px-2 py-1 text-xs focus:border-primary focus:outline-none"
+          />
+        </div>
+      )}
       {headerExtra && <div className="border-b border-border px-2 py-1.5">{headerExtra}</div>}
-      <div className="flex-1 overflow-y-auto p-1.5">
-        {items.map((item) => (
-          <div key={item.id} className="group mb-0.5 flex items-center rounded-lg">
+      <div className="flex-1 overflow-x-hidden overflow-y-auto p-1.5">
+        {visibleItems.length === 0 && kw ? (
+          <div className="px-3 py-2 text-xs text-muted-foreground">没有匹配的会话</div>
+        ) : null}
+        {visibleItems.map((item) => (
+          <div key={item.id} className="group mb-0.5 flex min-w-0 items-center rounded-lg">
             <button
               type="button"
               aria-label={`打开会话：${item.title}`}
@@ -59,7 +81,7 @@ export function SecondarySidebar({
                 onItemSelected?.();
               }}
               className={cn(
-                "flex-1 rounded-lg px-3 py-2 text-left text-sm",
+                "min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-sm",
                 selectedId === item.id
                   ? "bg-primary-soft font-medium text-primary"
                   : "hover:bg-muted",
@@ -76,7 +98,7 @@ export function SecondarySidebar({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onItemDelete(item.id);
+                  setPendingDelete(item);
                 }}
                 className="mr-1 inline-flex min-h-11 min-w-11 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:min-h-8 sm:min-w-8 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
                 aria-label={`删除会话：${item.title}`}
@@ -87,6 +109,18 @@ export function SecondarySidebar({
           </div>
         ))}
       </div>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`删除「${pendingDelete?.title || "无标题"}」？`}
+        description="删除后该会话将从列表移除，且无法恢复。"
+        confirmText="删除"
+        destructive
+        onConfirm={() => {
+          if (pendingDelete) onItemDelete?.(pendingDelete.id);
+          setPendingDelete(null);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

@@ -60,20 +60,25 @@ export function FileBrowserDrawer(props: {
       <button
         type="button"
         aria-label="关闭抽屉"
+        aria-hidden={!open}
+        tabIndex={open ? 0 : -1}
         className={cn(
           "fixed inset-0 z-40 block bg-black/30 transition-opacity",
           open ? "opacity-100" : "pointer-events-none opacity-0",
         )}
         onClick={onClose}
       />
-      {/* 抽屉 */}
+      {/* 抽屉：关闭后滑出视口并从无障碍树/Tab 序移除（visibility 延迟到动画结束） */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label="文件浏览"
+        aria-hidden={!open}
         className={cn(
-          "fixed right-0 top-0 z-50 flex h-full w-full flex-col border-l border-border bg-card shadow-xl transition-transform sm:w-80",
-          open ? "translate-x-0" : "translate-x-full",
+          "fixed right-0 top-0 z-50 flex h-full w-full flex-col border-l border-border bg-card shadow-xl sm:w-80",
+          open
+            ? "visible translate-x-0 transition-transform duration-300"
+            : "invisible translate-x-full [transition:transform_.3s_ease,visibility_0s_.3s]",
         )}
       >
         {/* 顶栏 */}
@@ -125,7 +130,10 @@ export function FileBrowserDrawer(props: {
         {/* 树区 */}
         <div className="flex-1 overflow-y-auto">
           {loading ? (
-            <div className="p-3 text-sm text-muted-foreground">加载中…</div>
+            <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
+              <RefreshCw size={14} className="animate-spin" />
+              加载中…
+            </div>
           ) : nodes.length === 0 && !error ? (
             <div className="p-3 text-sm text-muted-foreground">(空)</div>
           ) : (

@@ -50,6 +50,7 @@ export function AgentEditorPage() {
   const [form, setForm] = useState<typeof empty>(empty);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const [warnings, setWarnings] = useState<string[]>();
   const [readOnly, setReadOnly] = useState(false);
   const [hostMismatch, setHostMismatch] = useState<Record<number, boolean>>({});
@@ -118,6 +119,13 @@ export function AgentEditorPage() {
   }, [id, isNew, navigate]);
 
   async function save() {
+    setError(undefined);
+    if (!form.name.trim()) {
+      setError("请填写名称");
+      nameInputRef.current?.focus();
+      nameInputRef.current?.scrollIntoView({ block: "center" });
+      return;
+    }
     // 与后端 AgentGitRepositorySchema 同源校验：非法目录名一旦落库，读路径会让整个 agent 列表 500
     for (const r of form.gitRepositories) {
       if (!REPO_NAME_PATTERN.test(r.name)) {
@@ -128,7 +136,6 @@ export function AgentEditorPage() {
       }
     }
     setSaving(true);
-    setError(undefined);
     setWarnings(undefined);
     try {
       const saved = isNew ? await createAgent(form) : await updateAgent(id ?? "", form);
@@ -209,8 +216,9 @@ export function AgentEditorPage() {
           </div>
         ) : null}
 
-        <Field label="名称">
+        <Field label="名称（必填）">
           <input
+            ref={nameInputRef}
             className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -1036,15 +1044,20 @@ function CredentialPicker({
   const [options, setOptions] = useState<
     Array<{ code: string; name: string; keys: string[]; configured: boolean }>
   >([]);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 仅用于手动重试时触发重新加载
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       try {
         const [mine, templates] = await Promise.all([
           fetchMyCredentials(),
           fetchCredentialTemplates(),
         ]);
-        const mineCodes = new Set(mine.map((m) => m.code));
+        if (cancelled) return;
+        setLoadError(false);
         const seen = new Set<string>();
         const options: Array<{
           code: string;
@@ -1073,12 +1086,15 @@ function CredentialPicker({
           });
         }
         setOptions(options);
-        void mineCodes;
       } catch {
-        // 凭证存储未装配或网络失败：不阻断 agent 编辑
+        // 加载失败显式呈现（可重试），不再静默显示"暂无"
+        if (!cancelled) setLoadError(true);
       }
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadTick]);
 
   const toggle = (code: string) => {
     if (lockedCodes.includes(code)) return;
@@ -1087,7 +1103,15 @@ function CredentialPicker({
 
   return (
     <Field label="凭证（勾选后运行时按当前用户已配置的值注入）">
-      {options.length === 0 ? (
+      {loadError ? (
+        <button
+          type="button"
+          className="rounded border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+          onClick={() => setReloadTick((t) => t + 1)}
+        >
+          凭证列表加载失败，点击重试
+        </button>
+      ) : options.length === 0 ? (
         <div className="text-xs text-muted-foreground">
           暂无可选凭证。可先到「凭证管理」页创建。
         </div>

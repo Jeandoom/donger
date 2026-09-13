@@ -28,6 +28,8 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
+  /** 历史消息的落库时间（ISO）；本轮流式/本地乐观消息可能缺省 */
+  createdAt?: string;
   delivery?: MessageDelivery;
   files?: Array<{
     path: string;

@@ -42,7 +42,7 @@ describe("ChatWorkspace", () => {
   it("shows the assistant-ui welcome state before the first message", () => {
     renderWorkspace();
 
-    expect(screen.getByRole("heading", { name: "开始新的对话" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "开始新的会话" })).toBeInTheDocument();
     expect(screen.getByText("发送消息或添加附件，开始一个新的任务。")).toBeInTheDocument();
   });
 
@@ -65,7 +65,7 @@ describe("ChatWorkspace", () => {
       pendingApproval: { gateId: "g1", title: "部署审批", summary: "运行 deploy" },
     });
 
-    expect(screen.queryByRole("heading", { name: "开始新的对话" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "开始新的会话" })).not.toBeInTheDocument();
     expect(screen.getByText("部署审批")).toBeInTheDocument();
   });
 
@@ -74,7 +74,8 @@ describe("ChatWorkspace", () => {
     renderWorkspace({ isGenerating: true, onCancel });
 
     expect(screen.getByRole("status", { name: "思考中" })).toBeInTheDocument();
-    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger思考中");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("思考中");
     expect(screen.getAllByLabelText("助手消息")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "停止输出" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -91,7 +92,8 @@ describe("ChatWorkspace", () => {
     });
 
     expect(screen.queryByRole("status", { name: "思考中" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger你");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("你");
   });
 
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
