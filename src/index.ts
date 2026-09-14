@@ -182,6 +182,7 @@ async function main(): Promise<void> {
       installer: skillInstaller,
       skillPackStore,
       agentChain: cfg.agentChain,
+      turnStallTimeoutMs: cfg.turnStallTimeoutMs,
     });
   }
 

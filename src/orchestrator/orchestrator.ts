@@ -36,6 +36,7 @@ import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
+import { guardStreamStall } from "./stream-stall-guard.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
 import { createKbToolsServer } from "./kb-tools.js";
@@ -79,6 +80,8 @@ export interface OrchestratorDeps {
   commentStore?: CommentStore;
   /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
   agentChain?: AgentChainConfig;
+  /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
+  turnStallTimeoutMs?: number;
 }
 
 export class Orchestrator {
@@ -429,7 +432,29 @@ export class Orchestrator {
         }
         seq++;
 
-        for await (const e of rawEvents) {
+        const stallMs = this.deps.turnStallTimeoutMs ?? 0;
+        const guarded: AsyncIterable<RunnerEvent> =
+          stallMs > 0
+            ? guardStreamStall(rawEvents, stallMs, async () => {
+                console.error("[orchestrator] LLM 流停摆，看门狗中断本轮", p.conversation.id);
+                // 尽力留审计痕迹（seq=-1 = 执行前/外事件约定），错误沿 processMessage catch 收尾
+                try {
+                  await this.deps.auditStore.record({
+                    conversationId: p.conversation.id,
+                    taskId,
+                    userId: p.user.id,
+                    seq: -1,
+                    type: "result",
+                    resultSubtype: "error",
+                    text: `turn_stall: ${stallMs}ms 无事件，看门狗中断`,
+                    recordedAt: new Date().toISOString(),
+                  });
+                } catch {
+                  // ignore
+                }
+              })
+            : rawEvents;
+        for await (const e of guarded) {
           if (e.type === "session_init") capturedSessionId = e.sessionId;
           // 实时执行状态（SDK 事件推导，观测态）
           this.activityTracker.observe(p.conversation.id, e);
