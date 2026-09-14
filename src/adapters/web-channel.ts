@@ -1492,8 +1492,8 @@ export class WebChannel implements Channel {
     }
 
     // GET /api/conversations/:id/messages — 会话消息列表
-    // GET /api/conversations/:id/events —— 会话执行事件回放（audit 统一事件源；owner/admin 可见）
-    const eventsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/events$/);
+    // GET /api/conversations/:id/events[?light=1] —— 会话执行事件回放（audit 统一事件源；owner/admin 可见）
+    const eventsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/events(?:\?.*)?$/);
     if (eventsMatch && req.method === "GET") {
       const conversationId = eventsMatch[1] ?? "";
       const uid = this.requireRequestUser(req);
