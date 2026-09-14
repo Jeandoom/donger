@@ -192,6 +192,8 @@ type SSEEvent =
   | { type: "text_delta"; messageId: string; text: string }
   | { type: "thinking_delta"; messageId: string; text: string }
   | { type: "activity"; text: string }
+  | { type: "tool_use"; toolUseId: string; tool: string; inputPreview: string }
+  | { type: "tool_result"; toolUseId: string; outputPreview: string; isError: boolean }
   | { type: "approval_card"; gateId: string; title: string; summary: string }
   | {
       type: "credential_missing_card";
@@ -207,6 +209,12 @@ type SSEClient = {
   write(event: SSEEvent): void;
   close(): void;
 };
+
+/** 字符串截断（events 端点 light 模式用；空值原样返回） */
+function clipStr(value: string | undefined, max: number): string | undefined {
+  if (value === undefined) return undefined;
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
 
 export interface WebChannelDeps {
   port: number;
@@ -366,6 +374,22 @@ export class WebChannel implements Channel {
 
   pushThinkingDelta(conversationId: string, messageId: string, text: string): void {
     this.broadcastToConversation(conversationId, { type: "thinking_delta", messageId, text });
+  }
+
+  /** 结构化工具调用（turn UI）：广播 tool_use 事件，不落库（完整内容已落审计） */
+  pushToolUse(
+    conversationId: string,
+    event: { toolUseId: string; tool: string; inputPreview: string },
+  ): void {
+    this.broadcastToConversation(conversationId, { type: "tool_use", ...event });
+  }
+
+  /** 结构化工具结果（turn UI）：成败都广播，前端工具卡片据此收敛状态 */
+  pushToolResult(
+    conversationId: string,
+    event: { toolUseId: string; outputPreview: string; isError: boolean },
+  ): void {
+    this.broadcastToConversation(conversationId, { type: "tool_result", ...event });
   }
 
   /** 向会话的 SSE 客户端推送完成通知 */
@@ -1482,7 +1506,19 @@ export class WebChannel implements Channel {
       }
       const all = (await this.deps.auditStore?.listByConversation(conversationId)) ?? [];
       // llm_input/llm_output 是调试级原始消息（体积大、含系统提示），不入回放流
-      const events = all.filter((e) => e.type !== "llm_input" && e.type !== "llm_output");
+      const light = this.extractQuery(url, "light") === "1";
+      const events = all
+        .filter((e) => e.type !== "llm_input" && e.type !== "llm_output")
+        .map((e) =>
+          light
+            ? {
+                ...e,
+                // 轻量模式：工具出入参截断（turn UI 历史装配只需摘要；完整内容按需走观测面板）
+                toolInput: clipStr(e.toolInput, 2000),
+                toolOutput: clipStr(e.toolOutput, 2000),
+              }
+            : e,
+        );
       this.json(res, { events });
       return;
     }
@@ -1501,6 +1537,7 @@ export class WebChannel implements Channel {
         role: m.role,
         text: m.text,
         createdAt: m.createdAt,
+        taskId: m.taskId ?? null,
         files: JSON.parse(m.files) as Array<{
           path: string;
           name: string;

@@ -16,6 +16,11 @@ export class SqliteMessageStore implements MessageStore {
         createdAt TEXT NOT NULL
       )
     `);
+    // 回合归属（2026-09-14 turn UI）：旧库补列，可空零回填
+    const cols = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "taskId")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN taskId TEXT");
+    }
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversationId, createdAt ASC)",
     );
@@ -26,6 +31,7 @@ export class SqliteMessageStore implements MessageStore {
     role: "user" | "bot",
     text: string,
     files: string = "[]",
+    taskId?: string,
   ): Promise<StoredMessage> {
     const msg: StoredMessage = {
       id: crypto.randomUUID(),
@@ -33,13 +39,22 @@ export class SqliteMessageStore implements MessageStore {
       role,
       text,
       files,
+      ...(taskId ? { taskId } : {}),
       createdAt: new Date().toISOString(),
     };
     this.db
       .prepare(
-        "INSERT INTO messages (id, conversationId, role, text, files, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (id, conversationId, role, text, files, taskId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(msg.id, msg.conversationId, msg.role, msg.text, msg.files, msg.createdAt);
+      .run(
+        msg.id,
+        msg.conversationId,
+        msg.role,
+        msg.text,
+        msg.files,
+        msg.taskId ?? null,
+        msg.createdAt,
+      );
     return msg;
   }
 
@@ -53,6 +68,7 @@ export class SqliteMessageStore implements MessageStore {
       role: r.role as "user" | "bot",
       text: r.text as string,
       files: r.files as string,
+      ...(typeof r.taskId === "string" && r.taskId ? { taskId: r.taskId } : {}),
       createdAt: r.createdAt as string,
     }));
   }
