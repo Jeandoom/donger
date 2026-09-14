@@ -20,7 +20,7 @@ describe("mobile interactions", () => {
   });
 
   it("exposes the file drawer as a modal dialog", () => {
-    render(
+    const { container } = render(
       createElement(FileBrowserDrawer, {
         open: false,
         onClose: vi.fn(),
@@ -28,9 +28,15 @@ describe("mobile interactions", () => {
       }),
     );
 
-    expect(screen.getByRole("dialog", { name: "文件浏览", hidden: true })).toHaveAttribute(
-      "aria-modal",
-      "true",
-    );
+    // 关闭态：抽屉仍为 dialog 且对辅助技术隐藏（不可 Tab 聚焦到不可见控件）
+    const dialog = container.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveAttribute("aria-hidden", "true");
+    // 关闭态下抽屉内不应有可聚焦控件
+    const focusables = dialog.querySelectorAll("button, [tabindex]");
+    for (const el of focusables) {
+      expect(el.closest('[aria-hidden="true"]')).toBe(dialog);
+    }
   });
 });

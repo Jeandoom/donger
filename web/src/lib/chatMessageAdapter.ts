@@ -24,6 +24,8 @@ export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
     delivery: message.delivery ?? "accepted",
     files: message.files ?? [],
   };
+  // 顶层 createdAt（Date）：assistant-ui 对 assistant 消息只在该字段落元信息
+  const createdAt = message.createdAt ? new Date(message.createdAt) : undefined;
 
   if (message.role === "bot") {
     return {
@@ -31,6 +33,7 @@ export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
       role: "assistant",
       content: message.text,
       status: { type: "complete", reason: "stop" },
+      createdAt,
       metadata: { custom },
     };
   }
@@ -39,6 +42,7 @@ export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
     id: message.id,
     role: "user",
     content: message.text,
+    createdAt,
     metadata: { custom },
   };
 }

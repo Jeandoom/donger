@@ -386,23 +386,21 @@ export function useWebChat() {
     [state.pendingCredential],
   );
 
-  /** 删除会话（软删除，归档） */
+  /** 删除会话（软删除，归档）。确认交互由组件层 ConfirmDialog 负责 */
   const deleteConversation = useCallback(
     async (id: string) => {
-      if (window.confirm("确认删除该会话？")) {
-        try {
-          const conversation = state.conversations.find((item) => item.id === id);
-          if (!isDraftConversation(conversation)) {
-            const token = getToken();
-            await fetch(`/api/conversations/${id}`, {
-              method: "DELETE",
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-          }
-          dispatch({ type: "remove_conversation", conversationId: id });
-        } catch {
-          /* 忽略 */
+      try {
+        const conversation = state.conversations.find((item) => item.id === id);
+        if (!isDraftConversation(conversation)) {
+          const token = getToken();
+          await fetch(`/api/conversations/${id}`, {
+            method: "DELETE",
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          });
         }
+        dispatch({ type: "remove_conversation", conversationId: id });
+      } catch {
+        /* 忽略 */
       }
     },
     [state.conversations],

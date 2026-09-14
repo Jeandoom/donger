@@ -266,6 +266,17 @@ describe("RuntimeManager", () => {
     expect(JSON.stringify(runOptions.credentialsEnv)).not.toContain("secret-token");
   });
 
+  it("prepare：插件 scripts/ 共享运行库 → pythonPaths 注入（复盘 P2-10）", async () => {
+    await packStore.upsertPack(mkPack());
+    await packStore.upsertSkills("u1", "p1", [mkSkill()]);
+    const packDir = join(ws, "users", "u1", ".skills", "demo");
+    mkdirSync(join(packDir, "scripts", "credentials"), { recursive: true });
+    writeFileSync(join(packDir, "scripts", "credentials", "__init__.py"), "");
+    const m = makeMgr(fakeConvStore([baseConv()]));
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
+    expect(runOptions.pythonPaths).toEqual([join(packDir, "scripts")]);
+  });
+
   it("prepare：停用 pack → 不进 pluginPaths/白名单", async () => {
     await packStore.upsertPack(mkPack({ enabled: false }));
     await packStore.upsertSkills("u1", "p1", [mkSkill()]);

@@ -11,9 +11,31 @@ import { dirname, join } from "node:path";
 import { scanSkillPack } from "../domain/skill-scan.js";
 
 type LayoutMarker = {
-  version: 1;
+  version: 2;
   skills: Array<{ relativePath: string; name: string; modifiedAt: number; size: number }>;
+  /** 包内随插件物化的顶层共享目录（如 copilot-skills 的 scripts/，含 credentials 共享包） */
+  sharedDirs: string[];
 };
+
+/**
+ * 包内需要随插件物化的顶层共享目录约定（specs/2026-09-12-copilot-skills-packaging.md）：
+ * scripts/ = 技能脚本的共享运行库（copilot-skills 的 credentials 包在此），
+ * 源包 install.py/PYTHONPATH 的安装约定在平台内由「复制 + PYTHONPATH 桥」等效落地。
+ */
+const SHARED_DIRS = ["scripts"];
+
+/** 生成目录里实际存在的共享目录清单 */
+function presentSharedDirs(packDir: string): string[] {
+  return SHARED_DIRS.filter((dir) => statSafe(join(packDir, dir))?.isDirectory() === true);
+}
+
+function statSafe(path: string): ReturnType<typeof statSync> | undefined {
+  try {
+    return statSync(path);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * 将多级 skills 仓库适配为 Claude Agent SDK 可发现的标准 plugin 目录。
@@ -34,7 +56,8 @@ export function ensureSdkPluginLayout(packDir: string, pluginName: string): stri
 
   const generatedDir = join(packDir, ".donger-sdk-plugin");
   const markerPath = join(generatedDir, ".layout.json");
-  const marker = makeMarker(packDir, scanned.skills);
+  const sharedDirs = presentSharedDirs(packDir);
+  const marker = makeMarker(packDir, scanned.skills, sharedDirs);
   if (sameMarker(markerPath, marker)) return generatedDir;
 
   rmSync(generatedDir, { recursive: true, force: true });
@@ -45,6 +68,10 @@ export function ensureSdkPluginLayout(packDir: string, pluginName: string): stri
     const sourceDir = dirname(join(packDir, skill.relativePath));
     const targetName = uniqueSkillDirectoryName(skill.name, usedNames);
     cpSync(sourceDir, join(targetSkillsDir, targetName), { recursive: true });
+  }
+  // 共享运行库随插件物化：脚本 `from credentials import ...` 等导入靠它 + PYTHONPATH 桥
+  for (const dir of sharedDirs) {
+    cpSync(join(packDir, dir), join(generatedDir, dir), { recursive: true });
   }
   mkdirSync(join(generatedDir, ".claude-plugin"), { recursive: true });
   writeFileSync(
@@ -76,6 +103,10 @@ export function materializeSharedSkillPlugin(
     const targetName = uniqueSkillDirectoryName(skill.name, usedNames);
     cpSync(sourceDir, join(targetSkillsDir, targetName), { recursive: true });
   }
+  // 共享运行库随选中技能一起物化（访问者目录同样可 PYTHONPATH 桥）
+  for (const dir of presentSharedDirs(sourcePluginDir)) {
+    cpSync(join(sourcePluginDir, dir), join(targetDir, dir), { recursive: true });
+  }
   mkdirSync(join(targetDir, ".claude-plugin"), { recursive: true });
   writeFileSync(
     join(targetDir, ".claude-plugin", "plugin.json"),
@@ -87,9 +118,11 @@ export function materializeSharedSkillPlugin(
 function makeMarker(
   packDir: string,
   skills: Array<{ relativePath: string; name: string }>,
+  sharedDirs: string[],
 ): LayoutMarker {
   return {
-    version: 1,
+    version: 2,
+    sharedDirs,
     skills: skills.map((skill) => {
       const file = join(packDir, skill.relativePath);
       const stat = statSync(file);

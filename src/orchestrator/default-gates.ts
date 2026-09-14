@@ -4,10 +4,12 @@ import { GateRouter } from "../domain/gate-router.js";
 export function createDefaultGates(): GateRouter {
   const gates = new GateRouter();
   gates.describe({ id: "deploy", description: "部署/发布/推送操作审批" });
+  // release 用负向断言：release-202608-1 这类分支名/版本号是普通参数，不算发布动作
+  //（此前误拦只读 git fetch origin release-202608-1，60s 审批超时致任务失败，复盘 P2-9）
   gates.add({
     gateId: "deploy",
     toolName: "Bash",
-    commandPattern: /\b(deploy|publish|release|git\s+push)\b/i,
+    commandPattern: /\b(deploy|publish|git\s+push)\b|\brelease(?![-\w])/i,
   });
   // 阶段门（P2 三段式）：仅元数据，无工具规则——由编排层在阶段边界直调 channel.requestApproval
   gates.describe({ id: "design", description: "方案设计确认" });

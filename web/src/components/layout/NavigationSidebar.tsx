@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { apiFetch, clearToken, getToken } from "../../lib/auth";
+import { apiFetch, apiFetchRetry, clearToken, getToken } from "../../lib/auth";
 import { cn } from "../../lib/utils";
 
 interface LeafItem {
@@ -90,6 +90,7 @@ export function NavigationSidebar({
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState<UserInfo | null>(null);
+  const [userError, setUserError] = useState(false);
   const [openParents, setOpenParents] = useState<Record<ParentItem["key"], boolean>>(() => {
     try {
       return {
@@ -126,16 +127,22 @@ export function NavigationSidebar({
     });
   };
 
-  useEffect(() => {
-    if (getToken()) {
-      apiFetch("/api/auth/me")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (data?.user) setUser(data.user);
-        })
-        .catch(() => {});
+  const loadUser = useCallback(async () => {
+    setUserError(false);
+    try {
+      const data = (await apiFetchRetry("/api/auth/me").then((r) => (r.ok ? r.json() : null))) as {
+        user?: UserInfo;
+      } | null;
+      if (data?.user) setUser(data.user);
+      else setUserError(true);
+    } catch {
+      setUserError(true);
     }
   }, []);
+
+  useEffect(() => {
+    if (getToken()) void loadUser();
+  }, [loadUser]);
 
   const handleLogout = async () => {
     await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -202,6 +209,14 @@ export function NavigationSidebar({
             ⏻
           </button>
         </div>
+      ) : userError ? (
+        <button
+          type="button"
+          className="mt-3 w-full rounded-lg bg-sidebar-hover px-2.5 py-2 text-left text-xs text-sidebar-foreground hover:text-white"
+          onClick={() => void loadUser()}
+        >
+          用户信息加载失败，点击重试
+        </button>
       ) : (
         <div className="px-2.5 py-2 text-xs text-sidebar-foreground">未登录</div>
       )}

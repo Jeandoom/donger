@@ -37,6 +37,7 @@ import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { HookRegistry } from "./orchestrator/hook-registry.js";
 import { LoopRunner } from "./orchestrator/loop-runner.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import type { Channel } from "./ports/channel.js";
@@ -78,12 +79,6 @@ async function main(): Promise<void> {
   const db = new Database(cfg.dbPath);
   const store = new SqliteTaskStore(db);
   store.migrate();
-  // 僵尸清扫：上次进程遗留的 running 任务标记为中断（任务并发视图不被污染）
-  const stale = await store.failStaleRunning("服务重启中断");
-  if (stale > 0) log.warn({ count: stale }, "已将遗留 running 任务标记为中断");
-  // 挂起门清扫：审批/凭证的 resolve 通道在进程内存，重启后 awaiting_* 必然无人应答 → 标记失败
-  const staleAwaiting = await store.failStaleAwaiting("服务重启中断（审批/凭证挂起态随进程丢失）");
-  if (staleAwaiting > 0) log.warn({ count: staleAwaiting }, "已将遗留挂起门任务标记为失败");
   const usersDir = join(cfg.workspaceDir, "users");
   mkdirSync(usersDir, { recursive: true });
   const userStore = new SqliteUserStore(db, {
@@ -151,7 +146,12 @@ async function main(): Promise<void> {
       config: {
         workspaceDir: cfg.workspaceDir,
         llm: cfg.llm,
-        defaultSystemPromptAppend: "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+        // 临时文件指引：一周内 3 个不同任务各自踩中「bash /tmp 写、原生 python 读不到」
+        // 的 MSYS 路径映射坑（复盘 P2-11）；env 无法修复字面 /tmp，只能靠约定引导
+        defaultSystemPromptAppend: [
+          "完成后简要汇报；高危操作（部署/发布/推送）会触发审批门。",
+          "临时文件一律放当前工作目录的 .tmp/ 下并用相对路径引用，不要用 /tmp（Windows 原生 python 看不到 Git Bash 的 /tmp）。",
+        ].join("\n"),
         agentLlmPresets: cfg.agentLlmPresets,
       },
       skillPackStore,
@@ -264,6 +264,7 @@ async function main(): Promise<void> {
   const webOrch = createOrch(webChannel, skillPackStore, credentialSets, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
+  const orchestrators = new Map<string, Orchestrator>([["web", webOrch]]);
 
   // 工作流运行时：loopRunner / scheduler / hookRegistry（依赖 webOrch，构造后回填 webChannel.deps）
   const loopRunner = new LoopRunner({
@@ -294,6 +295,8 @@ async function main(): Promise<void> {
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
+  // 持久化门决议回退路径：重启后 respond 无内存 resolver 时落决议并触发本渠道续跑
+  webChannelDeps.onGatedDecision = (taskId) => webOrch.resumeGatedTask(taskId);
   await scheduler.restore();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 
@@ -318,8 +321,21 @@ async function main(): Promise<void> {
     const dtChannel = new DingTalkChannel(cfg.dingtalk);
     const dtOrch = createOrch(dtChannel, skillPackStore, credentialSets, skillInstaller);
     dtChannel.onMessage((m) => void dtOrch.handleMessage(m));
+    orchestrators.set("dingtalk", dtOrch);
     log.info({ channel: "dingtalk" }, "就绪");
   }
+
+  // 启动清扫（需编排实例就绪：持久化门决议按渠道续跑，specs/2026-09-12-durable-gate-design.md）
+  const swept = await sweepInterruptedTasks({
+    taskStore: store,
+    messageStore,
+    auditStore,
+    resumeGatedTask: (taskId, channelId) =>
+      orchestrators.get(channelId)?.resumeGatedTask(taskId) ?? Promise.resolve("not_found"),
+  });
+  if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
+  if (swept.resumed > 0) log.info({ count: swept.resumed }, "已按持久化决议续跑挂起审批任务");
+  if (swept.rearmed > 0) log.info({ count: swept.rearmed }, "挂起审批任务保留等待决议");
 }
 
 /** 从 DB 读取或自动生成 JWT 密钥并持久化 */

@@ -1,9 +1,10 @@
-import { isAbsolute, resolve, sep } from "node:path";
+import { delimiter, isAbsolute, resolve, sep } from "node:path";
 import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { matchesShellGit } from "../domain/git-shell-guard.js";
+import { isReadOnlyShellCommand } from "../domain/read-only-shell-command.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 
@@ -114,6 +115,15 @@ export class ClaudeAgentRunner implements AgentRunner {
               }
             }
           }
+          // 只读命令豁免审批门：deploy 门关键词会把 git fetch / 平台 API GET 误拦为
+          // 部署/发布（60s 审批超时即任务失败），且诱导 agent 拆分字符串绕过（P2-9）
+          if (
+            toolName === "Bash" &&
+            typeof input.command === "string" &&
+            isReadOnlyShellCommand(input.command)
+          ) {
+            return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
+          }
           const gated = this.gates.match(toolName, input);
           if (!gated) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
@@ -146,6 +156,15 @@ export class ClaudeAgentRunner implements AgentRunner {
           ANTHROPIC_BASE_URL: opts.llm.baseUrl,
           ANTHROPIC_AUTH_TOKEN: opts.llm.authToken,
           ...opts.credentialsEnv,
+          // 插件共享运行库桥：技能脚本 `from credentials import ...` 等共享包导入依赖
+          ...(opts.pythonPaths?.length
+            ? {
+                PYTHONPATH: [
+                  ...opts.pythonPaths,
+                  ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : []),
+                ].join(delimiter),
+              }
+            : {}),
         },
       },
     });

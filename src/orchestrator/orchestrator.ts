@@ -28,6 +28,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { makeApprovalResolver } from "./approval-flow.js";
@@ -308,7 +309,27 @@ export class Orchestrator {
         }),
       };
     };
-    const opts = await prepareOnce();
+    let opts: RunOptions;
+    try {
+      opts = await prepareOnce();
+    } catch (error) {
+      // 准备阶段失败（仓库物化/平台工具装配等）此前零审计痕迹，复盘 P2-12 补记；
+      // seq=-1 沿用 credential_prompt 的「执行前事件」约定。审计失败不阻断错误上抛。
+      try {
+        await this.deps.auditStore.record({
+          conversationId: p.conversation.id,
+          taskId: p.task.id,
+          userId: p.user.id,
+          seq: -1,
+          type: "prepare_error",
+          text: error instanceof Error ? error.message : String(error),
+          recordedAt: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+      throw error;
+    }
 
     const resolver = makeApprovalResolver(
       this.deps.store,
@@ -602,6 +623,15 @@ export class Orchestrator {
     requiresDesign: boolean;
     /** 首个执行轮的提示词（如 builder 的缺口引导）；缺省用 task.prompt。不改写 task，保持原始任务入库/审计/标题 */
     firstTurnPrompt?: string;
+    /** 重启/回退路径的持久化门决议：设置时跳过门前置轮，按决议直接续进（specs/2026-09-12-durable-gate-design.md） */
+    resumeGate?: {
+      gateId: "design" | "acceptance";
+      decision: { approved: boolean; reason?: string };
+      /** acceptance 门的执行/自验结果摘要（收尾用） */
+      summary?: string;
+      /** design 门已驳回次数（跨重启熔断计数） */
+      designRejections?: number;
+    };
     runController: AbortController;
   }): Promise<string | undefined> {
     const { store, channel, gates } = this.deps;
@@ -658,60 +688,125 @@ export class Orchestrator {
     const failMidway = async (error?: string) => {
       await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error });
       if (acceptanceGate) {
-        channel.pushResult?.(p.conversation.id, "error", error || "任务失败");
+        // 展示文案走友好映射，库存原始错误供诊断
+        channel.pushResult?.(p.conversation.id, "error", friendlyRunnerError(error) || "任务失败");
       }
       return p.conversation.id;
     };
 
     // —— 方案设计 + 方案门（requiresDesign=true）——
+    // 持久化门决议续跑：approved 直接进执行段（不重跑方案轮）；rejected 计数后走正常修订循环
+    const resumeGate = p.resumeGate;
     if (p.requiresDesign) {
-      await channel.send(p.threadId, { text: "📋 方案设计阶段（先出方案，确认后执行）" });
       let prompt = designFirstAsk(p.task.prompt);
       let designRejections = 0;
-      for (;;) {
-        // 方案轮非末轮：静默 result（后续还有 execute/accept）
-        const r = await turn(prompt, true);
-        if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
-        if (!r.ok) return await failMidway(r.error);
-        await store.updateStatus(p.task.id, nextStatus("planning", "request_approval"), {
-          pendingGate: {
-            gateId: "design",
-            title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
-            requestedAt: new Date().toISOString(),
-          },
-        });
-        const decision = await channel.requestApproval(p.threadId, {
-          gateId: "design",
-          title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
-          summary: r.resultText,
-        });
-        if (decision.approved) {
+      let resumedApproved = false;
+      if (resumeGate?.gateId === "design") {
+        designRejections = resumeGate.designRejections ?? 0;
+        if (resumeGate.decision.approved) {
+          resumedApproved = true;
           await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
             pendingGate: undefined,
           });
-          break;
-        }
-        designRejections += 1;
-        if (designRejections >= MAX_DESIGN_REJECTIONS) {
-          const error = `方案驳回次数达上限（${MAX_DESIGN_REJECTIONS}），任务终止`;
-          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "fail"), {
-            error,
+        } else {
+          designRejections += 1;
+          if (designRejections >= MAX_DESIGN_REJECTIONS) {
+            const error = `方案驳回次数达上限（${MAX_DESIGN_REJECTIONS}），任务终止`;
+            await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "fail"), {
+              error,
+              pendingGate: undefined,
+            });
+            channel.pushResult?.(p.conversation.id, "error", error);
+            return p.conversation.id;
+          }
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "redesign"), {
             pendingGate: undefined,
           });
-          channel.pushResult?.(p.conversation.id, "error", error);
-          return p.conversation.id;
+          prompt = designRejected(resumeGate.decision.reason ?? "未提供原因");
         }
-        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "redesign"), {
-          pendingGate: undefined,
+      }
+      if (!resumedApproved) {
+        await channel.send(p.threadId, {
+          text: "📋 方案设计阶段（先出方案，确认后执行）",
         });
-        prompt = designRejected(decision.reason ?? "未提供原因");
+        for (;;) {
+          // 方案轮非末轮：静默 result（后续还有 execute/accept）
+          const r = await turn(prompt, true);
+          if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
+          if (!r.ok) return await failMidway(r.error);
+          // summary/designRejections 随门持久化：重启后续跑不重跑方案轮且熔断计数不丢
+          await store.updateStatus(p.task.id, nextStatus("planning", "request_approval"), {
+            pendingGate: {
+              gateId: "design",
+              title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
+              requestedAt: new Date().toISOString(),
+              summary: r.resultText,
+              designRejections,
+            },
+          });
+          const decision = await channel.requestApproval(p.threadId, {
+            gateId: "design",
+            title: `审批门：${gates.getGate("design")?.description ?? "方案设计确认"}`,
+            summary: r.resultText,
+          });
+          if (decision.approved) {
+            await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
+              pendingGate: undefined,
+            });
+            break;
+          }
+          designRejections += 1;
+          if (designRejections >= MAX_DESIGN_REJECTIONS) {
+            const error = `方案驳回次数达上限（${MAX_DESIGN_REJECTIONS}），任务终止`;
+            await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "fail"), {
+              error,
+              pendingGate: undefined,
+            });
+            channel.pushResult?.(p.conversation.id, "error", error);
+            return p.conversation.id;
+          }
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "redesign"), {
+            pendingGate: undefined,
+          });
+          prompt = designRejected(decision.reason ?? "未提供原因");
+        }
       }
     }
 
     // —— 执行 + 自验 + 验收门（驳回重跑循环，达上限熔断）——
     let rejectionCount = p.task.rejectionCount ?? 0;
     let lastRejectionReason: string | undefined;
+    // 持久化验收门决议续跑：approved 用持久化摘要直接收尾；rejected 计数后重跑执行轮
+    let resumeAcceptance = resumeGate?.gateId === "acceptance" ? resumeGate : undefined;
     for (let round = 0; ; round++) {
+      if (resumeAcceptance) {
+        const decision = resumeAcceptance.decision;
+        const summary = resumeAcceptance.summary ?? "";
+        resumeAcceptance = undefined;
+        if (decision.approved) {
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
+            pendingGate: undefined,
+          });
+          return await finishTask(true, undefined, summary);
+        }
+        rejectionCount += 1;
+        if (rejectionCount >= MAX_ACCEPTANCE_REJECTIONS) {
+          const error = `验收驳回次数达上限（${MAX_ACCEPTANCE_REJECTIONS}），任务终止`;
+          await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "fail"), {
+            error,
+            rejectionCount,
+            pendingGate: undefined,
+          });
+          channel.pushResult?.(p.conversation.id, "error", error);
+          return p.conversation.id;
+        }
+        await store.updateStatus(p.task.id, nextStatus("awaiting_approval", "resume"), {
+          rejectionCount,
+          pendingGate: undefined,
+        });
+        lastRejectionReason = decision.reason ?? "";
+        continue;
+      }
       if (round === 0) {
         // 有方案门时状态已在门通过时 resume 为 running；无方案门时 planning --start--> running
         if (!p.requiresDesign) await store.updateStatus(p.task.id, nextStatus("planning", "start"));
@@ -745,6 +840,8 @@ export class Orchestrator {
           gateId: "acceptance",
           title: `审批门：${gates.getGate("acceptance")?.description ?? "验收确认"}`,
           requestedAt: new Date().toISOString(),
+          // 摘要持久化：重启后 approved 决议可直接凭此收尾，不重跑执行轮
+          summary,
         },
       });
       const decision = await channel.requestApproval(p.threadId, {
@@ -774,6 +871,80 @@ export class Orchestrator {
         rejectionCount,
       });
     }
+  }
+
+  /**
+   * 持久化门决议续跑（specs/2026-09-12-durable-gate-design.md）：
+   * WebChannel 回退路径或启动清扫发现 awaiting_approval 且 pendingGate.decision 已持久化时调用。
+   * 不满足续跑条件时不动任务（决议保持持久化，幂等可重试）。
+   */
+  async resumeGatedTask(
+    taskId: string,
+  ): Promise<"resumed" | "not_found" | "no_decision" | "busy" | "resume_failed"> {
+    const { store, conversationStore } = this.deps;
+    const task = await store.get(taskId);
+    if (!task) return "not_found";
+    const gate = task.pendingGate;
+    const decision = gate?.decision;
+    if (task.status !== "awaiting_approval" || !gate || !decision) return "no_decision";
+    if (!task.agentId) return "no_decision";
+    const conversation = await conversationStore.get(task.threadId);
+    if (!conversation) return "no_decision";
+    if (this.isConversationBusy(conversation.id)) return "busy";
+
+    const user = await this.resolveUserByRef(task.channelId, task.requesterId);
+    const resolved = await this.resolveAgentForUse(task.agentId, user);
+    if (resolved.gitBlocked) {
+      await store.updateStatus(task.id, nextStatus("awaiting_approval", "fail"), {
+        error: resolved.gitBlocked,
+        pendingGate: undefined,
+      });
+      return "resume_failed";
+    }
+
+    this.markBusy(conversation.id, task.id);
+    const runController = new AbortController();
+    this.abortControllers.set(conversation.id, runController);
+    try {
+      await this.runPhases({
+        task,
+        user,
+        conversation,
+        threadId: conversation.id,
+        channelId: task.channelId,
+        agent: resolved.agent,
+        sharedAgentSkillOwner: resolved.sharedAgentSkillOwner,
+        gitMaterializeItems: resolved.gitMaterializeItems,
+        requiresDesign: task.requiresDesign === true,
+        resumeGate: {
+          gateId: gate.gateId === "acceptance" ? "acceptance" : "design",
+          decision: { approved: decision.approved, reason: decision.reason },
+          summary: gate.summary,
+          designRejections: gate.designRejections,
+        },
+        runController,
+      });
+      return "resumed";
+    } finally {
+      this.abortControllers.delete(conversation.id);
+      this.unmarkBusy(conversation.id);
+    }
+  }
+
+  /** 按任务留痕的（channelId, requesterId）解析执行用户（与 resolveUser 同口径） */
+  private async resolveUserByRef(channelId: string, requesterId: string): Promise<User> {
+    const { userStore } = this.deps;
+    if (channelId === "web") {
+      const webUser = await userStore.get(requesterId);
+      if (!webUser) {
+        throw new NotFoundError("USER_NOT_FOUND", `Web 用户不存在: ${requesterId}`);
+      }
+      return webUser;
+    }
+    if (channelId === "dingtalk") {
+      return userStore.getOrCreateByIdentity("dingtalk", requesterId, requesterId.slice(0, 30));
+    }
+    return userStore.getOrCreateByIdentity("internal", requesterId, requesterId);
   }
 
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
@@ -1234,8 +1405,9 @@ export class Orchestrator {
         }
       }
       try {
-        await this.deps.channel.send(msg.threadId, { text: `❌ 处理出错：${errMsg}` });
-        this.deps.channel.pushResult?.(conversation.id, "error", `❌ 处理出错：${errMsg}`);
+        const display = friendlyRunnerError(errMsg);
+        await this.deps.channel.send(msg.threadId, { text: `❌ 处理出错：${display}` });
+        this.deps.channel.pushResult?.(conversation.id, "error", `❌ 处理出错：${display}`);
       } catch {
         // ignore
       }

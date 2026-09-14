@@ -7,7 +7,7 @@ import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
-import { type AgentListDTO, deleteAgent, fetchAgents } from "../lib/agents";
+import { type AgentListDTO, deleteAgent, fetchAgents, scenarioLabel } from "../lib/agents";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 
 export function AgentsPage() {
@@ -83,7 +83,11 @@ export function AgentsPage() {
         onDelete={(a) => setPendingDelete(a)}
         empty={kw ? "没有匹配的智能体" : "还没有智能体，点击右上角新建"}
       />
-      <Section title="分享给我的" items={shared} />
+      <Section
+        title="分享给我的"
+        items={shared}
+        empty={kw ? "没有匹配的智能体" : "暂无他人分享的智能体；通过分享链接授权后会出现在这里"}
+      />
 
       <ConfirmDialog
         open={pendingDelete !== null}
@@ -139,7 +143,7 @@ function Section({
                 {a.description ?? "—"}
               </Link>
               <div className="mt-auto flex items-center justify-between">
-                <Badge tone={a._mine ? "info" : "primary"}>{a._mine ? "我的" : "共享"}</Badge>
+                <Badge tone="success">{scenarioLabel(a.scenario)}</Badge>
                 <div className="flex items-center gap-1.5">
                   <Link to={`/agents/${a.id}/chat`}>
                     <Button variant="secondary" size="sm">
@@ -147,14 +151,14 @@ function Section({
                     </Button>
                   </Link>
                   {onDelete ? (
-                    <Button
-                      variant="danger"
-                      size="sm"
+                    <button
+                      type="button"
                       onClick={() => onDelete(a)}
                       title="删除智能体"
+                      className="rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                     >
                       删除
-                    </Button>
+                    </button>
                   ) : null}
                 </div>
               </div>

@@ -67,6 +67,50 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(results[0]?.status).toBe("warning");
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("changed");
   });
+
+  it("克隆覆盖源仓库全部分支（回归：单分支浅克隆致变更查询误报零变更）", async () => {
+    const { root, repository } = sourceRepository();
+    execFileSync("git", ["-C", root, "branch", "feature/AI-375"]);
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+
+    const results = await materializer.materialize({ destination, items: [{ repository }] });
+    expect(results[0]?.status).toBe("ready");
+
+    const branches = execFileSync("git", [
+      "-C",
+      join(destination, "sample"),
+      "branch",
+      "-r",
+    ]).toString();
+    expect(branches).toContain("origin/feature/AI-375");
+
+    // 第二次物化走 fast-forward：全量 refspec fetch 不破坏跟踪分支合并
+    const again = await materializer.materialize({ destination, items: [{ repository }] });
+    expect(again[0]?.status).toBe("ready");
+  });
+
+  it("已有目录不是目标仓库时备份并重新克隆自愈", async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    // 预置一个不是目标仓库的目录（无 remote 的空仓库）
+    const stale = join(destination, "sample");
+    execFileSync("git", ["init", "-q", stale]);
+    writeFileSync(join(stale, "junk.txt"), "old");
+    execFileSync("git", ["-C", stale, "add", "junk.txt"]);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+
+    const results = await materializer.materialize({ destination, items: [{ repository }] });
+
+    expect(results[0]?.status).toBe("warning");
+    expect(results[0]?.message).toContain("备份");
+    // 原路径已换成新克隆，旧现场保留在 .stale-* 备份目录
+    expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("hello");
+    const backup = results[0]?.message?.match(/已备份到 (.+?) 并重新克隆/)?.[1] ?? "";
+    expect(readFileSync(join(backup, "junk.txt"), "utf8")).toBe("old");
+  });
 });
 
 describe("buildCloneArgs", () => {
@@ -80,12 +124,12 @@ describe("buildCloneArgs", () => {
     syncMode: "fastForward" as const,
   };
 
-  it("浅克隆默认 depth 1", () => {
+  it("浅克隆默认 blobless partial clone（全分支，不再用 depth 1）", () => {
     expect(buildCloneArgs(base, "/tmp/d")).toEqual([
       "clone",
       "--no-recurse-submodules",
-      "--depth",
-      "1",
+      "--filter=blob:none",
+      "--no-single-branch",
       base.url,
       "/tmp/d",
     ]);
@@ -95,11 +139,13 @@ describe("buildCloneArgs", () => {
     const args = buildCloneArgs({ ...base, shallowSince: "1 year ago" }, "/tmp/d");
     expect(args).toContain("--shallow-since");
     expect(args[args.indexOf("--shallow-since") + 1]).toBe("1 year ago");
+    // 窗口模式仍为浅克隆：必须显式保留全部分支
+    expect(args).toContain("--no-single-branch");
   });
 
-  it("非浅克隆不附带 depth/shallow-since", () => {
+  it("非浅克隆不附带 filter/shallow-since", () => {
     const args = buildCloneArgs({ ...base, shallow: false, shallowSince: "1 year ago" }, "/tmp/d");
-    expect(args).not.toContain("--depth");
+    expect(args).not.toContain("--filter=blob:none");
     expect(args).not.toContain("--shallow-since");
   });
 

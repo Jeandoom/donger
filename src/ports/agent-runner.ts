@@ -37,6 +37,9 @@ export interface RunOptions {
   gitAllowShellGit?: boolean;
   /** 透传 SDK mcpServers（已解密） */
   mcpServers?: McpServerConfig[];
+  /** 插件共享运行库目录（<plugin>/scripts，存在才注入）：
+   *  runner 并入 PYTHONPATH，供技能脚本 `from credentials import ...` 等共享包导入 */
+  pythonPaths?: string[];
   /** in-process 平台工具 MCP server（assist 会话注入；instance 不可序列化，仅运行时使用） */
   platformTools?: McpSdkServerConfigWithInstance;
   /** in-process git 平台元数据 MCP server（agent 绑定 git 仓库时注入） */

@@ -9,8 +9,10 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { ArrowUp, Bot, Paperclip, Square, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import remarkGfm from "remark-gfm";
+import { fetchMe } from "../../lib/auth";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
+import { collapseToolNarration } from "../../lib/toolNarration";
 import { cn } from "../../lib/utils";
 import type { PendingApproval, PendingCredential } from "../../types";
 import { Button } from "../ui/button";
@@ -42,7 +44,7 @@ function ThreadWelcome({ hidden }: { hidden: boolean }) {
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-soft text-primary shadow-sm">
             <Bot aria-hidden="true" size={24} />
           </div>
-          <h1 className="mt-5 text-[22px] font-bold tracking-tight">开始新的对话</h1>
+          <h1 className="mt-5 text-[22px] font-bold tracking-tight">开始新的会话</h1>
           <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
             发送消息或添加附件，开始一个新的任务。
           </p>
@@ -108,6 +110,21 @@ function MessageFiles() {
   );
 }
 
+function MessageTime() {
+  const createdAt = useAuiState(({ message }) => {
+    // runtime 会把 ThreadMessageLike.createdAt 规范为 Date
+    return (message as unknown as { createdAt?: Date | string }).createdAt;
+  });
+  if (!createdAt) return null;
+  const d = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const text =
+    d.toDateString() === now.toDateString() ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
+  return <span className="font-normal opacity-75"> · {text}</span>;
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root
@@ -115,22 +132,39 @@ function UserMessage() {
       className={cn(THREAD_CONTENT_WIDTH, "flex items-start justify-end gap-3 py-4")}
     >
       <div className="min-w-0 max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground shadow-sm">
-        <div className="mb-1 text-xs font-medium opacity-75">你</div>
+        <div className="mb-1 text-xs font-medium opacity-75">
+          你
+          <MessageTime />
+        </div>
         <div className="whitespace-pre-wrap break-words">
           <MessagePrimitive.Parts />
         </div>
         <MessageFiles />
       </div>
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-        <UserRound aria-hidden="true" size={16} />
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-primary-foreground">
+        <UserAvatarImage />
       </div>
     </MessagePrimitive.Root>
   );
 }
 
+/** 当前用户头像（钉钉头像），加载失败回退到图标 */
+function UserAvatarImage() {
+  const [avatar, setAvatar] = useState<string | null>(null);
+  useEffect(() => {
+    void fetchMe().then((u) => setAvatar(u?.avatar ?? null));
+  }, []);
+  if (avatar) {
+    // eslint 无碍：头像 URL 来自服务端用户资料
+    return <img src={avatar} alt="" className="h-full w-full object-cover" />;
+  }
+  return <UserRound aria-hidden="true" size={16} />;
+}
+
 function AssistantText() {
-  // 启用 GFM：支持表格/删除线/任务列表（否则表格以竖线纯文本显示）
-  return <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} />;
+  // 启用 GFM：支持表格/删除线/任务列表（否则表格以竖线纯文本显示）；
+  // preprocess：把模型输出的超长工具 Output 折叠为代码块，避免刷屏
+  return <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} preprocess={collapseToolNarration} />;
 }
 
 function AssistantMessage() {
@@ -148,7 +182,10 @@ function AssistantMessage() {
         <Bot aria-hidden="true" size={16} />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">
-        <div className="mb-2 text-xs font-medium text-muted-foreground">donger</div>
+        <div className="mb-2 text-xs font-medium text-muted-foreground">
+          donger
+          <MessageTime />
+        </div>
         <div className="min-w-0 break-words text-sm leading-7 [&_a]:underline [&_code]:break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
           {isThinking ? (
             <ThinkingContent />
