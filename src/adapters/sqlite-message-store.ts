@@ -55,6 +55,18 @@ export class SqliteMessageStore implements MessageStore {
         msg.taskId ?? null,
         msg.createdAt,
       );
+    // 会话活跃度 = 最后一条消息：列表排序与 getLatest 都按 updatedAt DESC，
+    // 不随消息刷新会让活跃会话沉底、取「最近会话」取错（conversationStore.update 只在
+    // sdkSessionId/title/agentId 变化时被调用）。此处统一兜底刷新；
+    // conversations 表由 conversation store 负责建，缺表（极端迁移顺序）时跳过。
+    const hasConversations = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversations'")
+      .get();
+    if (hasConversations) {
+      this.db
+        .prepare("UPDATE conversations SET updatedAt = ? WHERE id = ?")
+        .run(msg.createdAt, conversationId);
+    }
     return msg;
   }
 
