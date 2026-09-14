@@ -50,6 +50,9 @@ describe("chat errors", () => {
         if (url.startsWith("/api/conversations?")) {
           return Promise.resolve(new Response(null, { status: 500 }));
         }
+        if (url.includes('/c1/events')) {
+          return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
+        }
         if (url.includes("/c1/messages")) {
           return Promise.resolve(new Response(null, { status: 503 }));
         }
@@ -71,6 +74,9 @@ describe("chat errors", () => {
         const url = String(input);
         if (url.startsWith("/api/conversations?")) {
           return Promise.resolve(new Response("[]", { status: 200 }));
+        }
+        if (url.includes('/c1/events')) {
+          return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
         }
         if (url.includes("/c1/messages")) {
           return Promise.resolve(new Response("[]", { status: 200 }));

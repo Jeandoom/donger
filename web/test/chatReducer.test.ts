@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chatReducer, initialChatState } from "../src/lib/chatReducer";
-import type { ConversationSummary, WsOut } from "../src/types";
+import type { ConversationSummary, SSEEvent } from "../src/types";
 
 describe("chatReducer", () => {
   it("user_message 追加一条 user 消息", () => {
@@ -10,15 +10,17 @@ describe("chatReducer", () => {
     expect(s.messages[0]?.text).toBe("你好");
   });
 
-  it("ws:text 追加一条 bot 消息", () => {
-    const msg: WsOut = { type: "text", text: "在的" };
+  it("ws:text 作为回合文本分片追加", () => {
+    const msg: SSEEvent = { type: "text", text: "在的" };
     const s = chatReducer(initialChatState(), { type: "ws", msg });
     expect(s.messages[0]?.role).toBe("bot");
-    expect(s.messages[0]?.text).toBe("在的");
+    expect(s.messages[0]?.kind).toBe("turn");
+    expect(s.messages[0]?.parts?.[0]?.kind).toBe("text");
+    expect(s.messages[0]?.parts?.[0]?.text).toBe("在的");
   });
 
   it("ws:approval_card 设置 pendingApproval", () => {
-    const msg: WsOut = {
+    const msg: SSEEvent = {
       type: "approval_card",
       gateId: "g1",
       title: "部署确认",
@@ -30,7 +32,7 @@ describe("chatReducer", () => {
   });
 
   it("ws:result 只结束生成状态，不重复追加 bot 消息", () => {
-    const msg: WsOut = { type: "result", subtype: "success", text: "完成" };
+    const msg: SSEEvent = { type: "result", subtype: "success", text: "完成" };
     const running = chatReducer(initialChatState(), { type: "generation", running: true });
     const s = chatReducer(running, { type: "ws", msg });
     expect(s.messages).toHaveLength(0);

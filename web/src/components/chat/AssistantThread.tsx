@@ -16,7 +16,10 @@ import { collapseToolNarration } from "../../lib/toolNarration";
 import { cn } from "../../lib/utils";
 import type { PendingApproval, PendingCredential } from "../../types";
 import { Button } from "../ui/button";
+import { MarkdownCodeHeader, MarkdownSyntaxHighlighter } from "./MarkdownCodeBlock";
 import { PendingInteraction } from "./PendingInteraction";
+import { ReasoningBlock } from "./ReasoningBlock";
+import { ToolCard } from "./ToolCard";
 
 const THREAD_CONTENT_WIDTH = "mx-auto w-full max-w-3xl px-3 sm:px-5";
 
@@ -163,8 +166,28 @@ function UserAvatarImage() {
 
 function AssistantText() {
   // 启用 GFM：支持表格/删除线/任务列表（否则表格以竖线纯文本显示）；
-  // preprocess：把模型输出的超长工具 Output 折叠为代码块，避免刷屏
-  return <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} preprocess={collapseToolNarration} />;
+  // preprocess：把模型输出的超长工具 Output 折叠为代码块，避免刷屏；
+  // 代码块：语法高亮（prism-react-renderer）+ 语言标签 + 复制按钮；表格：容器横滚 + 单元格样式
+  return (
+    <MarkdownTextPrimitive
+      remarkPlugins={[remarkGfm]}
+      preprocess={collapseToolNarration}
+      components={{
+        CodeHeader: MarkdownCodeHeader,
+        SyntaxHighlighter: MarkdownSyntaxHighlighter,
+        table: ({ node: _node, children, ...props }) => (
+          <div className="my-3 w-full overflow-x-auto">
+            <table
+              {...props}
+              className="w-full border-collapse text-[13px] [&_td]:border-b [&_td]:border-border/60 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_th]:border-b-2 [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-medium"
+            >
+              {children}
+            </table>
+          </div>
+        ),
+      }}
+    />
+  );
 }
 
 function AssistantMessage() {
@@ -186,11 +209,17 @@ function AssistantMessage() {
           donger
           <MessageTime />
         </div>
-        <div className="min-w-0 break-words text-sm leading-7 [&_a]:underline [&_code]:break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
+        <div className="min-w-0 break-words text-sm leading-7 [&_a]:underline [&_code]:break-words [&_pre]:max-w-full">
           {isThinking ? (
             <ThinkingContent />
           ) : (
-            <MessagePrimitive.Parts components={{ Text: AssistantText }} />
+            <MessagePrimitive.Parts
+              components={{
+                Text: AssistantText,
+                Reasoning: ReasoningBlock,
+                tools: { Fallback: ToolCard },
+              }}
+            />
           )}
         </div>
       </div>
