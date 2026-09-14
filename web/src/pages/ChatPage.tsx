@@ -51,6 +51,20 @@ export function ChatPage() {
         onResolveApproval={wc.resolveApproval}
         onDecideCredentialMissing={wc.decideCredentialMissing}
         errors={wc.errors}
+        aboveComposer={
+          wc.stage ? (
+            <div
+              role="status"
+              className="mx-auto mb-1 flex w-full max-w-3xl items-center gap-2 px-3 text-xs text-muted-foreground sm:px-5"
+            >
+              <span
+                aria-hidden="true"
+                className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+              />
+              {wc.stage}
+            </div>
+          ) : undefined
+        }
         onReloadConversations={() => void wc.loadConversations()}
         onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
       />

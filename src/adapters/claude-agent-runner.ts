@@ -7,6 +7,7 @@ import { matchesShellGit } from "../domain/git-shell-guard.js";
 import { isReadOnlyShellCommand } from "../domain/read-only-shell-command.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
+import { BUILTIN_TOOL_TEXT_PREFIX } from "../util/provider-tool-text.js";
 
 /**
  * 真实 AgentRunner：用 Claude Agent SDK 的 query() 驱动。
@@ -208,23 +209,58 @@ export class ClaudeAgentRunner implements AgentRunner {
     };
 
     let streamingMessageId: string | null = null;
+    // 内置工具协议块拦截：按 content block 缓冲首个增量判定 "**🌐" 前缀，命中则吞掉
+    // 该块全部增量（完整 text 事件仍会产出，由事件桥折叠），避免协议噪声/预签名 URL 直出前端
+    const blockPrefixBuffers = new Map<number, string>();
+    const suppressedBlocks = new Set<number>();
     for await (const m of stream) {
       if (m.type === "system" && "subtype" in m && m.subtype === "init") {
         yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
       } else if (m.type === "stream_event") {
         if (m.event.type === "message_start") {
           streamingMessageId = m.event.message.id;
+          blockPrefixBuffers.clear();
+          suppressedBlocks.clear();
         } else if (
           m.event.type === "content_block_delta" &&
           m.event.delta.type === "text_delta" &&
           streamingMessageId
         ) {
+          const blockIndex = typeof m.event.index === "number" ? m.event.index : 0;
+          if (suppressedBlocks.has(blockIndex)) continue;
+          const buffered = (blockPrefixBuffers.get(blockIndex) ?? "") + m.event.delta.text;
+          blockPrefixBuffers.delete(blockIndex);
+          if (
+            BUILTIN_TOOL_TEXT_PREFIX.startsWith(buffered) &&
+            buffered.length < BUILTIN_TOOL_TEXT_PREFIX.length
+          ) {
+            // 仍可能是协议头前缀（"*"、"**"…）：继续缓冲下一个增量
+            blockPrefixBuffers.set(blockIndex, buffered);
+            continue;
+          }
+          if (buffered.startsWith(BUILTIN_TOOL_TEXT_PREFIX)) {
+            suppressedBlocks.add(blockIndex);
+            continue;
+          }
           yield {
             type: "text_delta",
             taskId: task.id,
             messageId: streamingMessageId,
-            text: m.event.delta.text,
+            text: buffered,
           };
+        } else if (m.event.type === "content_block_stop" && streamingMessageId) {
+          // 块结束：冲刷仍在前缀缓冲里的短文本（不足判定长度即结束的普通文本块）
+          const stopIndex = typeof m.event.index === "number" ? m.event.index : -1;
+          const pending = stopIndex >= 0 ? blockPrefixBuffers.get(stopIndex) : undefined;
+          if (pending !== undefined) {
+            blockPrefixBuffers.delete(stopIndex);
+            yield {
+              type: "text_delta",
+              taskId: task.id,
+              messageId: streamingMessageId,
+              text: pending,
+            };
+          }
         } else if (m.event.type === "content_block_delta" && streamingMessageId) {
           // GLM/Claude 思考流：thinking_delta（signature_delta 等其余变体忽略）
           const delta = m.event.delta as { type?: string; thinking?: string };

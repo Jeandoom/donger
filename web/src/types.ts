@@ -21,6 +21,7 @@ export type SSEEvent =
       }>;
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
+  | { type: "activity"; text: string }
   | { type: "error"; error: string };
 
 export type ChatRole = "user" | "bot";
@@ -102,6 +103,8 @@ export interface ConversationSummary {
 export interface ChatState {
   messages: ChatMessage[];
   isGenerating: boolean;
+  /** 当前执行阶段横幅（🔨 执行阶段等，后端 activity 事件；过程态，不随历史回放） */
+  stage: string | null;
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
   connection: ConnectionState;

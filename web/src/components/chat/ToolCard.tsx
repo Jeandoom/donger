@@ -119,15 +119,7 @@ export function ToolCard({ toolName, argsText, result, isError }: ToolCallMessag
   );
 }
 
-function ToolIOSection({
-  label,
-  text,
-  failed,
-}: {
-  label: string;
-  text: string;
-  failed?: boolean;
-}) {
+function ToolIOSection({ label, text, failed }: { label: string; text: string; failed?: boolean }) {
   return (
     <div>
       <div className="mb-0.5 text-[11px] font-medium text-muted-foreground/70">{label}</div>

@@ -36,6 +36,7 @@ import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
+import { guardStreamStall } from "./stream-stall-guard.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
 import { createKbToolsServer } from "./kb-tools.js";
@@ -79,6 +80,8 @@ export interface OrchestratorDeps {
   commentStore?: CommentStore;
   /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
   agentChain?: AgentChainConfig;
+  /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
+  turnStallTimeoutMs?: number;
 }
 
 export class Orchestrator {
@@ -232,6 +235,21 @@ export class Orchestrator {
    * 单轮执行：prepare（含凭证 env / skills 覆盖）→ session 过期重试 → 事件桥 → 用量统计 → sessionId 回写。
    * 不做状态流转与收尾通知（调用方负责），供单轮路径与三段式阶段循环复用。
    */
+  /** 阶段横幅（🔨 执行阶段/🔍 验收阶段）：过程态而非聊天内容，优先走非持久通道
+   *  （web=activity 事件，前端输入区上方状态行，不落 messages 表）；无该能力的渠道退回 send */
+  private async emitStageBanner(
+    channel: Channel,
+    conversationId: string,
+    threadId: string,
+    text: string,
+  ): Promise<void> {
+    if (channel.pushActivity) {
+      channel.pushActivity(conversationId, text);
+      return;
+    }
+    await channel.send(threadId, { text });
+  }
+
   private async runTurn(p: {
     task: Task;
     user: User;
@@ -414,7 +432,29 @@ export class Orchestrator {
         }
         seq++;
 
-        for await (const e of rawEvents) {
+        const stallMs = this.deps.turnStallTimeoutMs ?? 0;
+        const guarded: AsyncIterable<RunnerEvent> =
+          stallMs > 0
+            ? guardStreamStall(rawEvents, stallMs, async () => {
+                console.error("[orchestrator] LLM 流停摆，看门狗中断本轮", p.conversation.id);
+                // 尽力留审计痕迹（seq=-1 = 执行前/外事件约定），错误沿 processMessage catch 收尾
+                try {
+                  await this.deps.auditStore.record({
+                    conversationId: p.conversation.id,
+                    taskId,
+                    userId: p.user.id,
+                    seq: -1,
+                    type: "result",
+                    resultSubtype: "error",
+                    text: `turn_stall: ${stallMs}ms 无事件，看门狗中断`,
+                    recordedAt: new Date().toISOString(),
+                  });
+                } catch {
+                  // ignore
+                }
+              })
+            : rawEvents;
+        for await (const e of guarded) {
           if (e.type === "session_init") capturedSessionId = e.sessionId;
           // 实时执行状态（SDK 事件推导，观测态）
           this.activityTracker.observe(p.conversation.id, e);
@@ -810,7 +850,7 @@ export class Orchestrator {
       if (round === 0) {
         // 有方案门时状态已在门通过时 resume 为 running；无方案门时 planning --start--> running
         if (!p.requiresDesign) await store.updateStatus(p.task.id, nextStatus("planning", "start"));
-        await channel.send(p.threadId, { text: "🔨 执行阶段" });
+        await this.emitStageBanner(channel, p.conversation.id, p.threadId, "🔨 执行阶段");
       }
       const execPrompt =
         round === 0
@@ -825,7 +865,7 @@ export class Orchestrator {
 
       let summary = re.resultText;
       if (selfVerifyTurn) {
-        await channel.send(p.threadId, { text: "🔍 验收阶段" });
+        await this.emitStageBanner(channel, p.conversation.id, p.threadId, "🔍 验收阶段");
         const ra = await turn(acceptAsk(), true);
         if (ra.aborted) return await this.finishCanceled(p.task, p.conversation);
         if (!ra.ok) return await failMidway(ra.error);

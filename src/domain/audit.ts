@@ -39,6 +39,12 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   },
   // Langfuse 风格密钥字面量：pk-lf-… / sk-lf-…
   { pattern: /\b(pk|sk)-[a-z0-9-]{6,}/gi, replacement: "$1-****" },
+  // 云存储预签名 URL 参数（UCloud/AWS 系）：Signature/有效期随模型输出落库属敏感泄露
+  // （实测样本：analyze_image 内置工具输出含 ?UCloudPublicKey=…&Expires=…&Signature=…）
+  {
+    pattern: /((?:UCloudPublicKey|Signature|Expires|X-Amz-[A-Za-z-]+)=)[^&\s"'\\]+/g,
+    replacement: "$1****",
+  },
 ];
 
 export function redactSecrets(text: string): string {

@@ -45,6 +45,11 @@ const EnvSchema = z.object({
   PUBLIC_BASE_URL: z.string().optional().default(""),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
+  // LLM 流停摆看门狗：轮内超过该毫秒数无任何事件视为挂死，中断并立即收尾（0=关闭）
+  TURN_STALL_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(600_000),
+  // 会话空闲滚动：距会话最后活跃超过该小时数时重开新 SDK 会话（0=关闭）；
+  // 防止低频闲聊会话跨天 resume 导致每轮全量重建超长上下文（实测"回复 OK"烧 32k 输入 token）
+  SESSION_IDLE_ROLL_HOURS: z.coerce.number().int().nonnegative().default(168),
   /** 允许仓库地址指向内网/回环 host（本地部署缺省允许；多用户部署建议 false 防 SSRF） */
   GIT_ALLOW_PRIVATE_HOSTS: z
     .enum(["true", "false"])
@@ -111,6 +116,10 @@ export interface AppConfig {
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
+  /** LLM 流停摆看门狗阈值（毫秒；0=关闭） */
+  turnStallTimeoutMs: number;
+  /** 会话空闲滚动阈值（小时；0=关闭） */
+  sessionIdleRollHours: number;
 }
 
 /**
@@ -150,6 +159,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
+    turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
+    sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {

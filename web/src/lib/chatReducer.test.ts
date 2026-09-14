@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chatReducer, initialChatState } from "./chatReducer";
 import type { ChatState, TurnPart } from "../types";
+import { chatReducer, initialChatState } from "./chatReducer";
 
 function withMessages(messages: ChatState["messages"]): ChatState {
   return { ...initialChatState(), messages };
@@ -135,6 +135,22 @@ describe("chatReducer 回合聚合", () => {
     const tool = turn?.parts?.[0];
     if (tool?.kind !== "tool") throw new Error("expected tool part");
     expect(tool.state).toBe("error");
+  });
+
+  it("activity 事件更新阶段横幅（替换式），回合收口时清除", () => {
+    let state = withMessages([]);
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "activity", text: "🔨 执行阶段" },
+    });
+    expect(state.stage).toBe("🔨 执行阶段");
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "activity", text: "🔍 验收阶段" },
+    });
+    expect(state.stage).toBe("🔍 验收阶段");
+    state = chatReducer(state, { type: "generation", running: false });
+    expect(state.stage).toBeNull();
   });
 
   it("error 事件收口回合为 error", () => {

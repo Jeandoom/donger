@@ -1418,14 +1418,16 @@ export class WebChannel implements Channel {
         agentKbDir: agent ? kbDir : undefined,
       });
 
-      // builtin-assist 会话 get-or-create（与 agentConvMatch 的内置分支一致）
+      // 任务专属会话 get-or-create：优化材料（他人路径附件、审计摘要）不混入用户已有
+      // 闲聊/任务历史；同一任务重复点击复用同一会话（按标题精确匹配）
+      const convTitle = `优化分析 ${task.id.slice(0, 8)}`.slice(0, 30);
       const list = (await this.deps.conversationStore?.listByUser(uid)) ?? [];
-      let conv = list.find((c) => c.agentId === BUILTIN_ASSIST_AGENT_ID);
+      let conv = list.find((c) => c.agentId === BUILTIN_ASSIST_AGENT_ID && c.title === convTitle);
       if (!conv) {
         conv = await this.deps.conversationStore?.createWithAgent(
           uid,
           "web",
-          BUILTIN_ASSIST_AGENT.name,
+          convTitle,
           BUILTIN_ASSIST_AGENT_ID,
         );
       }

@@ -147,6 +147,67 @@ describe("ClaudeAgentRunner", () => {
     expect(outputs[0]?.output).toContain('"assistant"');
   });
 
+  it("内置工具协议块（🌐 前缀）增量被拦截，普通块增量原样放行", async () => {
+    mockStream([
+      { type: "system", subtype: "init", session_id: "s1" },
+      { type: "stream_event", event: { type: "message_start", message: { id: "msg-1" } } },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "**🌐 Z." },
+        },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "ai Built-in Tool: analyze_image** Input…" },
+        },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "正常" },
+        },
+      },
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "文本" },
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "**🌐 Z.ai Built-in Tool: analyze_image** Input…" },
+            { type: "text", text: "正常文本" },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", result: "done" },
+    ]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+
+    const deltas = events.filter((e) => e.type === "text_delta");
+    expect(deltas).toEqual([
+      { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "正常" },
+      { type: "text_delta", taskId: "t1", messageId: "msg-1", text: "文本" },
+    ]);
+    // 完整 text 事件仍逐块产出（折叠交给事件桥）
+    const texts = events.filter((e) => e.type === "text");
+    expect(texts).toHaveLength(2);
+  });
+
   it("归一 SDKMessage → RunnerEvent（system init / assistant text+tool_use / result）", async () => {
     mockStream([
       { type: "system", subtype: "init", session_id: "s1" },

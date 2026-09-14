@@ -135,6 +135,18 @@ describe("redactSecrets（复盘 P2-12：本周真实泄露样本回归）", () 
     expect(out).toContain("sk-****");
   });
 
+  it("云存储预签名 URL 参数打码（analyze_image 内置工具真实泄露样本）", async () => {
+    const { redactSecrets } = await import("../../src/domain/audit.js");
+    const out = redactSecrets(
+      '{"imageSource":"https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/e02a5489/C:\\\\Users\\\\admin\\\\att.jpg?UCloudPublicKey=TOKEN_e15ba47a-d098-4fbd-9afc-a0dcf0e4e621&Expires=1788499735&Signature=qON/QSTFclrLN0cEdpBbVFE1lxc="}',
+    );
+    expect(out).toContain("UCloudPublicKey=****");
+    expect(out).toContain("Expires=****");
+    expect(out).toContain("Signature=****");
+    expect(out).not.toContain("qON/QSTF");
+    expect(out).not.toContain("TOKEN_e15ba47a");
+  });
+
   it("toAuditEvent 的 toolInput/user_message 走脱敏", async () => {
     const { toAuditEvent, userMessageAudit } = await import("../../src/domain/audit.js");
     const e = toAuditEvent(
