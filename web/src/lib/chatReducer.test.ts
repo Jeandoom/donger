@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chatReducer, initialChatState } from "./chatReducer";
 import type { ChatState, TurnPart } from "../types";
+import { chatReducer, initialChatState } from "./chatReducer";
 
 function withMessages(messages: ChatState["messages"]): ChatState {
   return { ...initialChatState(), messages };

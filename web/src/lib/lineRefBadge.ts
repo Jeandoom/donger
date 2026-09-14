@@ -11,7 +11,7 @@ const INLINE_CODE = /(`[^`\n]*`)/g;
 const LINE_REF = /（:((?:\d+(?:-\d+)?)(?:\s*[,，;；、]\s*:\d+(?:-\d+)?)*)）/g;
 
 export function lineRefBadge(text: string): string {
-  if (!text || !text.includes("（:")) return text;
+  if (!text?.includes("（:")) return text;
   return text
     .split(FENCED_BLOCK)
     .map((segment, i) => (i % 2 === 1 ? segment : transformOutsideInlineCode(segment)))
