@@ -12,6 +12,7 @@ import remarkGfm from "remark-gfm";
 import { fetchMe } from "../../lib/auth";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
+import { lineRefBadge } from "../../lib/lineRefBadge";
 import { collapseToolNarration } from "../../lib/toolNarration";
 import { cn } from "../../lib/utils";
 import type { PendingApproval, PendingCredential } from "../../types";
@@ -166,12 +167,12 @@ function UserAvatarImage() {
 
 function AssistantText() {
   // 启用 GFM：支持表格/删除线/任务列表（否则表格以竖线纯文本显示）；
-  // preprocess：把模型输出的超长工具 Output 折叠为代码块，避免刷屏；
+  // preprocess：全角行号引用转行内代码徽标（lineRefBadge）→ 超长工具 Output 折叠（防刷屏）；
   // 代码块：语法高亮（prism-react-renderer）+ 语言标签 + 复制按钮；表格：容器横滚 + 单元格样式
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
-      preprocess={collapseToolNarration}
+      preprocess={(text) => collapseToolNarration(lineRefBadge(text))}
       components={{
         CodeHeader: MarkdownCodeHeader,
         SyntaxHighlighter: MarkdownSyntaxHighlighter,
@@ -209,7 +210,14 @@ function AssistantMessage() {
           donger
           <MessageTime />
         </div>
-        <div className="min-w-0 break-words text-sm leading-7 [&_a]:underline [&_code]:break-words [&_pre]:max-w-full">
+        <div
+          className={cn(
+            "min-w-0 break-words text-sm leading-7 [&_a]:underline [&_pre]:max-w-full",
+            // 行内代码视觉区隔（仅行内，块级代码走 SyntaxHighlighter 的深色主题并保持横向滚动）
+            "[&_code:not(pre_code)]:break-all [&_code:not(pre_code)]:rounded [&_code:not(pre_code)]:border [&_code:not(pre_code)]:border-border [&_code:not(pre_code)]:bg-muted [&_code:not(pre_code)]:px-1.5 [&_code:not(pre_code)]:py-0.5 [&_code:not(pre_code)]:text-[0.85em]",
+            "[&_pre_code]:whitespace-pre",
+          )}
+        >
           {isThinking ? (
             <ThinkingContent />
           ) : (
