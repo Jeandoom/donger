@@ -140,6 +140,17 @@ export function useWebChat() {
       }
     });
 
+    eventSource.addEventListener("activity", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "activity") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("approval_card", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -241,9 +252,7 @@ export function useWebChat() {
       const controller = new AbortController();
       messagesRequestRef.current = controller;
       const token = getToken();
-      const authHeaders: Record<string, string> = token
-        ? { Authorization: `Bearer ${token}` }
-        : {};
+      const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       Promise.all([
         fetch(`/api/conversations/${conversationId}/messages`, {
           headers: authHeaders,

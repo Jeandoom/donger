@@ -137,6 +137,22 @@ describe("chatReducer 回合聚合", () => {
     expect(tool.state).toBe("error");
   });
 
+  it("activity 事件更新阶段横幅（替换式），回合收口时清除", () => {
+    let state = withMessages([]);
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "activity", text: "🔨 执行阶段" },
+    });
+    expect(state.stage).toBe("🔨 执行阶段");
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "activity", text: "🔍 验收阶段" },
+    });
+    expect(state.stage).toBe("🔍 验收阶段");
+    state = chatReducer(state, { type: "generation", running: false });
+    expect(state.stage).toBeNull();
+  });
+
   it("error 事件收口回合为 error", () => {
     let state = withMessages([]);
     state = chatReducer(state, {

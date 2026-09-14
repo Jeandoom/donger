@@ -37,6 +37,7 @@ export function initialChatState(): ChatState {
   return {
     messages: [],
     isGenerating: false,
+    stage: null,
     pendingApproval: null,
     pendingCredential: null,
     connection: "connecting",
@@ -109,11 +110,7 @@ function appendStreamPart(
 }
 
 /** 从尾部向前找同 messageId 的流式分片（不跨工具段） */
-function findStreamPart(
-  parts: TurnPart[],
-  kind: "text" | "thinking",
-  messageId: string,
-): number {
+function findStreamPart(parts: TurnPart[], kind: "text" | "thinking", messageId: string): number {
   for (let i = parts.length - 1; i >= 0; i -= 1) {
     const part = parts[i];
     if (!part || part.kind === "tool") return -1;
@@ -152,7 +149,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // 流终止（取消/断线/完成）：收口所有进行中的回合
       return action.running
         ? { ...state, isGenerating: true }
-        : { ...state, isGenerating: false, messages: closeTurn(state.messages, "done") };
+        : {
+            ...state,
+            isGenerating: false,
+            stage: null,
+            messages: closeTurn(state.messages, "done"),
+          };
     case "set_error":
       return { ...state, errors: { ...state.errors, [action.key]: action.message } };
     case "clear_error": {
@@ -169,7 +171,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         files: action.files,
         delivery: "sending",
       };
-      return { ...state, messages: [...messages, msg], isGenerating: true };
+      return { ...state, messages: [...messages, msg], isGenerating: true, stage: null };
     }
     case "message_delivery":
       return {
@@ -202,6 +204,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeConversationId: action.conversationId,
         messages: [],
         isGenerating: false,
+        stage: null,
         loadingMessages: !isDraft && action.conversationId !== null,
       };
     }
@@ -238,7 +241,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             : state.activeConversationId,
       };
     case "set_messages":
-      return { ...state, messages: action.messages, loadingMessages: false, isGenerating: false };
+      return {
+        ...state,
+        messages: action.messages,
+        loadingMessages: false,
+        isGenerating: false,
+        stage: null,
+      };
     case "loading_messages":
       return { ...state, loadingMessages: action.loading };
     case "remove_conversation": {
@@ -262,6 +271,9 @@ let fullTextSeq = 0;
 
 function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
   switch (msg.type) {
+    case "activity":
+      // 阶段横幅（🔨 执行阶段等）：过程态，替换式更新，不进消息流（不随历史回放）
+      return { ...state, isGenerating: true, stage: msg.text };
     case "thinking_delta": {
       if (!msg.text) return state;
       // 空白增量且无既有分片承接：不新开回合（沿用 SSE 连接 ack 不建行的既有行为），仅翻转生成态
