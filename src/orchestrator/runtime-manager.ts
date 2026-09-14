@@ -40,6 +40,8 @@ export interface RuntimeManagerConfig {
   defaultSystemPromptAppend: string;
   /** Agent 可选 LLM 预置列表（agent.llm.presetId 引用） */
   agentLlmPresets: LlmPreset[];
+  /** 会话空闲滚动阈值（小时；undefined/0=关闭）：闲置超限的会话重开新 SDK 会话 */
+  sessionIdleRollHours?: number;
 }
 
 export interface PrepareOpts {
@@ -262,6 +264,15 @@ export class RuntimeManager {
       updatedAt: now,
     };
 
+    // 空闲滚动：距会话最后活跃超过阈值时重开新 SDK 会话（sessionStore 保留，新 sessionId
+    // 轮末照常 commit 回写）。跨天/周低频会话若一直 resume，每轮全量重建超长上下文，
+    // 实测闲置 9 天后"回复 OK"也要 32k 输入 token（cacheRead 仅 2k）。
+    const idleRollMs = (this.deps.config.sessionIdleRollHours ?? 0) * 3_600_000;
+    const idleTooLong =
+      idleRollMs > 0 &&
+      Boolean(conversation.sdkSessionId) &&
+      Date.now() - Date.parse(conversation.updatedAt) > idleRollMs;
+
     const runOptions: RunOptions = {
       cwd: runtimeDir,
       skills,
@@ -269,7 +280,7 @@ export class RuntimeManager {
       llm,
       systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
       abortSignal: opts.abortSignal,
-      resume: conversation.sdkSessionId || undefined,
+      resume: idleTooLong ? undefined : conversation.sdkSessionId || undefined,
       workspaceRoot: user.homeDir,
       additionalDirectories,
       allowedWriteRoots,

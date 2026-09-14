@@ -153,6 +153,7 @@ async function main(): Promise<void> {
           "临时文件一律放当前工作目录的 .tmp/ 下并用相对路径引用，不要用 /tmp（Windows 原生 python 看不到 Git Bash 的 /tmp）。",
         ].join("\n"),
         agentLlmPresets: cfg.agentLlmPresets,
+        sessionIdleRollHours: cfg.sessionIdleRollHours,
       },
       skillPackStore,
       credentialSets,
