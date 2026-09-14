@@ -59,7 +59,14 @@ export function buildOptimizeBrief(input: OptimizeBriefInput): string {
     for (const c of comments) lines.push(`- [${c.createdAt.slice(0, 16)}] ${c.text}`);
   }
 
-  lines.push("", "请按 task-optimize 技能的步骤产出修订提案（diff 形式），经我确认后再落盘。");
+  // 产出要求显式给步骤：assist 智能体没有 task-optimize 技能，不给步骤它会即兴复盘、
+  // 口径漂移（2026-09-14 会话 cfd4703d 实测）
+  lines.push("", "## 产出要求（按以下顺序输出）");
+  lines.push("1. 指标分析：读上方审计事件的 token/耗时/工具轨迹，评估执行成本是否合理；");
+  lines.push("2. 问题定位：结合任务内容指出失败点、冗余步骤或体验问题；");
+  lines.push(
+    "3. 修订提案：以 diff 形式给出 systemPrompt/skills/工具配置的修订建议，先交我确认，未经确认不落盘。",
+  );
   return lines.join("\n");
 }
 

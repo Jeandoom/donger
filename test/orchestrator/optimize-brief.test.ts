@@ -78,6 +78,12 @@ describe("buildOptimizeBrief", () => {
     expect(brief).toContain("tokens=30");
     expect(brief).toContain("错误提示不友好");
     expect(brief).toContain("skills 文件目录：/skills/a1");
+    // 产出要求显式给工作流步骤（assist 智能体没有 task-optimize 技能）
+    expect(brief).toContain("## 产出要求（按以下顺序输出）");
+    expect(brief).toContain("1. 指标分析");
+    expect(brief).toContain("2. 问题定位");
+    expect(brief).toContain("3. 修订提案");
+    expect(brief).toContain("未经确认不落盘");
   });
 
   it("空事件与空评论的兜底文案", () => {
