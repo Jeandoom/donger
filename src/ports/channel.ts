@@ -46,6 +46,16 @@ export interface Channel {
   pushThinkingDelta?(conversationId: string, messageId: string, text: string): void;
   /** 推送中间过程行（工具调用/失败等，SSE 版本，WebChannel 实现） */
   pushActivity?(conversationId: string, text: string): void;
+  /** 推送结构化工具调用事件（SSE 版本，WebChannel 实现；输入为截断摘要，完整内容落审计） */
+  pushToolUse?(
+    conversationId: string,
+    event: { toolUseId: string; tool: string; inputPreview: string },
+  ): void;
+  /** 推送结构化工具结果事件（SSE 版本，WebChannel 实现；输出为截断摘要） */
+  pushToolResult?(
+    conversationId: string,
+    event: { toolUseId: string; outputPreview: string; isError: boolean },
+  ): void;
   /** 推送完成通知（SSE 版本） */
   pushResult?(conversationId: string, subtype: "success" | "error", text: string): void;
   /** 推送审批卡片（SSE 版本） */

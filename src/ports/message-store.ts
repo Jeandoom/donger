@@ -5,12 +5,13 @@ import type { StoredMessage } from "../domain/types.js";
  * 支持在切换历史会话时重新加载消息记录。
  */
 export interface MessageStore {
-  /** 添加一条消息 */
+  /** 添加一条消息（taskId 可选：bot 消息归属的任务，供回合合并/装饰） */
   add(
     conversationId: string,
     role: "user" | "bot",
     text: string,
     files?: string,
+    taskId?: string,
   ): Promise<StoredMessage>;
 
   /** 按 conversationId 获取所有消息（按时间正序） */

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { ChatMessage, ConversationSummary, SSEEvent } from "../types";
+import type { ConversationSummary, SSEEvent } from "../types";
 import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
+import { assembleTurnMessages, type HistoryEvent, type HistoryMessage } from "./turnAssembly";
 
 type SSEClient = {
   close(): void;
@@ -99,6 +100,39 @@ export function useWebChat() {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
         if (data.type === "text_delta") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("thinking_delta", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "thinking_delta") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("tool_use", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "tool_use") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    eventSource.addEventListener("tool_result", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "tool_result") {
           dispatch({ type: "ws", msg: data });
         }
       } catch {
@@ -207,17 +241,30 @@ export function useWebChat() {
       const controller = new AbortController();
       messagesRequestRef.current = controller;
       const token = getToken();
-      fetch(`/api/conversations/${conversationId}/messages`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        signal: controller.signal,
-      })
-        .then((response) => {
+      const authHeaders: Record<string, string> = token
+        ? { Authorization: `Bearer ${token}` }
+        : {};
+      Promise.all([
+        fetch(`/api/conversations/${conversationId}/messages`, {
+          headers: authHeaders,
+          signal: controller.signal,
+        }).then((response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return response.json() as Promise<ChatMessage[]>;
+          return response.json() as Promise<HistoryMessage[]>;
+        }),
+        // 工具事件装饰：加载失败（如权限/网络）降级为仅合并不装饰
+        fetch(`/api/conversations/${conversationId}/events?light=1`, {
+          headers: authHeaders,
+          signal: controller.signal,
         })
-        .then((messages) => {
+          .then((response) =>
+            response.ok ? (response.json() as Promise<{ events: HistoryEvent[] }>) : { events: [] },
+          )
+          .catch(() => ({ events: [] })),
+      ])
+        .then(([messages, { events }]) => {
           if (messagesRequestRef.current === controller) {
-            dispatch({ type: "set_messages", messages });
+            dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events) });
           }
         })
         .catch((error: unknown) => {

@@ -1,5 +1,9 @@
-import type { AppendMessage, ThreadMessageLike } from "@assistant-ui/react";
-import type { ChatMessage } from "../types";
+import type {
+  AppendMessage,
+  ThreadAssistantMessagePart,
+  ThreadMessageLike,
+} from "@assistant-ui/react";
+import type { ChatMessage, TurnPart } from "../types";
 import type { FileInfo } from "./chatReducer";
 
 type UnknownRecord = Record<string, unknown>;
@@ -19,6 +23,36 @@ function isFileInfo(value: unknown): value is FileInfo {
   );
 }
 
+/** JSON 值/对象最小结构（对齐 assistant-ui ToolCallMessagePart.args 的 ReadonlyJSONObject） */
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type JsonObject = { [key: string]: JsonValue };
+
+/** 工具输入摘要 → args 对象（摘要可能被截断，解析失败回退 raw） */
+function toToolArgs(inputPreview: string): JsonObject {
+  try {
+    const parsed: unknown = JSON.parse(inputPreview);
+    if (isRecord(parsed) && !Array.isArray(parsed)) return parsed as JsonObject;
+  } catch {
+    // 截断/非 JSON → raw
+  }
+  return { raw: inputPreview };
+}
+
+/** 回合分片 → assistant-ui content part */
+function toContentPart(part: TurnPart): ThreadAssistantMessagePart {
+  if (part.kind === "text") return { type: "text" as const, text: part.text };
+  if (part.kind === "thinking") return { type: "reasoning" as const, text: part.text };
+  return {
+    type: "tool-call" as const,
+    toolCallId: part.toolUseId,
+    toolName: part.tool,
+    argsText: part.inputPreview,
+    args: toToolArgs(part.inputPreview),
+    result: part.outputPreview,
+    isError: part.isError,
+  };
+}
+
 export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
   const custom = {
     delivery: message.delivery ?? "accepted",
@@ -28,6 +62,19 @@ export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
   const createdAt = message.createdAt ? new Date(message.createdAt) : undefined;
 
   if (message.role === "bot") {
+    if (message.kind === "turn") {
+      return {
+        id: message.id,
+        role: "assistant",
+        content: (message.parts ?? []).map(toContentPart),
+        status:
+          message.state === "running"
+            ? ({ type: "running" } as const)
+            : ({ type: "complete", reason: "stop" } as const),
+        createdAt,
+        metadata: { custom },
+      };
+    }
     return {
       id: message.id,
       role: "assistant",

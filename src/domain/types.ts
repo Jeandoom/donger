@@ -200,6 +200,8 @@ export interface StoredMessage {
   text: string;
   /** files 字段 JSON stringified，空数组存 "[]" */
   files: string;
+  /** 归属任务 id（一轮用户消息 = 一个 task，前端回合合并/工具装饰用）；旧数据为空 */
+  taskId?: string;
   createdAt: string;
 }
 

@@ -30,6 +30,9 @@ describe("useWebChat conversation switching", () => {
         if (url.startsWith("/api/conversations?")) {
           return Promise.resolve(new Response("[]", { status: 200 }));
         }
+        if (url.includes('/c1/events') || url.includes('/c2/events')) {
+          return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
+        }
         if (url.includes("/c1/messages")) return firstHistory.promise;
         if (url.includes("/c2/messages")) {
           return Promise.resolve(
@@ -46,7 +49,7 @@ describe("useWebChat conversation switching", () => {
     const { result } = renderHook(() => useWebChat());
     act(() => result.current.switchConversation("c1"));
     act(() => result.current.switchConversation("c2"));
-    await waitFor(() => expect(result.current.messages[0]?.id).toBe("m2"));
+    await waitFor(() => expect(result.current.messages[0]?.id).toBe("turn-m2"));
     firstHistory.resolve(
       new Response(JSON.stringify([{ id: "m1", role: "bot", text: "first" }]), {
         status: 200,
@@ -54,6 +57,6 @@ describe("useWebChat conversation switching", () => {
       }),
     );
     await act(async () => Promise.resolve());
-    expect(result.current.messages[0]?.id).toBe("m2");
+    expect(result.current.messages[0]?.id).toBe("turn-m2");
   });
 });

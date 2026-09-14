@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { chatReducer, initialChatState } from "../src/lib/chatReducer";
 
 describe("chat streaming", () => {
-  it("aggregates text deltas into one assistant message and result does not duplicate it", () => {
+  it("aggregates text deltas into one turn and result closes it without duplication", () => {
     const sent = chatReducer(initialChatState(), {
       type: "user_message",
       id: "user-1",
@@ -22,13 +22,14 @@ describe("chat streaming", () => {
     });
 
     expect(second.messages).toHaveLength(2);
-    expect(second.messages[1]).toMatchObject({
-      id: "assistant-1",
-      role: "bot",
-      text: "Hi!",
-    });
+    const turn = second.messages[1];
+    expect(turn?.role).toBe("bot");
+    expect(turn?.kind).toBe("turn");
+    expect(turn?.state).toBe("running");
+    expect(turn?.parts).toEqual([{ kind: "text", messageId: "assistant-1", text: "Hi!" }]);
     expect(second.isGenerating).toBe(true);
-    expect(completed.messages).toEqual(second.messages);
+    expect(completed.messages[1]?.state).toBe("done");
+    expect(completed.messages[1]?.parts).toEqual(turn?.parts);
     expect(completed.isGenerating).toBe(false);
   });
 

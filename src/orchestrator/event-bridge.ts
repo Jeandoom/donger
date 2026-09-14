@@ -43,16 +43,28 @@ export async function bridgeEvents(
         conversationId,
         `🔧 ${e.tool} ${clipInput(JSON.stringify(e.input ?? {}))}${scale}`,
       );
+      // 结构化工具事件（turn UI）：输入推截断摘要，完整内容落审计
+      channel.pushToolUse?.(conversationId, {
+        toolUseId: e.toolUseId,
+        tool: e.tool,
+        inputPreview: clipInput(JSON.stringify(e.input ?? {}), 500),
+      });
     } else if (e.type === "tool_result") {
+      // 结构化工具结果（turn UI）：成败都推，前端工具卡片据此收敛状态
+      channel.pushToolResult?.(conversationId, {
+        toolUseId: e.toolUseId,
+        outputPreview: clipInput(e.content, 2000),
+        isError: e.isError,
+      });
       if (e.isError) {
         const name = toolByUseId.get(e.toolUseId) ?? "工具";
         channel.pushActivity?.(conversationId, `⚠️ ${name} 失败：${clipInput(e.content, 80)}`);
       }
     } else if (e.type === "text") {
-      // 先持久化 bot 消息到数据库，再推送到前端
+      // 先持久化 bot 消息到数据库，再推送到前端（taskId 供前端回合合并/工具装饰）
       if (messageStore && conversationId) {
         await messageStore
-          .add(conversationId, "bot", e.text)
+          .add(conversationId, "bot", e.text, "[]", e.taskId)
           .catch((err) => console.error("[bridgeEvents] 保存 bot 消息失败", err));
       }
       // 通过 SSE 推送（优先 pushText，降级到 send）

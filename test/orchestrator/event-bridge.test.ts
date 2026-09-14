@@ -25,6 +25,8 @@ function fakeStreamingChannel() {
   const thinking: Array<{ messageId: string; text: string }> = [];
   const texts: string[] = [];
   const results: Array<{ subtype: "success" | "error"; text: string }> = [];
+  const toolUses: Array<{ toolUseId: string; tool: string; inputPreview: string }> = [];
+  const toolResults: Array<{ toolUseId: string; outputPreview: string; isError: boolean }> = [];
   return {
     id: "web",
     streaming: true,
@@ -32,6 +34,8 @@ function fakeStreamingChannel() {
     thinking,
     texts,
     results,
+    toolUses,
+    toolResults,
     onMessage: () => {},
     send: async () => {},
     pushText: (_conversationId: string, text: string) => texts.push(text),
@@ -39,6 +43,14 @@ function fakeStreamingChannel() {
       deltas.push({ messageId, text }),
     pushThinkingDelta: (_conversationId: string, messageId: string, text: string) =>
       thinking.push({ messageId, text }),
+    pushToolUse: (
+      _conversationId: string,
+      event: { toolUseId: string; tool: string; inputPreview: string },
+    ) => toolUses.push(event),
+    pushToolResult: (
+      _conversationId: string,
+      event: { toolUseId: string; outputPreview: string; isError: boolean },
+    ) => toolResults.push(event),
     pushResult: (_conversationId: string, subtype: "success" | "error", text: string) =>
       results.push({ subtype, text }),
     requestApproval: async () => ({ approved: true }),
@@ -86,6 +98,50 @@ describe("bridgeEvents", () => {
     expect(ch.texts).toEqual([]);
   });
 
+  it("tool_use/tool_result → 结构化事件推送（成败都推）+ activity 行为不变", async () => {
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        {
+          type: "tool_use",
+          taskId: "t",
+          tool: "Bash",
+          input: { command: "ls -la" },
+          toolUseId: "tu-1",
+        },
+        { type: "tool_result", taskId: "t", toolUseId: "tu-1", content: "ok", isError: false },
+        { type: "tool_result", taskId: "t", toolUseId: "tu-2", content: "boom", isError: true },
+      ]),
+    );
+    expect(ch.toolUses).toEqual([
+      { toolUseId: "tu-1", tool: "Bash", inputPreview: '{"command":"ls -la"}' },
+    ]);
+    expect(ch.toolResults).toEqual([
+      { toolUseId: "tu-1", outputPreview: "ok", isError: false },
+      { toolUseId: "tu-2", outputPreview: "boom", isError: true },
+    ]);
+  });
+
+  it("tool_use 输入摘要超长截断（500）", async () => {
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        {
+          type: "tool_use",
+          taskId: "t",
+          tool: "Write",
+          input: { content: "x".repeat(2000) },
+          toolUseId: "tu-1",
+        },
+      ]),
+    );
+    expect(ch.toolUses[0]?.inputPreview.length).toBeLessThanOrEqual(500);
+  });
+
   it("text → 发文本", async () => {
     const ch = fakeChannel();
     await bridgeEvents(ch, "th", of([{ type: "text", taskId: "t", text: "hi" }]));
@@ -112,7 +168,27 @@ describe("bridgeEvents", () => {
     expect(ch.sent[0]?.text).toBe("❌ 失败：崩了");
   });
 
-  it("session_init / tool_use 被忽略", async () => {
+  it("text 落库携带 taskId（回合归属）", async () => {
+    const added: Array<{ role: string; text: string; taskId?: string }> = [];
+    const store = {
+      add: async (
+        _conversationId: string,
+        role: "user" | "bot",
+        text: string,
+        _files?: string,
+        taskId?: string,
+      ) => {
+        added.push({ role, text, taskId });
+        return {} as import("../../src/domain/types.js").StoredMessage;
+      },
+      listByConversation: async () => [],
+    };
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(ch, "c1", of([{ type: "text", taskId: "task-9", text: "Hi" }]), store);
+    expect(added).toEqual([{ role: "bot", text: "Hi", taskId: "task-9" }]);
+  });
+
+  it("session_init 被忽略；非流式通道上 tool_use 无副作用", async () => {
     const ch = fakeChannel();
     await bridgeEvents(
       ch,

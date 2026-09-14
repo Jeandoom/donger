@@ -5,7 +5,9 @@ import type {
   ConversationSummary,
   MessageDelivery,
   SSEEvent,
+  TurnPart,
 } from "../types";
+import { finalizeTurnParts } from "./turnAssembly";
 
 export type FileInfo = {
   path: string;
@@ -62,20 +64,84 @@ export function isDraftConversation(conversation: ConversationSummary | undefine
   return conversation?.isDraft === true;
 }
 
-function appendBot(state: ChatState, text: string): ChatState {
-  const msg: ChatMessage = { id: makeId(), role: "bot", text };
-  return { ...state, messages: [...state.messages, msg] };
+/** 取或建当前进行中的回合（最后一个 running 状态的回合消息），返回新消息数组与回合下标 */
+function ensureTurn(messages: ChatMessage[]): { messages: ChatMessage[]; index: number } {
+  const last = messages[messages.length - 1];
+  if (last && last.role === "bot" && last.kind === "turn" && last.state === "running") {
+    return { messages, index: messages.length - 1 };
+  }
+  const turn: ChatMessage = {
+    id: makeId(),
+    role: "bot",
+    text: "",
+    kind: "turn",
+    parts: [],
+    state: "running",
+  };
+  return { messages: [...messages, turn], index: messages.length };
 }
 
-function appendBotDelta(state: ChatState, messageId: string, text: string): ChatState {
-  const existing = state.messages.find((message) => message.id === messageId);
-  if (!existing && !text.trim()) return { ...state, isGenerating: true };
-  const messages = existing
-    ? state.messages.map((message) =>
-        message.id === messageId ? { ...message, text: message.text + text } : message,
-      )
-    : [...state.messages, { id: messageId, role: "bot" as const, text }];
-  return { ...state, messages, isGenerating: true };
+function mapTurnParts(
+  messages: ChatMessage[],
+  index: number,
+  fn: (parts: TurnPart[]) => TurnPart[],
+): ChatMessage[] {
+  return messages.map((message, i) =>
+    i === index ? { ...message, parts: fn(message.parts ?? []) } : message,
+  );
+}
+
+/** 追加思考/文本增量：同一分片（messageId 相同且不跨工具段）继续拼接，否则新开分片 */
+function appendStreamPart(
+  parts: TurnPart[],
+  kind: "text" | "thinking",
+  messageId: string,
+  text: string,
+): TurnPart[] {
+  const match = findStreamPart(parts, kind, messageId);
+  const part = match >= 0 ? parts[match] : undefined;
+  if (part && part.kind !== "tool") {
+    const next = parts.slice();
+    next[match] = { ...part, text: part.text + text };
+    return next;
+  }
+  return [...parts, kind === "text" ? { kind, messageId, text } : { kind, messageId, text }];
+}
+
+/** 从尾部向前找同 messageId 的流式分片（不跨工具段） */
+function findStreamPart(
+  parts: TurnPart[],
+  kind: "text" | "thinking",
+  messageId: string,
+): number {
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i];
+    if (!part || part.kind === "tool") return -1;
+    if (part.kind === kind && part.messageId === messageId) return i;
+  }
+  return -1;
+}
+
+/** 进行中的回合（若有）的当前分片 */
+function runningTurnParts(messages: ChatMessage[]): TurnPart[] {
+  const last = messages[messages.length - 1];
+  if (last && last.role === "bot" && last.kind === "turn" && last.state === "running") {
+    return last.parts ?? [];
+  }
+  return [];
+}
+
+/** 把回合收口（state 置位 + 工具分片终结），返回新消息数组 */
+function closeTurn(messages: ChatMessage[], state: "done" | "error"): ChatMessage[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.role === "bot" && message.kind === "turn" && message.state === "running") {
+      changed = true;
+      return { ...message, state, parts: finalizeTurnParts(message.parts ?? []) };
+    }
+    return message;
+  });
+  return changed ? next : messages;
 }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -83,7 +149,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "connection":
       return { ...state, connection: action.state };
     case "generation":
-      return { ...state, isGenerating: action.running };
+      // 流终止（取消/断线/完成）：收口所有进行中的回合
+      return action.running
+        ? { ...state, isGenerating: true }
+        : { ...state, isGenerating: false, messages: closeTurn(state.messages, "done") };
     case "set_error":
       return { ...state, errors: { ...state.errors, [action.key]: action.message } };
     case "clear_error": {
@@ -91,6 +160,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, errors: remaining };
     }
     case "user_message": {
+      // 防御：上一回合未收到 result 时（漏事件）也在新用户消息处收口
+      const messages = closeTurn(state.messages, "done");
       const msg: ChatMessage = {
         id: action.id ?? makeId(),
         role: "user",
@@ -98,7 +169,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         files: action.files,
         delivery: "sending",
       };
-      return { ...state, messages: [...state.messages, msg], isGenerating: true };
+      return { ...state, messages: [...messages, msg], isGenerating: true };
     }
     case "message_delivery":
       return {
@@ -187,12 +258,111 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 }
 
+let fullTextSeq = 0;
+
 function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
   switch (msg.type) {
-    case "text":
-      return msg.text ? appendBot(state, msg.text) : state;
-    case "text_delta":
-      return appendBotDelta(state, msg.messageId, msg.text);
+    case "thinking_delta": {
+      if (!msg.text) return state;
+      // 空白增量且无既有分片承接：不新开回合（沿用 SSE 连接 ack 不建行的既有行为），仅翻转生成态
+      if (
+        !msg.text.trim() &&
+        findStreamPart(runningTurnParts(state.messages), "thinking", msg.messageId) < 0
+      ) {
+        return { ...state, isGenerating: true };
+      }
+      const { messages, index } = ensureTurn(state.messages);
+      return {
+        ...state,
+        isGenerating: true,
+        messages: mapTurnParts(messages, index, (parts) =>
+          appendStreamPart(parts, "thinking", msg.messageId, msg.text),
+        ),
+      };
+    }
+    case "text_delta": {
+      if (!msg.text) return state;
+      if (
+        !msg.text.trim() &&
+        findStreamPart(runningTurnParts(state.messages), "text", msg.messageId) < 0
+      ) {
+        return { ...state, isGenerating: true };
+      }
+      const { messages, index } = ensureTurn(state.messages);
+      return {
+        ...state,
+        isGenerating: true,
+        messages: mapTurnParts(messages, index, (parts) =>
+          appendStreamPart(parts, "text", msg.messageId, msg.text),
+        ),
+      };
+    }
+    case "text": {
+      // 完整文本段：仅在后端未流过 delta 时推送，直接作为新分片追加
+      if (!msg.text) return state;
+      fullTextSeq += 1;
+      const { messages, index } = ensureTurn(state.messages);
+      return {
+        ...state,
+        isGenerating: true,
+        messages: mapTurnParts(messages, index, (parts) => [
+          ...parts,
+          { kind: "text", messageId: `full-${fullTextSeq}`, text: msg.text },
+        ]),
+      };
+    }
+    case "tool_use": {
+      const { messages, index } = ensureTurn(state.messages);
+      return {
+        ...state,
+        isGenerating: true,
+        messages: mapTurnParts(messages, index, (parts) => [
+          ...parts,
+          {
+            kind: "tool",
+            toolUseId: msg.toolUseId,
+            tool: msg.tool,
+            inputPreview: msg.inputPreview,
+            state: "running",
+          },
+        ]),
+      };
+    }
+    case "tool_result": {
+      const { messages, index } = ensureTurn(state.messages);
+      return {
+        ...state,
+        messages: mapTurnParts(messages, index, (parts) => {
+          const next = parts.slice();
+          for (let i = next.length - 1; i >= 0; i -= 1) {
+            const part = next[i];
+            if (!part) continue;
+            if (part.kind === "tool" && part.toolUseId === msg.toolUseId) {
+              next[i] = {
+                ...part,
+                outputPreview: msg.outputPreview,
+                isError: msg.isError,
+                state: msg.isError ? "error" : "done",
+              };
+              return next;
+            }
+          }
+          // 找不到对应 tool_use（如 reducer 中途重挂）：降级为完整工具分片
+          return [
+            ...next,
+            {
+              kind: "tool",
+              toolUseId: msg.toolUseId,
+              tool: "tool",
+              inputPreview: "",
+              outputPreview: msg.outputPreview,
+              isError: msg.isError,
+              state: msg.isError ? "error" : "done",
+            },
+          ];
+        }),
+      };
+    }
     case "approval_card":
       return {
         ...state,
@@ -203,12 +373,15 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         ...state,
         pendingCredential: { reqId: msg.reqId, items: msg.items },
       };
-    case "result":
-      return { ...state, isGenerating: false };
+    case "result": {
+      const closed = closeTurn(state.messages, msg.subtype === "error" ? "error" : "done");
+      return { ...state, isGenerating: false, messages: closed };
+    }
     case "error":
       return {
         ...state,
         isGenerating: false,
+        messages: closeTurn(state.messages, "error"),
         errors: { ...state.errors, stream: msg.error },
       };
     default:

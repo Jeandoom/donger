@@ -399,6 +399,17 @@ describe("WebChannel auth", () => {
     expect(body.events.map((e) => e.type)).toEqual(["text", "tool_use"]);
   });
 
+  it("GET /api/conversations/:id/events?light=1 命中路由并截断工具字段", async () => {
+    const { port, token, convId } = await createEventsChannel();
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/conversations/${convId}/events?light=1`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { events: Array<{ type: string }> };
+    expect(body.events.map((e) => e.type)).toEqual(["text", "tool_use"]);
+  });
+
   it("GET /api/conversations/:id/events 非属主 → 403", async () => {
     const { port, convId, otherToken } = await createEventsChannel();
     const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/events`, {
