@@ -27,6 +27,7 @@ function fakeStreamingChannel() {
   const results: Array<{ subtype: "success" | "error"; text: string }> = [];
   const toolUses: Array<{ toolUseId: string; tool: string; inputPreview: string }> = [];
   const toolResults: Array<{ toolUseId: string; outputPreview: string; isError: boolean }> = [];
+  const activities: string[] = [];
   return {
     id: "web",
     streaming: true,
@@ -36,6 +37,7 @@ function fakeStreamingChannel() {
     results,
     toolUses,
     toolResults,
+    activities,
     onMessage: () => {},
     send: async () => {},
     pushText: (_conversationId: string, text: string) => texts.push(text),
@@ -51,6 +53,7 @@ function fakeStreamingChannel() {
       _conversationId: string,
       event: { toolUseId: string; outputPreview: string; isError: boolean },
     ) => toolResults.push(event),
+    pushActivity: (_conversationId: string, text: string) => activities.push(text),
     pushResult: (_conversationId: string, subtype: "success" | "error", text: string) =>
       results.push({ subtype, text }),
     requestApproval: async () => ({ approved: true }),
@@ -213,5 +216,60 @@ describe("bridgeEvents", () => {
       ]),
     );
     expect(ch.sent.map((m) => m.text)).toEqual(["a", "b"]);
+  });
+
+  it("内置工具协议调用头折叠为 activity，不落库不推送", async () => {
+    const added: Array<{ role: string; text: string }> = [];
+    const store = {
+      add: async (_c: string, role: "user" | "bot", text: string) => {
+        added.push({ role, text });
+        return {} as import("../../src/domain/types.js").StoredMessage;
+      },
+      listByConversation: async () => [],
+    };
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        {
+          type: "text",
+          taskId: "t",
+          text: '**🌐 Z.ai Built-in Tool: analyze_image**\n\n**Input:**\n```json\n{"imageSource":"https://x/att.jpg?Signature=qON"}\n```',
+        },
+      ]),
+      store,
+    );
+    expect(added).toEqual([]);
+    expect(ch.activities).toEqual(["🌐 analyze_image（模型内置工具）执行中"]);
+    expect(ch.texts).toEqual([]);
+  });
+
+  it("普通 text 落库/推送前脱敏预签名 URL 参数", async () => {
+    const added: Array<{ role: string; text: string }> = [];
+    const store = {
+      add: async (_c: string, role: "user" | "bot", text: string) => {
+        added.push({ role, text });
+        return {} as import("../../src/domain/types.js").StoredMessage;
+      },
+      listByConversation: async () => [],
+    };
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        {
+          type: "text",
+          taskId: "t",
+          text: "分析完成，图片见 https://x/att.jpg?UCloudPublicKey=TOKEN_abc&Expires=1788499735&Signature=qON/QSTF",
+        },
+      ]),
+      store,
+    );
+    expect(added.length).toBe(1);
+    expect(added[0]?.text).toContain("UCloudPublicKey=****");
+    expect(added[0]?.text).not.toContain("qON/QSTF");
+    expect(ch.texts[0]).toBe(added[0]?.text);
   });
 });

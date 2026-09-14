@@ -1,6 +1,8 @@
+import { redactSecrets } from "../domain/audit.js";
 import type { RunnerEvent } from "../domain/types.js";
 import type { Channel } from "../ports/channel.js";
 import type { MessageStore } from "../ports/message-store.js";
+import { matchBuiltinToolCall } from "../util/provider-tool-text.js";
 
 /** 把 RunnerEvent 流翻译成 Channel 消息。
  *  text → 通过 SSE pushText 推送，同时持久化到 MessageStore。
@@ -61,19 +63,28 @@ export async function bridgeEvents(
         channel.pushActivity?.(conversationId, `⚠️ ${name} 失败：${clipInput(e.content, 80)}`);
       }
     } else if (e.type === "text") {
+      // 模型服务端内置工具的调用头（🌐 … Built-in Tool + Input JSON）：协议噪声且常带
+      // 预签名 URL（含本地路径/签名），折叠为 activity 行，不作为聊天消息持久化
+      const builtinTool = matchBuiltinToolCall(e.text);
+      if (builtinTool) {
+        channel.pushActivity?.(conversationId, `🌐 ${builtinTool}（模型内置工具）执行中`);
+        continue;
+      }
+      // 落库/推送前脱敏（预签名 URL 参数等）；live 与历史保持一致
+      const text = redactSecrets(e.text);
       // 先持久化 bot 消息到数据库，再推送到前端（taskId 供前端回合合并/工具装饰）
       if (messageStore && conversationId) {
         await messageStore
-          .add(conversationId, "bot", e.text, "[]", e.taskId)
+          .add(conversationId, "bot", text, "[]", e.taskId)
           .catch((err) => console.error("[bridgeEvents] 保存 bot 消息失败", err));
       }
       // 通过 SSE 推送（优先 pushText，降级到 send）
       if (channel.pushTextDelta && streamedMessageId) {
         streamedMessageId = null;
       } else if (channel.pushText && conversationId) {
-        channel.pushText(conversationId, e.text);
+        channel.pushText(conversationId, text);
       } else {
-        await channel.send(conversationId, { text: e.text });
+        await channel.send(conversationId, { text });
       }
     } else if (e.type === "result") {
       if (e.subtype === "error") {
