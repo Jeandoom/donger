@@ -1,6 +1,6 @@
 // 本地 fs 的 FileBrowser 实现。多通道共享。
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { IGNORED_NAMES, resolveWithinRoots, scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { AgentStore } from "../ports/agent-store.js";
@@ -126,8 +126,11 @@ export class LocalFileBrowser implements FileBrowser {
       }
       const user = await this.deps.userStore.get(userId);
       if (!user) throw new ForbiddenError("FORBIDDEN", "用户不存在");
+      // 历史用户行可能存了相对 homeDir；realpath 复判按绝对路径比对，这里统一归一
+      // （与 RuntimeManager 按 cwd 解析的语义一致）。
+      const homeDir = resolve(user.homeDir);
       const roots = scopeRoots("runtime", {
-        homeDir: user.homeDir,
+        homeDir,
         workspaceDir: this.deps.workspaceDir,
         conversationId,
         agentId: conv.agentId || undefined,
@@ -137,7 +140,7 @@ export class LocalFileBrowser implements FileBrowser {
     const user = await this.deps.userStore.get(userId);
     if (!user) throw new ForbiddenError("FORBIDDEN", "用户不存在");
     const roots = scopeRoots("user", {
-      homeDir: user.homeDir,
+      homeDir: resolve(user.homeDir),
       workspaceDir: this.deps.workspaceDir,
     });
     const labels = [".skills", ".agents", ".workflows", "knowledge_base"];

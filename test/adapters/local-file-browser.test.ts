@@ -192,3 +192,35 @@ describe("LocalFileBrowser runtime scope", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });
+
+describe("LocalFileBrowser 历史相对 homeDir 兼容", () => {
+  it("homeDir 为相对路径的用户 → realpath 复判仍通过（预览不误报越界）", async () => {
+    const relUsersDir = join(".tmp-fb-rel-test", "users");
+    const db2 = new Database(":memory:");
+    try {
+      const store2 = new SqliteUserStore(db2, {
+        adminExternalIds: new Set(),
+        usersDir: relUsersDir,
+      });
+      store2.migrate();
+      const convStore2 = new SqliteConversationStore(db2);
+      convStore2.migrate();
+      const browser2 = new LocalFileBrowser({
+        userStore: store2,
+        conversationStore: convStore2,
+        workspaceDir: relUsersDir,
+      });
+      const u = await store2.getOrCreateByIdentity("internal", "rel", "Rel");
+      expect(u.homeDir.startsWith(".tmp-fb-rel-test")).toBe(true); // 复现历史相对行
+      const conv = await convStore2.create(u.id, "web", "t");
+      write(u.homeDir, join("sessions", conv.id, "workspace", "out.md"), "# ok");
+      const tree = await browser2.listTree(u.id, "runtime", conv.id);
+      expect(tree.map((n) => n.name)).toEqual(["out.md"]);
+      const c = await browser2.readFile(u.id, "runtime", "out.md", conv.id);
+      expect(c.buffer.toString("utf8")).toBe("# ok");
+    } finally {
+      db2.close();
+      rmSync(".tmp-fb-rel-test", { recursive: true, force: true });
+    }
+  });
+});
