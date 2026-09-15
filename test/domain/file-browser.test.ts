@@ -29,13 +29,23 @@ describe("file-browser domain", () => {
     expect(roots.every((r) => !r.includes("memory") && !r.includes("sessions"))).toBe(true);
   });
 
-  it("scopeRoots(runtime) 返回 homeDir/sessions/<conversationId>/workspace", () => {
+  it("scopeRoots(runtime) 绑定智能体 → homeDir/agents/<agentId>/workspace", () => {
+    const roots = scopeRoots("runtime", {
+      homeDir: "/h",
+      workspaceDir: "/w",
+      conversationId: "c1",
+      agentId: "a1",
+    });
+    // 与 RuntimeManager 对齐：绑定智能体的会话 cwd 在 agents/<agentId>/workspace
+    expect(roots).toEqual([join("/h", "agents", "a1", "workspace")]);
+  });
+
+  it("scopeRoots(runtime) 闲聊 → homeDir/sessions/<conversationId>/workspace", () => {
     const roots = scopeRoots("runtime", {
       homeDir: "/h",
       workspaceDir: "/w",
       conversationId: "c1",
     });
-    // runtime 文件在 user.homeDir/sessions/<convId>/workspace/ 下（由 RuntimeManager 创建）
     expect(roots).toEqual([join("/h", "sessions", "c1", "workspace")]);
   });
 

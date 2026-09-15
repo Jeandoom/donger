@@ -142,14 +142,34 @@ describe("LocalFileBrowser user scope", () => {
 });
 
 describe("LocalFileBrowser runtime scope", () => {
-  it("会话归属当前用户 → 列出 sessions/<convId> 下文件", async () => {
+  it("绑定智能体的会话 → 拍平展示 agents/<agentId>/workspace 内容", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.createWithAgent(user.id, "web", "t", "agent-a1");
+    write(user.homeDir, join("agents", "agent-a1", "workspace", "bugs", "report.md"), "# r");
+    const tree = await browser.listTree(user.id, "runtime", conv.id);
+    // 顶层直接是工作区内容，无会话目录节点
+    expect(tree.map((n) => n.name)).toEqual(["bugs"]);
+    const report = tree[0]?.children?.[0];
+    expect(report?.path).toBe("bugs/report.md");
+    const c = await browser.readFile(user.id, "runtime", "bugs/report.md", conv.id);
+    expect(c.buffer.toString("utf8")).toBe("# r");
+  });
+
+  it("闲聊会话 → 拍平展示 sessions/<convId>/workspace 内容", async () => {
     const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
     const conv = await convStore.create(user.id, "web", "t");
-    // runtime 文件在 user.homeDir/sessions/<convId>/workspace/ 下（由 RuntimeManager 创建）
     write(user.homeDir, join("sessions", conv.id, "workspace", "out.png"), "pngdata");
     const tree = await browser.listTree(user.id, "runtime", conv.id);
-    const convNode = tree.find((n) => n.path === conv.id);
-    expect(convNode?.children?.find((c) => c.name === "out.png")).toBeTruthy();
+    expect(tree.map((n) => n.name)).toEqual(["out.png"]);
+    const c = await browser.readFile(user.id, "runtime", "out.png", conv.id);
+    expect(c.buffer.toString("utf8")).toBe("pngdata");
+  });
+
+  it("工作区不存在 → 返回空树而非报错", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.create(user.id, "web", "t");
+    const tree = await browser.listTree(user.id, "runtime", conv.id);
+    expect(tree).toEqual([]);
   });
 
   it("跨用户 conversationId → Forbidden", async () => {
@@ -162,5 +182,13 @@ describe("LocalFileBrowser runtime scope", () => {
   it("runtime 缺 conversationId → Forbidden（参数非法）", async () => {
     const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
     await expect(browser.listTree(user.id, "runtime")).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("readFile 越界路径拒绝（Forbidden）", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.create(user.id, "web", "t");
+    await expect(
+      browser.readFile(user.id, "runtime", "../../secret", conv.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

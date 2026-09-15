@@ -892,9 +892,10 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
       { headers: { authorization: `Bearer ${token}` } },
     );
     const treeBody = (await tree.json()) as {
-      nodes: Array<{ children?: Array<{ name: string; children?: Array<{ name: string }> }> }>;
+      nodes: Array<{ name: string; children?: Array<{ name: string }> }>;
     };
-    const attachments = treeBody.nodes[0]?.children?.find((node) => node.name === "attachments");
+    // runtime 树已拍平：attachments 目录直接在顶层
+    const attachments = treeBody.nodes.find((node) => node.name === "attachments");
     expect(attachments?.children?.some((node) => node.name.endsWith("readme.md"))).toBe(true);
 
     const preview = await fetch(`http://127.0.0.1:${port}${file.url}`);

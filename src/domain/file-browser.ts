@@ -15,6 +15,8 @@ export interface ScopeRootsContext {
   homeDir: string;
   workspaceDir: string;
   conversationId?: string;
+  /** 会话绑定的智能体 id：绑定智能体的会话 cwd 为 agents/<agentId>/workspace（与 RuntimeManager 一致） */
+  agentId?: string;
 }
 
 /** 计算 scope 允许的物理根（绝对路径）列表。runtime 必须带 conversationId。 */
@@ -25,8 +27,11 @@ export function scopeRoots(scope: "user" | "runtime", ctx: ScopeRootsContext): s
   if (!ctx.conversationId) {
     throw new Error("runtime scope 需要 conversationId");
   }
-  // runtime 文件在 user's homeDir/sessions/<convId>/workspace/ 下（由 RuntimeManager 创建）。
-  return [join(ctx.homeDir, "sessions", ctx.conversationId, "workspace")];
+  // 与 RuntimeManager 对齐：绑定智能体的会话 cwd 在 homeDir/agents/<agentId>/workspace（产物跨会话延续），
+  // 闲聊会话在 homeDir/sessions/<conversationId>/workspace。
+  return ctx.agentId
+    ? [join(ctx.homeDir, "agents", ctx.agentId, "workspace")]
+    : [join(ctx.homeDir, "sessions", ctx.conversationId, "workspace")];
 }
 
 export type ResolvedPath = { ok: true; abs: string } | { ok: false };

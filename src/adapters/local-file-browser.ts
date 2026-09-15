@@ -29,6 +29,10 @@ export class LocalFileBrowser implements FileBrowser {
 
   async listTree(userId: string, scope: FileScope, conversationId?: string): Promise<FileNode[]> {
     const { roots, labels } = await this.resolveRoots(userId, scope, conversationId);
+    if (scope === "runtime") {
+      // 拍平展示：直接返回会话工作区内容，不再包一层会话目录节点
+      return this.buildDirNode(roots[0] ?? "", "", "").children ?? [];
+    }
     return roots.map((root, i) => this.buildDirNode(root, labels[i] ?? basename(root), ""));
   }
 
@@ -40,13 +44,22 @@ export class LocalFileBrowser implements FileBrowser {
     opts?: ReadFileOptions,
   ): Promise<FileContent> {
     const { roots, labels } = await this.resolveRoots(userId, scope, conversationId);
-    // path 形如 "<label>[/<rest>]"；第一段选择根，其余是根内相对路径。兼容 / 与 \。
-    const m = relPath.match(/^([^/\\]+)[/\\](.*)$/);
-    const head = m ? (m[1] ?? "") : relPath;
-    const rest = m ? (m[2] ?? "") : "";
-    const idx = labels.indexOf(head);
-    if (idx === -1) throw new ForbiddenError("FORBIDDEN", "路径越界");
-    const resolved = resolveWithinRoots([roots[idx] ?? ""], rest);
+    // runtime 树已拍平：relPath 直接相对唯一 runtime 根解析；其余 scope 的 path 形如
+    // "<label>[/<rest>]"，第一段选择根，其余是根内相对路径。兼容 / 与 \。
+    let root: string;
+    let rest: string;
+    if (scope === "runtime") {
+      root = roots[0] ?? "";
+      rest = relPath;
+    } else {
+      const m = relPath.match(/^([^/\\]+)[/\\](.*)$/);
+      const head = m ? (m[1] ?? "") : relPath;
+      rest = m ? (m[2] ?? "") : "";
+      const idx = labels.indexOf(head);
+      if (idx === -1) throw new ForbiddenError("FORBIDDEN", "路径越界");
+      root = roots[idx] ?? "";
+    }
+    const resolved = resolveWithinRoots([root], rest);
     if (!resolved.ok) throw new ForbiddenError("FORBIDDEN", "路径越界");
 
     // realpath 后用 relativeOfRoot 复判，挡 symlink 指向根外
@@ -117,6 +130,7 @@ export class LocalFileBrowser implements FileBrowser {
         homeDir: user.homeDir,
         workspaceDir: this.deps.workspaceDir,
         conversationId,
+        agentId: conv.agentId || undefined,
       });
       return { roots, labels: [conversationId] };
     }

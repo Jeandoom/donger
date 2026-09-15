@@ -12,18 +12,18 @@ export function FileBrowserDrawer(props: {
   activeConversationId: string | null;
 }) {
   const { open, onClose, activeConversationId } = props;
-  const [scope, setScope] = useState<FileScope>("user");
+  const [scope, setScope] = useState<FileScope>("runtime");
   const [nodes, setNodes] = useState<FileNode[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const token = getToken() ?? "";
-  // runtime 必须有会话；缺则不加载
-  const convId = scope !== "user" ? (activeConversationId ?? "") : undefined;
+  // runtime/扩展都挂在会话上；缺会话则不加载
+  const convId = activeConversationId ?? "";
 
   async function reload(): Promise<void> {
-    if (scope !== "user" && !convId) {
+    if (!convId) {
       setNodes([]);
       setError("当前无活跃会话");
       return;
@@ -85,7 +85,6 @@ export function FileBrowserDrawer(props: {
         <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-2">
           {(
             [
-              ["user", "user"],
               ["runtime", "runtime"],
               ["extension", "扩展"],
             ] as const
