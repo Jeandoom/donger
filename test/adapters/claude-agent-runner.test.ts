@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
@@ -31,6 +31,8 @@ const opts = { cwd: ".", skills: [], llm: { model: "m", baseUrl: "u", authToken:
 
 let captured: {
   canUseTool?: CanUseToolLike;
+  cwd?: string;
+  plugins?: Array<{ type: string; path: string }>;
   includePartialMessages?: boolean;
   sandbox?: {
     enabled?: boolean;
@@ -498,6 +500,29 @@ describe("ClaudeAgentRunner", () => {
     expect(env.PYTHONPATH).toContain("copilot-skills");
     expect(env.PYTHONPATH).toContain("D:\\existing\\libs");
     delete process.env.PYTHONPATH;
+  });
+
+  it("cwd/pluginPaths/additionalDirectories 相对输入归一为绝对（SDK 子进程按自身 cwd 解析）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          cwd: "data/workspace/users/u/agents/a/workspace",
+          pluginPaths: ["data/workspace/users/u/.skills/copilot-skills"],
+          additionalDirectories: ["E:/bug-fix/donger-bugs"],
+        },
+        async () => ({ approved: true }),
+      ),
+    );
+    expect(captured?.cwd).toBe(resolve("data/workspace/users/u/agents/a/workspace"));
+    expect(isAbsolute(captured?.cwd ?? "")).toBe(true);
+    expect(captured?.plugins).toEqual([
+      { type: "local", path: resolve("data/workspace/users/u/.skills/copilot-skills") },
+    ]);
+    expect(captured?.additionalDirectories).toEqual([resolve("E:/bug-fix/donger-bugs")]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 
@@ -16,13 +16,13 @@ describe("loadConfig", () => {
       baseUrl: base.ANTHROPIC_BASE_URL,
       authToken: "tok",
     });
-    expect(c.repoRoot).toBe("./repos");
-    expect(c.memoryDir).toBe("./data/memory");
+    expect(c.repoRoot).toBe(resolve("./repos"));
+    expect(c.memoryDir).toBe(resolve("./data/memory"));
     expect(c.dbPath).toBe(join(homedir(), ".donger", "donger.db"));
     expect(c.port).toBe(3330);
     expect(c.host).toBe("0.0.0.0");
     expect(c.logLevel).toBe("info");
-    expect(c.builtinSkillsDir).toBe(join("./repos", "skills"));
+    expect(c.builtinSkillsDir).toBe(resolve(join("./repos", "skills")));
     expect(c.dingtalk).toBeUndefined();
   });
 
@@ -60,9 +60,9 @@ describe("loadConfig", () => {
       HTTPS_CHAIN_PATH: ".data/chain.pem",
     });
     expect(c.https).toEqual({
-      certPath: ".data/cert.pem",
-      keyPath: ".data/privkey.pem",
-      chainPath: ".data/chain.pem",
+      certPath: resolve(".data/cert.pem"),
+      keyPath: resolve(".data/privkey.pem"),
+      chainPath: resolve(".data/chain.pem"),
     });
   });
 
@@ -95,9 +95,9 @@ describe("loadConfig", () => {
   });
 
   it("BUILTIN_SKILLS_DIR 可选：默认 <repoRoot>/skills，设了覆盖", () => {
-    expect(loadConfig(base).builtinSkillsDir).toBe(join("./repos", "skills"));
-    expect(loadConfig({ ...base, BUILTIN_SKILLS_DIR: "/path/to/skills" }).builtinSkillsDir).toBe(
-      "/path/to/skills",
+    expect(loadConfig(base).builtinSkillsDir).toBe(resolve(join("./repos", "skills")));
+    expect(loadConfig({ ...base, BUILTIN_SKILLS_DIR: "custom/skills" }).builtinSkillsDir).toBe(
+      resolve("custom/skills"),
     );
   });
 
@@ -107,10 +107,12 @@ describe("loadConfig", () => {
     expect(c.dbPath).toBe(join(homedir(), ".donger", "donger.db"));
   });
 
-  it("WORKSPACE_DIR / DB_PATH 可被 env 覆盖", () => {
-    const c = loadConfig({ ...base, WORKSPACE_DIR: "/tmp/ws", DB_PATH: "/tmp/x.db" });
-    expect(c.workspaceDir).toBe("/tmp/ws");
-    expect(c.dbPath).toBe("/tmp/x.db");
+  it("WORKSPACE_DIR / DB_PATH 可被 env 覆盖，相对值归一为绝对路径", () => {
+    const c = loadConfig({ ...base, WORKSPACE_DIR: "data/workspace", DB_PATH: "data/donger.db" });
+    expect(c.workspaceDir).toBe(resolve("data/workspace"));
+    expect(c.dbPath).toBe(resolve("data/donger.db"));
+    expect(isAbsolute(c.workspaceDir)).toBe(true);
+    expect(isAbsolute(c.dbPath)).toBe(true);
   });
 
   it("ADMIN_EXTERNAL_IDS 解析为 Set（逗号分隔、去空白、去空）", () => {

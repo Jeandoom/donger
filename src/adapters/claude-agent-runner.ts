@@ -21,6 +21,15 @@ export class ClaudeAgentRunner implements AgentRunner {
     const ac = new AbortController();
     opts.abortSignal?.addEventListener("abort", () => ac.abort(), { once: true });
 
+    // SDK 边界路径归一：这些路径会原样传给 CLI 子进程（--plugin-dir、spawn cwd、PYTHONPATH），
+    // 而子进程 cwd 是 workspace 目录，相对路径会在那边拼错——插件静默加载失败、技能 Unknown skill。
+    // 统一按服务进程 cwd 解析为绝对，同时兜住存量数据里的相对 homeDir（历史配置）。
+    const cwd = resolve(opts.cwd);
+    const pluginPaths = opts.pluginPaths?.map((path) => resolve(path));
+    const additionalDirectories = opts.additionalDirectories?.map((path) => resolve(path));
+    const readOnlyRoots = opts.readOnlyRoots?.map((path) => resolve(path));
+    const pythonPaths = opts.pythonPaths?.map((path) => resolve(path));
+
     const mcpServersSdk: Record<string, SdkMcpServerConfig> = {
       ...(opts.mcpServers?.length ? mcpServersToSdk(opts.mcpServers) : {}),
       ...(opts.platformTools ? { "donger-platform": opts.platformTools } : {}),
@@ -31,10 +40,10 @@ export class ClaudeAgentRunner implements AgentRunner {
     const stream = query({
       prompt: task.prompt,
       options: {
-        cwd: opts.cwd,
+        cwd,
         model: opts.llm.model,
         skills: opts.skills.length ? opts.skills : undefined,
-        plugins: opts.pluginPaths?.map((path) => ({ type: "local" as const, path })),
+        plugins: pluginPaths?.map((path) => ({ type: "local" as const, path })),
         systemPrompt: {
           type: "preset" as const,
           preset: "claude_code",
@@ -43,15 +52,13 @@ export class ClaudeAgentRunner implements AgentRunner {
         includePartialMessages: true,
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
         ...(Object.keys(mcpServersSdk).length ? { mcpServers: mcpServersSdk } : {}),
-        ...(opts.additionalDirectories?.length
-          ? { additionalDirectories: opts.additionalDirectories }
-          : {}),
+        ...(additionalDirectories?.length ? { additionalDirectories } : {}),
         settingSources: ["project"],
         sandbox: {
           enabled: true,
           failIfUnavailable: false,
           allowUnsandboxedCommands: true,
-          ...(opts.readOnlyRoots?.length ? { filesystem: { denyWrite: opts.readOnlyRoots } } : {}),
+          ...(readOnlyRoots?.length ? { filesystem: { denyWrite: readOnlyRoots } } : {}),
         },
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
@@ -158,10 +165,10 @@ export class ClaudeAgentRunner implements AgentRunner {
           ANTHROPIC_AUTH_TOKEN: opts.llm.authToken,
           ...opts.credentialsEnv,
           // 插件共享运行库桥：技能脚本 `from credentials import ...` 等共享包导入依赖
-          ...(opts.pythonPaths?.length
+          ...(pythonPaths?.length
             ? {
                 PYTHONPATH: [
-                  ...opts.pythonPaths,
+                  ...pythonPaths,
                   ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : []),
                 ].join(delimiter),
               }
@@ -176,10 +183,10 @@ export class ClaudeAgentRunner implements AgentRunner {
       input: serializeJson({
         prompt: task.prompt,
         options: {
-          cwd: opts.cwd,
+          cwd,
           model: opts.llm.model,
           skills: opts.skills,
-          plugins: opts.pluginPaths?.map((path) => ({ type: "local", path })),
+          plugins: pluginPaths?.map((path) => ({ type: "local", path })),
           systemPrompt: {
             type: "preset",
             preset: "claude_code",
@@ -189,13 +196,13 @@ export class ClaudeAgentRunner implements AgentRunner {
           allowedTools: opts.allowedTools,
           mcpServers: opts.mcpServers,
           platformTools: opts.platformTools ? "donger-platform" : undefined,
-          additionalDirectories: opts.additionalDirectories,
+          additionalDirectories,
           settingSources: ["project"],
           sandbox: {
             enabled: true,
             failIfUnavailable: false,
             allowUnsandboxedCommands: true,
-            filesystem: opts.readOnlyRoots?.length ? { denyWrite: opts.readOnlyRoots } : undefined,
+            filesystem: readOnlyRoots?.length ? { denyWrite: readOnlyRoots } : undefined,
           },
           permissionMode: "default",
           resume: opts.resume,

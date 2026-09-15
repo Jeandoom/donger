@@ -1,7 +1,13 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { LLMConfig } from "./domain/llm-config.js";
+
+/** 路径类配置统一绝对化（相对值按进程 cwd 解析）：路径会传给 SDK/CLI 子进程，
+ * 子进程 cwd 与服务不同（如 agent workspace），相对路径会在那边拼错（技能插件加载失败）。 */
+function toAbs(p: string): string {
+  return resolve(p);
+}
 
 const LogLevelSchema = z.enum(["debug", "info", "warn", "error"]);
 export type LogLevel = z.infer<typeof LogLevelSchema>;
@@ -140,15 +146,15 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       baseUrl: e.ANTHROPIC_BASE_URL,
       authToken: e.ANTHROPIC_AUTH_TOKEN,
     },
-    repoRoot: e.REPO_ROOT,
-    memoryDir: e.MEMORY_DIR,
-    workspaceDir: e.WORKSPACE_DIR || join(homedir(), ".donger", "workspace"),
-    dbPath: e.DB_PATH || join(homedir(), ".donger", "donger.db"),
+    repoRoot: toAbs(e.REPO_ROOT),
+    memoryDir: toAbs(e.MEMORY_DIR),
+    workspaceDir: toAbs(e.WORKSPACE_DIR || join(homedir(), ".donger", "workspace")),
+    dbPath: toAbs(e.DB_PATH || join(homedir(), ".donger", "donger.db")),
     port: e.PORT,
     host: e.HOST,
     https,
     logLevel: e.LOG_LEVEL,
-    builtinSkillsDir: e.BUILTIN_SKILLS_DIR || join(e.REPO_ROOT, "skills"),
+    builtinSkillsDir: toAbs(e.BUILTIN_SKILLS_DIR || join(e.REPO_ROOT, "skills")),
     adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
     jwtSecret: e.JWT_SECRET ?? "",
     cliToken: e.CLI_TOKEN,
@@ -191,7 +197,11 @@ function parseHttpsConfig(
   if (!certPath || !keyPath) {
     throw new Error("HTTPS_CERT_PATH 与 HTTPS_KEY_PATH 必须同时配置");
   }
-  return { certPath, keyPath, ...(chainPath ? { chainPath } : {}) };
+  return {
+    certPath: toAbs(certPath),
+    keyPath: toAbs(keyPath),
+    ...(chainPath ? { chainPath: toAbs(chainPath) } : {}),
+  };
 }
 
 /**
