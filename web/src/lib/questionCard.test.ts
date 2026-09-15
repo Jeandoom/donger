@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleQuestionAnswers } from "./questionCard";
+import { assembleQuestionAnswers, isQuestionAnswered, questionTabLabel } from "./questionCard";
 
 describe("assembleQuestionAnswers", () => {
   const questions = [
@@ -32,5 +32,31 @@ describe("assembleQuestionAnswers", () => {
   it("全未作答返回空 answers", () => {
     const { answers } = assembleQuestionAnswers(questions, {}, {});
     expect(answers).toEqual({});
+  });
+});
+
+describe("isQuestionAnswered", () => {
+  const q = { question: "有 traceId 吗？", options: [{ label: "没有" }] };
+
+  it("「其他」文本非空即已答（空白算未答）", () => {
+    expect(isQuestionAnswered(q, {}, { [q.question]: "abc123" })).toBe(true);
+    expect(isQuestionAnswered(q, {}, { [q.question]: "   " })).toBe(false);
+  });
+
+  it("选中任一选项即已答；都为空未答", () => {
+    expect(isQuestionAnswered(q, { [q.question]: ["没有"] }, {})).toBe(true);
+    expect(isQuestionAnswered(q, {}, {})).toBe(false);
+  });
+});
+
+describe("questionTabLabel", () => {
+  it("优先 header；无 header 截断问题；空问题回退序号", () => {
+    expect(questionTabLabel({ question: "长问题超出八个字需要截断显示", options: [] }, 0)).toBe(
+      "长问题超出八个字…",
+    );
+    expect(questionTabLabel({ header: "traceId", question: "有没有？", options: [] }, 1)).toBe(
+      "traceId",
+    );
+    expect(questionTabLabel({ question: "  ", options: [] }, 2)).toBe("问题 3");
   });
 });

@@ -329,6 +329,7 @@ export function AssistantThread(props: AssistantThreadProps) {
         {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
         {props.pendingQuestion ? (
           <QuestionCard
+            key={props.pendingQuestion.reqId}
             question={props.pendingQuestion}
             error={props.questionError}
             onAnswer={props.onAnswerQuestion}

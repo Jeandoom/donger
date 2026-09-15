@@ -26,3 +26,20 @@ export function assembleQuestionAnswers(
   }
   return { answers, response };
 }
+
+/** 单题是否已作答：「其他」文本非空，或至少选中一个选项 */
+export function isQuestionAnswered(
+  item: PendingQuestionItem,
+  selections: Record<string, string[]>,
+  others: Record<string, string>,
+): boolean {
+  if (others[item.question]?.trim()) return true;
+  return (selections[item.question]?.length ?? 0) > 0;
+}
+
+/** Tab 标签：优先 header；无 header 时截取问题前 8 字 */
+export function questionTabLabel(item: PendingQuestionItem, index: number): string {
+  if (item.header) return item.header;
+  const text = item.question.trim();
+  return text.length > 8 ? `${text.slice(0, 8)}…` : text || `问题 ${index + 1}`;
+}
