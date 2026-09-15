@@ -147,3 +147,47 @@ export async function getOrCreateAgentConversation(agentId: string): Promise<{ i
   if (!r.ok) throw new Error(`conv ${r.status}`);
   return (await r.json()) as { id: string };
 }
+
+// ---------------------------------------------------------------------------
+// 智能体回调链接（specs/2026-09-15-agent-callback-design.md）
+// ---------------------------------------------------------------------------
+
+export interface AgentCallbackInfo {
+  configured: boolean;
+  /** 仅尾 4 位，完整 token 不回传 */
+  tokenTail: string | null;
+  /** ISO；null = 不过期 */
+  expiresAt: string | null;
+  createdAt: string | null;
+}
+
+export interface AgentCallbackCreated {
+  token: string;
+  url: string;
+  expiresAt: string | null;
+}
+
+export async function fetchAgentCallback(id: string): Promise<AgentCallbackInfo> {
+  const r = await apiFetch(`/api/agents/${id}/callback`);
+  if (!r.ok) throw new Error(`callback ${r.status}`);
+  return (await r.json()) as AgentCallbackInfo;
+}
+
+/** 生成/重新生成（重新生成即吊销旧链接）；validityDays 缺省 = 不过期 */
+export async function generateAgentCallback(
+  id: string,
+  validityDays?: number,
+): Promise<AgentCallbackCreated> {
+  const r = await apiFetch(`/api/agents/${id}/callback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(validityDays ? { validityDays } : {}),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r, `callback ${r.status}`));
+  return (await r.json()) as AgentCallbackCreated;
+}
+
+export async function revokeAgentCallback(id: string): Promise<void> {
+  const r = await apiFetch(`/api/agents/${id}/callback`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await readErrorMessage(r, `callback ${r.status}`));
+}

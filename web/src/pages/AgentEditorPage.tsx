@@ -2,11 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../components/ui/page-header";
 import {
+  type AgentCallbackCreated,
+  type AgentCallbackInfo,
   type AgentDTO,
   type AgentMeta,
   createAgent,
   fetchAgent,
+  fetchAgentCallback,
   fetchAgentMeta,
+  generateAgentCallback,
+  revokeAgentCallback,
   updateAgent,
 } from "../lib/agents";
 import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
@@ -842,6 +847,7 @@ export function AgentEditorPage() {
           </div>
         </Field>
 
+        {!isNew && id ? <CallbackPanel agentId={id} /> : null}
         {!isNew && id ? <SharePanel agentId={id} /> : null}
 
         <div className="flex gap-2">
@@ -973,6 +979,171 @@ function SkillPicker({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+const CALLBACK_VALIDITY_OPTIONS: Array<{ days: number; label: string }> = [
+  { days: 360, label: "360 天" },
+  { days: 180, label: "180 天" },
+  { days: 30, label: "30 天" },
+  { days: 0, label: "不过期" },
+];
+
+function formatExpiry(expiresAt: string | null): string {
+  if (!expiresAt) return "永久有效";
+  const t = new Date(expiresAt).getTime();
+  if (Number.isNaN(t)) return "未知";
+  if (t <= Date.now()) return `已于 ${new Date(t).toLocaleString()} 过期`;
+  return `有效期至 ${new Date(t).toLocaleString()}`;
+}
+
+/**
+ * 回调链接面板：生成带有效期的回调 URL，调用方 GET ?query=xxx 即与该智能体对话。
+ * 链接等同该智能体的 API 密钥——完整 URL 仅生成时展示一次，之后只显尾 4 位。
+ */
+function CallbackPanel({ agentId }: { agentId: string }) {
+  const [info, setInfo] = useState<AgentCallbackInfo | null>(null);
+  const [validityDays, setValidityDays] = useState<number>(30);
+  const [created, setCreated] = useState<AgentCallbackCreated | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetchAgentCallback(agentId)
+      .then(setInfo)
+      .catch(() => setInfo(null));
+  }, [agentId]);
+
+  const generate = async (isRegenerate: boolean) => {
+    if (isRegenerate && !window.confirm("重新生成将立即作废当前回调链接，确认？")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await generateAgentCallback(agentId, validityDays || undefined);
+      setCreated(res);
+      setCopied(false);
+      setInfo({
+        configured: true,
+        tokenTail: res.token.slice(-4),
+        expiresAt: res.expiresAt,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async () => {
+    if (!window.confirm("吊销后调用方将立即无法使用该链接，确认吊销？")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await revokeAgentCallback(agentId);
+      setCreated(null);
+      setInfo({ configured: false, tokenTail: null, expiresAt: null, createdAt: null });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyUrl = async () => {
+    if (!created) return;
+    try {
+      await navigator.clipboard.writeText(created.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 剪贴板不可用时用户可手动选中输入框文本复制
+      setCopied(false);
+    }
+  };
+
+  const expired = !!info?.expiresAt && new Date(info.expiresAt).getTime() <= Date.now();
+
+  return (
+    <div className="space-y-2 rounded border p-3">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">回调</span>
+        <div className="flex items-center gap-2">
+          <select
+            className="rounded border bg-background px-2 py-1 text-sm"
+            value={validityDays}
+            onChange={(e) => setValidityDays(Number(e.target.value))}
+          >
+            {CALLBACK_VALIDITY_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="rounded border px-2 py-1 text-sm disabled:opacity-50"
+            disabled={busy}
+            onClick={() => generate(info?.configured ?? false)}
+          >
+            {info?.configured ? "重新生成" : "生成链接"}
+          </button>
+          {info?.configured ? (
+            <button
+              type="button"
+              className="rounded border border-destructive/40 px-2 py-1 text-sm text-destructive disabled:opacity-50"
+              disabled={busy}
+              onClick={revoke}
+            >
+              吊销
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {info?.configured ? (
+        <div className="text-xs text-muted-foreground">
+          当前链接：…{info.tokenTail} · {formatExpiry(info.expiresAt)}
+          {expired ? (
+            <span className="ml-1 rounded bg-destructive/10 px-1 text-destructive">已过期</span>
+          ) : null}
+        </div>
+      ) : (
+        <div className="text-xs text-muted-foreground">
+          未配置。生成后调用方访问该链接即可与本智能体对话。
+        </div>
+      )}
+
+      {created ? (
+        <div className="space-y-1">
+          <input
+            readOnly
+            className="w-full rounded border bg-muted px-2 py-1 text-xs"
+            value={`${created.url}?query=你的问题`}
+            onClick={(e) => (e.target as HTMLInputElement).select()}
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-amber-600">
+              完整链接仅此次显示，请立即复制保存；重新生成将使其失效。
+            </span>
+            <button type="button" className="text-xs underline" onClick={copyUrl}>
+              {copied ? "已复制" : "复制带示例参数的链接"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {error ? <div className="text-xs text-destructive">{error}</div> : null}
+
+      <div className="text-xs text-muted-foreground">
+        用法：<code>GET 回调链接?query=问题</code> 即发起一次对话（每次独立会话），响应返回
+        conversationId；再访问 <code>回调链接/conversations/&lt;conversationId&gt;</code>
+        轮询执行结果。注意：链接等同该智能体的 API 密钥，请勿外传；回调对话以 Full access
+        执行（免人工审批，工具白名单与写入边界守卫仍生效）；query 经 URL
+        明文传输，请勿传递敏感内容。
+      </div>
     </div>
   );
 }
