@@ -126,6 +126,12 @@ try {
     Assert-LastExitCode "git archive 导出"
     & $tarExe -xf $tarFile -C $DeployDir
     Assert-LastExitCode "解包部署文件"
+    # .certs 已被 .gitignore 忽略，git archive 带不过去；本地证书中转站存在则搬运
+    $certsDir = Join-Path $ProjectDir ".certs"
+    if (Test-Path -LiteralPath $certsDir) {
+        Copy-Item -LiteralPath $certsDir -Destination (Join-Path $DeployDir ".certs") -Recurse -Force
+        Write-Host "    已复制 .certs 证书到部署目录" -ForegroundColor DarkGray
+    }
 }
 finally {
     if (Test-Path -LiteralPath $tarFile) {
