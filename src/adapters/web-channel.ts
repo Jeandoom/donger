@@ -52,12 +52,6 @@ import {
 } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
-import {
-  buildGithubAuthorizeUrl,
-  getGithubAccessToken,
-  getGithubUser,
-  type GithubUserInfo,
-} from "../util/github-oauth-api.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
@@ -100,6 +94,13 @@ import {
   PayloadTooLargeError,
   ValidationError,
 } from "../util/errors.js";
+import {
+  buildGithubAuthorizeUrl,
+  configureGithubProxy,
+  type GithubUserInfo,
+  getGithubAccessToken,
+  getGithubUser,
+} from "../util/github-oauth-api.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import {
   handleInstall,
@@ -294,6 +295,8 @@ export interface WebChannelDeps {
   dingtalkConfig?: { appKey: string; appSecret: string };
   /** GitHub OAuth 登录（缺省=GitHub 登录/绑定端点不可用） */
   githubConfig?: { clientId: string; clientSecret: string };
+  /** GitHub 请求代理 URL（如 http://127.0.0.1:7897；空=直连） */
+  githubProxyUrl?: string;
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -351,6 +354,7 @@ export class WebChannel implements Channel {
     this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
     this.githubConfig = deps.githubConfig;
+    configureGithubProxy(deps.githubProxyUrl);
   }
 
   /** 惰性清理过期的 OAuth state（登录与绑定共用），防 Map 无界增长 */

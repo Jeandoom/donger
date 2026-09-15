@@ -260,6 +260,7 @@ async function main(): Promise<void> {
     dingtalkLoginRedirectUri: cfg.dingtalkLoginRedirectUri,
     githubLoginRedirectUri: cfg.githubLoginRedirectUri,
     githubConfig: cfg.githubOAuth,
+    githubProxyUrl: cfg.githubProxyUrl,
     triggerStore,
     workflowStore,
     loopStore,

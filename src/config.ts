@@ -47,6 +47,9 @@ const EnvSchema = z.object({
   // GitHub 登录回调地址（完整 URL，须与 OAuth App 注册的 Authorization callback URL 一致；
   // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导。dev 与生产域名不同时需分别建 OAuth App 并在此覆盖）
   GITHUB_LOGIN_REDIRECT_URI: z.string().optional().default(""),
+  // GitHub 请求代理（如 http://127.0.0.1:7897；大陆网络直连 github.com 间歇超时时配置。
+  // 空=直连。仅作用于 GitHub OAuth 请求，代理失败自动回退直连）
+  GITHUB_OAUTH_PROXY: z.string().optional().default(""),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
   // CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange 换 JWT；空=关闭该端点）
@@ -142,6 +145,8 @@ export interface AppConfig {
   dingtalkLoginRedirectUri: string;
   /** GitHub 登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
   githubLoginRedirectUri: string;
+  /** GitHub 请求代理 URL（空=直连） */
+  githubProxyUrl: string;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
@@ -189,6 +194,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
     dingtalkLoginRedirectUri: e.DINGTALK_LOGIN_REDIRECT_URI.trim(),
     githubLoginRedirectUri: e.GITHUB_LOGIN_REDIRECT_URI.trim(),
+    githubProxyUrl: e.GITHUB_OAUTH_PROXY.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,

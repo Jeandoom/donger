@@ -2,12 +2,46 @@
 // 代码仓库访问凭证走独立的 credential-sets 体系，与本模块无关。
 // 参考：https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps
 
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+
 const AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
 const USER_API = "https://api.github.com/user";
 
 // 大陆网络访问 github.com/api.github.com 时延波动大，给显式超时防止登录回调挂死
 const TIMEOUT_MS = 10_000;
+
+// 代理 dispatcher（configureGithubProxy 设置）。注意：Node 内置全局 fetch 的
+// Dispatcher Handler 协议与 npm undici 8 跨版本不兼容（实测报
+// "invalid onRequestStart method"），代理路径必须用 undici 自带的 fetch。
+let proxyDispatcher: ProxyAgent | undefined;
+
+/** 配置 GitHub 请求代理（幂等；仅启动时调用一次）。空串/未传=清空走直连。 */
+export function configureGithubProxy(proxyUrl?: string): void {
+  const trimmed = proxyUrl?.trim();
+  proxyDispatcher = trimmed ? new ProxyAgent(trimmed) : undefined;
+}
+
+/**
+ * GitHub 请求统一入口：配置了代理则先走代理，网络层失败（代理未开/断连）时直连重试一次；
+ * 超时直接抛（直连大概率同样超时，避免 20s 等待）；HTTP 状态错误不重试
+ * （业务语义如 bad_verification_code 须原样抛给回调层）。
+ */
+async function ghFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  if (proxyDispatcher) {
+    try {
+      return (await undiciFetch(url, {
+        ...init,
+        dispatcher: proxyDispatcher,
+      })) as Response;
+    } catch (e) {
+      // fetch 网络层失败（连接拒绝、代理未开）抛 TypeError → 直连兜底
+      if (e instanceof TypeError) return fetch(url, init);
+      throw e;
+    }
+  }
+  return fetch(url, init);
+}
 
 /** 构建授权跳转 URL（纯函数）。state 由调用方生成并暂存，回调时强校验。 */
 export function buildGithubAuthorizeUrl(params: {
@@ -39,7 +73,7 @@ export async function getGithubAccessToken(
   code: string,
   redirectUri: string,
 ): Promise<string> {
-  const res = await fetch(TOKEN_URL, {
+  const res = await ghFetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -70,7 +104,7 @@ export async function getGithubAccessToken(
 /** 通过 access_token 获取用户信息。 */
 export async function getGithubUser(accessToken: string): Promise<GithubUserInfo> {
   // GitHub API 强制要求 User-Agent 头，缺失会 403
-  const res = await fetch(USER_API, {
+  const res = await ghFetch(USER_API, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/vnd.github+json",
