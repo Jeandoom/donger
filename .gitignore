@@ -10,6 +10,7 @@ dist/
 *.db
 *.db-journal
 .data/
+.certs/
 data/
 logs/
 repos/
