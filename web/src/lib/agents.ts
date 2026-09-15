@@ -52,6 +52,8 @@ export interface AgentDTO {
   scenario?: "code-dev" | "kb-qa" | "research" | "ops";
   /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具） */
   gitAllowShellGit?: boolean;
+  /** 会话权限模式默认值（缺省=变更前问询） */
+  defaultPermissionMode?: "ask_before_change" | "full_access";
   llm: { presetId?: string };
   createdAt: string;
   updatedAt: string;

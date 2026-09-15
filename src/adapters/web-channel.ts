@@ -20,6 +20,7 @@ import {
   collectCredentialRefs,
 } from "../domain/connector.js";
 import { substituteCredentialRefs } from "../domain/connector-resolution.js";
+import type { Conversation } from "../domain/conversation.js";
 import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
@@ -33,6 +34,11 @@ import type { LLMConfig } from "../domain/llm-config.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
 import type { UserModelConfig } from "../domain/model-config.js";
 import { parseUserModelConfig } from "../domain/model-config.js";
+import {
+  type AgentPermissionMode,
+  AgentPermissionModeSchema,
+  resolvePermissionMode,
+} from "../domain/permission-mode.js";
 import { validateAgentAgainstPreset } from "../domain/scenario-preset.js";
 import { parseTriggerInput, type Trigger } from "../domain/trigger.js";
 import {
@@ -260,6 +266,8 @@ export interface WebChannelDeps {
   hookRegistry?: HookRegistry;
   /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
+  /** 会话权限模式切换回调（PATCH 即时通知 orchestrator 内存 registry）；缺省=仅落库，下轮生效 */
+  onPermissionModeChange?: (conversationId: string, mode: AgentPermissionMode) => void;
   publicBaseUrl?: string;
   /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
   dingtalkLoginRedirectUri?: string;
@@ -1667,8 +1675,9 @@ export class WebChannel implements Channel {
       }
       if (userId) {
         const list = (await this.deps.conversationStore?.listByUser(userId)) ?? [];
+        const withMode = await Promise.all(list.map((c) => this.conversationWithMode(c)));
         res.writeHead(200);
-        res.end(JSON.stringify(list));
+        res.end(JSON.stringify(withMode));
       } else {
         res.writeHead(400);
         res.end(JSON.stringify({ error: "userId required" }));
@@ -1713,6 +1722,54 @@ export class WebChannel implements Channel {
         : await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
       res.writeHead(201);
       res.end(JSON.stringify(conv));
+      return;
+    }
+
+    // PATCH /api/conversations/:id — 会话权限模式覆盖（仅会话属主/管理员）
+    const patchConvMatch = url.match(/^\/api\/conversations\/([\w-]+)$/);
+    if (patchConvMatch && req.method === "PATCH") {
+      const conversationId = patchConvMatch[1] ?? "";
+      const uid = this.requireRequestUser(req);
+      const conv = await this.deps.conversationStore?.get(conversationId);
+      if (!conv) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "conversation not found" }));
+        return;
+      }
+      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
+      if (conv.userId !== uid && viewer?.role !== "admin") {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可修改" }));
+        return;
+      }
+      const body = JSON.parse(await this.readBody(req)) as { permissionMode?: string };
+      const parsed = AgentPermissionModeSchema.safeParse(body.permissionMode);
+      if (!parsed.success) {
+        res.writeHead(400);
+        res.end(
+          JSON.stringify({ error: "permissionMode 无效（ask_before_change | full_access）" }),
+        );
+        return;
+      }
+      const previous = conv.permissionMode ?? "ask_before_change（跟随智能体默认）";
+      await this.deps.conversationStore?.update(conversationId, { permissionMode: parsed.data });
+      // 内存 registry 即时更新：进行中轮的下一次工具调用即按新模式校验
+      this.deps.onPermissionModeChange?.(conversationId, parsed.data);
+      try {
+        await this.deps.auditStore?.record({
+          conversationId,
+          taskId: "",
+          userId: uid ?? "unknown",
+          seq: -1,
+          type: "permission_mode_change",
+          text: `会话权限模式：${previous} → ${parsed.data}`,
+          toolInput: JSON.stringify({ from: conv.permissionMode, to: parsed.data }),
+          recordedAt: new Date().toISOString(),
+        });
+      } catch {
+        // 审计失败不阻断切换
+      }
+      this.json(res, { ok: true, permissionMode: parsed.data });
       return;
     }
 
@@ -3124,6 +3181,20 @@ export class WebChannel implements Channel {
       gitAllowShellGit: a.gitAllowShellGit,
       version: a.version,
       llm: a.llm,
+    };
+  }
+
+  /** 会话 DTO 附生效权限模式（存储覆盖 ?? 绑定智能体默认 ?? 系统缺省） */
+  private async conversationWithMode(
+    conv: Conversation,
+  ): Promise<Conversation & { effectivePermissionMode: AgentPermissionMode }> {
+    const agent = conv.agentId ? await this.deps.agentStore?.get(conv.agentId) : undefined;
+    return {
+      ...conv,
+      effectivePermissionMode: resolvePermissionMode(
+        conv.permissionMode,
+        agent?.defaultPermissionMode,
+      ),
     };
   }
 

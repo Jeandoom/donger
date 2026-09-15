@@ -166,6 +166,11 @@ export class ClaudeAgentRunner implements AgentRunner {
           if (!gated) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
           }
+          // 完全权限模式：命中审批门的调用直接放行（每次调用现取，轮内切换立即生效）。
+          // 只跳过审批门——白名单/写入边界/shell git 守卫/只读豁免在到达此处前已生效。
+          if (opts.permissionMode?.() === "full_access") {
+            return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
+          }
           const summary =
             toolName === "Bash" && typeof input.command === "string"
               ? String(input.command)
@@ -235,6 +240,8 @@ export class ClaudeAgentRunner implements AgentRunner {
             filesystem: readOnlyRoots?.length ? { denyWrite: readOnlyRoots } : undefined,
           },
           permissionMode: "default",
+          // donger 会话权限模式（审计口径；取轮启动时的值）
+          agentPermissionMode: opts.permissionMode?.(),
           resume: opts.resume,
           workspaceRoot: opts.workspaceRoot,
           allowedWriteRoots: opts.allowedWriteRoots,

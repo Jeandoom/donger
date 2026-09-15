@@ -4,6 +4,7 @@ import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
 import type {
+  AgentPermissionMode,
   ChatErrors,
   ChatMessage,
   ConnectionState,
@@ -14,6 +15,7 @@ import type {
 } from "../../types";
 import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
 import { SecondarySidebar } from "../layout/SecondarySidebar";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 import { AssistantThread } from "./AssistantThread";
 import { MobileConversationSheet } from "./MobileConversationSheet";
 
@@ -40,6 +42,8 @@ export interface ChatWorkspaceProps {
   onDecideCredentialMissing: (decision: string) => void;
   onAnswerQuestion: (answers: Record<string, string>, response?: string) => void;
   inputPlaceholder?: string;
+  /** 切换会话权限模式（undefined=不支持，隐藏切换器） */
+  onPermissionModeChange?: (mode: AgentPermissionMode) => Promise<void>;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
   errors: ChatErrors;
@@ -50,6 +54,12 @@ export interface ChatWorkspaceProps {
 
 export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  const activeConversation = props.conversations.find((c) => c.id === props.activeConversationId);
+  const effectiveMode: AgentPermissionMode =
+    activeConversation?.effectivePermissionMode ??
+    activeConversation?.permissionMode ??
+    "ask_before_change";
   const attachmentAdapter = useMemo(
     () =>
       new DongerAttachmentAdapter(
@@ -122,14 +132,50 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               </span>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => setDrawerOpen(true)}
-            className="shrink-0 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted"
-          >
-            文件
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {props.onPermissionModeChange ? (
+              <select
+                aria-label="会话权限模式"
+                value={effectiveMode}
+                onChange={(e) => {
+                  const mode = e.target.value as AgentPermissionMode;
+                  if (mode === "full_access" && effectiveMode !== "full_access") {
+                    setConfirmFullAccess(true);
+                  } else {
+                    void props.onPermissionModeChange?.(mode);
+                  }
+                }}
+                className={`rounded-lg border px-2 py-1.5 text-xs font-medium ${
+                  effectiveMode === "full_access"
+                    ? "border-amber-300 bg-warning-soft text-amber-800"
+                    : "border-border bg-card hover:bg-muted"
+                }`}
+              >
+                <option value="ask_before_change">🛡️ 变更前问询</option>
+                <option value="full_access">⚡ 完全权限</option>
+              </select>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              className="shrink-0 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              文件
+            </button>
+          </div>
         </div>
+        <ConfirmDialog
+          open={confirmFullAccess}
+          title="切换到完全权限模式？"
+          description="完全权限下，部署/发布/推送/Git 写入等高危操作将不再弹审批卡确认，直接执行（工具白名单与文件写入边界仍然生效）。定时/钩子等无人值守任务不受此开关影响，仍会逐项问询。"
+          confirmText="切换为完全权限"
+          destructive
+          onConfirm={() => {
+            setConfirmFullAccess(false);
+            void props.onPermissionModeChange?.("full_access");
+          }}
+          onCancel={() => setConfirmFullAccess(false)}
+        />
         {props.errors.stream ? (
           <div role="status" className="bg-warning-soft px-3 py-2 text-sm text-amber-800">
             {props.errors.stream}

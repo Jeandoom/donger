@@ -67,6 +67,33 @@ describe("SqliteConversationStore", () => {
     expect((await store.get(c2.id))?.agentId).toBe("agentX");
   });
 
+  it("permissionMode 覆盖写读与清空（空=跟随智能体默认）", async () => {
+    const c = await store.create("u1", "web", "模式测试");
+    expect((await store.get(c.id))?.permissionMode).toBeUndefined();
+    await store.update(c.id, { permissionMode: "full_access" });
+    expect((await store.get(c.id))?.permissionMode).toBe("full_access");
+    await store.update(c.id, { permissionMode: undefined });
+    expect((await store.get(c.id))?.permissionMode).toBeUndefined();
+  });
+
+  it("旧库 permissionMode 列不存在时 migrate 幂等补列且不丢数据", async () => {
+    const oldDb = new Database(":memory:");
+    oldDb.exec(
+      `CREATE TABLE conversations (id TEXT PRIMARY KEY, userId TEXT, sdkSessionId TEXT, title TEXT, channelId TEXT, agentId TEXT NOT NULL DEFAULT '', createdAt TEXT, updatedAt TEXT, archived INTEGER)`,
+    );
+    oldDb.exec(
+      `INSERT INTO conversations (id, userId, sdkSessionId, title, channelId, agentId, createdAt, updatedAt, archived) VALUES ('c1','u1','','旧会话','web','','t','t',0)`,
+    );
+    const s2 = new SqliteConversationStore(oldDb);
+    s2.migrate();
+    expect((await s2.get("c1"))?.title).toBe("旧会话");
+    expect((await s2.get("c1"))?.permissionMode).toBeUndefined();
+    // 补列后可正常写模式
+    await s2.update("c1", { permissionMode: "ask_before_change" });
+    expect((await s2.get("c1"))?.permissionMode).toBe("ask_before_change");
+    oldDb.close();
+  });
+
   it("旧库无 agentId 列时 migrate 幂等补列", () => {
     const oldDb = new Database(":memory:");
     oldDb.exec(

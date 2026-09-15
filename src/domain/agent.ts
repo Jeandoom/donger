@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AgentExtensionDirectoriesSchema } from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
+import { AgentPermissionModeSchema } from "./permission-mode.js";
 import { SCENARIO_KEYS } from "./scenario-preset.js";
 
 export const McpServerConfigSchema = z.object({
@@ -46,6 +47,8 @@ export const AgentSchema = z.object({
   extensionDirectories: AgentExtensionDirectoriesSchema,
   /** 所属场景（builder 创建时选定；缺省 = 不做场景校验） */
   scenario: z.enum(SCENARIO_KEYS).optional(),
+  /** 会话权限模式默认值：绑定该 agent 的会话未手动覆盖时生效（缺省=变更前问询） */
+  defaultPermissionMode: AgentPermissionModeSchema.default("ask_before_change"),
   llm: AgentLLMSchema,
   /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */
   version: z.number().int().positive().default(1),

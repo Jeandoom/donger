@@ -23,6 +23,7 @@ import {
   type SkillSelectorOption,
 } from "../lib/skillSelector";
 import { fetchCredentialTemplates, fetchMyCredentials } from "../lib/skills";
+import type { AgentPermissionMode } from "../types";
 
 const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   name: "",
@@ -38,6 +39,7 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   extensionDirectories: [],
   scenario: undefined,
   gitAllowShellGit: false,
+  defaultPermissionMode: "ask_before_change",
   llm: {},
 };
 
@@ -109,6 +111,7 @@ export function AgentEditorPage() {
             extensionDirectories: a.extensionDirectories ?? [],
             scenario: a.scenario,
             gitAllowShellGit: a.gitAllowShellGit ?? false,
+            defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
             llm: a.llm,
           });
         })
@@ -310,6 +313,26 @@ export function AgentEditorPage() {
           </select>
           <p className="text-xs text-muted-foreground">
             对话时会在每次用户输入后自动追加 /{`{默认 Skill}`}，触发对应技能。
+          </p>
+        </Field>
+
+        <Field label="默认对话模式">
+          <select
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
+            value={form.defaultPermissionMode ?? "ask_before_change"}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                defaultPermissionMode: event.target.value as AgentPermissionMode,
+              })
+            }
+          >
+            <option value="ask_before_change">变更前问询（默认）</option>
+            <option value="full_access">完全权限（跳过审批卡，高危操作直接执行）</option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            会话默认按此模式校验工具调用，用户可在聊天头部临时切换（完全权限下 deploy/push
+            等高危操作不再弹审批卡；白名单与文件写入边界不受影响；无人值守任务恒按变更前问询）。
           </p>
         </Field>
 

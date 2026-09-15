@@ -111,6 +111,9 @@ export type ChatErrorKey =
 
 export type ChatErrors = Partial<Record<ChatErrorKey, string>>;
 
+/** 会话权限模式：full_access 跳过工具审批门（白名单/写边界/shell git 守卫不受影响） */
+export type AgentPermissionMode = "ask_before_change" | "full_access";
+
 /** 会话摘要（从 GET /api/conversations 返回） */
 export interface ConversationSummary {
   id: string;
@@ -119,6 +122,10 @@ export interface ConversationSummary {
   title: string;
   channelId: string;
   agentId: string;
+  /** 会话级权限模式覆盖；空 = 跟随绑定智能体的默认配置 */
+  permissionMode?: AgentPermissionMode;
+  /** 生效权限模式（后端按 会话覆盖 ?? 智能体默认 ?? 变更前问询 计算） */
+  effectivePermissionMode?: AgentPermissionMode;
   createdAt: string;
   updatedAt: string;
   archived: boolean;

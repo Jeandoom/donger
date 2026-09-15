@@ -33,6 +33,11 @@ export type ChatAction =
   | { type: "set_messages"; messages: ChatMessage[] }
   | { type: "loading_messages"; loading: boolean }
   | { type: "remove_conversation"; conversationId: string }
+  | {
+      type: "update_conversation";
+      conversationId: string;
+      patch: Partial<ConversationSummary>;
+    }
   | { type: "set_error"; key: ChatErrorKey; message: string }
   | { type: "clear_error"; key: ChatErrorKey };
 
@@ -271,6 +276,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         loadingMessages: isActive ? false : state.loadingMessages,
       };
     }
+    case "update_conversation":
+      return {
+        ...state,
+        conversations: state.conversations.map((c) =>
+          c.id === action.conversationId ? { ...c, ...action.patch } : c,
+        ),
+      };
     default:
       return state;
   }

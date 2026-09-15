@@ -97,6 +97,8 @@ export class LoopRunner {
         threadId: loopId,
         requesterId: loop.ownerId,
         text: prompt,
+        // 无人值守触发：orchestrator 据此强制按变更前问询执行（full_access 仅限交互式会话）
+        unattended: true,
       };
       const agentConversationId = await orchestrator.handleMessage(msg);
       await loopStore.updateRun(run.id, {

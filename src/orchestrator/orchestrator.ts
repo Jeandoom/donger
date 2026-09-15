@@ -6,6 +6,11 @@ import type { Conversation } from "../domain/conversation.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { appendMessageFiles } from "../domain/message-files.js";
+import {
+  type AgentPermissionMode,
+  DEFAULT_PERMISSION_MODE,
+  resolvePermissionMode,
+} from "../domain/permission-mode.js";
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
@@ -78,8 +83,20 @@ export interface OrchestratorDeps {
 export class Orchestrator {
   // conversationId → taskId（该会话当前活跃任务，用于独立并发控制）
   private readonly busyConversations = new Map<string, string>();
+  // conversationId → 会话权限模式（轮启动时预热；web PATCH 即时更新，canUseTool 每次现取）
+  private readonly permissionModes = new Map<string, AgentPermissionMode>();
   // 会话实时执行状态（SDK 事件流推导；观测态，不落库）
   private readonly activityTracker = new ActivityTracker();
+
+  /** 更新会话权限模式（web PATCH 回调入口；进行中轮的下一次工具调用即生效） */
+  setPermissionMode(conversationId: string, mode: AgentPermissionMode): void {
+    this.permissionModes.set(conversationId, mode);
+  }
+
+  /** 会话生效权限模式（registry 未命中按变更前问询兜底） */
+  private effectivePermissionMode(conversationId: string): AgentPermissionMode {
+    return this.permissionModes.get(conversationId) ?? DEFAULT_PERMISSION_MODE;
+  }
 
   /** 查询会话实时执行状态（正在思考/输出/执行什么工具）；无活跃执行时 undefined */
   getActivity(conversationId: string): ActivitySnapshot | undefined {
@@ -273,6 +290,8 @@ export class Orchestrator {
         gitMaterializeItems: p.gitMaterializeItems,
       });
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
+      // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
+      base = { ...base, permissionMode: () => this.effectivePermissionMode(p.conversation.id) };
       // 业务知识库工具恒挂载（路径安全限制在 <用户工作区>/knowledge_base/ 内；可用性由白名单控制）
       base = {
         ...base,
@@ -1021,6 +1040,17 @@ export class Orchestrator {
         await store.updateStatus(task.id, nextStatus("created", "plan"), { steps });
       }
       task.steps = steps;
+
+      // 会话权限模式预热：无人值守触发（定时/钩子/工作流）强制按变更前问询，
+      // full_access 仅限交互式会话；会话未手动覆盖时跟随智能体默认。
+      // registry 供 runner canUseTool 每次工具调用现取（轮内 PATCH 切换立即生效）。
+      this.permissionModes.set(
+        conversation.id,
+        resolvePermissionMode(
+          msg.unattended === true ? DEFAULT_PERMISSION_MODE : conversation.permissionMode,
+          agent?.defaultPermissionMode,
+        ),
+      );
 
       // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并
       let memoryAppend: string | undefined;

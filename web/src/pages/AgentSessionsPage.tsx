@@ -151,6 +151,7 @@ export function AgentSessionsPage() {
       connection={wc.connection}
       onCancel={wc.cancel}
       onEnsureConversation={wc.ensureConversation}
+      onPermissionModeChange={wc.setPermissionMode}
       onResolveApproval={wc.resolveApproval}
       onDecideCredentialMissing={wc.decideCredentialMissing}
       onAnswerQuestion={wc.answerQuestion}

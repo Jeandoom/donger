@@ -33,6 +33,7 @@ export const BUILTIN_ASSIST_AGENT: Agent = {
   connectorIds: [],
   gitAllowShellGit: false,
   extensionDirectories: [],
+  defaultPermissionMode: "ask_before_change",
   llm: {},
   version: 1,
   createdAt: "",

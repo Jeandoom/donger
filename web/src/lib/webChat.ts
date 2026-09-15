@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { ConversationSummary, PendingQuestion, SSEEvent } from "../types";
+import type { AgentPermissionMode, ConversationSummary, PendingQuestion, SSEEvent } from "../types";
 import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
+import { setConversationPermissionMode } from "./conversations";
 import { assembleTurnMessages, type HistoryEvent, type HistoryMessage } from "./turnAssembly";
 
 type SSEClient = {
@@ -514,6 +515,32 @@ export function useWebChat() {
     [state.conversations],
   );
 
+  /** 切换会话权限模式：PATCH 落库 + 本地即时更新（失败回滚） */
+  const setPermissionMode = useCallback(
+    async (mode: AgentPermissionMode) => {
+      const id = state.activeConversationId;
+      if (!id) return;
+      const conversation = state.conversations.find((item) => item.id === id);
+      if (!conversation || conversation.isDraft) return;
+      const previous = conversation.permissionMode;
+      dispatch({
+        type: "update_conversation",
+        conversationId: id,
+        patch: { permissionMode: mode },
+      });
+      try {
+        await setConversationPermissionMode(id, mode);
+      } catch {
+        dispatch({
+          type: "update_conversation",
+          conversationId: id,
+          patch: { permissionMode: previous },
+        });
+      }
+    },
+    [state.activeConversationId, state.conversations],
+  );
+
   return {
     ...state,
     send,
@@ -526,5 +553,6 @@ export function useWebChat() {
     ensureConversation,
     loadConversations,
     deleteConversation,
+    setPermissionMode,
   };
 }

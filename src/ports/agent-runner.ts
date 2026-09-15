@@ -1,6 +1,7 @@
 import type { McpSdkServerConfigWithInstance, SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import type { AgentPermissionMode } from "../domain/permission-mode.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -42,6 +43,11 @@ export interface RunOptions {
    * 工具）；仅 agent 显式配置 true 时放行（push 仍有 deploy 审批门）。
    */
   gitAllowShellGit?: boolean;
+  /**
+   * 会话权限模式取值器（每次工具调用现取，轮内切换立即生效）：
+   * full_access 时命中审批门的调用直接放行；白名单/写边界/shell git 守卫不受影响。
+   */
+  permissionMode?: () => AgentPermissionMode;
   /** 透传 SDK mcpServers（已解密） */
   mcpServers?: McpServerConfig[];
   /** 插件共享运行库目录（<plugin>/scripts，存在才注入）：

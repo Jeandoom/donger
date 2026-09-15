@@ -1774,3 +1774,52 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     expect(res.status).toBe(400);
   });
 });
+
+describe("PATCH /api/conversations/:id（会话权限模式）", () => {
+  it("属主可切换 permissionMode；列表 DTO 附 effectivePermissionMode", async () => {
+    const { port, token, userId, convStore } = await startWebWithAgents();
+    const conv = await convStore.create(userId, "web", "模式测试");
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${conv.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ permissionMode: "full_access" }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { permissionMode: string }).permissionMode).toBe("full_access");
+    expect((await convStore.get(conv.id))?.permissionMode).toBe("full_access");
+
+    // 会话未绑定 agent：effective = 会话覆盖
+    const list = await fetch(`http://127.0.0.1:${port}/api/conversations?userId=${userId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const items = (await list.json()) as Array<{
+      id: string;
+      effectivePermissionMode?: string;
+    }>;
+    const mine = items.find((c) => c.id === conv.id);
+    expect(mine?.effectivePermissionMode).toBe("full_access");
+  });
+
+  it("非法模式值 → 400；不存在会话 → 404", async () => {
+    const { port, token, userId, convStore } = await startWebWithAgents();
+    const conv = await convStore.create(userId, "web", "模式测试");
+
+    const bad = await fetch(`http://127.0.0.1:${port}/api/conversations/${conv.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ permissionMode: "yolo" }),
+    });
+    expect(bad.status).toBe(400);
+
+    const missing = await fetch(
+      `http://127.0.0.1:${port}/api/conversations/00000000-0000-0000-0000-000000000000`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ permissionMode: "full_access" }),
+      },
+    );
+    expect(missing.status).toBe(404);
+  });
+});

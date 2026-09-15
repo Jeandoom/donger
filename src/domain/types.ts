@@ -124,9 +124,12 @@ export interface AuditEvent {
     | "tool_result"
     | "result"
     /** 凭证缺失问询（text=人读提示；toolInput=JSON {codes:[{code,name,keys}]}，不含值） */
+    /** 凭证缺失问询（text=人读提示；toolInput=JSON {codes:[{code,name,keys}]}，不含值） */
     | "credential_prompt"
     /** 执行前准备失败（仓库物化/平台工具装配等；text=失败原因。复盘 P2-12：此前零审计痕迹） */
-    | "prepare_error";
+    | "prepare_error"
+    /** 会话权限模式切换（text=人读描述；toolInput=JSON {from,to}） */
+    | "permission_mode_change";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;
@@ -163,6 +166,8 @@ export const IncomingMessageSchema = z.object({
   files: z.array(MessageFileSchema).optional(),
   /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
   builderFromTaskId: z.string().optional(),
+  /** 无人值守触发（定时/钩子/工作流）：权限模式强制按变更前问询执行 */
+  unattended: z.boolean().optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

@@ -279,6 +279,92 @@ describe("ClaudeAgentRunner", () => {
     expect(seen).toEqual(["deploy"]);
   });
 
+  it("canUseTool：full_access 命中门 → 直接 allow，不调 resolver", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /deploy/ });
+    gates.add({ gateId: "git-write", toolName: "mcp__donger-git__git_push" });
+    const runner = new ClaudeAgentRunner(gates);
+    let calls = 0;
+    await collect(
+      runner.run(task, { ...opts, permissionMode: () => "full_access" }, async () => {
+        calls++;
+        return { approved: true };
+      }),
+    );
+    const bash = await captured?.canUseTool?.(
+      "Bash",
+      { command: "bash deploy.sh" },
+      { toolUseID: "tu1" },
+    );
+    const push = await captured?.canUseTool?.(
+      "mcp__donger-git__git_push",
+      { repo: "r" },
+      { toolUseID: "tu2" },
+    );
+    expect(bash?.behavior).toBe("allow");
+    expect(push?.behavior).toBe("allow");
+    expect(calls).toBe(0);
+  });
+
+  it("canUseTool：permissionMode 为取值器，轮内切换立即生效", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /deploy/ });
+    const runner = new ClaudeAgentRunner(gates);
+    const seen: string[] = [];
+    let mode: "ask_before_change" | "full_access" = "full_access";
+    await collect(
+      runner.run(task, { ...opts, permissionMode: () => mode }, async (req) => {
+        seen.push(req.gateId);
+        return { approved: true };
+      }),
+    );
+    const allowed = await captured?.canUseTool?.(
+      "Bash",
+      { command: "bash deploy.sh" },
+      { toolUseID: "tu1" },
+    );
+    expect(allowed?.behavior).toBe("allow");
+    expect(seen).toEqual([]);
+    // 切回问询模式：下一次工具调用即走审批门（无需新起轮次）
+    mode = "ask_before_change";
+    const gated = await captured?.canUseTool?.(
+      "Bash",
+      { command: "bash deploy.sh" },
+      { toolUseID: "tu2" },
+    );
+    expect(gated?.behavior).toBe("allow"); // resolver 批准
+    expect(seen).toEqual(["deploy"]);
+  });
+
+  it("canUseTool：full_access 不豁免白名单与写入边界（安全不变量）", async () => {
+    mockStream([]);
+    const gates = new GateRouter();
+    const outside = mkdtempSync(join(tmpdir(), "outside-"));
+    const runner = new ClaudeAgentRunner(gates);
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          allowedTools: ["Read"],
+          permissionMode: () => "full_access",
+          workspaceRoot: join(outside, "ws"),
+        },
+        async () => ({ approved: true }),
+      ),
+    );
+    const deniedTool = await captured?.canUseTool?.("Bash", { command: "ls" }, { toolUseID: "tu" });
+    expect(deniedTool?.behavior).toBe("deny");
+    const deniedWrite = await captured?.canUseTool?.(
+      "Write",
+      { file_path: join(outside, "evil.txt") },
+      { toolUseID: "tu2" },
+    );
+    expect(deniedWrite?.behavior).toBe("deny");
+  });
+
   it("canUseTool：只读命令豁免审批门（不调 resolver，复盘 P2-9）", async () => {
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const gates = new GateRouter();
