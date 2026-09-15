@@ -29,7 +29,8 @@ const EnvSchema = z.object({
   LOG_LEVEL: LogLevelSchema.default("info"),
   // 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills
   BUILTIN_SKILLS_DIR: z.string().default(""),
-  // 管理员的外部 ID 白名单（钉钉 userId/staffId，逗号分隔）。
+  // 管理员的外部 ID 白名单（逗号分隔；裸 externalId 对全平台生效，
+  // 或 "provider:externalId" 限定平台（如 github:12345678）。见 domain/user.ts 的 isAdminExternalId）。
   ADMIN_EXTERNAL_IDS: z.string().optional().default(""),
   // 已废弃：保留以向后兼容，值会被合并进 ADMIN_EXTERNAL_IDS。
   ADMIN_STAFF_IDS: z.string().optional(),
@@ -40,6 +41,12 @@ const EnvSchema = z.object({
   // 钉钉扫码登录回调地址（完整 URL，须与钉钉开放平台注册的重定向 URI 一致；
   // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导）
   DINGTALK_LOGIN_REDIRECT_URI: z.string().optional().default(""),
+  // GitHub OAuth 登录（两值均非空才启用；OAuth App: https://github.com/settings/developers）
+  GITHUB_CLIENT_ID: z.string().optional().default(""),
+  GITHUB_CLIENT_SECRET: z.string().optional().default(""),
+  // GitHub 登录回调地址（完整 URL，须与 OAuth App 注册的 Authorization callback URL 一致；
+  // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导。dev 与生产域名不同时需分别建 OAuth App 并在此覆盖）
+  GITHUB_LOGIN_REDIRECT_URI: z.string().optional().default(""),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
   // CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange 换 JWT；空=关闭该端点）
@@ -73,6 +80,12 @@ export interface DingTalkConfig {
   robotCode: string;
   /** AI 卡片模板 ID（可选；有则用 AI 卡片流式回复） */
   cardTemplateId?: string;
+}
+
+/** GitHub OAuth 登录配置（仅当 CLIENT_ID/CLIENT_SECRET 均非空才出现） */
+export interface GithubOAuthConfig {
+  clientId: string;
+  clientSecret: string;
 }
 
 /** Agent 可选 LLM 预置模型（authToken 复用全局 ANTHROPIC_AUTH_TOKEN） */
@@ -109,6 +122,7 @@ export interface AppConfig {
   /** 管理员外部 ID 列表（ADMIN_EXTERNAL_IDS，逗号分隔；兼容 ADMIN_STAFF_IDS） */
   adminExternalIds: Set<string>;
   dingtalk?: DingTalkConfig;
+  githubOAuth?: GithubOAuthConfig;
   /** JWT 签名密钥（空字符串表示未配置，由 index.ts 处理） */
   jwtSecret: string;
   /** CLI 前端登录共享密钥（空=未启用 POST /api/auth/exchange） */
@@ -124,6 +138,8 @@ export interface AppConfig {
   publicBaseUrl: string;
   /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
   dingtalkLoginRedirectUri: string;
+  /** GitHub 登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
+  githubLoginRedirectUri: string;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
@@ -168,6 +184,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     },
     publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
     dingtalkLoginRedirectUri: e.DINGTALK_LOGIN_REDIRECT_URI.trim(),
+    githubLoginRedirectUri: e.GITHUB_LOGIN_REDIRECT_URI.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
@@ -180,6 +197,12 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       appSecret: e.DINGTALK_APP_SECRET,
       robotCode: e.DINGTALK_ROBOT_CODE,
       cardTemplateId: e.DINGTALK_CARD_TEMPLATE_ID || undefined,
+    };
+  }
+  if (e.GITHUB_CLIENT_ID && e.GITHUB_CLIENT_SECRET) {
+    cfg.githubOAuth = {
+      clientId: e.GITHUB_CLIENT_ID,
+      clientSecret: e.GITHUB_CLIENT_SECRET,
     };
   }
   return cfg;

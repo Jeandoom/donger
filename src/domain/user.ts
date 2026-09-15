@@ -21,11 +21,23 @@ export type User = z.infer<typeof UserSchema>;
 export interface UserIdentity {
   id: string;
   userId: string;
-  provider: string; // "dingtalk" | "feishu" | "qq" | ...
-  externalId: string; // 各平台的用户唯一标识（如 staffId、openId）
+  provider: string; // "dingtalk" | "github" | "feishu" | ...
+  externalId: string; // 各平台的用户唯一标识（如 staffId、openId、GitHub 数字 id）
   unionId?: string;
   name?: string;
   avatar?: string;
   rawProfile?: string; // OAuth 返回的原始用户信息（JSON）
   createdAt: string;
+}
+
+/**
+ * 管理员白名单判定：条目为裸 externalId（全平台生效）或 "provider:externalId"（限定平台）。
+ * 裸写法向后兼容既有 ADMIN_EXTERNAL_IDS（历史值均为钉钉 userId/staffId）。
+ */
+export function isAdminExternalId(
+  whitelist: ReadonlySet<string>,
+  provider: string,
+  externalId: string,
+): boolean {
+  return whitelist.has(externalId) || whitelist.has(`${provider}:${externalId}`);
 }

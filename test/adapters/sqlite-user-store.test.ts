@@ -138,17 +138,31 @@ describe("getOrCreateByIdentity", () => {
     const user = await s.getOrCreateByIdentity("dingtalk", "ext1", "Alice");
     expect(user.role).toBe("admin");
   });
+
+  it("provider:externalId 前缀命中 → role=admin；同裸 id 在其他平台 → user", async () => {
+    const s = newStore(["github:8888"]);
+    const gh = await s.getOrCreateByIdentity("github", "8888", "GH");
+    expect(gh.role).toBe("admin");
+    const dd = await s.getOrCreateByIdentity("dingtalk", "8888", "DD");
+    expect(dd.role).toBe("user");
+  });
 });
 
 describe("isAdminByExternalId", () => {
   it("externalId 在白名单内 → true", async () => {
     const s = newStore(["ext1"]);
-    expect(await s.isAdminByExternalId("ext1")).toBe(true);
+    expect(await s.isAdminByExternalId("dingtalk", "ext1")).toBe(true);
   });
 
   it("不在白名单 → false", async () => {
     const s = newStore();
-    expect(await s.isAdminByExternalId("ext1")).toBe(false);
+    expect(await s.isAdminByExternalId("dingtalk", "ext1")).toBe(false);
+  });
+
+  it("provider:externalId 前缀仅对对应 provider 生效", async () => {
+    const s = newStore(["github:8888"]);
+    expect(await s.isAdminByExternalId("github", "8888")).toBe(true);
+    expect(await s.isAdminByExternalId("dingtalk", "8888")).toBe(false);
   });
 });
 

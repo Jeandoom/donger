@@ -1,13 +1,13 @@
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
-import type { User, UserIdentity, UserRole } from "../domain/user.js";
+import { isAdminExternalId, type User, type UserIdentity, type UserRole } from "../domain/user.js";
 import type { UserStore } from "../ports/user-store.js";
 import { initUserWorkspace } from "../util/workspace.js";
 
 export interface SqliteUserStoreOptions {
   /**
    * 管理员的外部 ID 集合（来自 ADMIN_EXTERNAL_IDS 配置）。
-   * 值是钉钉 userId（扫码用）或 staffId（IM 用），逗号分隔。
+   * 条目为裸 externalId（全平台生效）或 "provider:externalId"（限定平台）。
    */
   adminExternalIds: Set<string>;
   /** 用户目录根（如 data/users/） */
@@ -108,7 +108,9 @@ export class SqliteUserStore implements UserStore {
     }
     // 2. 新建 User
     const id = crypto.randomUUID();
-    const role: UserRole = this.opts.adminExternalIds.has(externalId) ? "admin" : "user";
+    const role: UserRole = isAdminExternalId(this.opts.adminExternalIds, provider, externalId)
+      ? "admin"
+      : "user";
     const homeDir = join(this.opts.usersDir, id);
     const now = new Date().toISOString();
     const user: User = {
@@ -140,9 +142,9 @@ export class SqliteUserStore implements UserStore {
     return user;
   }
 
-  /** 检查外部 ID 是否在管理员白名单中 */
-  async isAdminByExternalId(externalId: string): Promise<boolean> {
-    return this.opts.adminExternalIds.has(externalId);
+  /** 检查外部 ID 是否在管理员白名单中（含 provider:externalId 前缀条目） */
+  async isAdminByExternalId(provider: string, externalId: string): Promise<boolean> {
+    return isAdminExternalId(this.opts.adminExternalIds, provider, externalId);
   }
 
   async updateRole(id: string, role: UserRole): Promise<void> {

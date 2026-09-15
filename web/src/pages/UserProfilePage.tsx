@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../components/ui/page-header";
+import { Button } from "../components/ui/button";
 import { apiFetch } from "../lib/auth";
 
 interface UserInfo {
@@ -19,18 +20,22 @@ interface UserIdentity {
 }
 
 const CHANNELS = [
-  { provider: "dingtalk", label: "钉钉", available: true },
-  { provider: "qq", label: "QQ", available: false },
-  { provider: "feishu", label: "飞书", available: false },
-  { provider: "wechat", label: "微信", available: false },
+  { provider: "dingtalk", label: "钉钉" },
+  { provider: "github", label: "GitHub" },
+  { provider: "qq", label: "QQ" },
+  { provider: "feishu", label: "飞书" },
+  { provider: "wechat", label: "微信" },
 ] as const;
 
 export function UserProfilePage() {
   const [user, setUser] = useState<UserInfo>();
   const [identities, setIdentities] = useState<UserIdentity[]>([]);
   const [error, setError] = useState("");
+  const [bindError, setBindError] = useState("");
+  // 后端已配置 GitHub OAuth（/api/auth/github/url 200=已配置，503=未配置）
+  const [githubConfigured, setGithubConfigured] = useState(false);
 
-  useEffect(() => {
+  const loadProfile = useCallback(() => {
     void apiFetch("/api/auth/me")
       .then(async (response) => {
         if (!response.ok) throw new Error(`加载用户信息失败：HTTP ${response.status}`);
@@ -44,6 +49,44 @@ export function UserProfilePage() {
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
   }, []);
+
+  useEffect(() => {
+    loadProfile();
+    void fetch("/api/auth/github/url")
+      .then((r) => setGithubConfigured(r.ok))
+      .catch(() => setGithubConfigured(false));
+  }, [loadProfile]);
+
+  // 绑定弹窗回传：刷新身份列表
+  useEffect(() => {
+    const handler = (ev: MessageEvent) => {
+      if (ev.data?.type === "bind-success" && ev.data.provider === "github") {
+        loadProfile();
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [loadProfile]);
+
+  const startGithubBind = () => {
+    setBindError("");
+    void apiFetch("/api/auth/github/bind")
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`发起绑定失败：HTTP ${r.status}`);
+        return (await r.json()) as { url?: string };
+      })
+      .then((data) => {
+        if (!data.url) throw new Error("未获取到授权地址");
+        const w = window.open(data.url, "github-bind", "width=600,height=700");
+        if (!w) setBindError("弹窗被拦截，请允许弹出窗口后重试");
+      })
+      .catch((reason: unknown) =>
+        setBindError(reason instanceof Error ? reason.message : String(reason)),
+      );
+  };
+
+  const channelAvailable = (provider: string): boolean =>
+    provider === "github" ? githubConfigured : provider === "dingtalk";
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
@@ -70,15 +113,21 @@ export function UserProfilePage() {
 
       <section className="space-y-3 rounded-lg border bg-background p-5">
         <h2 className="font-medium">已绑定的登录渠道</h2>
+        {bindError ? (
+          <div className="rounded bg-destructive-soft p-2 text-sm text-destructive">
+            {bindError}
+          </div>
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           {CHANNELS.map((channel) => {
             const identity = identities.find((item) => item.provider === channel.provider);
             const bound = Boolean(identity);
+            const available = channelAvailable(channel.provider);
             return (
               <div
                 key={channel.provider}
                 className={`flex items-center justify-between rounded border px-3 py-2 ${
-                  channel.available ? "" : "opacity-50"
+                  available ? "" : "opacity-50"
                 }`}
               >
                 <div>
@@ -86,12 +135,20 @@ export function UserProfilePage() {
                   <div className="text-xs text-muted-foreground">
                     {bound
                       ? `已绑定${identity?.name ? `：${identity.name}` : ""}`
-                      : channel.available
+                      : available
                         ? "未绑定"
                         : "待开发"}
                   </div>
                 </div>
-                <span className="text-xs text-muted-foreground">{bound ? "✓" : "—"}</span>
+                {bound ? (
+                  <span className="text-xs text-muted-foreground">✓</span>
+                ) : channel.provider === "github" && available ? (
+                  <Button variant="outline" size="sm" onClick={startGithubBind}>
+                    绑定
+                  </Button>
+                ) : (
+                  <span className="text-xs text-muted-foreground">—</span>
+                )}
               </div>
             );
           })}

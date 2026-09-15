@@ -8,6 +8,7 @@ export function LoginPage() {
   const [searchParams] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [githubUrl, setGithubUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // 登录成功后的回跳目标（分享链接等场景经 ?next= 传入；默认回首页）
@@ -46,6 +47,11 @@ export function LoginPage() {
   const loadQr = useCallback(() => {
     setLoading(true);
     setError(null);
+    // GitHub 登录探测：未配置（503）时隐藏对应按钮，不影响钉钉主流程
+    fetch("/api/auth/github/url")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { url?: string } | null) => setGithubUrl(data?.url ?? null))
+      .catch(() => setGithubUrl(null));
     fetch("/api/auth/qrcode-url")
       .then((r) => r.json())
       .then((data) => {
@@ -64,6 +70,12 @@ export function LoginPage() {
   const openQr = () => {
     if (!qrUrl) return;
     const w = window.open(qrUrl, "dingtalk-login", "width=500,height=600");
+    if (!w) setError("弹窗被拦截，请允许弹出窗口或手动复制链接到浏览器打开");
+  };
+
+  const openGithub = () => {
+    if (!githubUrl) return;
+    const w = window.open(githubUrl, "github-login", "width=600,height=700");
     if (!w) setError("弹窗被拦截，请允许弹出窗口或手动复制链接到浏览器打开");
   };
 
@@ -111,7 +123,7 @@ export function LoginPage() {
             <span className="text-lg font-bold">donger</span>
           </div>
           <h2 className="text-[22px] font-bold">登录</h2>
-          <p className="mt-1 mb-6 text-[13px] text-muted-foreground">使用钉钉扫码或访问令牌登录</p>
+          <p className="mt-1 mb-6 text-[13px] text-muted-foreground">使用钉钉扫码或 GitHub 登录</p>
 
           {error ? (
             <div className="mb-4 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
@@ -133,8 +145,13 @@ export function LoginPage() {
               <Button className="w-full" onClick={openQr} disabled={!qrUrl}>
                 钉钉扫码登录
               </Button>
+              {githubUrl ? (
+                <Button variant="outline" className="w-full" onClick={openGithub}>
+                  使用 GitHub 登录
+                </Button>
+              ) : null}
               <p className="text-center text-[11px] text-muted-foreground/80">
-                首次登录将自动创建账号并绑定钉钉身份
+                首次登录将自动创建账号并绑定对应平台身份
               </p>
             </div>
           )}

@@ -8,8 +8,24 @@ export function LoginSuccessPage() {
 
   useEffect(() => {
     const token = searchParams.get("token");
+    const mode = searchParams.get("mode");
     if (!token) {
       setStatus("error");
+      return;
+    }
+
+    // 身份绑定回调：通知主页面刷新绑定列表（不落 token，主窗口会话保持不变）
+    if (mode === "bind") {
+      if (window.opener) {
+        window.opener.postMessage(
+          { type: "bind-success", provider: searchParams.get("provider") ?? "github" },
+          "*",
+        );
+        setStatus("done");
+        setTimeout(() => window.close(), 500);
+      } else {
+        setStatus("done");
+      }
       return;
     }
 

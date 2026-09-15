@@ -253,6 +253,8 @@ async function main(): Promise<void> {
     gitAccessGate,
     publicBaseUrl: cfg.publicBaseUrl,
     dingtalkLoginRedirectUri: cfg.dingtalkLoginRedirectUri,
+    githubLoginRedirectUri: cfg.githubLoginRedirectUri,
+    githubConfig: cfg.githubOAuth,
     triggerStore,
     workflowStore,
     loopStore,

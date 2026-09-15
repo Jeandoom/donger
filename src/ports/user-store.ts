@@ -19,8 +19,8 @@ export interface UserStore {
     name?: string,
     avatar?: string,
   ): Promise<User>;
-  /** 检查外部 ID 是否在管理员白名单中 */
-  isAdminByExternalId(externalId: string): Promise<boolean>;
+  /** 检查外部 ID 是否在管理员白名单中（含 provider:externalId 前缀条目，见 domain/user.ts） */
+  isAdminByExternalId(provider: string, externalId: string): Promise<boolean>;
   /** 通过平台 identity 查找已有用户（不创建） */
   findByIdentity(provider: string, externalId: string): Promise<User | undefined>;
   /** 为已有 User 绑定新 identity */

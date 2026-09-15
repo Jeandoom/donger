@@ -52,6 +52,12 @@ import {
 } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
+import {
+  buildGithubAuthorizeUrl,
+  getGithubAccessToken,
+  getGithubUser,
+  type GithubUserInfo,
+} from "../util/github-oauth-api.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
@@ -271,10 +277,14 @@ export interface WebChannelDeps {
   publicBaseUrl?: string;
   /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
   dingtalkLoginRedirectUri?: string;
+  /** GitHub 登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
+  githubLoginRedirectUri?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
   llmDebugRunner?: LlmDebugRunner;
   dingtalkConfig?: { appKey: string; appSecret: string };
+  /** GitHub OAuth 登录（缺省=GitHub 登录/绑定端点不可用） */
+  githubConfig?: { clientId: string; clientSecret: string };
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -313,7 +323,10 @@ export class WebChannel implements Channel {
   private readonly connectorStore?: ConnectorStore;
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
+  private readonly githubConfig?: { clientId: string; clientSecret: string };
   private readonly oauthStateMap = new Map<string, number>();
+  /** GitHub 绑定流程的 state → 意图（登录与绑定共用 authorize 端点，靠 state 区分） */
+  private readonly githubBindStateMap = new Map<string, { userId: string; exp: number }>();
 
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
@@ -326,6 +339,18 @@ export class WebChannel implements Channel {
     this.connectorStore = deps.connectorStore;
     this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
+    this.githubConfig = deps.githubConfig;
+  }
+
+  /** 惰性清理过期的 OAuth state（登录与绑定共用），防 Map 无界增长 */
+  private pruneOauthStates(): void {
+    const now = Date.now();
+    for (const [s, exp] of this.oauthStateMap) {
+      if (now > exp) this.oauthStateMap.delete(s);
+    }
+    for (const [s, v] of this.githubBindStateMap) {
+      if (now > v.exp) this.githubBindStateMap.delete(s);
+    }
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -1170,6 +1195,8 @@ export class WebChannel implements Channel {
     const publicRoutes = [
       "/api/auth/qrcode-url",
       "/api/auth/dingtalk/callback",
+      "/api/auth/github/url",
+      "/api/auth/github/callback",
       "/api/auth/exchange",
       "/api/agents/by-share",
       "/api/health",
@@ -1289,6 +1316,105 @@ export class WebChannel implements Channel {
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.error("[auth] 钉钉回调处理失败:", errMsg);
+        res.writeHead(302, { Location: `/login?error=${encodeURIComponent(errMsg)}` });
+        res.end();
+      }
+      return;
+    }
+
+    // GET /api/auth/github/url —— 生成 GitHub 授权跳转 URL（登录用）
+    if (url === "/api/auth/github/url" && req.method === "GET") {
+      if (!this.githubConfig) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "GitHub 登录未配置" }));
+        return;
+      }
+      const state = `${Date.now()}-${Math.random()}`;
+      this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000);
+      this.pruneOauthStates();
+      this.json(res, { url: this.buildGithubAuthorizeUrl(state) });
+      return;
+    }
+
+    // GET /api/auth/github/bind —— 已登录用户发起 GitHub 身份绑定（经统一鉴权段取 userId）
+    if (url === "/api/auth/github/bind" && req.method === "GET") {
+      if (!this.githubConfig) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "GitHub 登录未配置" }));
+        return;
+      }
+      const userId = this.requireRequestUser(req);
+      const state = `${Date.now()}-${Math.random()}`;
+      this.githubBindStateMap.set(state, { userId, exp: Date.now() + 5 * 60 * 1000 });
+      this.pruneOauthStates();
+      this.json(res, { url: this.buildGithubAuthorizeUrl(state) });
+      return;
+    }
+
+    // GET /api/auth/github/callback —— 授权回调：按 state 区分登录（创建/复用账号）与绑定（addIdentity）
+    if (url.startsWith("/api/auth/github/callback") && req.method === "GET") {
+      const code = this.extractQuery(url, "code");
+      const state = this.extractQuery(url, "state");
+      if (!code || !state) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "缺少 code/state 参数" }));
+        return;
+      }
+      if (!this.githubConfig || !this.deps.userStore || !this.sessionStore) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "认证服务未就绪" }));
+        return;
+      }
+      try {
+        // 绑定流程：state 命中绑定意图
+        const bind = this.githubBindStateMap.get(state);
+        if (bind) {
+          this.githubBindStateMap.delete(state);
+          if (Date.now() > bind.exp) throw new Error("绑定会话已过期，请重新发起绑定");
+          const info = await this.fetchGithubUser(code);
+          const owner = await this.deps.userStore.findByIdentity("github", info.id);
+          if (owner && owner.id !== bind.userId) {
+            throw new Error("该 GitHub 账号已绑定其他用户");
+          }
+          if (!owner) {
+            await this.deps.userStore.addIdentity(bind.userId, {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              userId: bind.userId,
+              provider: "github",
+              externalId: info.id,
+              name: info.name ?? info.login,
+              avatar: info.avatarUrl,
+              createdAt: new Date().toISOString(),
+            });
+          }
+          const { token } = await this.sessionStore.create(bind.userId);
+          res.writeHead(302, {
+            Location: `/login/success?token=${token}&mode=bind&provider=github`,
+          });
+          res.end();
+          return;
+        }
+        // 登录流程：state 强校验（GitHub OAuth 规范要求；钉钉侧维持既有弱校验不动）
+        const exp = this.oauthStateMap.get(state);
+        this.oauthStateMap.delete(state);
+        if (!exp || Date.now() > exp) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "state 校验失败，请重新发起登录" }));
+          return;
+        }
+        const info = await this.fetchGithubUser(code);
+        const user = await this.deps.userStore.getOrCreateByIdentity(
+          "github",
+          info.id,
+          info.name ?? info.login,
+          info.avatarUrl,
+        );
+        const { token } = await this.sessionStore.create(user.id);
+        res.writeHead(302, { Location: `/login/success?token=${token}` });
+        res.end();
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("[auth] GitHub 回调处理失败:", errMsg);
         res.writeHead(302, { Location: `/login?error=${encodeURIComponent(errMsg)}` });
         res.end();
       }
@@ -3247,6 +3373,34 @@ export class WebChannel implements Channel {
     const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
     const port = this.boundPort ?? this.deps.port;
     return `${this.deps.https ? "https" : "http"}://${host}:${port}`;
+  }
+
+  /** GitHub 登录/绑定共用的回调地址（显式覆盖优先于推导） */
+  private githubRedirectUri(): string {
+    return (
+      this.deps.githubLoginRedirectUri?.trim() || `${this.oauthBaseUrl()}/api/auth/github/callback`
+    );
+  }
+
+  private buildGithubAuthorizeUrl(state: string): string {
+    if (!this.githubConfig) throw new Error("GitHub 登录未配置");
+    return buildGithubAuthorizeUrl({
+      clientId: this.githubConfig.clientId,
+      redirectUri: this.githubRedirectUri(),
+      state,
+    });
+  }
+
+  /** 授权码 → access_token → 用户信息 */
+  private async fetchGithubUser(code: string): Promise<GithubUserInfo> {
+    if (!this.githubConfig) throw new Error("GitHub 登录未配置");
+    const accessToken = await getGithubAccessToken(
+      this.githubConfig.clientId,
+      this.githubConfig.clientSecret,
+      code,
+      this.githubRedirectUri(),
+    );
+    return getGithubUser(accessToken);
   }
 
   /**
