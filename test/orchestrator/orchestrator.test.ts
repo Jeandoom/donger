@@ -88,6 +88,10 @@ function mockUserStore(): UserStore {
     },
     async updateProfile() {},
     async updateRole() {},
+    async setPasswordCredential() {},
+    async getPasswordCredential() {
+      return undefined;
+    },
   };
 }
 
