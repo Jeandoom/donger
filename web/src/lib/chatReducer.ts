@@ -4,6 +4,7 @@ import type {
   ChatState,
   ConversationSummary,
   MessageDelivery,
+  PendingQuestion,
   SSEEvent,
   TurnPart,
 } from "../types";
@@ -23,6 +24,8 @@ export type ChatAction =
   | { type: "message_delivery"; id: string; delivery: MessageDelivery }
   | { type: "clear_approval" }
   | { type: "clear_credential" }
+  | { type: "clear_question" }
+  | { type: "set_pending_question"; question: PendingQuestion | null }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
   | { type: "new_conversation"; conversation: ConversationSummary }
@@ -40,6 +43,7 @@ export function initialChatState(): ChatState {
     stage: null,
     pendingApproval: null,
     pendingCredential: null,
+    pendingQuestion: null,
     connection: "connecting",
     conversations: [],
     activeConversationId: null,
@@ -185,6 +189,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, pendingApproval: null };
     case "clear_credential":
       return { ...state, pendingCredential: null };
+    case "clear_question":
+      return { ...state, pendingQuestion: null };
+    case "set_pending_question":
+      return { ...state, pendingQuestion: action.question };
     case "ws":
       return applyWsOut(state, action.msg);
     case "set_conversations":
@@ -205,6 +213,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: [],
         isGenerating: false,
         stage: null,
+        pendingQuestion: null,
         loadingMessages: !isDraft && action.conversationId !== null,
       };
     }
@@ -385,9 +394,14 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         ...state,
         pendingCredential: { reqId: msg.reqId, items: msg.items },
       };
+    case "ask_user_question":
+      return {
+        ...state,
+        pendingQuestion: { reqId: msg.reqId, questions: msg.questions },
+      };
     case "result": {
       const closed = closeTurn(state.messages, msg.subtype === "error" ? "error" : "done");
-      return { ...state, isGenerating: false, messages: closed };
+      return { ...state, isGenerating: false, messages: closed, pendingQuestion: null };
     }
     case "error":
       return {
@@ -395,6 +409,7 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         isGenerating: false,
         messages: closeTurn(state.messages, "error"),
         errors: { ...state.errors, stream: msg.error },
+        pendingQuestion: null,
       };
     default:
       return state;

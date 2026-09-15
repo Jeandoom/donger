@@ -20,6 +20,12 @@ export type SSEEvent =
         keys: string[];
       }>;
     }
+  | {
+      type: "ask_user_question";
+      reqId: string;
+      conversationId: string;
+      questions: PendingQuestionItem[];
+    }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "activity"; text: string }
   | { type: "error"; error: string };
@@ -79,9 +85,29 @@ export interface PendingCredential {
   }>;
 }
 
+/** AskUserQuestion 单个问题（与后端 QuestionItem 对齐） */
+export interface PendingQuestionItem {
+  question: string;
+  header?: string;
+  options?: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+/** 一轮待作答问题（SSE ask_user_question / GET pending-question 共用） */
+export interface PendingQuestion {
+  reqId: string;
+  questions: PendingQuestionItem[];
+}
+
 export type ConnectionState = "connecting" | "open" | "closed";
 
-export type ChatErrorKey = "conversations" | "messages" | "stream" | "approval" | "credential";
+export type ChatErrorKey =
+  | "conversations"
+  | "messages"
+  | "stream"
+  | "approval"
+  | "credential"
+  | "question";
 
 export type ChatErrors = Partial<Record<ChatErrorKey, string>>;
 
@@ -107,6 +133,7 @@ export interface ChatState {
   stage: string | null;
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
+  pendingQuestion: PendingQuestion | null;
   connection: ConnectionState;
   /** 用户会话列表 */
   conversations: ConversationSummary[];

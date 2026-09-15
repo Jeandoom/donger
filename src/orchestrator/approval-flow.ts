@@ -1,7 +1,7 @@
 import type { GateRouter } from "../domain/gate-router.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { ApprovalCard } from "../domain/types.js";
-import type { ApprovalResolver } from "../ports/agent-runner.js";
+import type { ApprovalResolver, QuestionResolver } from "../ports/agent-runner.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { TaskStore } from "../ports/task-store.js";
@@ -47,5 +47,26 @@ export function makeApprovalResolver(
       pendingGate: undefined,
     });
     return { approved: result.approved, reason: result.reason };
+  };
+}
+
+/**
+ * 构造 questionResolver：runner 命中 AskUserQuestion 时——
+ * 渠道实现 requestUserInput 则推问题卡等作答；未实现/抛错（含超时）一律空答案降级，
+ * 模型收到 "The user did not answer the questions." 自走默认假设分支（与历史行为一致）。
+ */
+export function makeQuestionResolver(channel: Channel, threadId: string): QuestionResolver {
+  return async (req) => {
+    if (!channel.requestUserInput) return { answers: {} };
+    try {
+      return await channel.requestUserInput(threadId, {
+        taskId: req.taskId,
+        conversationId: threadId,
+        toolUseId: req.toolUseId,
+        questions: req.questions,
+      });
+    } catch {
+      return { answers: {} };
+    }
   };
 }

@@ -10,6 +10,7 @@ import type {
   ConversationSummary,
   PendingApproval,
   PendingCredential,
+  PendingQuestion,
 } from "../../types";
 import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
 import { SecondarySidebar } from "../layout/SecondarySidebar";
@@ -30,12 +31,14 @@ export interface ChatWorkspaceProps {
   isGenerating: boolean;
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
+  pendingQuestion: PendingQuestion | null;
   connection: ConnectionState;
   onSend: (text: string, files?: FileInfo[]) => Promise<void>;
   onEnsureConversation?: () => Promise<string | null>;
   onCancel: () => Promise<void>;
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onDecideCredentialMissing: (decision: string) => void;
+  onAnswerQuestion: (answers: Record<string, string>, response?: string) => void;
   inputPlaceholder?: string;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
@@ -161,6 +164,9 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             <AssistantThread
               pendingApproval={props.pendingApproval}
               pendingCredential={props.pendingCredential}
+              pendingQuestion={props.pendingQuestion}
+              questionError={props.errors.question}
+              onAnswerQuestion={props.onAnswerQuestion}
               approvalError={props.errors.approval}
               credentialError={props.errors.credential}
               onResolveApproval={props.onResolveApproval}

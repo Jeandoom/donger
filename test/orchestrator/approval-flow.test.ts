@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
-import type { ApprovalCard, Task } from "../../src/domain/types.js";
-import { makeApprovalResolver } from "../../src/orchestrator/approval-flow.js";
+import type { ApprovalCard, QuestionItem, Task } from "../../src/domain/types.js";
+import {
+  makeApprovalResolver,
+  makeQuestionResolver,
+} from "../../src/orchestrator/approval-flow.js";
 import type { Channel } from "../../src/ports/channel.js";
 
 const baseTask: Task = {
@@ -122,5 +125,74 @@ describe("makeApprovalResolver", () => {
       summary: "部署",
     });
     expect(ch.state.card?.title).toBe("审批门：deploy");
+  });
+});
+
+describe("makeQuestionResolver", () => {
+  const questions: QuestionItem[] = [{ question: "异常表现是什么？", header: "异常表现" }];
+
+  it("渠道实现 requestUserInput：透传请求并返回作答", async () => {
+    const seen: { conversationId: string; questions: QuestionItem[] } = {
+      conversationId: "",
+      questions: [],
+    };
+    const ch = {
+      id: "web",
+      onMessage: () => {},
+      send: async () => {},
+      requestUserInput: async (
+        _t: string,
+        req: { conversationId: string; questions: QuestionItem[] },
+      ) => {
+        seen.conversationId = req.conversationId;
+        seen.questions = req.questions;
+        return { answers: { "异常表现是什么？": "接口报错" } };
+      },
+    } as unknown as Channel;
+
+    const resolution = await makeQuestionResolver(
+      ch,
+      "conv-1",
+    )({
+      taskId: "t1",
+      toolUseId: "tu",
+      questions,
+    });
+    expect(seen.conversationId).toBe("conv-1");
+    expect(seen.questions).toEqual(questions);
+    expect(resolution.answers).toEqual({ "异常表现是什么？": "接口报错" });
+  });
+
+  it("渠道未实现 requestUserInput：空答案降级", async () => {
+    const ch = fakeChannel({ approved: true });
+    const resolution = await makeQuestionResolver(
+      ch,
+      "th",
+    )({
+      taskId: "t1",
+      toolUseId: "tu",
+      questions,
+    });
+    expect(resolution.answers).toEqual({});
+  });
+
+  it("渠道抛错（含超时）：空答案降级不上抛", async () => {
+    const ch = {
+      id: "web",
+      onMessage: () => {},
+      send: async () => {},
+      requestUserInput: async () => {
+        throw new Error("boom");
+      },
+    } as unknown as Channel;
+    const resolution = await makeQuestionResolver(
+      ch,
+      "th",
+    )({
+      taskId: "t1",
+      toolUseId: "tu",
+      questions,
+    });
+    expect(resolution.answers).toEqual({});
   });
 });

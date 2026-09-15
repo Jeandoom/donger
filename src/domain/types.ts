@@ -226,3 +226,29 @@ export interface ApprovalDecision {
   approved: boolean;
   reason?: string;
 }
+
+/** AskUserQuestion 单个问题（与 CLI 工具输入 schema 对齐；数据形状，resolver 类型在 ports 定义） */
+export interface QuestionItem {
+  /** 问题原文（同时是 answers 的 key，须与 input.questions[].question 逐字一致） */
+  question: string;
+  header?: string;
+  options?: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+/** 用户对一轮 AskUserQuestion 的作答结果 */
+export interface QuestionResolution {
+  /** key = QuestionItem.question 原文；单选=选项 label，多选=多个 label 逗号串 */
+  answers: Record<string, string>;
+  /** 自由文本补充（选「其他」时可以是填写内容，也可以为空） */
+  response?: string;
+  /** 超时/无渠道降级标记（观测用；空答案时模型按「未回答」分支继续） */
+  timedOut?: boolean;
+}
+
+/** runner 命中 AskUserQuestion 时抛给编排层的问题请求 */
+export interface QuestionRequest {
+  taskId: string;
+  toolUseId: string;
+  questions: QuestionItem[];
+}

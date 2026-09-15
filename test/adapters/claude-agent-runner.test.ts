@@ -524,6 +524,84 @@ describe("ClaudeAgentRunner", () => {
     ]);
     expect(captured?.additionalDirectories).toEqual([resolve("E:/bug-fix/donger-bugs")]);
   });
+
+  it("AskUserQuestion：调用 questionResolver 并以 updatedInput.answers 放行", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const questions = [
+      { question: "异常表现是什么？", header: "异常表现", options: [{ label: "接口报错" }] },
+    ];
+    const seen: Array<unknown> = [];
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          questionResolver: async (req) => {
+            seen.push(req.questions);
+            return { answers: { "异常表现是什么？": "接口报错" }, response: "顺便看下日志" };
+          },
+        },
+        async () => ({ approved: true }),
+      ),
+    );
+    const canUseTool = captured?.canUseTool;
+    expect(canUseTool).toBeTruthy();
+    if (!canUseTool) throw new Error("canUseTool not captured");
+    const decision = await canUseTool(
+      "AskUserQuestion",
+      { questions, title: "收集信息" },
+      { toolUseID: "tu1" },
+    );
+    expect(seen).toEqual([questions]);
+    expect(decision.behavior).toBe("allow");
+    expect((decision as { updatedInput?: Record<string, unknown> }).updatedInput).toEqual({
+      questions,
+      title: "收集信息",
+      answers: { "异常表现是什么？": "接口报错" },
+      response: "顺便看下日志",
+    });
+  });
+
+  it("AskUserQuestion：无 questionResolver 时原样放行（历史行为：空答案）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(runner.run(task, { ...opts }, async () => ({ approved: true })));
+    const canUseTool = captured?.canUseTool;
+    if (!canUseTool) throw new Error("canUseTool not captured");
+    const decision = await canUseTool(
+      "AskUserQuestion",
+      { questions: [{ question: "q?" }] },
+      { toolUseID: "tu2" },
+    );
+    expect(decision.behavior).toBe("allow");
+    expect((decision as { updatedInput?: unknown }).updatedInput).toEqual({
+      questions: [{ question: "q?" }],
+    });
+  });
+
+  it("AskUserQuestion：questions 形态非法时不调 resolver 原样放行", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    let called = 0;
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          questionResolver: async () => {
+            called += 1;
+            return { answers: {} };
+          },
+        },
+        async () => ({ approved: true }),
+      ),
+    );
+    const canUseTool = captured?.canUseTool;
+    if (!canUseTool) throw new Error("canUseTool not captured");
+    await canUseTool("AskUserQuestion", { questions: "bad" }, { toolUseID: "tu3" });
+    expect(called).toBe(0);
+  });
 });
 
 describe("ClaudeAgentRunner agent options 透传", () => {

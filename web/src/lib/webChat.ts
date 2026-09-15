@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { ConversationSummary, SSEEvent } from "../types";
+import type { ConversationSummary, PendingQuestion, SSEEvent } from "../types";
 import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
@@ -173,6 +173,17 @@ export function useWebChat() {
       }
     });
 
+    eventSource.addEventListener("ask_user_question", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "ask_user_question") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("result", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -270,10 +281,22 @@ export function useWebChat() {
             response.ok ? (response.json() as Promise<{ events: HistoryEvent[] }>) : { events: [] },
           )
           .catch(() => ({ events: [] })),
+        // 待作答问题：刷新/切换后恢复锚定卡片（agent 仍在等待作答时）
+        fetch(`/api/conversations/${conversationId}/pending-question`, {
+          headers: authHeaders,
+          signal: controller.signal,
+        })
+          .then((response) =>
+            response.ok
+              ? (response.json() as Promise<{ question: PendingQuestion | null }>)
+              : { question: null },
+          )
+          .catch(() => ({ question: null })),
       ])
-        .then(([messages, { events }]) => {
+        .then(([messages, { events }, { question }]) => {
           if (messagesRequestRef.current === controller) {
             dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events) });
+            dispatch({ type: "set_pending_question", question: question ?? null });
           }
         })
         .catch((error: unknown) => {
@@ -442,6 +465,35 @@ export function useWebChat() {
     [state.pendingCredential],
   );
 
+  /** AskUserQuestion 作答：answers key=问题原文；提交后由后端 resolve 挂起的问询 */
+  const answerQuestion = useCallback(
+    async (answers: Record<string, string>, response?: string) => {
+      const pending = state.pendingQuestion;
+      if (!pending) return;
+      const token = getToken();
+      dispatch({ type: "clear_error", key: "question" });
+      try {
+        const res = await fetch(`/api/user-inputs/${pending.reqId}/respond`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ answers, ...(response?.trim() ? { response } : {}) }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        dispatch({ type: "clear_question" });
+      } catch (error: unknown) {
+        dispatch({
+          type: "set_error",
+          key: "question",
+          message: errorText(error, "作答提交失败"),
+        });
+      }
+    },
+    [state.pendingQuestion],
+  );
+
   /** 删除会话（软删除，归档）。确认交互由组件层 ConfirmDialog 负责 */
   const deleteConversation = useCallback(
     async (id: string) => {
@@ -468,6 +520,7 @@ export function useWebChat() {
     cancel,
     resolveApproval,
     decideCredentialMissing,
+    answerQuestion,
     switchConversation,
     newConversation,
     ensureConversation,

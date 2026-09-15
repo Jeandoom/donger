@@ -44,12 +44,14 @@ export function ChatPage() {
         isGenerating={wc.isGenerating}
         pendingApproval={wc.pendingApproval}
         pendingCredential={wc.pendingCredential}
+        pendingQuestion={wc.pendingQuestion}
         connection={wc.connection}
         onSend={wc.send}
         onEnsureConversation={wc.ensureConversation}
         onCancel={wc.cancel}
         onResolveApproval={wc.resolveApproval}
         onDecideCredentialMissing={wc.decideCredentialMissing}
+        onAnswerQuestion={wc.answerQuestion}
         errors={wc.errors}
         aboveComposer={
           wc.stage ? (

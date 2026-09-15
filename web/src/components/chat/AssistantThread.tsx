@@ -15,10 +15,11 @@ import type { FileInfo } from "../../lib/chatReducer";
 import { lineRefBadge } from "../../lib/lineRefBadge";
 import { collapseToolNarration } from "../../lib/toolNarration";
 import { cn } from "../../lib/utils";
-import type { PendingApproval, PendingCredential } from "../../types";
+import type { PendingApproval, PendingCredential, PendingQuestion } from "../../types";
 import { Button } from "../ui/button";
 import { MarkdownCodeHeader, MarkdownSyntaxHighlighter } from "./MarkdownCodeBlock";
 import { PendingInteraction } from "./PendingInteraction";
+import { QuestionCard } from "./QuestionCard";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCard } from "./ToolCard";
 
@@ -294,6 +295,9 @@ function AddAttachmentButton() {
 export interface AssistantThreadProps {
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
+  pendingQuestion: PendingQuestion | null;
+  questionError?: string;
+  onAnswerQuestion: (answers: Record<string, string>, response?: string) => void;
   approvalError?: string;
   credentialError?: string;
   onResolveApproval: (approved: boolean, reason?: string) => void;
@@ -322,6 +326,14 @@ export function AssistantThread(props: AssistantThreadProps) {
         </div>
       </ThreadPrimitive.Viewport>
       <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
+        {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
+        {props.pendingQuestion ? (
+          <QuestionCard
+            question={props.pendingQuestion}
+            error={props.questionError}
+            onAnswer={props.onAnswerQuestion}
+          />
+        ) : null}
         {props.aboveComposer}
         <ComposerPrimitive.Root
           aria-label="消息输入"

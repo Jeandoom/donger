@@ -31,12 +31,11 @@ import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
 import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
-import { makeApprovalResolver } from "./approval-flow.js";
+import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
-import { guardStreamStall } from "./stream-stall-guard.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
 import { createKbToolsServer } from "./kb-tools.js";
@@ -52,6 +51,7 @@ import {
 } from "./phase-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
+import { guardStreamStall } from "./stream-stall-guard.js";
 
 export interface OrchestratorDeps {
   store: TaskStore;
@@ -356,6 +356,8 @@ export class Orchestrator {
       gates,
       this.deps.commentStore,
     );
+    // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
+    const questionResolver = makeQuestionResolver(channel, p.threadId);
 
     // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
     let capturedSessionId: string | undefined;
@@ -365,7 +367,11 @@ export class Orchestrator {
     const SESSION_EXPIRED_RE = /No conversation found with session ID/i;
     let attemptOpts = opts;
     for (let attempt = 0; attempt < 2; attempt++) {
-      rawEvents = this.deps.runner.run({ ...p.task, status: "running" }, attemptOpts, resolver);
+      rawEvents = this.deps.runner.run(
+        { ...p.task, status: "running" },
+        { ...attemptOpts, questionResolver },
+        resolver,
+      );
       // 预读第一个实际 SDK 事件判断是否 session 过期；llm_input 是审计事件，不能遮住 result 错误。
       const iterator = rawEvents[Symbol.asyncIterator]();
       const prefetched: RunnerEvent[] = [];

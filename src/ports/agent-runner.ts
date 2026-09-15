@@ -1,7 +1,14 @@
 import type { McpSdkServerConfigWithInstance, SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import type { ApprovalDecision, ApprovalRequest, RunnerEvent, Task } from "../domain/types.js";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  QuestionRequest,
+  QuestionResolution,
+  RunnerEvent,
+  Task,
+} from "../domain/types.js";
 
 /** 运行一个任务所需的环境（由编排层从 LLMConfig + 任务上下文注入） */
 export interface RunOptions {
@@ -46,7 +53,16 @@ export interface RunOptions {
   gitPlatformTools?: McpSdkServerConfigWithInstance;
   /** in-process 业务知识库 MCP server（恒挂载，可用性由 agent tools 白名单控制） */
   kbTools?: McpSdkServerConfigWithInstance;
+  /**
+   * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
+   * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按
+   * 原样放行（空答案 → 模型收到 "The user did not answer the questions."，即历史行为）。
+   */
+  questionResolver?: QuestionResolver;
 }
+
+/** runner 命中 AskUserQuestion 时回调；由 Orchestrator 实现（推问题卡 → 等用户作答 → 返回答案） */
+export type QuestionResolver = (req: QuestionRequest) => Promise<QuestionResolution>;
 
 /** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */
 export type ApprovalResolver = (req: ApprovalRequest) => Promise<ApprovalDecision>;

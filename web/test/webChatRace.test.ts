@@ -33,6 +33,9 @@ describe("useWebChat conversation switching", () => {
         if (url.includes('/c1/events') || url.includes('/c2/events')) {
           return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
         }
+        if (url.endsWith('/pending-question')) {
+          return Promise.resolve(new Response(JSON.stringify({ question: null }), { status: 200 }));
+        }
         if (url.includes("/c1/messages")) return firstHistory.promise;
         if (url.includes("/c2/messages")) {
           return Promise.resolve(

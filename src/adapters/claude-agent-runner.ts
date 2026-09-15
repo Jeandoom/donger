@@ -5,7 +5,7 @@ import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { matchesShellGit } from "../domain/git-shell-guard.js";
 import { isReadOnlyShellCommand } from "../domain/read-only-shell-command.js";
-import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
+import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { BUILTIN_TOOL_TEXT_PREFIX } from "../util/provider-tool-text.js";
 
@@ -131,6 +131,36 @@ export class ClaudeAgentRunner implements AgentRunner {
             isReadOnlyShellCommand(input.command)
           ) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
+          }
+          // AskUserQuestion 交互桥：CLI 把该工具的用户交互搭在权限通道（checkPermissions
+          // 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。缺此桥时
+          // 原样放行 → answers 为空 → "The user did not answer the questions."（该工具
+          // 在 donger 曾从未真正可用）。问题形态不合法也走原样放行。
+          if (toolName === "AskUserQuestion" && opts.questionResolver) {
+            const questions = parseAskUserQuestions(input);
+            if (questions) {
+              try {
+                const resolution = await opts.questionResolver({
+                  taskId: task.id,
+                  toolUseId: ctx.toolUseID,
+                  questions,
+                });
+                const updatedInput: Record<string, unknown> = { ...input };
+                if (Object.keys(resolution.answers).length > 0) {
+                  updatedInput.answers = resolution.answers;
+                }
+                if (resolution.response?.trim()) {
+                  updatedInput.response = resolution.response.trim();
+                }
+                return { behavior: "allow" as const, updatedInput, toolUseID: ctx.toolUseID };
+              } catch {
+                return {
+                  behavior: "allow" as const,
+                  updatedInput: input,
+                  toolUseID: ctx.toolUseID,
+                };
+              }
+            }
           }
           const gated = this.gates.match(toolName, input);
           if (!gated) {
@@ -396,4 +426,37 @@ function mcpServersToSdk(servers: McpServerConfig[]): Record<string, SdkMcpServe
         : ({ type: "http", url: s.url, headers: s.headers } as SdkMcpServerConfig);
   }
   return out;
+}
+
+/**
+ * 从 AskUserQuestion 工具输入中校验并提取问题列表。
+ * questions 缺失/形态不合法返回 null（调用方按原样放行降级）。
+ */
+function parseAskUserQuestions(input: Record<string, unknown>): QuestionItem[] | null {
+  const raw = input.questions;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const items: QuestionItem[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.question !== "string" || !e.question.trim()) return null;
+    const item: QuestionItem = { question: e.question };
+    if (typeof e.header === "string" && e.header.trim()) item.header = e.header;
+    if (e.multiSelect === true) item.multiSelect = true;
+    if (e.options !== undefined) {
+      if (!Array.isArray(e.options)) return null;
+      const options: Array<{ label: string; description?: string }> = [];
+      for (const opt of e.options) {
+        if (typeof opt !== "object" || opt === null) return null;
+        const o = opt as Record<string, unknown>;
+        if (typeof o.label !== "string" || !o.label) return null;
+        const parsed: { label: string; description?: string } = { label: o.label };
+        if (typeof o.description === "string" && o.description) parsed.description = o.description;
+        options.push(parsed);
+      }
+      item.options = options;
+    }
+    items.push(item);
+  }
+  return items;
 }

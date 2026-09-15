@@ -1,4 +1,10 @@
-import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
+import type {
+  ApprovalCard,
+  IncomingMessage,
+  OutgoingMessage,
+  QuestionItem,
+  QuestionResolution,
+} from "../domain/types.js";
 
 /** 渠道返回的审批结果（独立于 ApprovalDecision，便于渠道附带响应者等额外信息） */
 export interface ApprovalResult {
@@ -66,6 +72,20 @@ export interface Channel {
     summary: string,
   ): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
+  /**
+   * AskUserQuestion 问询（Web 实现；未实现的渠道由编排层按「空答案」降级，
+   * 模型收到 "The user did not answer the questions." 后自走默认假设分支）。
+   * threadId 即 conversationId（Web SSE 语义），卡片广播与 pending 归属都用它。
+   */
+  requestUserInput?(
+    threadId: string,
+    req: {
+      taskId: string;
+      conversationId: string;
+      toolUseId: string;
+      questions: QuestionItem[];
+    },
+  ): Promise<QuestionResolution>;
   /** 凭证缺失问询（Web/CLI 实现；未实现的渠道由编排层按「暂停」降级并提示到 Web 操作）。 */
   requestMissingCredentials?(
     threadId: string,

@@ -164,3 +164,49 @@ describe("chatReducer 回合聚合", () => {
     expect(state.errors.stream).toBe("挂了");
   });
 });
+
+describe("chatReducer AskUserQuestion 状态", () => {
+  it("ask_user_question 设置 pendingQuestion，result/error 清除", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "ws",
+      msg: {
+        type: "ask_user_question",
+        reqId: "rq1",
+        conversationId: "c1",
+        questions: [{ question: "异常表现是什么？", header: "异常表现" }],
+      },
+    });
+    expect(state.pendingQuestion?.reqId).toBe("rq1");
+    expect(state.pendingQuestion?.questions[0]?.question).toBe("异常表现是什么？");
+
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "result", subtype: "success", text: "done" },
+    });
+    expect(state.pendingQuestion).toBeNull();
+  });
+
+  it("switch_conversation 清除 pendingQuestion；set_pending_question 恢复", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "ws",
+      msg: {
+        type: "ask_user_question",
+        reqId: "rq1",
+        conversationId: "c1",
+        questions: [{ question: "q" }],
+      },
+    });
+    state = chatReducer(state, { type: "switch_conversation", conversationId: "c2" });
+    expect(state.pendingQuestion).toBeNull();
+
+    state = chatReducer(state, {
+      type: "set_pending_question",
+      question: { reqId: "rq2", questions: [{ question: "q2", multiSelect: true }] },
+    });
+    expect(state.pendingQuestion?.reqId).toBe("rq2");
+    state = chatReducer(state, { type: "clear_question" });
+    expect(state.pendingQuestion).toBeNull();
+  });
+});

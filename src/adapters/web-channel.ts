@@ -41,6 +41,8 @@ import {
   type MessageFile,
   MessageFileSchema,
   type OutgoingMessage,
+  type QuestionItem,
+  type QuestionResolution,
 } from "../domain/types.js";
 import { checkUnattendedSafety } from "../domain/unattended-guard.js";
 import type { User } from "../domain/user.js";
@@ -200,6 +202,12 @@ type SSEEvent =
       reqId: string;
       conversationId: string;
       items: MissingCredentialItem[];
+    }
+  | {
+      type: "ask_user_question";
+      reqId: string;
+      conversationId: string;
+      questions: QuestionItem[];
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "error"; error: string };
@@ -465,6 +473,66 @@ export class WebChannel implements Channel {
     }
   >();
 
+  /** AskUserQuestion 待作答 resolve（key=reqId；带会话归属供 owner 校验） */
+  private readonly pendingQuestionResolves = new Map<
+    string,
+    {
+      conversationId: string;
+      questions: QuestionItem[];
+      resolve: (result: QuestionResolution) => void;
+    }
+  >();
+
+  /**
+   * AskUserQuestion 问询：SSE 推 ask_user_question 卡片（前端锚定输入框上方渲染），
+   * HTTP POST /api/user-inputs/:reqId/respond 回传答案。
+   * 10 分钟无人作答 → 空答案降级（生命周期门同款放宽；模型按「未回答」分支继续）。
+   */
+  async requestUserInput(
+    threadId: string,
+    req: {
+      taskId: string;
+      conversationId: string;
+      toolUseId: string;
+      questions: QuestionItem[];
+    },
+  ): Promise<QuestionResolution> {
+    void req.taskId;
+    void req.toolUseId;
+    const reqId = crypto.randomUUID();
+    this.broadcastToConversation(threadId, {
+      type: "ask_user_question",
+      reqId,
+      conversationId: threadId,
+      questions: req.questions,
+    });
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingQuestionResolves.delete(reqId);
+        resolve({ answers: {}, timedOut: true });
+      }, 600_000);
+      this.pendingQuestionResolves.set(reqId, {
+        conversationId: threadId,
+        questions: req.questions,
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this.pendingQuestionResolves.delete(reqId);
+          resolve(result);
+        },
+      });
+    });
+  }
+
+  /** 当前会话待作答的问题（刷新后恢复卡片用；无则 null） */
+  getPendingQuestion(conversationId: string): { reqId: string; questions: QuestionItem[] } | null {
+    for (const [reqId, pending] of this.pendingQuestionResolves) {
+      if (pending.conversationId === conversationId) {
+        return { reqId, questions: pending.questions };
+      }
+    }
+    return null;
+  }
+
   /** 凭证缺失问询决议（key = reqId；带会话归属供 owner 校验） */
   private readonly pendingMissingDecides = new Map<
     string,
@@ -605,6 +673,15 @@ export class WebChannel implements Channel {
           url.endsWith("/decide")
         ) {
           await this.handleMissingCredentialDecide(url, req, res);
+          return;
+        }
+        // AskUserQuestion 作答回传
+        if (
+          url.startsWith("/api/user-inputs/") &&
+          req.method === "POST" &&
+          url.endsWith("/respond")
+        ) {
+          await this.handleUserInputRespond(req, res);
           return;
         }
         // 发送消息
@@ -964,6 +1041,67 @@ export class WebChannel implements Channel {
   }
 
   /**
+   * POST /api/user-inputs/:reqId/respond
+   * AskUserQuestion 作答回传：answers key=问题原文，单选=label，多选=label 逗号串。
+   */
+  private async handleUserInputRespond(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const match = req.url?.match(/^\/api\/user-inputs\/([\w-]+)\/respond$/);
+    if (!match) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "invalid user-input url" }));
+      return;
+    }
+    const reqId = match[1] ?? "";
+
+    let authUserId: string | undefined;
+    if (this.sessionStore) {
+      authUserId = (await this.authMiddleware(req)) ?? undefined;
+      if (!authUserId) {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+
+    let body: { answers?: Record<string, string>; response?: string };
+    try {
+      body = JSON.parse(await this.readBody(req)) as {
+        answers?: Record<string, string>;
+        response?: string;
+      };
+    } catch {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "invalid json body" }));
+      return;
+    }
+    if (typeof body !== "object" || body === null || typeof body.answers !== "object") {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "answers 必须是对象" }));
+      return;
+    }
+
+    const pending = this.pendingQuestionResolves.get(reqId);
+    if (!pending) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: "question not found or expired" }));
+      return;
+    }
+    const conv = await this.deps.conversationStore?.get(pending.conversationId);
+    if (conv && authUserId && conv.userId !== authUserId) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: "forbidden: 仅会话属主可作答" }));
+      return;
+    }
+    this.pendingQuestionResolves.delete(reqId);
+    pending.resolve({
+      answers: body.answers ?? {},
+      ...(body.response?.trim() ? { response: body.response.trim() } : {}),
+    });
+    res.writeHead(200);
+    res.end(JSON.stringify({ ok: true }));
+  }
+
+  /**
    * POST /api/conversations/:id/messages
    * 发送消息（替代 WebSocket）
    */
@@ -1147,7 +1285,8 @@ export class WebChannel implements Channel {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
       const redirectUri =
-        this.deps.dingtalkLoginRedirectUri?.trim() || `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
+        this.deps.dingtalkLoginRedirectUri?.trim() ||
+        `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
       const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
       res.writeHead(200);
       res.end(JSON.stringify({ url: qrUrl }));
@@ -1525,6 +1664,23 @@ export class WebChannel implements Channel {
             : e,
         );
       this.json(res, { events });
+      return;
+    }
+
+    // GET /api/conversations/:id/pending-question — 待作答问题（刷新后恢复锚定卡片）
+    const pendingQMatch = url.match(/^\/api\/conversations\/([\w-]+)\/pending-question$/);
+    if (pendingQMatch && req.method === "GET") {
+      const conversationId = pendingQMatch[1] ?? "";
+      const uid = this.requireRequestUser(req);
+      const conv = await this.deps.conversationStore?.get(conversationId);
+      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
+      if (conv && viewer && conv.userId !== viewer.id && viewer.role !== "admin") {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可查看问询" }));
+        return;
+      }
+      const pending = this.getPendingQuestion(conversationId);
+      this.json(res, { question: pending });
       return;
     }
 
