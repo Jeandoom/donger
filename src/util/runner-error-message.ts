@@ -16,7 +16,8 @@ const MAPPINGS: ErrorMapping[] = [
     message: "会话状态已失效且自动恢复未成功，请重发任务即可继续",
   },
   {
-    pattern: /Unable to connect to API|ECONNREFUSED|ConnectionRefused|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed/i,
+    pattern:
+      /Unable to connect to API|ECONNREFUSED|ConnectionRefused|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed/i,
     message: "LLM 服务暂时不可达（网络或端点故障），请稍后重试；持续出现请检查 LLM 端点配置",
   },
   {

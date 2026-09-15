@@ -252,6 +252,7 @@ async function main(): Promise<void> {
     agentShareStore,
     gitAccessGate,
     publicBaseUrl: cfg.publicBaseUrl,
+    dingtalkLoginRedirectUri: cfg.dingtalkLoginRedirectUri,
     triggerStore,
     workflowStore,
     loopStore,

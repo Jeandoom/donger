@@ -266,6 +266,8 @@ export interface WebChannelDeps {
     },
   ) => Promise<unknown>;
   publicBaseUrl?: string;
+  /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
+  dingtalkLoginRedirectUri?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
   llmDebugRunner?: LlmDebugRunner;
@@ -1144,7 +1146,8 @@ export class WebChannel implements Channel {
       for (const [s, exp] of this.oauthStateMap) {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
-      const redirectUri = `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
+      const redirectUri =
+        this.deps.dingtalkLoginRedirectUri?.trim() || `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
       const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
       res.writeHead(200);
       res.end(JSON.stringify({ url: qrUrl }));

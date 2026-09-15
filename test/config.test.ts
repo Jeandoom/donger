@@ -43,6 +43,15 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base, HOST: "127.0.0.1" }).host).toBe("127.0.0.1");
   });
 
+  it("DINGTALK_LOGIN_REDIRECT_URI 默认空串，配置时去除首尾空白", () => {
+    expect(loadConfig(base).dingtalkLoginRedirectUri).toBe("");
+    const c = loadConfig({
+      ...base,
+      DINGTALK_LOGIN_REDIRECT_URI: "  https://a.example.com:3300/cb  ",
+    });
+    expect(c.dingtalkLoginRedirectUri).toBe("https://a.example.com:3300/cb");
+  });
+
   it("HTTPS 证书配置三件套被解析", () => {
     const c = loadConfig({
       ...base,

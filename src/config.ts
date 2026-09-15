@@ -31,6 +31,9 @@ const EnvSchema = z.object({
   DINGTALK_APP_SECRET: z.string().optional(),
   DINGTALK_ROBOT_CODE: z.string().optional(),
   DINGTALK_CARD_TEMPLATE_ID: z.string().optional(),
+  // 钉钉扫码登录回调地址（完整 URL，须与钉钉开放平台注册的重定向 URI 一致；
+  // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导）
+  DINGTALK_LOGIN_REDIRECT_URI: z.string().optional().default(""),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
   // CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange 换 JWT；空=关闭该端点）
@@ -113,6 +116,8 @@ export interface AppConfig {
   /** task-flow agent 链（DISPATCHER_AGENT_ID/BUILDER_AGENT_ID/CHAT_AGENT_ID，均可选） */
   agentChain: AgentChainEnvConfig;
   publicBaseUrl: string;
+  /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
+  dingtalkLoginRedirectUri: string;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
@@ -156,6 +161,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       chatAgentId: e.CHAT_AGENT_ID || undefined,
     },
     publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
+    dingtalkLoginRedirectUri: e.DINGTALK_LOGIN_REDIRECT_URI.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,

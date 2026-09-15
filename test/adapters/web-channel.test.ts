@@ -118,7 +118,10 @@ async function startWith(usageStore: InMemoryUsageStore): Promise<number> {
   return port;
 }
 
-async function startQrChannel(publicBaseUrl?: string): Promise<number> {
+async function startQrChannel(
+  publicBaseUrl?: string,
+  dingtalkLoginRedirectUri?: string,
+): Promise<number> {
   const tmp = mkdtempSync(join(tmpdir(), "web-qr-"));
   web = new WebChannel({
     port: 0,
@@ -126,6 +129,7 @@ async function startQrChannel(publicBaseUrl?: string): Promise<number> {
     workspaceDir: tmp,
     dingtalkConfig: { appKey: "ding-app", appSecret: "secret" },
     publicBaseUrl,
+    dingtalkLoginRedirectUri,
   });
   web.onMessage(() => {});
   await web.ready();
@@ -150,6 +154,18 @@ describe("WebChannel GET /api/auth/qrcode-url", () => {
     const body = (await response.json()) as { url: string };
     expect(new URL(body.url).searchParams.get("redirect_uri")).toBe(
       `http://127.0.0.1:${port}/api/auth/dingtalk/callback`,
+    );
+  });
+
+  it("配置 DINGTALK_LOGIN_REDIRECT_URI 时优先于 PUBLIC_BASE_URL", async () => {
+    const port = await startQrChannel(
+      "https://example.com:3333",
+      "https://ddns.example.com:8443/api/auth/dingtalk/callback",
+    );
+    const response = await fetch(`http://127.0.0.1:${port}/api/auth/qrcode-url`);
+    const body = (await response.json()) as { url: string };
+    expect(new URL(body.url).searchParams.get("redirect_uri")).toBe(
+      "https://ddns.example.com:8443/api/auth/dingtalk/callback",
     );
   });
 });
