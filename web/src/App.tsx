@@ -1,7 +1,6 @@
 import { Link, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AuthGuard } from "./components/auth/AuthGuard";
 import { Shell } from "./components/layout/Shell";
-import { OfflineBanner } from "./components/pwa/OfflineBanner";
 import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
 import { AgentSessionsPage } from "./pages/AgentSessionsPage";
@@ -27,7 +26,6 @@ import { WorkflowsPage } from "./pages/WorkflowsPage";
 export function App() {
   return (
     <>
-      <OfflineBanner />
       <PwaUpdatePrompt />
       <Routes>
         {/* 登录相关路由（免认证） */}
