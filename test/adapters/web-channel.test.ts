@@ -8,9 +8,11 @@ import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { LocalFileBrowser } from "../../src/adapters/local-file-browser.js";
+import { SqliteAgentCallbackStore } from "../../src/adapters/sqlite-agent-callback-store.js";
 import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
+import { SqliteMessageStore } from "../../src/adapters/sqlite-message-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
@@ -1821,5 +1823,241 @@ describe("PATCH /api/conversations/:id（会话权限模式）", () => {
       },
     );
     expect(missing.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 智能体回调链接（specs/2026-09-15-agent-callback-design.md）
+// ---------------------------------------------------------------------------
+
+describe("WebChannel agent callback", () => {
+  interface CallbackFixture {
+    port: number;
+    token: string;
+    userId: string;
+    agentStore: SqliteAgentStore;
+    callbackStore: SqliteAgentCallbackStore;
+    convStore: SqliteConversationStore;
+    messageStore: SqliteMessageStore;
+    db: Database.Database;
+  }
+
+  async function startCallbackFixture(
+    opts: { rateLimitPerMin?: number; busy?: boolean } = {},
+  ): Promise<CallbackFixture> {
+    const tmp = mkdtempSync(join(tmpdir(), "web-cb-"));
+    const db = new Database(join(tmp, "t.db"));
+    const userStore = new SqliteUserStore(db, {
+      adminExternalIds: new Set<string>(),
+      usersDir: join(tmp, "users"),
+    });
+    userStore.migrate();
+    const convStore = new SqliteConversationStore(db);
+    convStore.migrate();
+    const cipher = createSecretCipher("pw");
+    const agentStore = new SqliteAgentStore(db, cipher);
+    agentStore.migrate();
+    const callbackStore = new SqliteAgentCallbackStore(db);
+    callbackStore.migrate();
+    const messageStore = new SqliteMessageStore(db);
+    messageStore.migrate();
+    const sessionStore = new JwtSessionStore(db, "test-secret", 3_600_000);
+    sessionStore.migrate();
+    const user = await userStore.getOrCreateByIdentity("internal", "webu", "tester");
+    const { token } = await sessionStore.create(user.id);
+    web = new WebChannel({
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: tmp,
+      userStore,
+      conversationStore: convStore,
+      messageStore,
+      sessionStore,
+      agentStore,
+      agentCallbackStore: callbackStore,
+      callbackRateLimitPerMin: opts.rateLimitPerMin,
+      conversationBusyGetter: () => opts.busy ?? false,
+      // 模拟 orchestrator 轮完成：延迟落一条 bot 回复（真实实现在 index.ts 装配处）
+      callbackSubmit: async (msg) => {
+        await new Promise((r) => setTimeout(r, 500));
+        await messageStore.add(msg.conversationId ?? msg.threadId, "bot", "done-reply");
+      },
+      agentMeta: { presets: [], skillPaths: [] },
+    });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("server not listening");
+    return { port, token, userId: user.id, agentStore, callbackStore, convStore, messageStore, db };
+  }
+
+  async function mkAgent(f: CallbackFixture, name: string) {
+    return f.agentStore.create({
+      ownerId: f.userId,
+      name,
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+  }
+
+  it("管理端未登录 POST → 401", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const r = await fetch(`http://127.0.0.1:${f.port}/api/agents/${a.id}/callback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it("POST 生成返回完整 url；GET 只显 token 尾 4 位（不泄完整 token）", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const create = await fetch(`http://127.0.0.1:${f.port}/api/agents/${a.id}/callback`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ validityDays: 30 }),
+    });
+    expect(create.status).toBe(200);
+    const created = (await create.json()) as { token: string; url: string; expiresAt: string };
+    expect(created.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(created.url).toContain(`/api/callbacks/${created.token}`);
+    expect(created.expiresAt).toBeTruthy();
+
+    const info = await fetch(`http://127.0.0.1:${f.port}/api/agents/${a.id}/callback`, {
+      headers: { authorization: `Bearer ${f.token}` },
+    });
+    const dto = (await info.json()) as { configured: boolean; tokenTail: string };
+    expect(dto.configured).toBe(true);
+    expect(dto.tokenTail).toBe(created.token.slice(-4));
+    expect(JSON.stringify(dto)).not.toContain(created.token.slice(0, 10));
+  });
+
+  it("POST 非法 validityDays → 400", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const r = await fetch(`http://127.0.0.1:${f.port}/api/agents/${a.id}/callback`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ validityDays: 7 }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it("回调发起：202 + full_access 会话 + 用户消息落库", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const cb = await f.callbackStore.upsert(a.id, f.userId);
+    const r = await fetch(
+      `http://127.0.0.1:${f.port}/api/callbacks/${cb.token}?query=${encodeURIComponent("检查服务状态")}`,
+    );
+    expect(r.status).toBe(202);
+    const body = (await r.json()) as { ok: boolean; conversationId: string; status: string };
+    expect(body.ok).toBe(true);
+    expect(body.status).toBe("queued");
+    const conv = await f.convStore.get(body.conversationId);
+    expect(conv?.channelId).toBe("callback");
+    expect(conv?.agentId).toBe(a.id);
+    expect(conv?.permissionMode).toBe("full_access");
+    expect(conv?.userId).toBe(f.userId);
+    expect(conv?.title.startsWith("[回调]")).toBe(true);
+    const msgs = await f.messageStore.listByConversation(body.conversationId);
+    expect(msgs.map((m) => m.role)).toEqual(["user"]);
+    expect(msgs[0]?.text).toBe("检查服务状态");
+  });
+
+  it("无效 token → 401；缺 query → 400", async () => {
+    const f = await startCallbackFixture();
+    const bad = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/no-such-token?query=x`);
+    expect(bad.status).toBe(401);
+    const a = await mkAgent(f, "CB");
+    const cb = await f.callbackStore.upsert(a.id, f.userId);
+    const noQuery = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/${cb.token}`);
+    expect(noQuery.status).toBe(400);
+  });
+
+  it("过期 token 发起 → 410；结果查询仍放行", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const cb = await f.callbackStore.upsert(a.id, f.userId);
+    f.db
+      .prepare("UPDATE agent_callbacks SET expiresAt = ? WHERE token = ?")
+      .run(new Date(Date.now() - 1000).toISOString(), cb.token);
+    const r = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/${cb.token}?query=x`);
+    expect(r.status).toBe(410);
+
+    // 过期前已发起的会话：结果查询仍可取回
+    const conv = await f.convStore.createWithAgent(f.userId, "callback", "[回调] t", a.id);
+    await f.messageStore.add(conv.id, "user", "q");
+    const res = await fetch(
+      `http://127.0.0.1:${f.port}/api/callbacks/${cb.token}/conversations/${conv.id}`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("queued");
+  });
+
+  it("结果查询：有 bot 回复 → completed；无 → queued；跨 agent 会话 → 404", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const other = await mkAgent(f, "OTHER");
+    const cb = await f.callbackStore.upsert(a.id, f.userId);
+    const conv = await f.convStore.createWithAgent(f.userId, "callback", "[回调] t", a.id);
+    await f.messageStore.add(conv.id, "user", "q");
+    const url = `http://127.0.0.1:${f.port}/api/callbacks/${cb.token}/conversations/${conv.id}`;
+
+    const queued = await fetch(url);
+    expect(((await queued.json()) as { status: string }).status).toBe("queued");
+
+    await f.messageStore.add(conv.id, "bot", "reply-text");
+    const done = await fetch(url);
+    const doneBody = (await done.json()) as {
+      status: string;
+      messages: Array<{ role: string; text: string }>;
+    };
+    expect(doneBody.status).toBe("completed");
+    expect(doneBody.messages.map((m) => m.role)).toEqual(["user", "bot"]);
+    expect(doneBody.messages[1]?.text).toBe("reply-text");
+
+    const foreign = await f.convStore.createWithAgent(f.userId, "callback", "t", other.id);
+    const r404 = await fetch(
+      `http://127.0.0.1:${f.port}/api/callbacks/${cb.token}/conversations/${foreign.id}`,
+    );
+    expect(r404.status).toBe(404);
+  });
+
+  it("busy 会话 status=running；限流按 token 生效", async () => {
+    const f = await startCallbackFixture({ busy: true, rateLimitPerMin: 2 });
+    const a = await mkAgent(f, "CB");
+    const cb = await f.callbackStore.upsert(a.id, f.userId);
+    const conv = await f.convStore.createWithAgent(f.userId, "callback", "[回调] t", a.id);
+    const res = await fetch(
+      `http://127.0.0.1:${f.port}/api/callbacks/${cb.token}/conversations/${conv.id}`,
+    );
+    expect(((await res.json()) as { status: string }).status).toBe("running");
+
+    const first = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/${cb.token}?query=1`);
+    expect(first.status).toBe(202);
+    const second = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/${cb.token}?query=2`);
+    expect(second.status).toBe(202);
+    const third = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/${cb.token}?query=3`);
+    expect(third.status).toBe(429);
+  });
+
+  it("agent 删除级联吊销回调（DELETE /api/agents/:id 后 token 失效）", async () => {
+    const f = await startCallbackFixture();
+    const a = await mkAgent(f, "CB");
+    const cb = await f.callbackStore.upsert(a.id, f.userId);
+    const del = await fetch(`http://127.0.0.1:${f.port}/api/agents/${a.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${f.token}` },
+    });
+    expect(del.status).toBe(204);
+    expect(await f.callbackStore.findByToken(cb.token)).toBeUndefined();
+    const r = await fetch(`http://127.0.0.1:${f.port}/api/callbacks/${cb.token}?query=x`);
+    expect(r.status).toBe(401);
   });
 });

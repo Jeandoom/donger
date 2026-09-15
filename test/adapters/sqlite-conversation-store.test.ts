@@ -67,6 +67,14 @@ describe("SqliteConversationStore", () => {
     expect((await store.get(c2.id))?.agentId).toBe("agentX");
   });
 
+  it("createWithAgent 支持 opts.permissionMode 会话级覆盖（回调链路写 full_access）", async () => {
+    const c = await store.createWithAgent("u", "callback", "t", "a1", {
+      permissionMode: "full_access",
+    });
+    expect(c.permissionMode).toBe("full_access");
+    expect((await store.get(c.id))?.permissionMode).toBe("full_access");
+  });
+
   it("permissionMode 覆盖写读与清空（空=跟随智能体默认）", async () => {
     const c = await store.create("u1", "web", "模式测试");
     expect((await store.get(c.id))?.permissionMode).toBeUndefined();

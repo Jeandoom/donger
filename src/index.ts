@@ -12,6 +12,7 @@ import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
+import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
@@ -108,6 +109,8 @@ async function main(): Promise<void> {
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
   agentShareStore.migrate();
+  const agentCallbackStore = new SqliteAgentCallbackStore(db);
+  agentCallbackStore.migrate();
   // GitConnection 体系已退役（spec 2026-09-10 §8）：平台连接表随之废弃
   db.exec("DROP TABLE IF EXISTS git_connections");
   db.exec("DROP TABLE IF EXISTS git_repository_grants");
@@ -250,6 +253,8 @@ async function main(): Promise<void> {
     modelConfigStore,
     agentStore,
     agentShareStore,
+    agentCallbackStore,
+    callbackRateLimitPerMin: cfg.callbackRateLimitPerMin,
     gitAccessGate,
     publicBaseUrl: cfg.publicBaseUrl,
     dingtalkLoginRedirectUri: cfg.dingtalkLoginRedirectUri,
@@ -300,6 +305,18 @@ async function main(): Promise<void> {
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
+  // 回调链路专用投递：await 整轮，失败把错误落为 bot 消息（结果查询端点据此收敛 status）
+  webChannelDeps.conversationBusyGetter = (conversationId) => webOrch.isBusy(conversationId);
+  webChannelDeps.callbackSubmit = async (msg) => {
+    const conversationId = msg.conversationId ?? msg.threadId;
+    try {
+      await webOrch.handleMessage(msg);
+    } catch (e) {
+      await messageStore
+        .add(conversationId, "bot", `回调执行失败：${(e as Error).message}`)
+        .catch((err) => console.error("[web] 落回调失败消息异常", err));
+    }
+  };
   await scheduler.restore();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 

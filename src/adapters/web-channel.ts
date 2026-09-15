@@ -68,6 +68,7 @@ import type { LoopRunner } from "../orchestrator/loop-runner.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
+import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type {
@@ -262,6 +263,14 @@ export interface WebChannelDeps {
   modelConfigStore?: UserModelConfigStore;
   agentStore?: AgentStore;
   agentShareStore?: AgentShareStore;
+  /** 智能体回调链接（缺省=回调端点不可用） */
+  agentCallbackStore?: AgentCallbackStore;
+  /** 会话忙碌查询（回调结果查询的 status 判定用）；缺省=一律视为不忙 */
+  conversationBusyGetter?: (conversationId: string) => boolean;
+  /** 回调链路专用投递：await 整轮、失败落 bot 错误消息（区别于普通通道的 fire-and-forget）；缺省=端点 503 */
+  callbackSubmit?: (msg: IncomingMessage) => Promise<void>;
+  /** 回调发起限流（次/分钟/token，默认 10） */
+  callbackRateLimitPerMin?: number;
   gitAccessGate?: GitAccessGate;
   /** 工作流模块（M14+M15+M6）—— 缺省=不支持 */
   triggerStore?: TriggerStore;
@@ -320,6 +329,7 @@ export class WebChannel implements Channel {
   private readonly fileBrowser?: FileBrowser;
   private readonly agentStore?: AgentStore;
   private readonly agentShareStore?: AgentShareStore;
+  private readonly agentCallbackStore?: AgentCallbackStore;
   private readonly connectorStore?: ConnectorStore;
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
@@ -336,6 +346,7 @@ export class WebChannel implements Channel {
     this.fileBrowser = deps.fileBrowser;
     this.agentStore = deps.agentStore;
     this.agentShareStore = deps.agentShareStore;
+    this.agentCallbackStore = deps.agentCallbackStore;
     this.connectorStore = deps.connectorStore;
     this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
@@ -1169,6 +1180,125 @@ export class WebChannel implements Channel {
     res.end(JSON.stringify({ ok: true, conversationId }));
   }
 
+  // ---------------------------------------------------------------------------
+  // 智能体回调链接（specs/2026-09-15-agent-callback-design.md）
+  // ---------------------------------------------------------------------------
+
+  /** 回调端点的否定响应：统一随机延迟后返回，防时序探测 */
+  private async callbackDeny(res: ServerResponse, status: number, error: string): Promise<void> {
+    await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 100)));
+    this.json(res, { error }, status);
+  }
+
+  /** 按 token 的滑动窗口限流（次/分钟）；内存态，单实例部署即够 */
+  private readonly callbackRateBuckets = new Map<string, number[]>();
+  private checkCallbackRateLimit(token: string): boolean {
+    const limit = this.deps.callbackRateLimitPerMin ?? 10;
+    const now = Date.now();
+    const hits = (this.callbackRateBuckets.get(token) ?? []).filter((t) => now - t < 60_000);
+    if (hits.length >= limit) {
+      this.callbackRateBuckets.set(token, hits);
+      return false;
+    }
+    hits.push(now);
+    this.callbackRateBuckets.set(token, hits);
+    return true;
+  }
+
+  /**
+   * GET /api/callbacks/:token?query=xxx
+   * 异步发起对话：创建 full_access 回调会话 + 投递 orchestrator，立即 202 返回 conversationId。
+   */
+  private async handleCallbackChat(
+    req: HttpRequest,
+    res: ServerResponse,
+    token: string,
+  ): Promise<void> {
+    if (!this.agentCallbackStore || !this.deps.callbackSubmit || !this.deps.conversationStore) {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: "callback endpoint unavailable" }));
+      return;
+    }
+    const cb = await this.agentCallbackStore.findByToken(token);
+    if (!cb) return this.callbackDeny(res, 401, "invalid token");
+    const a = await this.agentStore?.get(cb.agentId);
+    if (!a) return this.callbackDeny(res, 404, "agent not found");
+    if (cb.expiresAt && new Date(cb.expiresAt).getTime() <= Date.now()) {
+      return this.callbackDeny(res, 410, "callback link expired");
+    }
+    const query = (this.extractQuery(req.url ?? "", "query") ?? "").trim();
+    if (!query) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "query is required" }));
+      return;
+    }
+    if (query.length > 4000) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "query too long (max 4000 chars)" }));
+      return;
+    }
+    if (!this.checkCallbackRateLimit(token)) {
+      res.writeHead(429);
+      res.end(JSON.stringify({ error: "rate limited" }));
+      return;
+    }
+    const conv = await this.deps.conversationStore.createWithAgent(
+      cb.ownerId,
+      "callback",
+      `[回调] ${query.slice(0, 20)}`,
+      cb.agentId,
+      { permissionMode: "full_access" },
+    );
+    if (this.messageStore) {
+      await this.messageStore
+        .add(conv.id, "user", query)
+        .catch((e) => console.error("[web] 保存回调消息失败", e));
+    }
+    // callbackSubmit 内部 await 整轮并在失败时落 bot 错误消息；此处不等待（异步裁决）
+    this.deps
+      .callbackSubmit({
+        channelId: "callback",
+        threadId: conv.id,
+        requesterId: cb.ownerId,
+        text: query,
+        conversationId: conv.id,
+      })
+      .catch((e) => console.error("[web] 回调投递失败", e));
+    this.json(res, { ok: true, conversationId: conv.id, status: "queued" }, 202);
+  }
+
+  /**
+   * GET /api/callbacks/:token/conversations/:conversationId
+   * 查回调会话执行结果：token 过期后仍可查；status = busy?running : 有 bot 回复?completed : queued。
+   */
+  private async handleCallbackResult(
+    res: ServerResponse,
+    token: string,
+    conversationId: string,
+  ): Promise<void> {
+    if (!this.agentCallbackStore || !this.deps.conversationStore) {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: "callback endpoint unavailable" }));
+      return;
+    }
+    const cb = await this.agentCallbackStore.findByToken(token);
+    if (!cb) return this.callbackDeny(res, 401, "invalid token");
+    const conv = await this.deps.conversationStore.get(conversationId);
+    // 不区分「不存在」与「不属于该 agent」，统一 404 防会话枚举
+    if (!conv || conv.agentId !== cb.agentId) {
+      return this.callbackDeny(res, 404, "conversation not found");
+    }
+    const busy = this.deps.conversationBusyGetter?.(conversationId) ?? false;
+    const msgs = (await this.messageStore?.listByConversation(conversationId)) ?? [];
+    const hasBotReply = msgs.some((m) => m.role === "bot");
+    const status = busy ? "running" : hasBotReply ? "completed" : "queued";
+    this.json(res, {
+      conversationId,
+      status,
+      messages: msgs.map((m) => ({ role: m.role, text: m.text, ts: m.createdAt })),
+    });
+  }
+
   private async handleCancel(
     req: HttpRequest,
     res: ServerResponse,
@@ -1199,6 +1329,7 @@ export class WebChannel implements Channel {
       "/api/auth/github/callback",
       "/api/auth/exchange",
       "/api/agents/by-share",
+      "/api/callbacks",
       "/api/health",
     ];
     const isPublic = publicRoutes.some((r) => url.startsWith(r));
@@ -2139,6 +2270,7 @@ export class WebChannel implements Channel {
         if (wfCount > 0) {
           return this.json(res, { error: `被 ${wfCount} 个工作流引用，无法删除` }, 409);
         }
+        await this.agentCallbackStore?.revoke(id);
         await this.agentStore?.delete(id);
         res.writeHead(204);
         res.end();
@@ -2221,6 +2353,63 @@ export class WebChannel implements Channel {
       await this.agentShareStore?.removeGrant(sid, grantUserId);
       return this.json(res, { ok: true });
     }
+    // 智能体回调链接管理（鉴权 + canManageAgent；完整 URL 仅 POST 生成时返回一次）
+    const cbAdminMatch = url.match(/^\/api\/agents\/([\w-]+)\/callback$/);
+    if (cbAdminMatch) {
+      const cid = cbAdminMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(cid);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
+      if (req.method === "GET") {
+        const cb = await this.agentCallbackStore?.get(cid);
+        return this.json(res, {
+          configured: !!cb,
+          tokenTail: cb ? cb.token.slice(-4) : null,
+          expiresAt: cb?.expiresAt ?? null,
+          createdAt: cb?.createdAt ?? null,
+        });
+      }
+      if (req.method === "POST") {
+        const body = JSON.parse(await this.readBody(req).catch(() => "{}")) as {
+          validityDays?: number;
+        };
+        const days = body.validityDays;
+        if (days !== undefined && days !== null && days !== 30 && days !== 180 && days !== 360) {
+          return this.json(res, { error: "validityDays 仅支持 30/180/360，缺省为不过期" }, 400);
+        }
+        const cb = await this.agentCallbackStore?.upsert(cid, a.ownerId, days ?? undefined);
+        if (!cb) return this.json(res, { error: "callback store unavailable" }, 500);
+        return this.json(res, {
+          token: cb.token,
+          expiresAt: cb.expiresAt,
+          url: `${this.oauthBaseUrl()}/api/callbacks/${cb.token}`,
+        });
+      }
+      if (req.method === "DELETE") {
+        await this.agentCallbackStore?.revoke(cid);
+        return this.json(res, { ok: true });
+      }
+    }
+
+    // 公开：回调链接发起对话（URL 即凭证，token 与 agent 一一绑定）
+    const callbackPathname = url.split("?")[0] ?? url;
+    const callbackMatch = callbackPathname.match(/^\/api\/callbacks\/([A-Za-z0-9_-]+)$/);
+    if (callbackMatch && req.method === "GET") {
+      await this.handleCallbackChat(req, res, callbackMatch[1] ?? "");
+      return;
+    }
+    // 公开：凭 token 查回调会话执行结果（token 过期后仍可查已发起会话）
+    const callbackResultMatch = callbackPathname.match(
+      /^\/api\/callbacks\/([A-Za-z0-9_-]+)\/conversations\/([\w-]+)$/,
+    );
+    if (callbackResultMatch && req.method === "GET") {
+      await this.handleCallbackResult(res, callbackResultMatch[1] ?? "", callbackResultMatch[2] ?? "");
+      return;
+    }
+
     // 公开：by-share（不泄配置）
     const byShareMatch = url.match(/^\/api\/agents\/by-share\/([\w-]+)$/);
     if (byShareMatch && req.method === "GET") {

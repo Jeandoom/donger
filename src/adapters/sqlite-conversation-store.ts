@@ -52,6 +52,7 @@ export class SqliteConversationStore implements ConversationStore {
     channelId: string,
     title: string,
     agentId: string,
+    opts?: { permissionMode?: Conversation["permissionMode"] },
   ): Promise<Conversation> {
     const now = new Date().toISOString();
     const conv: Conversation = {
@@ -61,7 +62,7 @@ export class SqliteConversationStore implements ConversationStore {
       title,
       channelId,
       agentId,
-      permissionMode: undefined,
+      permissionMode: opts?.permissionMode,
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -77,7 +78,7 @@ export class SqliteConversationStore implements ConversationStore {
         conv.title,
         conv.channelId,
         conv.agentId,
-        null,
+        conv.permissionMode ?? null,
         conv.createdAt,
         conv.updatedAt,
         0,

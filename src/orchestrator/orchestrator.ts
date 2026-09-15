@@ -154,6 +154,11 @@ export class Orchestrator {
     return this.busyConversations.has(conversationId);
   }
 
+  /** 会话是否正在处理消息（web 回调结果查询的 status 判定用） */
+  isBusy(conversationId: string): boolean {
+    return this.isConversationBusy(conversationId);
+  }
+
   /** 标记会话繁忙 */
   private markBusy(conversationId: string, taskId: string): void {
     this.busyConversations.set(conversationId, taskId);

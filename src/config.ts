@@ -61,6 +61,8 @@ const EnvSchema = z.object({
   PUBLIC_BASE_URL: z.string().optional().default(""),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
+  // 智能体回调链接发起限流（次/分钟/token，防泄露后被刷 LLM 费用）
+  CALLBACK_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   // LLM 流停摆看门狗：轮内超过该毫秒数无任何事件视为挂死，中断并立即收尾（0=关闭）
   TURN_STALL_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(600_000),
   // 会话空闲滚动：距会话最后活跃超过该小时数时重开新 SDK 会话（0=关闭）；
@@ -143,6 +145,8 @@ export interface AppConfig {
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
+  /** 智能体回调链接发起限流（次/分钟/token） */
+  callbackRateLimitPerMin: number;
   /** LLM 流停摆看门狗阈值（毫秒；0=关闭） */
   turnStallTimeoutMs: number;
   /** 会话空闲滚动阈值（小时；0=关闭） */
@@ -188,6 +192,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
+    callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,
   };
