@@ -3,7 +3,6 @@ import { isChatTaskType, parseRoutingDecision } from "../../src/domain/routing.j
 
 const VALID = {
   agentId: "agent-ops",
-  requiresDesign: false,
   taskType: "ops-inspect",
   rationale: "SLS 巡检类任务，路由到运维 agent",
 };
@@ -32,17 +31,20 @@ describe("parseRoutingDecision", () => {
   });
 
   it("JSON 字符串值内裸换行自动修复", () => {
-    const raw =
-      '{"agentId":"a1","requiresDesign":false,"taskType":"chat",\n  "rationale":"第一行\n第二行"}';
+    const raw = '{"agentId":"a1","taskType":"chat",\n  "rationale":"第一行\n第二行"}';
     const r = parseRoutingDecision(raw);
     expect(r.agentId).toBe("a1");
     expect(r.rationale).toBe("第一行\n第二行");
   });
 
-  it("代码块 JSON 尾随解释文字可解析", () => {
+  it("未知字段（如旧版 requiresDesign）被剥离不报错", () => {
     const raw =
       '结论如下：\n```json\n{"agentId":"a1","requiresDesign":true,"taskType":"dev","rationale":"匹配"}\n```\n以上。';
-    expect(parseRoutingDecision(raw).requiresDesign).toBe(true);
+    expect(parseRoutingDecision(raw)).toEqual({
+      agentId: "a1",
+      taskType: "dev",
+      rationale: "匹配",
+    });
   });
 });
 

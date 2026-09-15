@@ -134,24 +134,14 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
     await cli.exit();
   }, 900_000);
 
-  it("知识库维护：验收驳回重跑（rejectionCount）与登记职责修订", async () => {
+  it("知识库维护：单轮完成且 kb-keeper 仍在册可路由", async () => {
     if (!liveEnabled()) return expect(true).toBe(true);
     const cli = await ChatDriver.start(backend.api, backend.baseUrl, jwt);
 
     // 维护类任务：整理知识库变更摘要（kb-keeper 职责内）。
-    // 用 requiresDesign 的真实判定不可控，这里直接断言任务终态与驳回链路：
-    // 验收门出现后先驳回一次，再批准。
     cli.type("把交易行为分析口径整理成一页摘要，补充机构席位净买入的用法说明");
     await cli.seeAny(["📨 已分派给", "🧩", "❌"], 300_000);
-    await cli.see("✅", 600_000); // 无验收技能时单轮完成；有验收门时等门
-
-    if (cli.has("🔔") && !cli.has("✅ 完成")) {
-      // 走到验收门：先驳回（带原因），验证重跑链路
-      cli.type("n");
-      await cli.see("驳回原因", 60_000);
-      cli.type("摘要缺少机构席位净买入的用法");
-      await cli.see("✅ 完成", 600_000);
-    }
+    await cli.see("✅", 600_000);
     await cli.exit();
 
     // 任务层面的事实断言：至少一个 done 任务，且 kb-keeper 仍在册（可继续被路由）

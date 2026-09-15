@@ -35,7 +35,6 @@ const agent: Agent = {
     },
   ],
   extensionDirectories: [],
-  acceptanceGate: false,
   llm: {},
   version: 1,
   createdAt: "t",

@@ -31,34 +31,15 @@ export const TaskSchema = z.object({
   // —— 多 agent 任务平台（P1）——
   /** dispatcher 路由或显式指定的执行 agent */
   agentId: z.string().optional(),
-  /** 是否需要方案设计人工确认（dispatcher 判定，默认 false） */
-  requiresDesign: z.boolean().optional(),
-  /** 验收驳回次数（≥上限时熔断终止） */
-  rejectionCount: z.number().int().nonnegative().optional(),
   /** dispatcher 路由理由（观测/优化用） */
   routingRationale: z.string().optional(),
   // —— 人工门挂起态（观测 + 重启清扫依据；决议/提交后清除）——
-  /** 任务正卡在审批门（lifecycle 门或工具门）时写入。
-   *  持久化决议设计见 specs/2026-09-12-durable-gate-design.md：summary/designRejections
-   *  支撑重启后续跑（不重跑门前置轮），decision 为重启后写入的持久决议 */
+  /** 任务正卡在工具审批门时写入（仅 gateId/title/requestedAt；决议在内存 resolver，随进程丢失） */
   pendingGate: z
     .object({
       gateId: z.string(),
       title: z.string(),
       requestedAt: z.string(),
-      /** 门摘要：design=方案文本；acceptance=执行/自验结果（续跑收尾用） */
-      summary: z.string().optional(),
-      /** design 门已驳回次数（熔断计数跨重启） */
-      designRejections: z.number().int().nonnegative().optional(),
-      decision: z
-        .object({
-          approved: z.boolean(),
-          reason: z.string().optional(),
-          comment: z.string().optional(),
-          responderId: z.string().optional(),
-          respondedAt: z.string(),
-        })
-        .optional(),
     })
     .optional(),
   /** 任务正卡在凭证缺失问询时写入（missingCodes = agent 勾选但当前用户未配置的 code） */
@@ -76,11 +57,9 @@ export type Task = z.infer<typeof TaskSchema>;
 export type SkillKind = "markdown" | "code";
 export interface Skill {
   id: string;
-  kind: SkillKind;
+  kind: "markdown" | "code";
   description: string;
   triggers?: string[];
-  /** 该 skill 执行完后触发的审批门 id（如 design→"design"） */
-  gateAfter?: string;
 }
 
 // === Gate ===

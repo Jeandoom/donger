@@ -210,7 +210,7 @@ describe("方案二 · 代码仓库开发/测试/部署/bugfix（真机 GLM）",
     if (backend) await backend.stop();
   });
 
-  it("需求开发 → 测试 → 部署（方案门/deploy 门/验收门全生命周期）", async () => {
+  it("需求开发 → 测试 → 部署（deploy 门全生命周期）", async () => {
     if (!liveEnabled()) return expect(true).toBe(true);
     const before = gitCommitCount(repo.repoDir);
     const cli = await ChatDriver.start(backend.api, backend.baseUrl, jwt);
@@ -220,8 +220,7 @@ describe("方案二 · 代码仓库开发/测试/部署/bugfix（真机 GLM）",
         "全部通过后执行 bash deploy.sh 发布。",
     );
     await cli.seeAny(["📨 已分派给", "🧩", "❌"], 300_000);
-    await cli.see("🔔 审批门：方案设计确认", 300_000); // requiresDesign 真实判定
-    await cli.approveAll("✅ 完成", 12, 900_000); // deploy 门 / 验收门逐张批准
+    await cli.approveAll("✅ 完成", 12, 900_000); // deploy 门逐张批准
 
     // 事实断言：仓库真实演进 + 测试真实通过 + 部署产物真实存在
     expect(gitCommitCount(repo.repoDir)).toBeGreaterThan(before);

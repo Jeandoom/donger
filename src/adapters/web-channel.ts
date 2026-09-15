@@ -44,7 +44,6 @@ import {
   type QuestionItem,
   type QuestionResolution,
 } from "../domain/types.js";
-import { checkUnattendedSafety } from "../domain/unattended-guard.js";
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
@@ -261,18 +260,6 @@ export interface WebChannelDeps {
   hookRegistry?: HookRegistry;
   /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
-  /** 持久化门决议续跑回调（specs/2026-09-12-durable-gate-design.md）：
-   *  respond 回退路径写入 pendingGate.decision 后触发；缺省=决议仅持久化，待重启清扫续跑 */
-  onGatedDecision?: (
-    taskId: string,
-    decision: {
-      approved: boolean;
-      reason?: string;
-      comment?: string;
-      responderId?: string;
-      respondedAt: string;
-    },
-  ) => Promise<unknown>;
   publicBaseUrl?: string;
   /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
   dingtalkLoginRedirectUri?: string;
@@ -918,72 +905,29 @@ export class WebChannel implements Channel {
     };
 
     const pending = this.pendingApprovalResolves.get(approvalId);
-    if (pending) {
-      // 会话属主校验（多用户隔离）：仅会话 owner 可决议
-      const conv = await this.deps.conversationStore?.get(pending.conversationId);
-      if (conv && authUserId && conv.userId !== authUserId) {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
-        return;
-      }
-      this.pendingApprovalResolves.delete(approvalId);
-      // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
-      pending.resolve({
-        approved: body.approved,
-        reason: body.reason,
-        comment: body.comment?.trim() || undefined,
-        responderId: authUserId,
-      });
-      res.writeHead(200);
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-
-    // 回退路径（specs/2026-09-12-durable-gate-design.md）：无内存 resolver（进程重启后）
-    // 时把决议持久化到 pendingGate.decision 并触发续跑；决议已存在的重复 respond 幂等返回
-    const taskStore = this.deps.taskStore;
-    if (!taskStore) {
+    if (!pending) {
+      // 审批决议的 resolver 在内存中；进程重启后原审批卡已失效（重启清扫会标失败任务）
       res.writeHead(404);
       res.end(JSON.stringify({ error: "approval not found or expired" }));
       return;
     }
-    const gated = (await taskStore.listByStatus("awaiting_approval")).find(
-      (t) => t.pendingGate?.gateId === approvalId,
-    );
-    if (!gated?.pendingGate) {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: "approval not found or expired" }));
-      return;
-    }
-    const conv = await this.deps.conversationStore?.get(gated.threadId);
+    // 会话属主校验（多用户隔离）：仅会话 owner 可决议
+    const conv = await this.deps.conversationStore?.get(pending.conversationId);
     if (conv && authUserId && conv.userId !== authUserId) {
       res.writeHead(403);
       res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
       return;
     }
-    if (gated.pendingGate.decision) {
-      // 幂等：已决议的门不接受二次决议
-      res.writeHead(200);
-      res.end(JSON.stringify({ ok: true, duplicated: true }));
-      return;
-    }
-    const decision = {
+    this.pendingApprovalResolves.delete(approvalId);
+    // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
+    pending.resolve({
       approved: body.approved,
       reason: body.reason,
       comment: body.comment?.trim() || undefined,
       responderId: authUserId,
-      respondedAt: new Date().toISOString(),
-    };
-    await taskStore.updateStatus(gated.id, "awaiting_approval", {
-      pendingGate: { ...gated.pendingGate, decision },
     });
     res.writeHead(200);
-    res.end(JSON.stringify({ ok: true, resumed: false }));
-    try {
-      await this.deps.onGatedDecision?.(gated.id, decision);
-    } catch (e) {
-      console.error("[web-channel] 持久决议续跑失败（决议已保留，重启后可再续）", e);
-    }
+    res.end(JSON.stringify({ ok: true }));
   }
 
   /** 凭证缺失问询决议：按 reqId 解析 pendingMissingDecides，把决议回传给 requestMissingCredentials */
@@ -2630,19 +2574,9 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)\/(enable|disable)$/);
     if (m && req.method === "POST") {
-      const loop = await this.requireOwnedLoop(m[1] ?? "", uid);
+      // requireOwnedLoop 兼做属主校验（副作用），返回值此处不需要
+      await this.requireOwnedLoop(m[1] ?? "", uid);
       const enabled = m[2] === "enable";
-      if (enabled) {
-        // 无人值守防护：绑定 agent 的技能含验收门时，定时任务会永久卡在人工门 → 拒绝启用
-        const wf = loop.workflowId ? await ws?.get(loop.workflowId) : undefined;
-        const agent = wf?.agentId ? await this.deps.agentStore?.get(wf.agentId) : undefined;
-        if (agent) {
-          const check = checkUnattendedSafety(agent);
-          if (!check.safe) {
-            throw new ValidationError("UNATTENDED_UNSAFE", check.reason);
-          }
-        }
-      }
       const updated = await ls?.setEnabled(m[1] ?? "", enabled);
       // 启停时同步调度器
       if (this.deps.scheduler && updated) {
@@ -3188,7 +3122,6 @@ export class WebChannel implements Channel {
       // 编辑器需要的完整配置字段：漏传会让表单读到 undefined，保存时把默认值覆盖回库
       scenario: a.scenario,
       gitAllowShellGit: a.gitAllowShellGit,
-      acceptanceGate: a.acceptanceGate,
       version: a.version,
       llm: a.llm,
     };

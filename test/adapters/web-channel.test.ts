@@ -417,10 +417,9 @@ describe("WebChannel auth", () => {
 
   it("GET /api/conversations/:id/events?light=1 命中路由并截断工具字段", async () => {
     const { port, token, convId } = await createEventsChannel();
-    const res = await fetch(
-      `http://127.0.0.1:${port}/api/conversations/${convId}/events?light=1`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
+    const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/events?light=1`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { events: Array<{ type: string }> };
     expect(body.events.map((e) => e.type)).toEqual(["text", "tool_use"]);
@@ -1168,7 +1167,7 @@ describe("WebChannel /api/agents", () => {
     expect(r.status).toBe(403);
   });
 
-  it("详情 DTO 返回 scenario/acceptanceGate/gitAllowShellGit/version（漏传会让表单把默认值覆盖回库）", async () => {
+  it("详情 DTO 返回 scenario/gitAllowShellGit/version（漏传会让表单把默认值覆盖回库）", async () => {
     const { port, token, agentStore, userId } = await startWebWithAgents();
     const a = await agentStore.create({
       ownerId: userId,
@@ -1177,7 +1176,6 @@ describe("WebChannel /api/agents", () => {
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
       scenario: "code-dev",
-      acceptanceGate: true,
       gitAllowShellGit: true,
       llm: {},
     });
@@ -1187,12 +1185,10 @@ describe("WebChannel /api/agents", () => {
     expect(r.status).toBe(200);
     const dto = (await r.json()) as {
       scenario?: string;
-      acceptanceGate?: boolean;
       gitAllowShellGit?: boolean;
       version?: number;
     };
     expect(dto.scenario).toBe("code-dev");
-    expect(dto.acceptanceGate).toBe(true);
     expect(dto.gitAllowShellGit).toBe(true);
     expect(dto.version).toBe(1);
   });
@@ -1776,134 +1772,5 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
       body: JSON.stringify({ unrelated: "field" }),
     });
     expect(res.status).toBe(400);
-  });
-});
-
-/** 持久化门决议回退路径专用通道（specs/2026-09-12-durable-gate-design.md §2.1） */
-async function createDurableGateChannel(): Promise<{
-  port: number;
-  token: string;
-  otherToken: string;
-  taskId: string;
-  decisions: Array<{ taskId: string; decision: { approved: boolean } }>;
-  taskStore: import("../../src/adapters/sqlite-task-store.js").SqliteTaskStore;
-}> {
-  const db: Database.Database = new Database(":memory:");
-  const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
-  const sessionStore = new JwtSessionStore(db, "test-secret");
-  sessionStore.migrate();
-  const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
-  const userStore = new SqliteUserStore(db, {
-    adminExternalIds: new Set(),
-    usersDir: mkdtempSync(join(tmpdir(), "web-gate-users-")),
-  });
-  userStore.migrate();
-  const owner = await userStore.getOrCreateByIdentity("internal", "gate-owner", "属主");
-  const { token } = await sessionStore.create(owner.id);
-  const other = await userStore.getOrCreateByIdentity("internal", "gate-other", "旁人");
-  const otherToken = (await sessionStore.create(other.id)).token;
-
-  const { SqliteConversationStore } = await import(
-    "../../src/adapters/sqlite-conversation-store.js"
-  );
-  const convStore = new SqliteConversationStore(db);
-  convStore.migrate();
-  await convStore.create(owner.id, "web", "持久门");
-  const convId = (await convStore.listByUser(owner.id))[0]?.id;
-  if (!convId) throw new Error("no conversation");
-
-  const { SqliteTaskStore } = await import("../../src/adapters/sqlite-task-store.js");
-  const taskStore = new SqliteTaskStore(db);
-  taskStore.migrate();
-  const taskId = "t-durable-gate";
-  await taskStore.create({
-    id: taskId,
-    channelId: "web",
-    threadId: convId,
-    requesterId: owner.id,
-    prompt: "做个功能",
-    status: "awaiting_approval",
-    skillChain: [],
-    agentId: "a1",
-    requiresDesign: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    pendingGate: {
-      gateId: "design-abc",
-      title: "审批门：方案设计确认",
-      requestedAt: new Date().toISOString(),
-      summary: "方案文本",
-    },
-  });
-
-  const decisions: Array<{ taskId: string; decision: { approved: boolean } }> = [];
-  const tmp = mkdtempSync(join(tmpdir(), "web-gate-"));
-  web = new WebChannel({
-    port: 0,
-    workspaceDir: tmp,
-    sessionStore,
-    userStore,
-    conversationStore: convStore,
-    taskStore,
-    onGatedDecision: async (tid, decision) => {
-      decisions.push({ taskId: tid, decision });
-    },
-  });
-  web.onMessage(() => {});
-  await web.ready();
-  const port = web.boundPort;
-  if (!port) throw new Error("no port");
-  return { port, token, otherToken, taskId, decisions, taskStore };
-}
-
-describe("POST /api/approvals/:id/respond 回退路径（重启后持久决议）", () => {
-  it("无内存 resolver 时决议落 pendingGate.decision 并触发续跑回调", async () => {
-    const { port, token, taskId, decisions, taskStore } = await createDurableGateChannel();
-    const res = await fetch(`http://127.0.0.1:${port}/api/approvals/design-abc/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ approved: true, reason: "可以" }),
-    });
-    expect(res.status).toBe(200);
-    const stored = await taskStore.get(taskId);
-    expect(stored?.pendingGate?.decision?.approved).toBe(true);
-    expect(stored?.pendingGate?.decision?.reason).toBe("可以");
-    expect(decisions).toEqual([{ taskId, decision: expect.objectContaining({ approved: true }) }]);
-  });
-
-  it("非属主 → 403；未知 gateId → 404；已决议二次 respond 幂等不重复续跑", async () => {
-    const { port, token, otherToken, taskId, decisions, taskStore } =
-      await createDurableGateChannel();
-
-    const forbidden = await fetch(`http://127.0.0.1:${port}/api/approvals/design-abc/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${otherToken}` },
-      body: JSON.stringify({ approved: true }),
-    });
-    expect(forbidden.status).toBe(403);
-
-    const missing = await fetch(`http://127.0.0.1:${port}/api/approvals/no-such-gate/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ approved: true }),
-    });
-    expect(missing.status).toBe(404);
-
-    const first = await fetch(`http://127.0.0.1:${port}/api/approvals/design-abc/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ approved: false, reason: "改" }),
-    });
-    expect(first.status).toBe(200);
-    const dup = await fetch(`http://127.0.0.1:${port}/api/approvals/design-abc/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ approved: true }),
-    });
-    expect(dup.status).toBe(200);
-    expect(((await dup.json()) as { duplicated?: boolean }).duplicated).toBe(true);
-    // 决议保持首次写入，不被覆盖
-    expect((await taskStore.get(taskId))?.pendingGate?.decision?.approved).toBe(false);
-    expect(decisions).toHaveLength(1);
   });
 });

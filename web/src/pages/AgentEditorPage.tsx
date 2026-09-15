@@ -38,7 +38,6 @@ const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
   extensionDirectories: [],
   scenario: undefined,
   gitAllowShellGit: false,
-  acceptanceGate: false,
   llm: {},
 };
 
@@ -110,7 +109,6 @@ export function AgentEditorPage() {
             extensionDirectories: a.extensionDirectories ?? [],
             scenario: a.scenario,
             gitAllowShellGit: a.gitAllowShellGit ?? false,
-            acceptanceGate: a.acceptanceGate ?? false,
             llm: a.llm,
           });
         })
@@ -313,18 +311,6 @@ export function AgentEditorPage() {
           <p className="text-xs text-muted-foreground">
             对话时会在每次用户输入后自动追加 /{`{默认 Skill}`}，触发对应技能。
           </p>
-        </Field>
-
-        <Field label="验收门">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.acceptanceGate ?? false}
-              onChange={(event) => setForm({ ...form, acceptanceGate: event.target.checked })}
-            />
-            执行后先自验再弹验收卡等人工确认（默认关闭；dispatcher
-            判定需要方案确认的任务也会弹验收门；启用 定时/钩子无人值守任务前需关闭）
-          </label>
         </Field>
 
         <Field label="工具">

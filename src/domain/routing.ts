@@ -3,7 +3,6 @@ import { z } from "zod";
 /** dispatcher 的结构化路由决策（spec §4.3） */
 export const RoutingDecisionSchema = z.object({
   agentId: z.string().min(1),
-  requiresDesign: z.boolean(),
   taskType: z.string().min(1),
   rationale: z.string().min(1),
 });

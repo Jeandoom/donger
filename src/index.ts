@@ -298,8 +298,6 @@ async function main(): Promise<void> {
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
-  // 持久化门决议回退路径：重启后 respond 无内存 resolver 时落决议并触发本渠道续跑
-  webChannelDeps.onGatedDecision = (taskId) => webOrch.resumeGatedTask(taskId);
   await scheduler.restore();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 
@@ -328,17 +326,11 @@ async function main(): Promise<void> {
     log.info({ channel: "dingtalk" }, "就绪");
   }
 
-  // 启动清扫（需编排实例就绪：持久化门决议按渠道续跑，specs/2026-09-12-durable-gate-design.md）
-  const swept = await sweepInterruptedTasks({
-    taskStore: store,
-    messageStore,
-    auditStore,
-    resumeGatedTask: (taskId, channelId) =>
-      orchestrators.get(channelId)?.resumeGatedTask(taskId) ?? Promise.resolve("not_found"),
-  });
+  // 启动清扫：遗留 running/awaiting_approval 任务无续跑依据，统一标失败并补提示
+  const swept = await sweepInterruptedTasks({ taskStore: store, messageStore, auditStore });
   if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
-  if (swept.resumed > 0) log.info({ count: swept.resumed }, "已按持久化决议续跑挂起审批任务");
-  if (swept.rearmed > 0) log.info({ count: swept.rearmed }, "挂起审批任务保留等待决议");
+  if (swept.awaitingApproval > 0)
+    log.warn({ count: swept.awaitingApproval }, "已将遗留审批挂起任务标记为中断");
 }
 
 /** 从 DB 读取或自动生成 JWT 密钥并持久化 */

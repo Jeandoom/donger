@@ -46,8 +46,6 @@ export const AgentSchema = z.object({
   extensionDirectories: AgentExtensionDirectoriesSchema,
   /** 所属场景（builder 创建时选定；缺省 = 不做场景校验） */
   scenario: z.enum(SCENARIO_KEYS).optional(),
-  /** 验收工作流：执行后先自验（产出验收卡摘要）再弹验收门等人工确认；requiresDesign=true 的任务恒弹门 */
-  acceptanceGate: z.boolean().default(false),
   llm: AgentLLMSchema,
   /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */
   version: z.number().int().positive().default(1),

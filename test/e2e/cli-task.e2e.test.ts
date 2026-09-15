@@ -210,9 +210,9 @@ describe("CLI task 能力 E2E（真实 HTTP+SSE 后端）", () => {
     rmSync(backend.dir, { recursive: true, force: true });
   });
 
-  function dispatcher(agentId: string, requiresDesign = false): Script {
+  function dispatcher(agentId: string): Script {
     return {
-      result: `{"agentId":"${agentId}","requiresDesign":${requiresDesign},"taskType":"e2e-demo","rationale":"登记表匹配演示智能体"}`,
+      result: `{"agentId":"${agentId}","taskType":"e2e-demo","rationale":"登记表匹配演示智能体"}`,
     };
   }
 
@@ -252,7 +252,7 @@ describe("CLI task 能力 E2E（真实 HTTP+SSE 后端）", () => {
   it("闲聊兜底：taskType=chat 直答，不走分发", async () => {
     backend.runner.scripts.push(
       {
-        result: '{"agentId":"none","requiresDesign":false,"taskType":"chat","rationale":"打招呼"}',
+        result: '{"agentId":"none","taskType":"chat","rationale":"打招呼"}',
       },
       // 回答以 text 事件输出（真实 LLM 行为）；result 只承载回合终态
       { intro: "你好呀，我是兜底直答", result: "你好呀，我是兜底直答" },
@@ -261,35 +261,6 @@ describe("CLI task 能力 E2E（真实 HTTP+SSE 后端）", () => {
     cli.type("你好");
     await cli.see("你好呀，我是兜底直答");
     expect(cli.out.includes("📨")).toBe(false);
-    await cli.exit();
-  }, 60_000);
-
-  it("方案门驳回→修订→批准→验收门→done 全生命周期（含 thinking 透出）", async () => {
-    backend.runner.scripts.push(
-      dispatcher(backend.agent.id, true),
-      { thinking: "先理解需求，再定方案边界…", result: "方案 v1：先做 A" },
-      { result: "方案 v2：先做 B" },
-      { result: "已按方案执行完毕" },
-    );
-    const cli = await ChatDriver.start(api, backend.baseUrl, jwt);
-    cli.type("给项目加一个导出功能");
-
-    await cli.see("📋 方案设计阶段");
-    await cli.see("💭"); // 思考流实时透出（V17）
-    await cli.see("先理解需求，再定方案边界…");
-    await cli.see("🔔 审批门：方案设计确认");
-    await cli.see("方案 v1：先做 A"); // 卡片摘要可见
-    cli.type("n"); // 驳回
-    await cli.see("驳回原因"); // 非 TTY 下提示回显，驱动可同步
-    cli.type("范围太大");
-    await cli.see("方案 v2：先做 B"); // 修订后再次出方案
-    expect(backend.runner.prompts.some((p) => p.includes("方案被驳回：范围太大"))).toBe(true);
-    cli.type("y"); // 批准修订方案
-    await cli.see("🔨 执行阶段");
-    await cli.see("🔔 审批门：验收确认");
-    await cli.see("已按方案执行完毕"); // 验收卡摘要可见
-    cli.type("y");
-    await cli.see("✅ 完成");
     await cli.exit();
   }, 60_000);
 

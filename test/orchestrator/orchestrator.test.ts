@@ -563,7 +563,6 @@ describe("Orchestrator agent 路径", () => {
     gitRepositories: [],
     gitAllowShellGit: false,
     extensionDirectories: [],
-    acceptanceGate: false,
     llm: {},
     version: 1,
     createdAt: "",

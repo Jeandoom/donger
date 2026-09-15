@@ -306,7 +306,6 @@ describe("task flow steps", () => {
   it("chat 兜底：steps 记录 dispatcher→chat，任务归属 builtin-chat", async () => {
     const routing = JSON.stringify({
       agentId: "none",
-      requiresDesign: false,
       taskType: "chat",
       rationale: "闲聊问候",
     });

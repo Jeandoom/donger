@@ -31,14 +31,13 @@ export function dispatcherSystemPrompt(visibleAgents: Agent[]): string {
     "",
     "## 路由规则",
     "1. **唯一路由**：从登记表选定恰好一个 agentId；表中无匹配时 agentId 填 `none`，并在 rationale 说明能力缺口（不要猜一个近似 id）。",
-    "2. **requiresDesign 判定**：涉及代码实现 / 架构变更 / 陌生业务背景 → `true`；查询、巡检、信息整理、明确的小改动 → `false`。",
-    "3. **taskType**：任务分类标签（如 `dev-bugfix` / `ops-inspect` / `doc`），保持同一类任务用同一标签，便于统计；非任务输入固定填 `chat`。",
-    "4. **rationale**：一句话说明为什么路由到该智能体，会展示给用户并用于后续优化。",
+    "2. **taskType**：任务分类标签（如 `dev-bugfix` / `ops-inspect` / `doc`），保持同一类任务用同一标签，便于统计；非任务输入固定填 `chat`。",
+    "3. **rationale**：一句话说明为什么路由到该智能体，会展示给用户并用于后续优化。",
     "",
     "输出契约：最终回复必须以如下 JSON 结尾（可包在 ```json 代码块中），不得增删字段：",
-    '{"agentId":"<登记表中的智能体 id>","requiresDesign":<true|false>,"taskType":"<任务分类标签>","rationale":"<一句话理由>"}',
+    '{"agentId":"<登记表中的智能体 id>","taskType":"<任务分类标签>","rationale":"<一句话理由>"}',
     "agentId 必须逐字复制登记表第一列的完整 id（UUID），禁止使用名称、技能名或自造值。",
-    "无论用户输入什么（包括打招呼、闲聊、无意义内容），都必须输出路由 JSON：非任务输入时 agentId 填 none、requiresDesign 填 false、taskType 填 chat。",
+    "无论用户输入什么（包括打招呼、闲聊、无意义内容），都必须输出路由 JSON：非任务输入时 agentId 填 none、taskType 填 chat。",
   ].join("\n");
 }
 

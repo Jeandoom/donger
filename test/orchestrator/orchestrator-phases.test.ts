@@ -47,8 +47,8 @@ class ScriptedRunner implements AgentRunner {
   }
 }
 
-/** 审批决议序列通道：按序消费 approvals；记录卡片与发送文本 */
-function seqChannel(approvals: Array<{ approved: boolean; reason?: string }>) {
+/** 审批决议序列通道：记录卡片与发送文本 */
+function seqChannel() {
   const cards: ApprovalCard[] = [];
   const texts: string[] = [];
   const channel: Channel & { cards: ApprovalCard[]; texts: string[] } = {
@@ -61,7 +61,7 @@ function seqChannel(approvals: Array<{ approved: boolean; reason?: string }>) {
     },
     requestApproval: async (_t, c) => {
       cards.push(c);
-      return approvals.shift() ?? { approved: true };
+      return { approved: true };
     },
   };
   return channel;
@@ -190,14 +190,33 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
   return { mgr, credentialSets, packStore, installer: fakeInstaller };
 }
 
-const ROUTING_JSON =
-  '{"agentId":"a1","requiresDesign":true,"taskType":"dev","rationale":"前端任务"}';
+const ROUTING_JSON = '{"agentId":"a1","taskType":"dev","rationale":"前端任务"}';
+
+function visibleAgent(): Agent {
+  return {
+    id: "a1",
+    ownerId: "u-webu",
+    name: "A",
+    description: "演示智能体",
+    skills: [],
+    tools: { mode: "all", whitelist: [] },
+    mcpServers: [],
+    credentials: [],
+    gitRepositories: [],
+    gitAllowShellGit: false,
+    extensionDirectories: [],
+    llm: {},
+    version: 1,
+    createdAt: "",
+    updatedAt: "",
+  };
+}
 
 function build(
   runner: AgentRunner,
   channel: Channel,
   convStore: ConversationStore,
-  skills: string[] = ["x-design", "x-execute", "x-accept"],
+  skills: string[] = ["x-execute"],
   agentOverrides: Partial<Agent> = {},
   /** listByOwner 返回值：模拟 dispatcher 登记表的可见 agent 集合 */
   visible: Agent[] = [],
@@ -214,7 +233,6 @@ function build(
     gitRepositories: [],
     gitAllowShellGit: false,
     extensionDirectories: [],
-    acceptanceGate: false,
     llm: {},
     version: 1,
     createdAt: "",
@@ -251,67 +269,38 @@ function build(
 
 const MSG = { channelId: "test", threadId: "th", requesterId: "webu", text: "修复导出乱码" };
 
-describe("三段式生命周期", () => {
-  it("dispatch→design→方案门过→execute→accept→验收门过→done", async () => {
+describe("agent 任务单执行轮生命周期", () => {
+  it("dispatch 路由 → 单执行轮 → done，无审批卡；prompt 保持原文", async () => {
     const runner = new ScriptedRunner([
       { result: ROUTING_JSON }, // dispatcher
-      { result: "方案：三步走" }, // design
       { result: "执行完成" }, // execute
-      { result: "自验通过" }, // accept（acceptanceGate=true 配置的自验轮）
     ]);
-    const channel = seqChannel([{ approved: true }, { approved: true }]);
-    const { orch, store } = build(
-      runner,
-      channel,
-      statefulConvStore(""),
-      ["x-design", "x-execute", "x-accept"],
-      {
-        acceptanceGate: true,
-      },
-    );
+    const channel = seqChannel();
+    const { orch, store } = build(runner, channel, statefulConvStore(""));
 
     await orch.handleMessage(MSG);
 
     const done = await store.listByStatus("done");
     expect(done).toHaveLength(1);
-    expect(done[0]?.requiresDesign).toBe(true);
     expect(done[0]?.agentId).toBe("a1");
-    expect(channel.cards.map((c) => c.gateId)).toEqual(["design", "acceptance"]);
-    // dispatcher 轮走统一管道但不接续会话（noResume）
+    expect(done[0]?.routingRationale).toBe("前端任务");
+    // 无阶段门：整个任务只有 dispatcher + 执行两轮，不弹审批卡
+    expect(channel.cards).toHaveLength(0);
+    expect(runner.prompts).toEqual([MSG.text, MSG.text]);
+    // dispatcher 轮走统一管道但不接续会话（noResume）；执行轮为会话首轮（dispatcher 的
+    // sessionId 不回写），其自身 sdkSessionId 轮末回写供后续消息接续
     expect(runner.optsList[0]?.resume).toBeUndefined();
     expect(runner.optsList[0]?.sessionStore).toBeUndefined();
-    // 阶段 prompt 关键词
-    expect(runner.prompts[1]).toContain("实施方案");
-    expect(runner.prompts[2]).toContain("方案已确认");
-    expect(runner.prompts[3]).toContain("自验");
-    // 阶段间 resume 链：execute 轮 resume = design 轮 sessionId
-    expect(runner.optsList[2]?.resume).toBe("sdk-2");
-    expect(runner.optsList[3]?.resume).toBe("sdk-3");
+    expect(runner.optsList[1]?.resume).toBeUndefined();
+    expect(runner.optsList[1]?.sessionStore).toBeDefined();
   });
 
   it("dispatcher 登记表读时渲染：提示词只含当前用户可见的 agent", async () => {
     // 可见集合含自有 agent a1：登记表进入 dispatcher 系统提示
     const runner = new ScriptedRunner([{ result: ROUTING_JSON }, { result: "执行完成" }]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const { orch } = build(runner, channel, statefulConvStore(""), ["x-execute"], {}, [
-      {
-        id: "a1",
-        ownerId: "u-webu",
-        name: "A",
-        description: "演示智能体",
-        skills: [],
-        tools: { mode: "all", whitelist: [] },
-        mcpServers: [],
-        credentials: [],
-        gitRepositories: [],
-        gitAllowShellGit: false,
-        extensionDirectories: [],
-        acceptanceGate: false,
-        llm: {},
-        version: 1,
-        createdAt: "",
-        updatedAt: "",
-      },
+      visibleAgent(),
     ]);
     await orch.handleMessage(MSG);
     expect(runner.optsList[0]?.systemPromptAppend).toContain("a1");
@@ -319,71 +308,17 @@ describe("三段式生命周期", () => {
 
     // 可见集合为空：登记表空表提示（非 chat 类任务转 builder 兜底）
     const runner2 = new ScriptedRunner([
-      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
     ]);
-    const { orch: orch2 } = build(runner2, seqChannel([]), statefulConvStore(""));
+    const { orch: orch2 } = build(runner2, seqChannel(), statefulConvStore(""));
     await orch2.handleMessage(MSG);
     expect(runner2.optsList[0]?.systemPromptAppend).toContain("当前暂无可用智能体");
   });
 
-  it("方案驳回→重设计（带原因）→通过→…→done（rejectionCount 不增）", async () => {
-    const runner = new ScriptedRunner([
-      { result: ROUTING_JSON },
-      { result: "方案 v1" },
-      { result: "方案 v2" },
-      { result: "执行完成" },
-      { result: "自验通过" },
-    ]);
-    const channel = seqChannel([
-      { approved: false, reason: "漏了编码转换" },
-      { approved: true },
-      { approved: true },
-    ]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""), ["x-execute"], {
-      acceptanceGate: true,
-    });
-
-    await orch.handleMessage(MSG);
-
-    expect(await store.listByStatus("done")).toHaveLength(1);
-    expect(runner.prompts[2]).toContain("方案被驳回");
-    expect(runner.prompts[2]).toContain("漏了编码转换");
-    expect(channel.cards[0]?.gateId).toBe("design");
-    const done = (await store.listByStatus("done"))[0];
-    expect(done?.rejectionCount ?? 0).toBe(0); // 方案驳回不计验收驳回
-  });
-
-  it("验收驳回→rejectionCount=1→重执行→再验→done", async () => {
-    const runner = new ScriptedRunner([
-      { result: ROUTING_JSON },
-      { result: "方案" },
-      { result: "执行 v1" },
-      { result: "自验 v1" },
-      { result: "执行 v2" },
-      { result: "自验 v2" },
-    ]);
-    const channel = seqChannel([
-      { approved: true },
-      { approved: false, reason: "还有乱码用例" },
-      { approved: true },
-    ]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""), ["x-execute"], {
-      acceptanceGate: true,
-    });
-
-    await orch.handleMessage(MSG);
-
-    const done = await store.listByStatus("done");
-    expect(done).toHaveLength(1);
-    expect(done[0]?.rejectionCount).toBe(1);
-    expect(runner.prompts[4]).toContain("验收被驳回");
-    expect(runner.prompts[4]).toContain("还有乱码用例");
-  });
-
-  it("显式 agent（无 dispatch、无 accept skill）→单轮 execute→done，无审批卡", async () => {
+  it("显式 agent（会话绑定）→单轮 execute→done，无审批卡", async () => {
     const runner = new ScriptedRunner([{ result: "回答完成" }]);
-    const channel = seqChannel([]);
-    const { orch, store } = build(runner, channel, statefulConvStore("a1"), ["x-execute"]);
+    const channel = seqChannel();
+    const { orch, store } = build(runner, channel, statefulConvStore("a1"));
 
     await orch.handleMessage(MSG);
 
@@ -394,19 +329,19 @@ describe("三段式生命周期", () => {
 
   it("builtin-assist 会话：短路解析内置智能体，单轮执行且系统提示注入", async () => {
     const runner = new ScriptedRunner([{ result: "已创建 agent" }]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const { orch, store } = build(runner, channel, statefulConvStore("builtin-assist"));
 
     await orch.handleMessage(MSG);
 
     expect(await store.listByStatus("done")).toHaveLength(1);
     expect(runner.optsList[0]?.systemPromptAppend).toContain("创作助手");
-    expect(channel.cards).toHaveLength(0); // 无三段 skill → 无审批卡
+    expect(channel.cards).toHaveLength(0);
   });
 
   it("assist 会话注入 platformTools（in-process MCP server）", async () => {
     const runner = new ScriptedRunner([{ result: "完成" }]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const { orch, store } = build(runner, channel, statefulConvStore("builtin-assist"));
 
     await orch.handleMessage(MSG);
@@ -418,10 +353,10 @@ describe("三段式生命周期", () => {
 
   it("dispatch none 回复含「AI 生成助手」引导", async () => {
     const runner = new ScriptedRunner([
-      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
       { result: "已补建" }, // agent-builder 首轮
     ]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const { orch } = build(runner, channel, statefulConvStore(""));
     await orch.handleMessage(MSG);
     expect(channel.texts.join("\n")).toContain("Agent Builder");
@@ -429,10 +364,10 @@ describe("三段式生命周期", () => {
 
   it("dispatch none → 转入 agent-builder 兜底（不失败、绑定会话、注入缺口与平台工具）", async () => {
     const runner = new ScriptedRunner([
-      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
       { result: "已补建" },
     ]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const convStore = statefulConvStore("");
     const { orch, store } = build(runner, channel, convStore);
 
@@ -452,7 +387,7 @@ describe("三段式生命周期", () => {
     // 首轮 prompt 含缺口分析 + 原始任务
     expect(runner.prompts[1]).toContain("缺能力");
     expect(runner.prompts[1]).toContain("修复导出乱码");
-    // 平台工具注入（write_skill / create_agent / update_kb_registry / finish_builder 可用）
+    // 平台工具注入（write_skill / create_agent / finish_builder 可用）
     expect(runner.optsList[1]?.platformTools?.name).toBe("donger-platform");
     // 转入提示
     expect(channel.texts.join("\n")).toContain("Agent Builder");
@@ -460,11 +395,11 @@ describe("三段式生命周期", () => {
 
   it("agent-builder 会话绑定后续消息直连（不再过 dispatcher）", async () => {
     const runner = new ScriptedRunner([
-      { result: '{"agentId":"none","requiresDesign":false,"taskType":"dev","rationale":"缺能力"}' },
+      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
       { result: "已补建" },
       { result: "补充说明" }, // 同会话第二条消息
     ]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const { orch, store } = build(runner, channel, statefulConvStore(""));
 
     await orch.handleMessage(MSG);
@@ -478,7 +413,7 @@ describe("三段式生命周期", () => {
 
   it("agent-builder 会话：短路解析内置智能体且注入 platformTools", async () => {
     const runner = new ScriptedRunner([{ result: "已补建" }]);
-    const channel = seqChannel([]);
+    const channel = seqChannel();
     const { orch, store } = build(runner, channel, statefulConvStore("agent-builder"));
 
     await orch.handleMessage(MSG);
@@ -487,83 +422,12 @@ describe("三段式生命周期", () => {
     expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
     expect(runner.optsList[0]?.systemPromptAppend).toContain("构建助手");
   });
-
-  it("acceptanceGate=true 且 requiresDesign=false：单方案轮无门，验收门仍弹（agent 配置触发）", async () => {
-    const runner = new ScriptedRunner([
-      { result: '{"agentId":"a1","requiresDesign":false,"taskType":"dev","rationale":"简单任务"}' },
-      { result: "执行完成" }, // execute
-      { result: "自验通过" }, // accept
-    ]);
-    const channel = seqChannel([{ approved: true }]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""), ["x-execute"], {
-      acceptanceGate: true,
-    });
-
-    await orch.handleMessage(MSG);
-
-    const done = await store.listByStatus("done");
-    expect(done).toHaveLength(1);
-    // 无方案门：只有验收卡；执行轮 prompt 是任务原文（无方案引导）
-    expect(channel.cards.map((c) => c.gateId)).toEqual(["acceptance"]);
-    expect(runner.prompts[1]).toBe(MSG.text);
-    expect(runner.prompts[2]).toContain("自验");
-  });
-
-  it("验收驳回达上限（3 次）→ 熔断 failed，不再执行", async () => {
-    const runner = new ScriptedRunner([
-      { result: ROUTING_JSON }, // dispatcher（requiresDesign=true）
-      { result: "方案" },
-      { result: "执行 v1" },
-      { result: "执行 v2" },
-      { result: "执行 v3" },
-    ]);
-    const channel = seqChannel([
-      { approved: true },
-      { approved: false, reason: "r1" },
-      { approved: false, reason: "r2" },
-      { approved: false, reason: "r3" },
-    ]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""));
-
-    await orch.handleMessage(MSG);
-
-    const failed = await store.listByStatus("failed");
-    expect(failed).toHaveLength(1);
-    expect(failed[0]?.error).toContain("验收驳回次数达上限");
-    expect(failed[0]?.rejectionCount).toBe(3);
-    // 未配置 acceptanceGate：无自验轮，验收卡摘要用执行结果；三轮执行后熔断
-    expect(runner.prompts).toHaveLength(5);
-    expect(runner.prompts[3]).toContain("验收被驳回");
-  });
-
-  it("方案驳回达上限（3 次）→ 熔断 failed，不进入执行", async () => {
-    const runner = new ScriptedRunner([
-      { result: ROUTING_JSON },
-      { result: "方案 v1" },
-      { result: "方案 v2" },
-      { result: "方案 v3" },
-    ]);
-    const channel = seqChannel([
-      { approved: false, reason: "r1" },
-      { approved: false, reason: "r2" },
-      { approved: false, reason: "r3" },
-    ]);
-    const { orch, store } = build(runner, channel, statefulConvStore(""));
-
-    await orch.handleMessage(MSG);
-
-    const failed = await store.listByStatus("failed");
-    expect(failed).toHaveLength(1);
-    expect(failed[0]?.error).toContain("方案驳回次数达上限");
-    // dispatcher + 三轮方案后熔断，无执行轮
-    expect(runner.prompts).toHaveLength(4);
-  });
 });
 
 describe("dispatch 权限降级", () => {
   it("路由命中但当前用户无权使用 → 可行动提示 + task failed（不硬抛裸错误）", async () => {
     const runner = new ScriptedRunner([{ result: ROUTING_JSON }]);
-    const channel = seqChannel([{ approved: true }]);
+    const channel = seqChannel();
     const { orch, store } = build(
       runner,
       channel,
@@ -580,174 +444,5 @@ describe("dispatch 权限降级", () => {
     expect(channel.texts.some((t) => t.includes("无权使用它"))).toBe(true);
     // 失败后不再进入执行轮（runner 只消费了 dispatcher 路由这一条）
     expect(runner.prompts).toEqual([MSG.text]);
-  });
-});
-
-describe("持久化门决议续跑（specs/2026-09-12-durable-gate-design.md）", () => {
-  function gatedTask(overrides: Partial<Task> = {}): Task {
-    return {
-      id: "t-gate",
-      channelId: "test",
-      threadId: "conv-agent",
-      requesterId: "u-webu",
-      prompt: "做一个功能",
-      status: "awaiting_approval",
-      skillChain: [],
-      agentId: "a1",
-      requiresDesign: true,
-      createdAt: "t",
-      updatedAt: "t",
-      ...overrides,
-    };
-  }
-
-  it("design 门 approved 决议重启后续跑：不重跑方案轮，直接执行到 done", async () => {
-    const channel = seqChannel([]);
-    const runner = new ScriptedRunner([{ result: "执行完成" }]);
-    const convStore = statefulConvStore("a1");
-    const { orch, store } = build(runner, channel, convStore);
-    await store.create(
-      gatedTask({
-        pendingGate: {
-          gateId: "design",
-          title: "审批门：方案设计确认",
-          requestedAt: "t",
-          decision: { approved: true, respondedAt: "t" },
-        },
-      }),
-    );
-
-    const result = await orch.resumeGatedTask("t-gate");
-
-    expect(result).toBe("resumed");
-    expect(runner.prompts).toEqual(["方案已确认，开始按方案执行。"]);
-    expect(channel.texts.join("\n")).not.toContain("方案设计阶段");
-    expect((await store.get("t-gate"))?.status).toBe("done");
-  });
-
-  it("design 门 rejected 决议续跑：按原因进修订轮，过门后执行", async () => {
-    const channel = seqChannel([{ approved: true }]);
-    const runner = new ScriptedRunner([{ result: "修订后的方案" }, { result: "执行完成" }]);
-    const convStore = statefulConvStore("a1");
-    const { orch, store } = build(runner, channel, convStore);
-    await store.create(
-      gatedTask({
-        pendingGate: {
-          gateId: "design",
-          title: "审批门：方案设计确认",
-          requestedAt: "t",
-          designRejections: 1,
-          decision: { approved: false, reason: "方案太粗", respondedAt: "t" },
-        },
-      }),
-    );
-
-    const result = await orch.resumeGatedTask("t-gate");
-
-    expect(result).toBe("resumed");
-    expect(runner.prompts[0]).toContain("方案太粗");
-    expect(runner.prompts).toHaveLength(2);
-    expect((await store.get("t-gate"))?.status).toBe("done");
-  });
-
-  it("design 门 rejected 续跑达熔断上限：直接 failed，不再执行", async () => {
-    const channel = seqChannel([]);
-    const runner = new ScriptedRunner([]);
-    const convStore = statefulConvStore("a1");
-    const { orch, store } = build(runner, channel, convStore);
-    await store.create(
-      gatedTask({
-        pendingGate: {
-          gateId: "design",
-          title: "审批门：方案设计确认",
-          requestedAt: "t",
-          designRejections: 2,
-          decision: { approved: false, reason: "仍不行", respondedAt: "t" },
-        },
-      }),
-    );
-
-    const result = await orch.resumeGatedTask("t-gate");
-
-    expect(result).toBe("resumed");
-    expect(runner.prompts).toHaveLength(0);
-    expect((await store.get("t-gate"))?.status).toBe("failed");
-  });
-
-  it("acceptance 门 approved 决议续跑：凭持久化摘要直接收尾，不重跑执行/自验轮", async () => {
-    const channel = seqChannel([]);
-    const runner = new ScriptedRunner([]);
-    const convStore = statefulConvStore("a1");
-    const { orch, store } = build(
-      runner,
-      channel,
-      convStore,
-      ["x-design", "x-execute", "x-accept"],
-      { acceptanceGate: true },
-    );
-    await store.create(
-      gatedTask({
-        requiresDesign: false,
-        pendingGate: {
-          gateId: "acceptance",
-          title: "审批门：验收确认",
-          requestedAt: "t",
-          summary: "已完成的执行结果",
-          decision: { approved: true, respondedAt: "t" },
-        },
-      }),
-    );
-
-    const result = await orch.resumeGatedTask("t-gate");
-
-    expect(result).toBe("resumed");
-    expect(runner.prompts).toHaveLength(0);
-    expect((await store.get("t-gate"))?.status).toBe("done");
-  });
-
-  it("acceptance 门 rejected 决议续跑：按原因重跑执行+自验，再过门收尾", async () => {
-    const channel = seqChannel([{ approved: true }]);
-    const runner = new ScriptedRunner([{ result: "重跑执行完成" }, { result: "自验通过" }]);
-    const convStore = statefulConvStore("a1");
-    const { orch, store } = build(
-      runner,
-      channel,
-      convStore,
-      ["x-design", "x-execute", "x-accept"],
-      { acceptanceGate: true },
-    );
-    await store.create(
-      gatedTask({
-        requiresDesign: false,
-        rejectionCount: 1,
-        pendingGate: {
-          gateId: "acceptance",
-          title: "审批门：验收确认",
-          requestedAt: "t",
-          summary: "旧执行结果",
-          decision: { approved: false, reason: "缺测试", respondedAt: "t" },
-        },
-      }),
-    );
-
-    const result = await orch.resumeGatedTask("t-gate");
-
-    expect(result).toBe("resumed");
-    expect(runner.prompts[0]).toContain("缺测试");
-    expect(runner.prompts).toHaveLength(2);
-    expect((await store.get("t-gate"))?.rejectionCount).toBe(2);
-    expect((await store.get("t-gate"))?.status).toBe("done");
-  });
-
-  it("无决议/不存在/会话忙时不动任务", async () => {
-    const channel = seqChannel([]);
-    const runner = new ScriptedRunner([]);
-    const convStore = statefulConvStore("a1");
-    const { orch, store } = build(runner, channel, convStore);
-    await store.create(gatedTask({ id: "t-nodecision" }));
-
-    expect(await orch.resumeGatedTask("t-nodecision")).toBe("no_decision");
-    expect(await orch.resumeGatedTask("t-missing")).toBe("not_found");
-    expect((await store.get("t-nodecision"))?.status).toBe("awaiting_approval");
   });
 });
