@@ -151,7 +151,7 @@ export class SqliteUserStore implements UserStore {
 
   migrateCredentials(): void {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS user_credentials (
+      CREATE TABLE IF NOT EXISTS user_email_credentials (
         userId       TEXT PRIMARY KEY,
         passwordHash TEXT NOT NULL,
         updatedAt    TEXT NOT NULL
@@ -162,7 +162,7 @@ export class SqliteUserStore implements UserStore {
   async setPasswordCredential(userId: string, passwordHash: string): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO user_credentials (userId, passwordHash, updatedAt) VALUES (?, ?, ?)
+        `INSERT INTO user_email_credentials (userId, passwordHash, updatedAt) VALUES (?, ?, ?)
          ON CONFLICT(userId) DO UPDATE SET passwordHash = excluded.passwordHash, updatedAt = excluded.updatedAt`,
       )
       .run(userId, passwordHash, new Date().toISOString());
@@ -170,7 +170,7 @@ export class SqliteUserStore implements UserStore {
 
   async getPasswordCredential(userId: string): Promise<string | undefined> {
     const row = this.db
-      .prepare("SELECT passwordHash FROM user_credentials WHERE userId = ?")
+      .prepare("SELECT passwordHash FROM user_email_credentials WHERE userId = ?")
       .get(userId) as { passwordHash: string } | undefined;
     return row?.passwordHash;
   }
