@@ -72,6 +72,10 @@ function setup(script: FakeScript) {
     },
     async updateProfile() {},
     async updateRole() {},
+    async setPasswordCredential() {},
+    async getPasswordCredential() {
+      return undefined;
+    },
   };
   const conversationStore: import("../../src/ports/conversation-store.js").ConversationStore = {
     async create() {

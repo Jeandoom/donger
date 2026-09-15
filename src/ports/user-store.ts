@@ -31,4 +31,10 @@ export interface UserStore {
   updateProfile(id: string, partial: Partial<Pick<User, "name" | "avatar">>): Promise<void>;
   /** 更新用户角色 */
   updateRole(id: string, role: UserRole): Promise<void>;
+
+  // ---- 邮箱注册的密码凭证（passwordHash 存独立表，见 SqliteUserStore.migrateCredentials） ----
+  /** 写入/更新密码哈希（upsert） */
+  setPasswordCredential(userId: string, passwordHash: string): Promise<void>;
+  /** 读取密码哈希；未设置过密码返回 undefined */
+  getPasswordCredential(userId: string): Promise<string | undefined>;
 }

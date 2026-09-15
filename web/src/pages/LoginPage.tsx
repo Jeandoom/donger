@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import { getToken, setLoginNext, setToken } from "../lib/auth";
+import { apiFetch, getToken, setLoginNext, setToken } from "../lib/auth";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -10,6 +10,12 @@ export function LoginPage() {
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // 邮箱登录
+  const [showEmailLogin, setShowEmailLogin] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
 
   // 登录成功后的回跳目标（分享链接等场景经 ?next= 传入；默认回首页）
   const next = searchParams.get("next") || "/";
@@ -79,6 +85,32 @@ export function LoginPage() {
     if (!w) setError("弹窗被拦截，请允许弹出窗口或手动复制链接到浏览器打开");
   };
 
+  const submitEmailLogin = (ev: React.FormEvent) => {
+    ev.preventDefault();
+    setAuthError(null);
+    setAuthBusy(true);
+    void apiFetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    })
+      .then(async (r) => {
+        if (!r.ok) {
+          const data = (await r.json().catch(() => ({}))) as { error?: string };
+          throw new Error(data.error ?? `登录失败（HTTP ${r.status}）`);
+        }
+        return (await r.json()) as { token: string };
+      })
+      .then((data) => {
+        setToken(data.token);
+        navigate(next, { replace: true });
+      })
+      .catch((reason: unknown) =>
+        setAuthError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setAuthBusy(false));
+  };
+
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-sidebar">
@@ -116,14 +148,16 @@ export function LoginPage() {
       </div>
 
       {/* 右：登录卡 */}
-      <div className="flex flex-1 items-center justify-center bg-background px-6 lg:flex-none lg:w-[560px]">
+      <div className="flex flex-1 items-center justify-center bg-background px-6 py-12 lg:flex-none lg:w-[560px]">
         <div className="w-full max-w-sm">
           <div className="mb-8 flex items-center gap-2 lg:hidden">
             <img src="/pwa-icon.svg" alt="donger logo" className="h-8 w-8 rounded-lg" />
             <span className="text-lg font-bold">donger</span>
           </div>
           <h2 className="text-[22px] font-bold">登录</h2>
-          <p className="mt-1 mb-6 text-[13px] text-muted-foreground">使用钉钉扫码或 GitHub 登录</p>
+          <p className="mt-1 mb-6 text-[13px] text-muted-foreground">
+            钉钉扫码 / GitHub / 邮箱登录
+          </p>
 
           {error ? (
             <div className="mb-4 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
@@ -150,8 +184,57 @@ export function LoginPage() {
                   使用 GitHub 登录
                 </Button>
               ) : null}
+              <Button
+                variant="ghost"
+                className="w-full text-muted-foreground"
+                onClick={() => setShowEmailLogin((v) => !v)}
+              >
+                {showEmailLogin ? "收起邮箱登录" : "邮箱账号登录"}
+              </Button>
+              {showEmailLogin ? (
+                <form
+                  className="space-y-3 rounded-xl border border-border bg-muted/40 p-4"
+                  onSubmit={submitEmailLogin}
+                >
+                  {authError ? (
+                    <div className="rounded bg-destructive-soft p-2 text-xs text-destructive">
+                      {authError}
+                    </div>
+                  ) : null}
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="邮箱"
+                    autoComplete="email"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="密码"
+                    autoComplete="current-password"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <Button type="submit" className="w-full" disabled={authBusy}>
+                    {authBusy ? "登录中…" : "登录"}
+                  </Button>
+                  <p className="text-center text-[11px] text-muted-foreground/80">
+                    没有账号？
+                    <Link
+                      to={`/register${next !== "/" ? `?next=${encodeURIComponent(next)}` : ""}`}
+                      className="ml-1 underline"
+                    >
+                      注册新账号
+                    </Link>
+                  </p>
+                </form>
+              ) : null}
               <p className="text-center text-[11px] text-muted-foreground/80">
-                首次登录将自动创建账号并绑定对应平台身份
+                首次扫码/GitHub 登录将自动创建账号并绑定对应平台身份
               </p>
             </div>
           )}

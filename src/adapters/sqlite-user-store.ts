@@ -147,6 +147,34 @@ export class SqliteUserStore implements UserStore {
     return isAdminExternalId(this.opts.adminExternalIds, provider, externalId);
   }
 
+  // ---- 邮箱注册的密码凭证（独立表，避免哈希进 users.data JSON 被 API 序列化） ----
+
+  migrateCredentials(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_credentials (
+        userId       TEXT PRIMARY KEY,
+        passwordHash TEXT NOT NULL,
+        updatedAt    TEXT NOT NULL
+      )
+    `);
+  }
+
+  async setPasswordCredential(userId: string, passwordHash: string): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO user_credentials (userId, passwordHash, updatedAt) VALUES (?, ?, ?)
+         ON CONFLICT(userId) DO UPDATE SET passwordHash = excluded.passwordHash, updatedAt = excluded.updatedAt`,
+      )
+      .run(userId, passwordHash, new Date().toISOString());
+  }
+
+  async getPasswordCredential(userId: string): Promise<string | undefined> {
+    const row = this.db
+      .prepare("SELECT passwordHash FROM user_credentials WHERE userId = ?")
+      .get(userId) as { passwordHash: string } | undefined;
+    return row?.passwordHash;
+  }
+
   async updateRole(id: string, role: UserRole): Promise<void> {
     const cur = await this.get(id);
     if (!cur) throw new Error(`user 不存在: ${id}`);

@@ -50,6 +50,9 @@ const EnvSchema = z.object({
   // GitHub 请求代理（如 http://127.0.0.1:7897；大陆网络直连 github.com 间歇超时时配置。
   // 空=直连。仅作用于 GitHub OAuth 请求，代理失败自动回退直连）
   GITHUB_OAUTH_PROXY: z.string().optional().default(""),
+  // 邮箱注册域名白名单（逗号分隔，如 example.com,.corp.cn 支持子域通配）。
+  // 空=关闭无邀请的自助注册（只能凭邀请链接注册，防 robot 漏配敞口）
+  EMAIL_SIGNUP_ALLOWED_DOMAINS: z.string().optional().default(""),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
   // CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange 换 JWT；空=关闭该端点）
@@ -147,6 +150,8 @@ export interface AppConfig {
   githubLoginRedirectUri: string;
   /** GitHub 请求代理 URL（空=直连） */
   githubProxyUrl: string;
+  /** 邮箱注册域名白名单（规范化为小写集合；空=关闭无邀请自助注册） */
+  emailSignupAllowedDomains: Set<string>;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
@@ -195,6 +200,11 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     dingtalkLoginRedirectUri: e.DINGTALK_LOGIN_REDIRECT_URI.trim(),
     githubLoginRedirectUri: e.GITHUB_LOGIN_REDIRECT_URI.trim(),
     githubProxyUrl: e.GITHUB_OAUTH_PROXY.trim(),
+    emailSignupAllowedDomains: new Set(
+      e.EMAIL_SIGNUP_ALLOWED_DOMAINS.split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    ),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,

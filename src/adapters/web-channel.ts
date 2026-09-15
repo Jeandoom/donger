@@ -30,6 +30,14 @@ import {
 } from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
+import {
+  buildInvite,
+  inviteBlockReason,
+  isEmailDomainAllowed,
+  isValidEmail,
+  normalizeEmail,
+  passwordPolicyError,
+} from "../domain/invite.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
 import type { UserModelConfig } from "../domain/model-config.js";
@@ -61,8 +69,8 @@ import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
-import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
+import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type {
@@ -76,6 +84,7 @@ import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FileBrowser } from "../ports/file-browser.js";
+import type { InviteStore } from "../ports/invite-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
@@ -101,6 +110,7 @@ import {
   getGithubAccessToken,
   getGithubUser,
 } from "../util/github-oauth-api.js";
+import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import {
   handleInstall,
@@ -297,6 +307,10 @@ export interface WebChannelDeps {
   githubConfig?: { clientId: string; clientSecret: string };
   /** GitHub 请求代理 URL（如 http://127.0.0.1:7897；空=直连） */
   githubProxyUrl?: string;
+  /** 邀请注册链接存储（缺省=邮箱注册/邀请端点不可用） */
+  inviteStore?: InviteStore;
+  /** 邮箱注册域名白名单（小写集合；空=关闭无邀请自助注册） */
+  emailSignupAllowedDomains?: Set<string>;
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -337,7 +351,10 @@ export class WebChannel implements Channel {
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly dingtalkConfig?: { appKey: string; appSecret: string };
   private readonly githubConfig?: { clientId: string; clientSecret: string };
+  private readonly inviteStore?: InviteStore;
   private readonly oauthStateMap = new Map<string, number>();
+  /** 注册/登录的 IP 滑动窗口限流（次/分钟）；内存态，单实例部署即够 */
+  private readonly signupRateBuckets = new Map<string, number[]>();
   /** GitHub 绑定流程的 state → 意图（登录与绑定共用 authorize 端点，靠 state 区分） */
   private readonly githubBindStateMap = new Map<string, { userId: string; exp: number }>();
 
@@ -354,7 +371,21 @@ export class WebChannel implements Channel {
     this.agentMeta = deps.agentMeta;
     this.dingtalkConfig = deps.dingtalkConfig;
     this.githubConfig = deps.githubConfig;
+    this.inviteStore = deps.inviteStore;
     configureGithubProxy(deps.githubProxyUrl);
+  }
+
+  /** 注册/登录限流：每 IP 每分钟 5 次（register 与 login 共用桶） */
+  private checkSignupRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const hits = (this.signupRateBuckets.get(ip) ?? []).filter((t) => now - t < 60_000);
+    if (hits.length >= 5) {
+      this.signupRateBuckets.set(ip, hits);
+      return false;
+    }
+    hits.push(now);
+    this.signupRateBuckets.set(ip, hits);
+    return true;
   }
 
   /** 惰性清理过期的 OAuth state（登录与绑定共用），防 Map 无界增长 */
@@ -1332,6 +1363,8 @@ export class WebChannel implements Channel {
       "/api/auth/github/url",
       "/api/auth/github/callback",
       "/api/auth/exchange",
+      "/api/auth/register",
+      "/api/auth/login",
       "/api/agents/by-share",
       "/api/callbacks",
       "/api/health",
@@ -1554,6 +1587,120 @@ export class WebChannel implements Channel {
         res.end();
       }
       return;
+    }
+
+    // === 邮箱注册/登录（防 robot：域名白名单 + 邀请链接 + IP 限流） ===
+
+    // POST /api/auth/register { email, password, invite? }
+    if (url.split("?")[0] === "/api/auth/register" && req.method === "POST") {
+      if (!this.deps.userStore || !this.inviteStore || !this.sessionStore) {
+        return this.json(res, { error: "注册服务未启用" }, 503);
+      }
+      const ip = req.socket.remoteAddress ?? "unknown";
+      if (!this.checkSignupRateLimit(ip)) {
+        return this.json(res, { error: "尝试过于频繁，请稍后再试" }, 429);
+      }
+      let body: { email?: unknown; password?: unknown; invite?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const email = normalizeEmail(typeof body.email === "string" ? body.email : "");
+      const password = typeof body.password === "string" ? body.password : "";
+      if (!isValidEmail(email)) return this.json(res, { error: "邮箱格式无效" }, 400);
+      const pwdErr = passwordPolicyError(password);
+      if (pwdErr) return this.json(res, { error: pwdErr }, 400);
+
+      const inviteToken = typeof body.invite === "string" ? body.invite.trim() : "";
+      const invite = inviteToken ? await this.inviteStore.getByToken(inviteToken) : undefined;
+      if (inviteToken) {
+        const reason = invite ? inviteBlockReason(invite, new Date()) : "邀请链接无效";
+        if (reason) return this.json(res, { error: reason }, 403);
+      } else if (!isEmailDomainAllowed(email, this.deps.emailSignupAllowedDomains ?? new Set())) {
+        return this.json(res, { error: "该邮箱域名不在允许注册范围，请使用邀请链接注册" }, 403);
+      }
+
+      const existing = await this.deps.userStore.findByIdentity("email", email);
+      if (existing) return this.json(res, { error: "该邮箱已注册，请直接登录" }, 409);
+
+      if (inviteToken) {
+        // 原子核销（防并发超用）；步骤上方已做格式与查重校验，核销失败视为被并发用完
+        const consumed = await this.inviteStore.consume(inviteToken, new Date());
+        if (!consumed) return this.json(res, { error: "邀请链接使用次数已用完" }, 403);
+      }
+
+      const name = email.split("@")[0] ?? email;
+      const user = await this.deps.userStore.getOrCreateByIdentity("email", email, name);
+      await this.deps.userStore.setPasswordCredential(user.id, hashPassword(password));
+      const { token } = await this.sessionStore.create(user.id);
+      return this.json(res, { token, user });
+    }
+
+    // POST /api/auth/login { email, password }
+    if (url.split("?")[0] === "/api/auth/login" && req.method === "POST") {
+      if (!this.deps.userStore || !this.sessionStore) {
+        return this.json(res, { error: "登录服务未启用" }, 503);
+      }
+      const ip = req.socket.remoteAddress ?? "unknown";
+      if (!this.checkSignupRateLimit(ip)) {
+        return this.json(res, { error: "尝试过于频繁，请稍后再试" }, 429);
+      }
+      let body: { email?: unknown; password?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const email = normalizeEmail(typeof body.email === "string" ? body.email : "");
+      const password = typeof body.password === "string" ? body.password : "";
+      // 不区分「邮箱不存在」与「密码错误」，防账号枚举
+      const user = await this.deps.userStore.findByIdentity("email", email);
+      const storedHash = user
+        ? await this.deps.userStore.getPasswordCredential(user.id)
+        : undefined;
+      if (!user || !storedHash || !verifyPassword(password, storedHash)) {
+        return this.json(res, { error: "邮箱或密码错误" }, 401);
+      }
+      const { token } = await this.sessionStore.create(user.id);
+      return this.json(res, { token, user });
+    }
+
+    // GET /api/invites —— 当前用户的邀请列表
+    if (url.split("?")[0] === "/api/invites" && req.method === "GET") {
+      if (!this.inviteStore) return this.json(res, { error: "邀请服务未启用" }, 503);
+      const userId = this.requireRequestUser(req);
+      return this.json(res, { invites: await this.inviteStore.listByCreator(userId) });
+    }
+
+    // POST /api/invites { expiresInDays?, maxUses? } —— 生成邀请
+    if (url.split("?")[0] === "/api/invites" && req.method === "POST") {
+      if (!this.inviteStore) return this.json(res, { error: "邀请服务未启用" }, 503);
+      const userId = this.requireRequestUser(req);
+      let body: { expiresInDays?: unknown; maxUses?: unknown } = {};
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        // 空 body 视为默认值
+      }
+      const invite = buildInvite({
+        createdBy: userId,
+        expiresInDays: typeof body.expiresInDays === "number" ? body.expiresInDays : 7,
+        maxUses: typeof body.maxUses === "number" ? body.maxUses : 1,
+      });
+      await this.inviteStore.create(invite);
+      return this.json(res, { invite }, 201);
+    }
+
+    // POST /api/invites/:id/disable —— 属主禁用邀请
+    {
+      const disableMatch = url.split("?")[0]?.match(/^\/api\/invites\/([\w-]+)\/disable$/);
+      if (disableMatch && req.method === "POST") {
+        if (!this.inviteStore) return this.json(res, { error: "邀请服务未启用" }, 503);
+        const userId = this.requireRequestUser(req);
+        const ok = await this.inviteStore.disable(disableMatch[1] ?? "", userId);
+        return this.json(res, ok ? { ok: true } : { error: "邀请不存在" }, ok ? 200 : 404);
+      }
     }
 
     // GET /api/auth/me
@@ -2410,7 +2557,11 @@ export class WebChannel implements Channel {
       /^\/api\/callbacks\/([A-Za-z0-9_-]+)\/conversations\/([\w-]+)$/,
     );
     if (callbackResultMatch && req.method === "GET") {
-      await this.handleCallbackResult(res, callbackResultMatch[1] ?? "", callbackResultMatch[2] ?? "");
+      await this.handleCallbackResult(
+        res,
+        callbackResultMatch[1] ?? "",
+        callbackResultMatch[2] ?? "",
+      );
       return;
     }
 

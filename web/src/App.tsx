@@ -9,6 +9,7 @@ import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
+import { InvitesPage } from "./pages/InvitesPage";
 import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
@@ -19,6 +20,7 @@ import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { TriggerEditorPage } from "./pages/TriggerEditorPage";
 import { TriggersPage } from "./pages/TriggersPage";
+import { RegisterPage } from "./pages/RegisterPage";
 import { UserProfilePage } from "./pages/UserProfilePage";
 import { WorkflowEditorPage } from "./pages/WorkflowEditorPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
@@ -31,6 +33,8 @@ export function App() {
         {/* 登录相关路由（免认证） */}
         <Route path="/login" element={<LoginPage />} />
         <Route path="/login/success" element={<LoginSuccessPage />} />
+        {/* 邮箱注册（免认证；持邀请链接不受域名白名单限制） */}
+        <Route path="/register" element={<RegisterPage />} />
         {/* 分享落地页（公开；登录后自动授权进入） */}
         <Route path="/share/:token" element={<ShareLandingPage />} />
         {/* 合并流程已废弃：旧链接重定向到登录页 */}
@@ -57,6 +61,7 @@ export function App() {
             <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/profile" element={<UserProfilePage />} />
+            <Route path="/settings/invites" element={<InvitesPage />} />
             <Route path="/settings/models" element={<ModelsPage />} />
             <Route path="/settings/credentials" element={<CredentialsPage />} />
             <Route path="/credentials" element={<Navigate to="/settings/credentials" replace />} />

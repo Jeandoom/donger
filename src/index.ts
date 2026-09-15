@@ -20,6 +20,7 @@ import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
+import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModelConfigStore } from "./adapters/sqlite-model-config-store.js";
@@ -87,6 +88,9 @@ async function main(): Promise<void> {
     usersDir,
   });
   userStore.migrate();
+  userStore.migrateCredentials();
+  const inviteStore = new SqliteInviteStore(db);
+  inviteStore.migrate();
   const conversationStore = new SqliteConversationStore(db);
   conversationStore.migrate();
   const usageStore = new SqliteUsageStore(db);
@@ -261,6 +265,8 @@ async function main(): Promise<void> {
     githubLoginRedirectUri: cfg.githubLoginRedirectUri,
     githubConfig: cfg.githubOAuth,
     githubProxyUrl: cfg.githubProxyUrl,
+    inviteStore,
+    emailSignupAllowedDomains: cfg.emailSignupAllowedDomains,
     triggerStore,
     workflowStore,
     loopStore,

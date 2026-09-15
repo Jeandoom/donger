@@ -57,6 +57,7 @@ const entries: NavEntry[] = [
       { to: "/settings/profile", label: "个人" },
       { to: "/settings/models", label: "模型" },
       { to: "/settings/credentials", label: "凭证" },
+      { to: "/settings/invites", label: "邀请" },
     ],
   },
 ];
