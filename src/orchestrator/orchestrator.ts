@@ -454,26 +454,34 @@ export class Orchestrator {
         seq++;
 
         const stallMs = this.deps.turnStallTimeoutMs ?? 0;
+        // 等用户作答 AskUserQuestion 是合法阻塞（AskUserQuestion 桥接挂起期间流上无事件），
+        // 停摆判定对这类任务豁免——问询 resolver 超时降级必然 settle，豁免窗口有界。
+        const isAwaitingUserInput = () => this.deps.runner.isAwaitingUserInput?.(taskId) ?? false;
         const guarded: AsyncIterable<RunnerEvent> =
           stallMs > 0
-            ? guardStreamStall(rawEvents, stallMs, async () => {
-                console.error("[orchestrator] LLM 流停摆，看门狗中断本轮", p.conversation.id);
-                // 尽力留审计痕迹（seq=-1 = 执行前/外事件约定），错误沿 processMessage catch 收尾
-                try {
-                  await this.deps.auditStore.record({
-                    conversationId: p.conversation.id,
-                    taskId,
-                    userId: p.user.id,
-                    seq: -1,
-                    type: "result",
-                    resultSubtype: "error",
-                    text: `turn_stall: ${stallMs}ms 无事件，看门狗中断`,
-                    recordedAt: new Date().toISOString(),
-                  });
-                } catch {
-                  // ignore
-                }
-              })
+            ? guardStreamStall(
+                rawEvents,
+                stallMs,
+                async () => {
+                  console.error("[orchestrator] LLM 流停摆，看门狗中断本轮", p.conversation.id);
+                  // 尽力留审计痕迹（seq=-1 = 执行前/外事件约定），错误沿 processMessage catch 收尾
+                  try {
+                    await this.deps.auditStore.record({
+                      conversationId: p.conversation.id,
+                      taskId,
+                      userId: p.user.id,
+                      seq: -1,
+                      type: "result",
+                      resultSubtype: "error",
+                      text: `turn_stall: ${stallMs}ms 无事件，看门狗中断`,
+                      recordedAt: new Date().toISOString(),
+                    });
+                  } catch {
+                    // ignore
+                  }
+                },
+                isAwaitingUserInput,
+              )
             : rawEvents;
         for await (const e of guarded) {
           if (e.type === "session_init") capturedSessionId = e.sessionId;

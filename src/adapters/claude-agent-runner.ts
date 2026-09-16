@@ -15,7 +15,17 @@ import { BUILTIN_TOOL_TEXT_PREFIX } from "../util/provider-tool-text.js";
  * superpowers 经 plugins + skills 加载；审批门经 canUseTool 接 GateRouter + resolver。
  */
 export class ClaudeAgentRunner implements AgentRunner {
+  // 正在等用户作答 AskUserQuestion 的任务（taskId 集合）。看门狗据此豁免停摆判定：
+  // 等人工输入是合法阻塞，不是流挂死。问询 resolver 必然 settle（超时降级/catch），
+  // finally 复位，豁免窗口有界。
+  private readonly pendingUserInputs = new Set<string>();
+
   constructor(private readonly gates: GateRouter) {}
+
+  /** 该任务当前是否在等用户作答（guard 豁免判定用，按任务隔离防跨会话误豁免） */
+  isAwaitingUserInput(taskId: string): boolean {
+    return this.pendingUserInputs.has(taskId);
+  }
 
   async *run(task: Task, opts: RunOptions, resolver: ApprovalResolver): AsyncIterable<RunnerEvent> {
     const ac = new AbortController();
@@ -139,6 +149,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           if (toolName === "AskUserQuestion" && opts.questionResolver) {
             const questions = parseAskUserQuestions(input);
             if (questions) {
+              this.pendingUserInputs.add(task.id);
               try {
                 const resolution = await opts.questionResolver({
                   taskId: task.id,
@@ -159,6 +170,8 @@ export class ClaudeAgentRunner implements AgentRunner {
                   updatedInput: input,
                   toolUseID: ctx.toolUseID,
                 };
+              } finally {
+                this.pendingUserInputs.delete(task.id);
               }
             }
           }
