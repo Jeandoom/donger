@@ -515,30 +515,38 @@ export function useWebChat() {
     [state.conversations],
   );
 
-  /** 切换会话权限模式：PATCH 落库 + 本地即时更新（失败回滚） */
+  /** 切换会话权限模式：草稿先落库转正 → PATCH 落库 + 本地乐观更新（失败回滚并提示） */
   const setPermissionMode = useCallback(
     async (mode: AgentPermissionMode) => {
-      const id = state.activeConversationId;
-      if (!id) return;
-      const conversation = state.conversations.find((item) => item.id === id);
-      if (!conversation || conversation.isDraft) return;
-      const previous = conversation.permissionMode;
+      const active = state.conversations.find((item) => item.id === state.activeConversationId);
+      if (!active) return;
+      // 草稿会话先转正：否则 PATCH 无目标，设置随草稿一并丢失（转正失败静默返回，发送时会重试）
+      const conversationId = await persistDraftConversation(active);
+      if (!conversationId) return;
+      const previous = active.permissionMode;
+      const previousEffective = active.effectivePermissionMode;
       dispatch({
         type: "update_conversation",
-        conversationId: id,
-        patch: { permissionMode: mode },
+        conversationId,
+        // UI 优先读 effectivePermissionMode（列表接口恒返回），乐观更新须一并改写
+        patch: { permissionMode: mode, effectivePermissionMode: mode },
       });
       try {
-        await setConversationPermissionMode(id, mode);
+        await setConversationPermissionMode(conversationId, mode);
       } catch {
         dispatch({
           type: "update_conversation",
-          conversationId: id,
-          patch: { permissionMode: previous },
+          conversationId,
+          patch: { permissionMode: previous, effectivePermissionMode: previousEffective },
+        });
+        dispatch({
+          type: "set_error",
+          key: "conversations",
+          message: "权限模式切换失败，已还原",
         });
       }
     },
-    [state.activeConversationId, state.conversations],
+    [persistDraftConversation, state.activeConversationId, state.conversations],
   );
 
   return {
