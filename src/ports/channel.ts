@@ -73,6 +73,11 @@ export interface Channel {
   ): Promise<void>;
   requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
   /**
+   * 停止任务时解开该会话全部挂起审批（Web 实现）：审批不设超时后，这是 abort 路径
+   * 解开 canUseTool await 的唯一通道——否则挂审批时点停止，轮次收口会永久卡住。
+   */
+  cancelPendingApprovals?(conversationId: string): void;
+  /**
    * AskUserQuestion 问询（Web 实现；未实现的渠道由编排层按「空答案」降级，
    * 模型收到 "The user did not answer the questions." 后自走默认假设分支）。
    * threadId 即 conversationId（Web SSE 语义），卡片广播与 pending 归属都用它。

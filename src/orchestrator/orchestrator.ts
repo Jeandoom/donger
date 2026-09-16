@@ -128,6 +128,9 @@ export class Orchestrator {
     const controller = this.abortControllers.get(conversationId);
     if (!controller || controller.signal.aborted) return false;
     controller.abort();
+    // 审批门已不设超时：abort 后须同步解开挂起审批，否则 canUseTool 的 await
+    // 永不返回，轮次收口（finishCanceled）会卡死在事件流上。
+    this.deps.channel.cancelPendingApprovals?.(conversationId);
     return true;
   }
 
