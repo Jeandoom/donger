@@ -305,6 +305,8 @@ export interface AssistantThreadProps {
   placeholder: string;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
+  /** 输入框底部行插槽：附件按钮左侧（会话权限模式切换器等） */
+  composerLeading?: React.ReactNode;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -348,7 +350,10 @@ export function AssistantThread(props: AssistantThreadProps) {
             placeholder={props.placeholder}
           />
           <div className="flex items-center justify-between gap-2">
-            <AddAttachmentButton />
+            <div className="flex items-center gap-1">
+              {props.composerLeading}
+              <AddAttachmentButton />
+            </div>
             <ThreadPrimitive.If running={false}>
               <ComposerPrimitive.Send asChild>
                 <Button

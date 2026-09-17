@@ -33,9 +33,11 @@ export function useWebChat() {
     }
   }, []);
 
-  /** 创建新会话（agentId 缺省=默认会话） */
+  /** 创建新会话（agentId 缺省=默认会话；defaultPermissionMode=绑定智能体的默认对话模式，仅 UI 预填） */
   const newConversation = useCallback(
-    async (agentId?: string): Promise<ConversationSummary> => {
+    async (agentId?: string, defaultPermissionMode?: AgentPermissionMode): Promise<
+      ConversationSummary
+    > => {
       const now = new Date().toISOString();
       const conversation: ConversationSummary = {
         id: `draft-${makeId()}`,
@@ -44,6 +46,8 @@ export function useWebChat() {
         title: "新会话",
         channelId: "web",
         agentId: agentId ?? "",
+        // 仅预填展示值：permissionMode 保持空 = 跟随智能体默认，与转正后后端计算一致
+        effectivePermissionMode: defaultPermissionMode ?? "ask_before_change",
         createdAt: now,
         updatedAt: now,
         archived: false,
