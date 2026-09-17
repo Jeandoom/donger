@@ -99,10 +99,11 @@ export function AgentSessionsPage() {
     if (latest) {
       wc.switchConversation(latest.id);
     } else if (deepLinkAgent === agentId) {
-      void wc.newConversation(agentId);
+      void wc.newConversation(agentId, agent?.defaultPermissionMode);
     }
   }, [
     agentId,
+    agent?.defaultPermissionMode,
     wc.conversations,
     wc.activeConversationId,
     deepLinkAgent,
@@ -128,7 +129,7 @@ export function AgentSessionsPage() {
         onSelectConversation={wc.switchConversation}
         onDeleteConversation={wc.deleteConversation}
         onNewConversation={() => {
-          if (agentId) void wc.newConversation(agentId);
+          if (agentId) void wc.newConversation(agentId, agent?.defaultPermissionMode);
         }}
         sidebarTitle={agent ? `智能体：${agent.name}` : "智能体会话"}
         sidebarHeaderExtra={
