@@ -2,21 +2,30 @@ import {
   AttachmentPrimitive,
   ComposerPrimitive,
   MessagePrimitive,
+  type TextMessagePartProps,
   ThreadPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { ArrowUp, Bot, Paperclip, Square, UserRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowUp, Bot, Square, UserRound, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import remarkGfm from "remark-gfm";
+import { BUILTIN_ASSIST_AGENT_ID } from "../../lib/assist";
 import { fetchMe } from "../../lib/auth";
-import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
 import { lineRefBadge } from "../../lib/lineRefBadge";
+import type { Mention } from "../../lib/mentions";
+import { tokenizeMentionMarkers } from "../../lib/mentions";
 import { collapseToolNarration } from "../../lib/toolNarration";
 import { cn } from "../../lib/utils";
 import type { PendingApproval, PendingCredential, PendingQuestion } from "../../types";
 import { Button } from "../ui/button";
+import {
+  ComposerMentionTriggers,
+  ComposerPlusMenu,
+  useMentionCandidatesState,
+} from "./ComposerMentions";
 import { MarkdownCodeHeader, MarkdownSyntaxHighlighter } from "./MarkdownCodeBlock";
 import { PendingInteraction } from "./PendingInteraction";
 import { QuestionCard } from "./QuestionCard";
@@ -130,6 +139,28 @@ function MessageTime() {
   return <span className="font-normal opacity-75"> · {text}</span>;
 }
 
+/** 用户消息正文：@/​/$ 引用标记高亮（保守分词，邮箱/金额/路径不误伤） */
+function UserText(props: TextMessagePartProps) {
+  const tokens = tokenizeMentionMarkers(props.text);
+  return (
+    <>
+      {tokens.map((token, i) => {
+        const key = `${token.type}:${i}`;
+        return token.type === "mention" ? (
+          <span
+            key={key}
+            className="rounded bg-black/20 px-1 font-medium text-inherit dark:bg-white/20"
+          >
+            {token.text}
+          </span>
+        ) : (
+          <span key={key}>{token.text}</span>
+        );
+      })}
+    </>
+  );
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root
@@ -142,7 +173,7 @@ function UserMessage() {
           <MessageTime />
         </div>
         <div className="whitespace-pre-wrap break-words">
-          <MessagePrimitive.Parts />
+          <MessagePrimitive.Parts components={{ Text: UserText }} />
         </div>
         <MessageFiles />
       </div>
@@ -272,26 +303,6 @@ function ComposerAttachment() {
   );
 }
 
-function AddAttachmentButton() {
-  const attachmentCount = useAuiState(({ composer }) => composer.attachments.length);
-  const disabled = attachmentCount >= MAX_MESSAGE_ATTACHMENTS;
-  return (
-    <ComposerPrimitive.AddAttachment asChild>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        aria-label="添加附件"
-        className="min-h-11 min-w-11 rounded-full text-muted-foreground"
-        disabled={disabled}
-        title={disabled ? `最多上传 ${MAX_MESSAGE_ATTACHMENTS} 个文件` : "添加附件"}
-      >
-        <Paperclip aria-hidden="true" size={18} />
-      </Button>
-    </ComposerPrimitive.AddAttachment>
-  );
-}
-
 export interface AssistantThreadProps {
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
@@ -303,12 +314,36 @@ export interface AssistantThreadProps {
   onResolveApproval: (approved: boolean, reason?: string) => void;
   onDecideCredentialMissing: (decision: string) => void;
   placeholder: string;
+  /** 当前会话绑定的智能体 id（引用候选按该 agent 装配集过滤；空 = 闲聊会话，仅附件入口） */
+  agentId?: string;
+  /** 选中引用候选后回调（发送时对账后随消息上送） */
+  onMentionInserted: (mention: Mention) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
   const hasPendingInteraction = Boolean(props.pendingApproval || props.pendingCredential);
+  const hasAgent = Boolean(props.agentId) && props.agentId !== BUILTIN_ASSIST_AGENT_ID;
+  const { candidates, loading, refresh } = useMentionCandidatesState(hasAgent, props.agentId);
+  const aui = useAui();
+  const inputWrapRef = useRef<HTMLDivElement | null>(null);
+  // 菜单插入触发字符：追加到文本末尾（词首才触发检测，必要时先补空白），并把光标挪到末尾
+  const insertTrigger = useCallback(
+    (char: string) => {
+      const current = aui.composer().getState().text ?? "";
+      const next =
+        current.length > 0 && !/\s$/.test(current) ? `${current} ${char}` : `${current}${char}`;
+      aui.composer().setText(next);
+      requestAnimationFrame(() => {
+        const textarea = inputWrapRef.current?.querySelector("textarea");
+        textarea?.focus();
+        const end = textarea?.value.length ?? next.length;
+        textarea?.setSelectionRange(end, end);
+      });
+    },
+    [aui],
+  );
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
       <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
@@ -338,42 +373,55 @@ export function AssistantThread(props: AssistantThreadProps) {
         {props.aboveComposer}
         <ComposerPrimitive.Root
           aria-label="消息输入"
-          className="pb-safe pointer-events-auto mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
+          className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
         >
-          <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
-            <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
-          </div>
-          <ComposerPrimitive.Input
-            className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground"
-            placeholder={props.placeholder}
-          />
-          <div className="flex items-center justify-between gap-2">
-            <AddAttachmentButton />
-            <ThreadPrimitive.If running={false}>
-              <ComposerPrimitive.Send asChild>
-                <Button
-                  type="submit"
-                  size="icon"
-                  aria-label="发送消息"
-                  className="min-h-11 min-w-11 rounded-full"
-                >
-                  <ArrowUp aria-hidden="true" size={18} />
-                </Button>
-              </ComposerPrimitive.Send>
-            </ThreadPrimitive.If>
-            <ThreadPrimitive.If running>
-              <ComposerPrimitive.Cancel asChild>
-                <Button
-                  type="button"
-                  size="icon"
-                  aria-label="停止输出"
-                  className="min-h-11 min-w-11 rounded-full"
-                >
-                  <Square aria-hidden="true" size={16} fill="currentColor" />
-                </Button>
-              </ComposerPrimitive.Cancel>
-            </ThreadPrimitive.If>
-          </div>
+          <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+            <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
+              <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
+            </div>
+            <div ref={inputWrapRef} className="relative">
+              <ComposerPrimitive.Input
+                className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground"
+                placeholder={props.placeholder}
+              />
+              <ComposerMentionTriggers
+                candidates={candidates}
+                loading={loading}
+                onMentionInserted={props.onMentionInserted}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <ComposerPlusMenu
+                hasAgent={hasAgent}
+                onInsertTrigger={insertTrigger}
+                onOpen={refresh}
+              />
+              <ThreadPrimitive.If running={false}>
+                <ComposerPrimitive.Send asChild>
+                  <Button
+                    type="submit"
+                    size="icon"
+                    aria-label="发送消息"
+                    className="min-h-11 min-w-11 rounded-full"
+                  >
+                    <ArrowUp aria-hidden="true" size={18} />
+                  </Button>
+                </ComposerPrimitive.Send>
+              </ThreadPrimitive.If>
+              <ThreadPrimitive.If running>
+                <ComposerPrimitive.Cancel asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    aria-label="停止输出"
+                    className="min-h-11 min-w-11 rounded-full"
+                  >
+                    <Square aria-hidden="true" size={16} fill="currentColor" />
+                  </Button>
+                </ComposerPrimitive.Cancel>
+              </ThreadPrimitive.If>
+            </div>
+          </ComposerPrimitive.Unstable_TriggerPopoverRoot>
         </ComposerPrimitive.Root>
       </div>
     </ThreadPrimitive.Root>

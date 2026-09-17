@@ -35,8 +35,16 @@ describe("ChatWorkspace", () => {
     renderWorkspace();
 
     expect(screen.getByText("会话（0）")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "添加附件" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加内容" })).toBeInTheDocument();
     expect(screen.getByText("已连接")).toBeInTheDocument();
+  });
+
+  it("➕ 菜单：闲聊会话只提供附件入口，绑定智能体后才出现引用项", () => {
+    renderWorkspace();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    expect(screen.getByRole("menuitem", { name: /添加附件/ })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /引用技能/ })).not.toBeInTheDocument();
   });
 
   it("shows the assistant-ui welcome state before the first message", () => {
@@ -99,8 +107,8 @@ describe("ChatWorkspace", () => {
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
     renderWorkspace({ sidebarTitle: "会话" });
 
-    const addAttachment = screen.getByRole("button", { name: "添加附件" });
-    expect(addAttachment).toHaveClass("min-h-11");
+    const addContent = screen.getByRole("button", { name: "添加内容" });
+    expect(addContent).toHaveClass("min-h-11");
     const composer = screen.getByRole("form", { name: "消息输入" });
     expect(composer).toHaveClass("pb-safe", "rounded-2xl", "shadow-sm");
     expect(screen.getByRole("button", { name: "发送消息" })).toHaveClass("min-h-11", "min-w-11");

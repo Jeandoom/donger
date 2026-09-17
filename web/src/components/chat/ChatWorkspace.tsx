@@ -1,8 +1,11 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BUILTIN_ASSIST_AGENT_ID } from "../../lib/assist";
 import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
+import type { Mention } from "../../lib/mentions";
+import { reconcileMentions } from "../../lib/mentions";
 import type {
   AgentPermissionMode,
   ChatErrors,
@@ -35,7 +38,7 @@ export interface ChatWorkspaceProps {
   pendingCredential: PendingCredential | null;
   pendingQuestion: PendingQuestion | null;
   connection: ConnectionState;
-  onSend: (text: string, files?: FileInfo[]) => Promise<void>;
+  onSend: (text: string, files?: FileInfo[], mentions?: Mention[]) => Promise<void>;
   onEnsureConversation?: () => Promise<string | null>;
   onCancel: () => Promise<void>;
   onResolveApproval: (approved: boolean, reason?: string) => void;
@@ -68,11 +71,28 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       ),
     [props.activeConversationId, props.onEnsureConversation],
   );
+  // 引用候选选中后先攒在 ref（文本标记为事实源），发送时对账后随消息上送
+  const mentionsRef = useRef<Mention[]>([]);
+  useEffect(() => {
+    mentionsRef.current = [];
+  }, []);
+  const collectMention = useCallback((mention: Mention) => {
+    mentionsRef.current = [
+      ...mentionsRef.current.filter((m) => m.kind !== mention.kind || m.id !== mention.id),
+      mention,
+    ];
+  }, []);
+  const handleSend = useCallback(
+    async (text: string, files?: FileInfo[]) => {
+      await props.onSend(text, files, reconcileMentions(text, mentionsRef.current));
+    },
+    [props.onSend],
+  );
   const runtime = useAssistantRuntimeBridge({
     messages: props.messages,
     loading: props.loadingMessages,
     generating: props.isGenerating,
-    send: props.onSend,
+    send: handleSend,
     cancel: props.onCancel,
     attachmentAdapter,
   });
@@ -218,6 +238,13 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onResolveApproval={props.onResolveApproval}
               onDecideCredentialMissing={props.onDecideCredentialMissing}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
+              agentId={
+                activeConversation?.agentId &&
+                activeConversation.agentId !== BUILTIN_ASSIST_AGENT_ID
+                  ? activeConversation.agentId
+                  : undefined
+              }
+              onMentionInserted={collectMention}
               aboveComposer={props.aboveComposer}
             />
           </AssistantRuntimeProvider>

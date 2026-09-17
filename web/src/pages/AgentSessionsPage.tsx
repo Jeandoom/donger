@@ -174,9 +174,9 @@ export function AgentSessionsPage() {
         errors={wc.errors}
         onReloadConversations={() => void wc.loadConversations()}
         onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
-        onSend={async (text, files) => {
+        onSend={async (text, files, mentions) => {
           const access = await checkGitAccess();
-          if (access?.ready) await wc.send(text, files);
+          if (access?.ready) await wc.send(text, files, mentions);
         }}
         blockingContent={
           wc.activeConversationId &&

@@ -4,6 +4,7 @@ import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
 import { setConversationPermissionMode } from "./conversations";
+import type { Mention } from "./mentions";
 import { assembleTurnMessages, type HistoryEvent, type HistoryMessage } from "./turnAssembly";
 
 type SSEClient = {
@@ -373,7 +374,7 @@ export function useWebChat() {
   }, [persistDraftConversation, state.activeConversationId, state.conversations]);
 
   const send = useCallback(
-    async (text: string, files?: FileInfo[]): Promise<void> => {
+    async (text: string, files?: FileInfo[], mentions?: Mention[]): Promise<void> => {
       let active = state.conversations.find((item) => item.id === state.activeConversationId);
       if (!active) {
         // 初始空态（尚未选中任何会话）直接发送：先落一个草稿，避免消息被静默丢弃
@@ -395,7 +396,11 @@ export function useWebChat() {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ text, files }),
+          body: JSON.stringify({
+            text,
+            files,
+            ...(mentions && mentions.length > 0 ? { mentions } : {}),
+          }),
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         dispatch({ type: "message_delivery", id, delivery: "accepted" });
