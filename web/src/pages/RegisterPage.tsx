@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import { apiFetch, setLoginNext, setToken, getToken } from "../lib/auth";
+import { apiFetch, getToken, setLoginNext, setToken } from "../lib/auth";
 
 /** 邮箱注册页。持邀请链接（?invite=）注册不受邮箱域名白名单限制。 */
 export function RegisterPage() {

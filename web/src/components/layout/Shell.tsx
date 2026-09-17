@@ -1,8 +1,8 @@
 import { Outlet } from "react-router-dom";
+import { OfflineBanner } from "../pwa/OfflineBanner";
 import { MobileNavigationDrawer } from "./MobileNavigationDrawer";
 import { NavigationSidebar } from "./NavigationSidebar";
 import { PageErrorBoundary } from "./PageErrorBoundary";
-import { OfflineBanner } from "../pwa/OfflineBanner";
 
 export function Shell() {
   return (
