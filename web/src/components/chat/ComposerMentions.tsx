@@ -111,7 +111,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps) {
         <div
           role="menu"
           aria-label="添加内容菜单"
-          className="absolute bottom-full left-0 z-20 mb-2 w-72 overflow-hidden rounded-xl border bg-background p-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-2 w-72 max-w-[calc(100vw-9rem)] overflow-hidden rounded-xl border bg-background p-1 shadow-lg"
         >
           <ComposerPrimitive.AddAttachment asChild>
             <button
@@ -125,8 +125,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps) {
               )}
             >
               <Paperclip aria-hidden="true" size={15} className="shrink-0 text-muted-foreground" />
-              <span>添加附件</span>
-              <span className="ml-auto text-[11px] text-muted-foreground">
+              <span className="shrink-0">添加附件</span>
+              <span className="ml-auto truncate pl-2 text-[11px] text-muted-foreground">
                 {attachmentFull ? `最多 ${MAX_MESSAGE_ATTACHMENTS} 个` : "图片 / Markdown"}
               </span>
             </button>

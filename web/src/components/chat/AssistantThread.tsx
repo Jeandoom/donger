@@ -336,19 +336,26 @@ export function AssistantThread(props: AssistantThreadProps) {
   );
   const aui = useAui();
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
-  // 菜单插入触发字符：追加到文本末尾（词首才触发检测，必要时先补空白），并把光标挪到末尾
+  // 菜单插入触发字符：经原生 value setter + input 事件写入（等同真实键入）。
+  // 库的光标检测只在 textarea onChange/onSelect 中同步内部光标位置，纯 setText
+  // 不触发该链路，导致插入的 @ 不弹候选浮层（2026-09-17 e2e 实锤）。
   const insertTrigger = useCallback(
     (char: string) => {
       const current = aui.composer().getState().text ?? "";
       const next =
         current.length > 0 && !/\s$/.test(current) ? `${current} ${char}` : `${current}${char}`;
+      const textarea = inputWrapRef.current?.querySelector("textarea");
+      if (textarea) {
+        textarea.focus();
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        if (setter) {
+          setter.call(textarea, next);
+          textarea.setSelectionRange(next.length, next.length);
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          return;
+        }
+      }
       aui.composer().setText(next);
-      requestAnimationFrame(() => {
-        const textarea = inputWrapRef.current?.querySelector("textarea");
-        textarea?.focus();
-        const end = textarea?.value.length ?? next.length;
-        textarea?.setSelectionRange(end, end);
-      });
     },
     [aui],
   );
@@ -392,12 +399,15 @@ export function AssistantThread(props: AssistantThreadProps) {
                 className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground"
                 placeholder={props.placeholder}
               />
-              <ComposerMentionTriggers
-                candidates={candidates}
-                loading={loading}
-                error={error}
-                onMentionInserted={props.onMentionInserted}
-              />
+              {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
+              {hasAgent ? (
+                <ComposerMentionTriggers
+                  candidates={candidates}
+                  loading={loading}
+                  error={error}
+                  onMentionInserted={props.onMentionInserted}
+                />
+              ) : null}
             </div>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1">
