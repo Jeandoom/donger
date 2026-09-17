@@ -210,3 +210,31 @@ describe("chatReducer AskUserQuestion 状态", () => {
     expect(state.pendingQuestion).toBeNull();
   });
 });
+
+describe("chatReducer 并发淘汰通知", () => {
+  it("eviction_notice 存入弹窗状态，clear_eviction 清空", () => {
+    let state = initialChatState();
+    expect(state.evictionNotice).toBeNull();
+
+    state = chatReducer(state, {
+      type: "ws",
+      msg: {
+        type: "eviction_notice",
+        taskId: "t1",
+        conversationId: "conv-1",
+        taskExcerpt: "分析 aix-py 访问异常",
+        startedAt: "2026-09-16T10:00:00Z",
+        pendingSince: "2026-09-16T10:01:00Z",
+        canceledAt: "2026-09-16T10:05:00Z",
+      },
+    });
+    expect(state.evictionNotice).toMatchObject({
+      taskId: "t1",
+      conversationId: "conv-1",
+      taskExcerpt: "分析 aix-py 访问异常",
+    });
+
+    state = chatReducer(state, { type: "clear_eviction" });
+    expect(state.evictionNotice).toBeNull();
+  });
+});

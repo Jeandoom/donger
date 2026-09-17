@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AssistDraftBanner } from "../components/chat/AssistDraftBanner";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { EvictionNoticeDialog } from "../components/chat/EvictionNoticeDialog";
 import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
@@ -118,75 +119,78 @@ export function AgentSessionsPage() {
     : [];
 
   return (
-    <ChatWorkspace
-      conversations={conversations}
-      activeConversationId={wc.activeConversationId}
-      activeConversationIsDraft={activeIsDraft}
-      onSelectConversation={wc.switchConversation}
-      onDeleteConversation={wc.deleteConversation}
-      onNewConversation={() => {
-        if (agentId) void wc.newConversation(agentId);
-      }}
-      sidebarTitle={agent ? `智能体：${agent.name}` : "智能体会话"}
-      sidebarHeaderExtra={
-        <select
-          className="h-8 w-full rounded-lg border border-border bg-card px-2 text-xs focus:border-primary focus:outline-none"
-          value={agentId}
-          onChange={(event) => setAgentId(event.target.value)}
-        >
-          {agents.length === 0 ? <option value="">（暂无可用智能体）</option> : null}
-          {agents.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
-      }
-      messages={wc.messages}
-      loadingMessages={wc.loadingMessages}
-      isGenerating={wc.isGenerating}
-      pendingApproval={wc.pendingApproval}
-      pendingCredential={wc.pendingCredential}
-      pendingQuestion={wc.pendingQuestion}
-      connection={wc.connection}
-      onCancel={wc.cancel}
-      onEnsureConversation={wc.ensureConversation}
-      onPermissionModeChange={wc.setPermissionMode}
-      onResolveApproval={wc.resolveApproval}
-      onDecideCredentialMissing={wc.decideCredentialMissing}
-      onAnswerQuestion={wc.answerQuestion}
-      inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}
-      aboveComposer={
-        assistDraft ? (
-          <AssistDraftBanner
-            draft={assistDraft}
-            onSend={(text) => {
-              setAssistDraft("");
-              void wc.send(text);
-            }}
-            onDismiss={() => setAssistDraft("")}
-          />
-        ) : undefined
-      }
-      errors={wc.errors}
-      onReloadConversations={() => void wc.loadConversations()}
-      onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
-      onSend={async (text, files) => {
-        const access = await checkGitAccess();
-        if (access?.ready) await wc.send(text, files);
-      }}
-      blockingContent={
-        wc.activeConversationId &&
-        !activeIsDraft &&
-        (gitLoading || !gitPreflight.ready || gitError) ? (
-          <GitAccessBlocker
-            loading={gitLoading}
-            requirements={gitPreflight.requirements}
-            error={gitError || undefined}
-            onRetry={() => void checkGitAccess()}
-          />
-        ) : undefined
-      }
-    />
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <EvictionNoticeDialog notice={wc.evictionNotice} onClose={wc.dismissEviction} />
+      <ChatWorkspace
+        conversations={conversations}
+        activeConversationId={wc.activeConversationId}
+        activeConversationIsDraft={activeIsDraft}
+        onSelectConversation={wc.switchConversation}
+        onDeleteConversation={wc.deleteConversation}
+        onNewConversation={() => {
+          if (agentId) void wc.newConversation(agentId);
+        }}
+        sidebarTitle={agent ? `智能体：${agent.name}` : "智能体会话"}
+        sidebarHeaderExtra={
+          <select
+            className="h-8 w-full rounded-lg border border-border bg-card px-2 text-xs focus:border-primary focus:outline-none"
+            value={agentId}
+            onChange={(event) => setAgentId(event.target.value)}
+          >
+            {agents.length === 0 ? <option value="">（暂无可用智能体）</option> : null}
+            {agents.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        }
+        messages={wc.messages}
+        loadingMessages={wc.loadingMessages}
+        isGenerating={wc.isGenerating}
+        pendingApproval={wc.pendingApproval}
+        pendingCredential={wc.pendingCredential}
+        pendingQuestion={wc.pendingQuestion}
+        connection={wc.connection}
+        onCancel={wc.cancel}
+        onEnsureConversation={wc.ensureConversation}
+        onPermissionModeChange={wc.setPermissionMode}
+        onResolveApproval={wc.resolveApproval}
+        onDecideCredentialMissing={wc.decideCredentialMissing}
+        onAnswerQuestion={wc.answerQuestion}
+        inputPlaceholder={agent ? `向 ${agent.name} 发消息…` : "输入消息…"}
+        aboveComposer={
+          assistDraft ? (
+            <AssistDraftBanner
+              draft={assistDraft}
+              onSend={(text) => {
+                setAssistDraft("");
+                void wc.send(text);
+              }}
+              onDismiss={() => setAssistDraft("")}
+            />
+          ) : undefined
+        }
+        errors={wc.errors}
+        onReloadConversations={() => void wc.loadConversations()}
+        onReloadMessages={() => wc.switchConversation(wc.activeConversationId)}
+        onSend={async (text, files) => {
+          const access = await checkGitAccess();
+          if (access?.ready) await wc.send(text, files);
+        }}
+        blockingContent={
+          wc.activeConversationId &&
+          !activeIsDraft &&
+          (gitLoading || !gitPreflight.ready || gitError) ? (
+            <GitAccessBlocker
+              loading={gitLoading}
+              requirements={gitPreflight.requirements}
+              error={gitError || undefined}
+              onRetry={() => void checkGitAccess()}
+            />
+          ) : undefined
+        }
+      />
+    </div>
   );
 }

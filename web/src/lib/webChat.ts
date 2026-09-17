@@ -185,6 +185,17 @@ export function useWebChat() {
       }
     });
 
+    eventSource.addEventListener("eviction_notice", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "eviction_notice") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("result", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -541,8 +552,11 @@ export function useWebChat() {
     [state.activeConversationId, state.conversations],
   );
 
+  const dismissEviction = useCallback(() => dispatch({ type: "clear_eviction" }), []);
+
   return {
     ...state,
+    dismissEviction,
     send,
     cancel,
     resolveApproval,

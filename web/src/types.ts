@@ -28,7 +28,26 @@ export type SSEEvent =
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
   | { type: "activity"; text: string }
+  | {
+      type: "eviction_notice";
+      taskId: string;
+      conversationId: string;
+      taskExcerpt: string;
+      startedAt: string;
+      pendingSince: string;
+      canceledAt: string;
+    }
   | { type: "error"; error: string };
+
+/** 并发淘汰通知（eviction_notice 事件的前端形态，弹窗展示用） */
+export interface EvictionNotice {
+  taskId: string;
+  conversationId: string;
+  taskExcerpt: string;
+  startedAt: string;
+  pendingSince: string;
+  canceledAt: string;
+}
 
 export type ChatRole = "user" | "bot";
 
@@ -141,6 +160,8 @@ export interface ChatState {
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
   pendingQuestion: PendingQuestion | null;
+  /** 并发淘汰弹窗（最新一条；用户关闭后清空） */
+  evictionNotice: EvictionNotice | null;
   connection: ConnectionState;
   /** 用户会话列表 */
   conversations: ConversationSummary[];

@@ -78,6 +78,21 @@ export interface Channel {
    */
   cancelPendingApprovals?(conversationId: string): void;
   /**
+   * 并发淘汰通知（Web 实现）：并发满时系统强制结束最早挂起的任务放行新任务，
+   * 把被结束任务的详情推给新任务所在会话，前端弹窗展示。未实现渠道靠 send 文本兜底。
+   */
+  pushEvictionNotice?(
+    conversationId: string,
+    info: {
+      taskId: string;
+      conversationId: string;
+      taskExcerpt: string;
+      startedAt: string;
+      pendingSince: string;
+      canceledAt: string;
+    },
+  ): void;
+  /**
    * AskUserQuestion 问询（Web 实现；未实现的渠道由编排层按「空答案」降级，
    * 模型收到 "The user did not answer the questions." 后自走默认假设分支）。
    * threadId 即 conversationId（Web SSE 语义），卡片广播与 pending 归属都用它。

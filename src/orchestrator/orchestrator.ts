@@ -17,7 +17,12 @@ import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import type { AgentRunner, RunOptions } from "../ports/agent-runner.js";
+import type {
+  AgentRunner,
+  ApprovalResolver,
+  QuestionResolver,
+  RunOptions,
+} from "../ports/agent-runner.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
@@ -80,6 +85,18 @@ export interface OrchestratorDeps {
   turnStallTimeoutMs?: number;
 }
 
+/** 活跃任务明细：并发额度按条目记账，满载时从中挑「最早进入挂起」的淘汰 */
+interface ActiveTaskEntry {
+  taskId: string;
+  conversationId: string;
+  /** 任务文本摘要（用户消息前 60 字），弹窗展示用 */
+  taskExcerpt: string;
+  /** 任务开始时间（ISO） */
+  startedAt: string;
+  /** 进入等人工输入（审批门/问询）的时刻（ISO）；undefined=活跃执行中 */
+  pendingSince?: string;
+}
+
 export class Orchestrator {
   // conversationId → taskId（该会话当前活跃任务，用于独立并发控制）
   private readonly busyConversations = new Map<string, string>();
@@ -103,8 +120,9 @@ export class Orchestrator {
     return this.activityTracker.get(conversationId);
   }
 
-  // userId → 活跃任务数（并发限制）
-  private readonly userActiveCounts = new Map<string, number>();
+  /** 活跃任务明细（并发限制 + 满载时淘汰最早挂起任务的候选表） */
+  // userId → conversationId → 任务明细
+  private readonly userActiveTasks = new Map<string, Map<string, ActiveTaskEntry>>();
   private readonly abortControllers = new Map<string, AbortController>();
   // conversationId → 触发补建的原任务文本（builder 干跑验证用；进程内存态，重启丢失后回退当前消息）
   private readonly builderOriginalPrompts = new Map<string, string>();
@@ -134,22 +152,48 @@ export class Orchestrator {
     return true;
   }
 
-  /** 检查用户并发数是否超限 */
+  /** 该用户活跃任务是否已满 */
   private checkUserLimit(userId: string): boolean {
-    const count = this.userActiveCounts.get(userId) ?? 0;
-    return count < Orchestrator.MAX_CONCURRENT_PER_USER;
+    return (this.userActiveTasks.get(userId)?.size ?? 0) < Orchestrator.MAX_CONCURRENT_PER_USER;
   }
 
-  /** 注册用户活跃任务 */
-  private registerActive(userId: string): void {
-    const count = this.userActiveCounts.get(userId) ?? 0;
-    this.userActiveCounts.set(userId, count + 1);
+  /** 注册活跃任务（并发额度记账 + 淘汰候选表） */
+  private registerActive(userId: string, entry: ActiveTaskEntry): void {
+    let tasks = this.userActiveTasks.get(userId);
+    if (!tasks) {
+      tasks = new Map();
+      this.userActiveTasks.set(userId, tasks);
+    }
+    tasks.set(entry.conversationId, entry);
   }
 
-  /** 注销用户活跃任务 */
-  private unregisterActive(userId: string): void {
-    const count = this.userActiveCounts.get(userId) ?? 0;
-    this.userActiveCounts.set(userId, Math.max(0, count - 1));
+  /** 注销活跃任务（按会话键删除；任务已不存在时幂等） */
+  private unregisterActive(userId: string, conversationId: string): void {
+    this.userActiveTasks.get(userId)?.delete(conversationId);
+  }
+
+  /** 标记任务进入等人工输入（审批门/问询挂起），淘汰候选按此时间排序 */
+  private markTaskPending(userId: string, conversationId: string): void {
+    const entry = this.userActiveTasks.get(userId)?.get(conversationId);
+    if (entry && !entry.pendingSince) entry.pendingSince = new Date().toISOString();
+  }
+
+  /** 标记任务脱离挂起（人工输入已返回） */
+  private clearTaskPending(userId: string, conversationId: string): void {
+    const entry = this.userActiveTasks.get(userId)?.get(conversationId);
+    if (entry) entry.pendingSince = undefined;
+  }
+
+  /**
+   * 并发满时的淘汰候选：该用户所有挂起任务中「最早进入挂起」的一个。
+   * 只淘汰等人工输入的任务——活跃执行中的任务挤掉等于中断正在干活的 agent，不参与淘汰。
+   */
+  private findEvictionCandidate(userId: string): ActiveTaskEntry | undefined {
+    const pendings = [...(this.userActiveTasks.get(userId)?.values() ?? [])].filter(
+      (e) => e.pendingSince,
+    );
+    if (pendings.length === 0) return undefined;
+    return pendings.reduce((a, b) => (a.pendingSince! <= b.pendingSince! ? a : b));
   }
 
   /** 检查会话是否繁忙 */
@@ -367,7 +411,7 @@ export class Orchestrator {
       throw error;
     }
 
-    const resolver = makeApprovalResolver(
+    const innerApprovalResolver = makeApprovalResolver(
       this.deps.store,
       channel,
       p.threadId,
@@ -375,7 +419,26 @@ export class Orchestrator {
       this.deps.commentStore,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
-    const questionResolver = makeQuestionResolver(channel, p.threadId);
+    const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);
+    // 等人工输入（审批/问询）期间打挂起标记：并发满时淘汰候选按「最早进入挂起」挑选
+    const markPending = () => this.markTaskPending(p.user.id, p.conversation.id);
+    const clearPending = () => this.clearTaskPending(p.user.id, p.conversation.id);
+    const resolver: ApprovalResolver = async (req) => {
+      markPending();
+      try {
+        return await innerApprovalResolver(req);
+      } finally {
+        clearPending();
+      }
+    };
+    const questionResolver: QuestionResolver = async (req) => {
+      markPending();
+      try {
+        return await innerQuestionResolver(req);
+      } finally {
+        clearPending();
+      }
+    };
 
     // 包装 runner 事件：捕获 session_init 的 sessionId + 审计落库（非阻塞）
     let capturedSessionId: string | undefined;
@@ -799,14 +862,45 @@ export class Orchestrator {
   ): Promise<string | undefined> {
     const { channel } = this.deps;
     if (!this.checkUserLimit(user.id)) {
-      const text = "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。";
-      await channel.send(msg.threadId, { text });
-      channel.pushResult?.(conversation.id, "error", text);
-      return conversation.id;
+      // 满载：优先强制结束「最早进入挂起」的任务放行新任务；无挂起可淘汰才拒绝
+      const victim = this.findEvictionCandidate(user.id);
+      if (!victim) {
+        const text = "⏳ 您的并发对话已达上限（10条），请等待部分对话完成后再发新消息。";
+        await channel.send(msg.threadId, { text });
+        channel.pushResult?.(conversation.id, "error", text);
+        return conversation.id;
+      }
+      const canceledAt = new Date().toISOString();
+      this.cancelConversation(victim.conversationId);
+      // 立即释放额度（收口是异步的；unregisterActive 幂等，收口再删无害）
+      this.unregisterActive(user.id, victim.conversationId);
+      const reason =
+        "并发已达上限，为执行新任务，系统自动结束了最早进入等待状态的任务。";
+      const detail = [
+        `任务内容：${victim.taskExcerpt}`,
+        `开始时间：${victim.startedAt}`,
+        `进入等待：${victim.pendingSince}`,
+        `结束时间：${canceledAt}`,
+      ].join("\n");
+      await channel.send(msg.threadId, { text: `⚠️ ${reason}\n${detail}` });
+      // SSE 弹窗（Web）：推给新任务所在会话，展示被强制结束任务的详情
+      channel.pushEvictionNotice?.(conversation.id, {
+        taskId: victim.taskId,
+        conversationId: victim.conversationId,
+        taskExcerpt: victim.taskExcerpt,
+        startedAt: victim.startedAt,
+        pendingSince: victim.pendingSince ?? canceledAt,
+        canceledAt,
+      });
     }
 
     this.markBusy(conversation.id, "");
-    this.registerActive(user.id);
+    this.registerActive(user.id, {
+      taskId: "",
+      conversationId: conversation.id,
+      taskExcerpt: (msg.text || conversation.title || "").slice(0, 60),
+      startedAt: new Date().toISOString(),
+    });
     const runController = new AbortController();
     this.abortControllers.set(conversation.id, runController);
     try {
@@ -814,7 +908,7 @@ export class Orchestrator {
     } finally {
       this.abortControllers.delete(conversation.id);
       this.unmarkBusy(conversation.id);
-      this.unregisterActive(user.id);
+      this.unregisterActive(user.id, conversation.id);
       // builder 补建完成（finish_builder）→ 原任务自动重派：复用会话排队机制接续执行
       if (this.builderFinished.delete(conversation.id)) {
         const original = this.builderOriginalPrompts.get(conversation.id);
@@ -929,6 +1023,9 @@ export class Orchestrator {
         updatedAt: now,
       };
       await store.create(task);
+      // 回填淘汰候选表的 taskId（registerActive 时任务尚未创建）
+      const activeEntry = this.userActiveTasks.get(user.id)?.get(conversation.id);
+      if (activeEntry) activeEntry.taskId = task.id;
 
       // 任务分发（P1）：会话未绑定 agent 且装配了 agentStore → 经 dispatcher 路由（Task Flow 第一步）
       let firstTurnPrompt: string | undefined;
@@ -1213,7 +1310,7 @@ export class Orchestrator {
       this.abortControllers.delete(conversation.id);
       // 无论成功失败，都解除会话繁忙 + 用户活跃计数
       this.unmarkBusy(conversation.id);
-      this.unregisterActive(user.id);
+      this.unregisterActive(user.id, conversation.id);
     }
   }
 }

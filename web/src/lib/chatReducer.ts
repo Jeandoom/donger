@@ -25,6 +25,7 @@ export type ChatAction =
   | { type: "clear_approval" }
   | { type: "clear_credential" }
   | { type: "clear_question" }
+  | { type: "clear_eviction" }
   | { type: "set_pending_question"; question: PendingQuestion | null }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
@@ -49,6 +50,7 @@ export function initialChatState(): ChatState {
     pendingApproval: null,
     pendingCredential: null,
     pendingQuestion: null,
+    evictionNotice: null,
     connection: "connecting",
     conversations: [],
     activeConversationId: null,
@@ -196,6 +198,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, pendingCredential: null };
     case "clear_question":
       return { ...state, pendingQuestion: null };
+    case "clear_eviction":
+      return { ...state, evictionNotice: null };
     case "set_pending_question":
       return { ...state, pendingQuestion: action.question };
     case "ws":
@@ -410,6 +414,18 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
       return {
         ...state,
         pendingQuestion: { reqId: msg.reqId, questions: msg.questions },
+      };
+    case "eviction_notice":
+      return {
+        ...state,
+        evictionNotice: {
+          taskId: msg.taskId,
+          conversationId: msg.conversationId,
+          taskExcerpt: msg.taskExcerpt,
+          startedAt: msg.startedAt,
+          pendingSince: msg.pendingSince,
+          canceledAt: msg.canceledAt,
+        },
       };
     case "result": {
       const closed = closeTurn(state.messages, msg.subtype === "error" ? "error" : "done");

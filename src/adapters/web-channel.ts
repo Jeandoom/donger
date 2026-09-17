@@ -234,6 +234,15 @@ type SSEEvent =
       questions: QuestionItem[];
     }
   | { type: "result"; subtype: "success" | "error"; text: string }
+  | {
+      type: "eviction_notice";
+      taskId: string;
+      conversationId: string;
+      taskExcerpt: string;
+      startedAt: string;
+      pendingSince: string;
+      canceledAt: string;
+    }
   | { type: "error"; error: string };
 
 /** 向 SSE 客户端写事件的回调 */
@@ -526,6 +535,21 @@ export class WebChannel implements Channel {
       this.approvalStreams.delete(gateId);
       pending.resolve({ approved: false, reason: "任务已中断" });
     }
+  }
+
+  /** 并发淘汰通知：SSE 推给（新任务的）目标会话，前端弹窗展示被强制结束任务的详情 */
+  pushEvictionNotice(
+    conversationId: string,
+    info: {
+      taskId: string;
+      conversationId: string;
+      taskExcerpt: string;
+      startedAt: string;
+      pendingSince: string;
+      canceledAt: string;
+    },
+  ): void {
+    this.broadcastToConversation(conversationId, { type: "eviction_notice", ...info });
   }
 
   /** 存储审批响应的 resolve 函数（带会话归属，供 owner 校验） */

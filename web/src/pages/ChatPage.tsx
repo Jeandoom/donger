@@ -1,6 +1,7 @@
 import { Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { EvictionNoticeDialog } from "../components/chat/EvictionNoticeDialog";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID, noneAssistHint } from "../lib/assist";
 import { isDefaultConv } from "../lib/conversations";
 import { useWebChat } from "../lib/webChat";
@@ -12,6 +13,7 @@ export function ChatPage() {
   const hint = noneAssistHint(wc.messages);
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <EvictionNoticeDialog notice={wc.evictionNotice} onClose={wc.dismissEviction} />
       {hint ? (
         <div className="flex w-full shrink-0 items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs">
           <span>没有能处理该任务的智能体？让 AI 协助创建一个。</span>

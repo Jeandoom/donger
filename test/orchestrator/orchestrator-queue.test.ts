@@ -55,6 +55,20 @@ class ScriptedRunner implements AgentRunner {
   }
 }
 
+/** 全状态任务聚合（InMemoryTaskStore 无全量 list，按枚举状态拼装） */
+async function allTasks(store: InMemoryTaskStore) {
+  const statuses = [
+    "created",
+    "running",
+    "awaiting_approval",
+    "awaiting_credentials",
+    "done",
+    "failed",
+    "canceled",
+  ] as const;
+  return (await Promise.all(statuses.map((s) => store.listByStatus(s)))).flat();
+}
+
 function seqChannel(onSend?: (text: string) => Promise<void>) {
   const texts: string[] = [];
   const channel: Channel & { texts: string[] } = {
@@ -160,7 +174,7 @@ function build(
   runner: AgentRunner,
   channel: Channel,
   auditStore = new InMemoryAuditStore(),
-  opts: { withDispatch?: boolean; agentId?: string } = {},
+  opts: { withDispatch?: boolean; agentId?: string; convStore?: ConversationStore } = {},
 ): { orch: Orchestrator; store: InMemoryTaskStore; auditStore: InMemoryAuditStore } {
   const store = new InMemoryTaskStore();
   const db = new Database(":memory:");
@@ -181,7 +195,7 @@ function build(
   };
   const runtimeMgr = new RuntimeManager({
     transcriptStore: mockTranscriptStore(),
-    conversationStore: statefulConvStore(opts.agentId ?? ""),
+    conversationStore: opts.convStore ?? statefulConvStore(opts.agentId ?? ""),
     config: {
       workspaceDir: mkdtempSync(join(tmpdir(), "donger-test-ws-")),
       llm: { model: "m", baseUrl: "u", authToken: "t" },
@@ -196,7 +210,7 @@ function build(
   const orch = new Orchestrator({
     store,
     userStore: mockUserStore(),
-    conversationStore: statefulConvStore(opts.agentId ?? ""),
+    conversationStore: opts.convStore ?? statefulConvStore(opts.agentId ?? ""),
     usageStore: new InMemoryUsageStore(),
     auditStore,
     gates: createDefaultGates(),
@@ -383,5 +397,206 @@ describe("builder 绑定闲置超时", () => {
     expect(channel.texts.some((t) => t.includes("超时结束"))).toBe(true);
     expect(inner.builderBoundAt.has("conv-agent")).toBe(false);
     expect(inner.builderOriginalPrompts.has("conv-agent")).toBe(false);
+  });
+});
+
+/** 多会话 fake：每个消息按 conversationId 路由，支持跨会话并发 */
+function multiConvStore(): ConversationStore {
+  const cache = new Map<
+    string,
+    {
+      id: string;
+      userId: string;
+      sdkSessionId: string;
+      title: string;
+      channelId: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+      archived: boolean;
+    }
+  >();
+  return {
+    async create(_userId, _channelId, title) {
+      const id = `conv-${cache.size + 1}`;
+      const conv = {
+        id,
+        userId: "u-webu",
+        sdkSessionId: "",
+        title: title || id,
+        channelId: "test",
+        agentId: "",
+        createdAt: "t",
+        updatedAt: "t",
+        archived: false,
+      };
+      cache.set(id, conv);
+      return conv;
+    },
+    async get(id) {
+      return cache.get(id);
+    },
+    async getLatest() {
+      return [...cache.values()].at(-1);
+    },
+    async listByUser() {
+      return [...cache.values()];
+    },
+    async update(id, patch) {
+      const c = cache.get(id);
+      if (c) Object.assign(c, patch);
+    },
+  };
+}
+
+/** 可记录淘汰通知与挂起审批的 fake channel（模拟 web-channel 行为） */
+function evictableChannel() {
+  const texts: string[] = [];
+  const pendingApprovals = new Map<string, (r: { approved: boolean; reason?: string }) => void>();
+  const evictions: Array<{
+    taskId: string;
+    conversationId: string;
+    taskExcerpt: string;
+    startedAt: string;
+    pendingSince: string;
+    canceledAt: string;
+  }> = [];
+  const channel: Channel & {
+    texts: string[];
+    evictions: typeof evictions;
+  } = {
+    id: "test",
+    texts,
+    evictions,
+    onMessage: () => {},
+    send: async (_t, m) => {
+      texts.push(m.text);
+    },
+    requestApproval: (_threadId, card) =>
+      new Promise((resolve) => {
+        pendingApprovals.set(card.gateId, resolve);
+      }),
+    cancelPendingApprovals: (conversationId) => {
+      for (const [gateId, resolve] of pendingApprovals) {
+        resolve({ approved: false, reason: "任务已中断" });
+        pendingApprovals.delete(gateId);
+        void conversationId;
+      }
+    },
+    pushEvictionNotice: (_conversationId, info) => {
+      evictions.push(info);
+    },
+  };
+  return channel;
+}
+
+describe("并发满载淘汰最早挂起任务", () => {
+  /** 挂审批型 runner：idx === pendAt 的任务触发审批 resolver 并等待（模拟等人工输入） */
+  class GatedRunner2 implements AgentRunner {
+    readonly prompts: string[] = [];
+    private readonly gates: Array<() => void> = [];
+    constructor(private readonly pendAt: number) {}
+    release(): void {
+      this.gates.shift()?.();
+    }
+    async *run(task: Task, _opts: RunOptions, resolver: ApprovalResolver): AsyncIterable<RunnerEvent> {
+      const idx = this.prompts.push(task.prompt) - 1;
+      yield { type: "session_init", taskId: task.id, sessionId: `sdk-${idx}` };
+      if (idx === this.pendAt) {
+        await resolver({
+          taskId: task.id,
+          gateId: "deploy",
+          tool: "Bash",
+          toolUseId: `t-${task.id}`,
+          input: { command: "deploy prod" },
+          summary: "部署审批",
+        });
+        yield { type: "result", taskId: task.id, subtype: "success", result: `approved:${task.prompt}` };
+        return;
+      }
+      await new Promise<void>((resolve) => this.gates.push(resolve));
+      yield { type: "result", taskId: task.id, subtype: "success", result: `done:${task.prompt}` };
+    }
+  }
+
+  it("满载且无挂起 → 维持拒绝", async () => {
+    const orig = (Orchestrator as unknown as { MAX_CONCURRENT_PER_USER: number })
+      .MAX_CONCURRENT_PER_USER;
+    (Orchestrator as unknown as { MAX_CONCURRENT_PER_USER: number }).MAX_CONCURRENT_PER_USER = 2;
+    try {
+      const runner = new GatedRunner2(-1);
+      const channel = evictableChannel();
+      const { orch } = build(runner, channel, new InMemoryAuditStore(), {
+        convStore: multiConvStore(),
+      });
+      const ps = [
+        orch.handleMessage({ ...MSG("任务1"), conversationId: "conv-1" }),
+        orch.handleMessage({ ...MSG("任务2"), conversationId: "conv-2" }),
+      ];
+      await vi.waitFor(() => expect(runner.prompts).toEqual(["任务1", "任务2"]));
+      await orch.handleMessage({ ...MSG("任务3"), conversationId: "conv-3" });
+      expect(channel.texts.some((t) => t.includes("已达上限"))).toBe(true);
+      expect(runner.prompts).toEqual(["任务1", "任务2"]);
+      expect(channel.evictions).toHaveLength(0);
+      for (const p of ps) {
+        runner.release();
+        await p;
+      }
+    } finally {
+      (Orchestrator as unknown as { MAX_CONCURRENT_PER_USER: number }).MAX_CONCURRENT_PER_USER =
+        orig;
+    }
+  });
+
+  it("满载且有挂起 → 强制结束最早挂起者，新任务成功执行并弹窗告知", async () => {
+    const orig = (Orchestrator as unknown as { MAX_CONCURRENT_PER_USER: number })
+      .MAX_CONCURRENT_PER_USER;
+    (Orchestrator as unknown as { MAX_CONCURRENT_PER_USER: number }).MAX_CONCURRENT_PER_USER = 2;
+    try {
+      const runner = new GatedRunner2(0); // 任务1 挂审批
+      const channel = evictableChannel();
+      const { orch, store } = build(runner, channel, new InMemoryAuditStore(), {
+        convStore: multiConvStore(),
+      });
+      const p1 = orch.handleMessage({ ...MSG("任务1-等审批"), conversationId: "conv-1" });
+      const p2 = orch.handleMessage({ ...MSG("任务2-执行中"), conversationId: "conv-2" });
+      await vi.waitFor(async () =>
+        expect((await allTasks(store)).filter((t) => t.status === "awaiting_approval").length).toBe(1),
+      );
+
+      // 第 3 个任务：淘汰最早挂起的任务1（而非活跃执行中的任务2）
+      const p3 = orch.handleMessage({ ...MSG("任务3-新任务"), conversationId: "conv-3" });
+      await vi.waitFor(() => expect(runner.prompts).toContain("任务3-新任务"));
+
+      // 被淘汰任务收口为 canceled，审批挂起被解开
+      await vi.waitFor(async () => {
+        expect((await allTasks(store)).find((t) => t.prompt.includes("任务1"))?.status).toBe("canceled");
+      });
+      // 新任务的会话收到弹窗事件：含任务摘要与三个时间
+      expect(channel.evictions).toHaveLength(1);
+      expect(channel.evictions[0].conversationId).toBe("conv-1");
+      expect(channel.evictions[0].taskExcerpt).toContain("任务1-等审批");
+      expect(channel.evictions[0].startedAt).toBeTruthy();
+      expect(channel.evictions[0].pendingSince).toBeTruthy();
+      expect(channel.evictions[0].canceledAt).toBeTruthy();
+      // 渠道文本兜底：说明情况 + 详情
+      expect(channel.texts.some((t) => t.includes("并发已达上限") && t.includes("任务1-等审批"))).toBe(
+        true,
+      );
+      // 未误伤活跃执行中的任务2
+      expect((await allTasks(store)).find((t) => t.prompt.includes("任务2"))?.status).not.toBe(
+        "canceled",
+      );
+
+      // 任务2/任务3 各占一个长任务闸，逐个放行
+      runner.release();
+      await p2;
+      runner.release();
+      await p3;
+      void p1;
+    } finally {
+      (Orchestrator as unknown as { MAX_CONCURRENT_PER_USER: number }).MAX_CONCURRENT_PER_USER =
+        orig;
+    }
   });
 });
