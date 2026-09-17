@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import { ZodError } from "zod";
 import type { LlmPreset } from "../config.js";
+import type { Viewer } from "../domain/access-policy.js";
 import { type Agent, parseAgent, parseAgentInput } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import {
@@ -113,6 +114,7 @@ import {
 } from "../util/github-oauth-api.js";
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
+import { ApiRouteGuard } from "./api-route-guard.js";
 import {
   handleInstall,
   handleInstallUpload,
@@ -123,6 +125,7 @@ import {
   handleUpdate,
   type SkillApiDeps,
 } from "./skill-api.js";
+import { buildWebRouteGuardSpecs } from "./web-route-guards.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -367,6 +370,8 @@ export class WebChannel implements Channel {
   private readonly signupRateBuckets = new Map<string, number[]>();
   /** GitHub 绑定流程的 state → 意图（登录与绑定共用 authorize 端点，靠 state 区分） */
   private readonly githubBindStateMap = new Map<string, { userId: string; exp: number }>();
+  /** /api 路由守卫：授权单点收口，未登记路由一律 404（fail-closed） */
+  private readonly routeGuard: ApiRouteGuard;
 
   constructor(private readonly deps: WebChannelDeps) {
     this.webRoot = deps.webRoot ?? join(__dirname, "..", "..", "web");
@@ -382,7 +387,44 @@ export class WebChannel implements Channel {
     this.dingtalkConfig = deps.dingtalkConfig;
     this.githubConfig = deps.githubConfig;
     this.inviteStore = deps.inviteStore;
+    this.routeGuard = new ApiRouteGuard(
+      buildWebRouteGuardSpecs({
+        conversationStore: deps.conversationStore,
+        taskStore: deps.taskStore,
+        userStore: deps.userStore,
+      }),
+    );
     configureGithubProxy(deps.githubProxyUrl);
+  }
+
+  /**
+   * 鉴权 → Viewer：登录态取用户（含 role 供 owner/admin 判定）。
+   * 未装配 sessionStore 的本地免认证模式视为全权本地用户（与既有分支语义一致）。
+   */
+  private async resolveViewer(req: HttpRequest): Promise<Viewer | null> {
+    if (!this.sessionStore) return { id: "local", role: "admin" };
+    const uid = await this.authMiddleware(req);
+    if (!uid) return null;
+    const user = await this.deps.userStore?.get(uid);
+    return { id: uid, role: user?.role === "admin" ? "admin" : "user" };
+  }
+
+  /** 守卫通过后把 viewer 写回 req（userId 供既有 handler 取身份；viewer 供 role 判定） */
+  private attachViewer(req: HttpRequest, viewer: Viewer | null): void {
+    if (!viewer) return;
+    const carrier = req as HttpRequest & { userId?: string; viewer?: Viewer };
+    carrier.userId = viewer.id;
+    carrier.viewer = viewer;
+  }
+
+  /** 取守卫注入的 viewer（未注入时按 member 兜底，防本地免认证路径下 role 判定失效） */
+  private currentViewer(req: HttpRequest): Viewer {
+    return (
+      (req as HttpRequest & { viewer?: Viewer }).viewer ?? {
+        id: (req as HttpRequest & { userId?: string }).userId ?? "",
+        role: "user",
+      }
+    );
   }
 
   /** 注册/登录限流：每 IP 每分钟 5 次（register 与 login 共用桶） */
@@ -739,6 +781,22 @@ export class WebChannel implements Channel {
     if (url.startsWith("/api/")) {
       // 路由匹配基于 pathname（剥离查询串），以便 SSE 的 ?token= 不影响分发
       const pathname = url.split("?")[0] ?? url;
+
+      // 授权单点收口：未登记路由 404（fail-closed），owner/admin 判定统一在此执行。
+      // 守卫通过后写回 req.userId，下游 handler 既有取身份逻辑不变。
+      const viewer = await this.resolveViewer(req);
+      const guardResult = await this.routeGuard.check({
+        method: req.method ?? "GET",
+        pathname,
+        viewer,
+      });
+      if (!guardResult.ok) {
+        res.writeHead(guardResult.status, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: guardResult.error }));
+        return;
+      }
+      this.attachViewer(req, viewer);
+
       // SSE 流式接口需要特殊 Content-Type
       if (pathname.startsWith("/api/conversations/") && pathname.endsWith("/stream")) {
         await this.handleSSEStream(req, res);
@@ -892,12 +950,11 @@ export class WebChannel implements Channel {
       }
     }
 
-    // SSE 头
+    // SSE 头（不带 CORS 通配：流内容含会话私密数据，跨站订阅一律拒绝）
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
     });
 
     const client: SSEClient = {
@@ -1383,31 +1440,8 @@ export class WebChannel implements Channel {
   // ---------------------------------------------------------------------------
 
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
-    // 免认证路由
-    const publicRoutes = [
-      "/api/auth/qrcode-url",
-      "/api/auth/dingtalk/callback",
-      "/api/auth/github/url",
-      "/api/auth/github/callback",
-      "/api/auth/exchange",
-      "/api/auth/register",
-      "/api/auth/login",
-      "/api/agents/by-share",
-      "/api/callbacks",
-      "/api/health",
-    ];
-    const isPublic = publicRoutes.some((r) => url.startsWith(r));
-
-    if (!isPublic && this.sessionStore) {
-      const authUserId = await this.authMiddleware(req);
-      if (!authUserId) {
-        res.writeHead(401);
-        res.end(JSON.stringify({ error: "unauthorized", message: "请先登录" }));
-        return;
-      }
-      (req as HttpRequest & { userId?: string }).userId = authUserId;
-    }
-
+    // 鉴权与授权已由 routeGuard 在 handleHttp 的 /api 入口统一执行（fail-closed）；
+    // 本方法只做路由分发。公开性/属主/管理员规则见 web-route-guards.ts。
     const preflightMatch = url.match(/^\/api\/conversations\/([\w-]+)\/preflight$/);
     if (preflightMatch && req.method === "GET") {
       const result = await this.checkConversationGitAccess(
@@ -1853,19 +1887,23 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/tasks（兼容 ?status= 查询串）
+    // GET /api/tasks（兼容 ?status= 查询串）——按 viewer 过滤（admin 全量）
     if (url.split("?")[0] === "/api/tasks" && req.method === "GET") {
+      const viewer = this.currentViewer(req);
+      const isAdmin = viewer.role === "admin";
       const status = this.extractQuery(url, "status");
+      const collect = async (s: string) => {
+        const list = (await this.deps.taskStore?.listByStatus(s as never)) ?? [];
+        return isAdmin ? list : list.filter((t) => t.requesterId === viewer.id);
+      };
       const tasks = status
-        ? ((await this.deps.taskStore?.listByStatus(status as never)) ?? [])
-        : ((await this.deps.taskStore
-            ?.listByStatus("done" as never)
-            .then(async (d) => [
-              ...d,
-              ...((await this.deps.taskStore?.listByStatus("failed" as never)) ?? []),
-              ...((await this.deps.taskStore?.listByStatus("running" as never)) ?? []),
-              ...((await this.deps.taskStore?.listByStatus("created" as never)) ?? []),
-            ])) ?? []);
+        ? await collect(status)
+        : [
+            ...(await collect("done")),
+            ...(await collect("failed")),
+            ...(await collect("running")),
+            ...(await collect("created")),
+          ];
       res.writeHead(200);
       res.end(JSON.stringify(tasks));
       return;
@@ -1999,7 +2037,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/conversations/:id/activity — 会话实时执行状态（SDK 事件流推导；owner/admin 可见）
+    // GET /api/conversations/:id/activity — 会话实时执行状态（SDK 事件流推导；属主判定由 routeGuard 执行）
     const activityMatch = url.match(/^\/api\/conversations\/([\w-]+)\/activity$/);
     if (activityMatch && req.method === "GET") {
       if (!this.deps.activityGetter) {
@@ -2008,14 +2046,6 @@ export class WebChannel implements Channel {
         return;
       }
       const conversationId = activityMatch[1] ?? "";
-      const uid = this.requireRequestUser(req);
-      const conv = await this.deps.conversationStore?.get(conversationId);
-      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
-      if (conv && viewer && conv.userId !== viewer.id && viewer.role !== "admin") {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主或管理员可查看执行状态" }));
-        return;
-      }
       const activity = this.deps.activityGetter(conversationId);
       res.writeHead(activity ? 200 : 204);
       res.end(activity ? JSON.stringify({ activity }) : "");
@@ -2023,18 +2053,10 @@ export class WebChannel implements Channel {
     }
 
     // GET /api/conversations/:id/messages — 会话消息列表
-    // GET /api/conversations/:id/events[?light=1] —— 会话执行事件回放（audit 统一事件源；owner/admin 可见）
+    // GET /api/conversations/:id/events[?light=1] —— 会话执行事件回放（audit 统一事件源；属主判定由 routeGuard 执行）
     const eventsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/events(?:\?.*)?$/);
     if (eventsMatch && req.method === "GET") {
       const conversationId = eventsMatch[1] ?? "";
-      const uid = this.requireRequestUser(req);
-      const conv = await this.deps.conversationStore?.get(conversationId);
-      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
-      if (conv && viewer && conv.userId !== viewer.id && viewer.role !== "admin") {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主或管理员可查看执行事件" }));
-        return;
-      }
       const all = (await this.deps.auditStore?.listByConversation(conversationId)) ?? [];
       // llm_input/llm_output 是调试级原始消息（体积大、含系统提示），不入回放流
       const light = this.extractQuery(url, "light") === "1";
@@ -2054,18 +2076,10 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/conversations/:id/pending-question — 待作答问题（刷新后恢复锚定卡片）
+    // GET /api/conversations/:id/pending-question — 待作答问题（刷新后恢复锚定卡片；属主判定由 routeGuard 执行）
     const pendingQMatch = url.match(/^\/api\/conversations\/([\w-]+)\/pending-question$/);
     if (pendingQMatch && req.method === "GET") {
       const conversationId = pendingQMatch[1] ?? "";
-      const uid = this.requireRequestUser(req);
-      const conv = await this.deps.conversationStore?.get(conversationId);
-      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
-      if (conv && viewer && conv.userId !== viewer.id && viewer.role !== "admin") {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可查看问询" }));
-        return;
-      }
       const pending = this.getPendingQuestion(conversationId);
       this.json(res, { question: pending });
       return;
@@ -2097,9 +2111,11 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/conversations?userId=xxx（userId 为 users.id）
+    // GET /api/conversations —— 仅本人会话列表（admin 可经 ?userId= 代查）
     if (url.startsWith("/api/conversations") && req.method === "GET") {
-      const userId = this.extractQuery(url, "userId");
+      const viewer = this.currentViewer(req);
+      const requested = this.extractQuery(url, "userId");
+      const userId = viewer.role === "admin" && requested ? requested : viewer.id;
       if (userId && this.deps.userStore) {
         const user = await this.deps.userStore.get(userId);
         if (!user) {
@@ -2131,15 +2147,16 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/conversations（userId 为 users.id）
+    // POST /api/conversations —— 会话归属强制为当前登录者（防代他人建会话）
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
-      const { userId, channelId, agentId } = JSON.parse(body) as {
-        userId: string;
+      const { channelId, agentId } = JSON.parse(body) as {
+        userId?: string;
         channelId?: string;
         agentId?: string;
       };
-      if (userId && this.deps.userStore) {
+      const userId = this.requireRequestUser(req);
+      if (this.deps.userStore) {
         const user = await this.deps.userStore.get(userId);
         if (!user) {
           res.writeHead(404);
@@ -2160,7 +2177,7 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // PATCH /api/conversations/:id — 会话权限模式覆盖（仅会话属主/管理员）
+    // PATCH /api/conversations/:id — 会话权限模式覆盖（属主/管理员判定由 routeGuard owner 规则执行）
     const patchConvMatch = url.match(/^\/api\/conversations\/([\w-]+)$/);
     if (patchConvMatch && req.method === "PATCH") {
       const conversationId = patchConvMatch[1] ?? "";
@@ -2169,12 +2186,6 @@ export class WebChannel implements Channel {
       if (!conv) {
         res.writeHead(404);
         res.end(JSON.stringify({ error: "conversation not found" }));
-        return;
-      }
-      const viewer = uid ? await this.deps.userStore?.get(uid) : undefined;
-      if (conv.userId !== uid && viewer?.role !== "admin") {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可修改" }));
         return;
       }
       const body = JSON.parse(await this.readBody(req)) as { permissionMode?: string };
@@ -2304,9 +2315,11 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/usage
+    // GET /api/usage —— 默认仅本人记录；admin 可显式传 userId 查任意用户
     if ((url === "/api/usage" || url.startsWith("/api/usage?")) && req.method === "GET") {
-      const userId = this.extractQuery(url, "userId");
+      const viewer = this.currentViewer(req);
+      const requested = this.extractQuery(url, "userId");
+      const userId = viewer.role === "admin" ? requested : viewer.id;
       const taskId = this.extractQuery(url, "taskId");
       const since = this.extractQuery(url, "since");
       const until = this.extractQuery(url, "until");
