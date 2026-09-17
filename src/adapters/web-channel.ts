@@ -380,6 +380,8 @@ export class WebChannel implements Channel {
   private readonly rateLimiter: RateLimiter;
   /** GitHub 绑定流程的 state → 意图（登录与绑定共用 authorize 端点，靠 state 区分） */
   private readonly githubBindStateMap = new Map<string, { userId: string; exp: number }>();
+  /** 一次性登录 code → JWT（规格 M4：OAuth/验证回调 302 不再携带 token，60 秒单次有效） */
+  private readonly oneTimeCodes = new Map<string, { token: string; exp: number }>();
   /** /api 路由守卫：授权单点收口，未登记路由一律 404（fail-closed） */
   private readonly routeGuard: ApiRouteGuard;
 
@@ -462,6 +464,17 @@ export class WebChannel implements Channel {
     for (const [s, v] of this.githubBindStateMap) {
       if (now > v.exp) this.githubBindStateMap.delete(s);
     }
+    for (const [c, v] of this.oneTimeCodes) {
+      if (now > v.exp) this.oneTimeCodes.delete(c);
+    }
+  }
+
+  /** 签发一次性登录 code（60 秒单次有效）：302 落地页拿 code 换 token，token 不进 URL/历史 */
+  private issueOneTimeCode(token: string): string {
+    this.pruneOauthStates();
+    const code = randomBytes(24).toString("base64url");
+    this.oneTimeCodes.set(code, { token, exp: Date.now() + 60_000 });
+    return code;
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -878,14 +891,26 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // /uploads/ 静态文件
+    // /uploads/ 静态文件（规格 M4：附件不再无鉴权直出，须携带属主 token）
     if (url.startsWith("/uploads/")) {
-      const relPath = decodeURIComponent(url.replace("/uploads/", ""));
+      const uploadUser = await this.authMiddleware(req);
+      if (!uploadUser) {
+        res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("unauthorized");
+        return;
+      }
+      // 剥离查询串（?token= 不得混入文件路径）
+      const relPath = decodeURIComponent(url.split("?")[0]!.replace("/uploads/", ""));
       const [conversationId, ...fileParts] = relPath.split(/[\\/]/);
       const fileName = fileParts.join(sep);
       const attachmentDir = conversationId
-        ? await this.resolveAttachmentDir(conversationId)
+        ? await this.resolveAttachmentDir(conversationId, uploadUser)
         : undefined;
+      if (!attachmentDir) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("forbidden");
+        return;
+      }
       const candidate = attachmentDir ? resolve(attachmentDir, fileName) : "";
       const insideAttachmentDir =
         !!attachmentDir &&
@@ -1499,6 +1524,24 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // POST /api/auth/code-exchange { code } —— 一次性 code 换 JWT（60 秒单次有效）
+    if (url.split("?")[0] === "/api/auth/code-exchange" && req.method === "POST") {
+      if (!this.sessionStore) return this.json(res, { error: "认证服务未启用" }, 503);
+      let body: { code?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const code = typeof body.code === "string" ? body.code : "";
+      const entry = code ? this.oneTimeCodes.get(code) : undefined;
+      this.oneTimeCodes.delete(code);
+      if (!entry || Date.now() > entry.exp) {
+        return this.json(res, { error: "登录凭据已过期，请重新登录" }, 401);
+      }
+      return this.json(res, { token: entry.token });
+    }
+
     // GET /api/auth/qrcode-url
     if (url === "/api/auth/qrcode-url" && req.method === "GET") {
       if (!this.dingtalkConfig) {
@@ -1563,7 +1606,9 @@ export class WebChannel implements Channel {
           userInfo.avatar,
         );
         const { token } = await this.sessionStore.create(user.id);
-        res.writeHead(302, { Location: `/login/success?token=${token}` });
+        res.writeHead(302, {
+          Location: `/login/success?code=${this.issueOneTimeCode(token)}`,
+        });
         res.end();
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -1641,7 +1686,7 @@ export class WebChannel implements Channel {
           }
           const { token } = await this.sessionStore.create(bind.userId);
           res.writeHead(302, {
-            Location: `/login/success?token=${token}&mode=bind&provider=github`,
+            Location: `/login/success?code=${this.issueOneTimeCode(token)}&mode=bind&provider=github`,
           });
           res.end();
           return;
@@ -1662,7 +1707,9 @@ export class WebChannel implements Channel {
           info.avatarUrl,
         );
         const { token } = await this.sessionStore.create(user.id);
-        res.writeHead(302, { Location: `/login/success?token=${token}` });
+        res.writeHead(302, {
+          Location: `/login/success?code=${this.issueOneTimeCode(token)}`,
+        });
         res.end();
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -1804,7 +1851,9 @@ export class WebChannel implements Channel {
       }
       const user = await this.deps.userStore.get(userId);
       const { token: jwt } = await this.sessionStore.create(userId);
-      res.writeHead(302, { Location: `/login/success?token=${jwt}&mode=verified` });
+      res.writeHead(302, {
+        Location: `/login/success?code=${this.issueOneTimeCode(jwt)}&mode=verified`,
+      });
       res.end();
       return;
     }
@@ -3146,7 +3195,24 @@ export class WebChannel implements Channel {
       return true;
     }
     if (pathname === "/api/triggers" && req.method === "POST") {
-      const body = JSON.parse(await this.readBody(req));
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      // hook 触发器缺省 path 时服务端生成不可猜随机 slug（规格 M4）：
+      // 未认证触发通道（hook-registry 按 hook.path 匹配）的防扫描收敛；
+      // 显式提供 path（任一层）保持向后兼容（存量 webhook 不迁移），另一层继承同值
+      if (body.type === "hook") {
+        const hookCfg = body.hook as Record<string, unknown> | undefined;
+        const topGiven = typeof body.path === "string";
+        const hookGiven = !!hookCfg && typeof hookCfg.path === "string";
+        if (!topGiven && !hookGiven) {
+          const generated = `/hooks/${randomBytes(8).toString("hex")}`;
+          body.path = generated;
+          if (hookCfg) hookCfg.path = generated;
+        } else if (topGiven && hookCfg && !hookGiven) {
+          hookCfg.path = body.path as string;
+        } else if (!topGiven && hookCfg && hookGiven) {
+          body.path = hookCfg.path as string;
+        }
+      }
       const created = await ts?.create(parseTriggerInput({ ...body, ownerId: uid }));
       this.json(res, created, 201);
       return true;

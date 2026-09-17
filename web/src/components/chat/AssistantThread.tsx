@@ -9,7 +9,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { ArrowUp, Bot, Paperclip, Square, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import remarkGfm from "remark-gfm";
-import { fetchMe } from "../../lib/auth";
+import { fetchMe, getToken } from "../../lib/auth";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import type { FileInfo } from "../../lib/chatReducer";
 import { lineRefBadge } from "../../lib/lineRefBadge";
@@ -32,7 +32,10 @@ function uploadUrl(path: string): string | null {
   const [conversationId, ...parts] = relativePath.split("/");
   const fileName = parts.at(-1);
   if (!conversationId || !fileName) return null;
-  return `/uploads/${encodeURIComponent(conversationId)}/${encodeURIComponent(fileName)}`;
+  // 附件已不无鉴权直出（规格 M4）：img 请求带属主 token
+  const token = getToken();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `/uploads/${encodeURIComponent(conversationId)}/${encodeURIComponent(fileName)}${qs}`;
 }
 
 function ThreadWelcome({ hidden }: { hidden: boolean }) {

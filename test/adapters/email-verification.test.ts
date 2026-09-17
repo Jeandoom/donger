@@ -114,7 +114,7 @@ describe("邮箱验证状态机", () => {
     // 核销 → 302 带 token；登录 200
     const verify = await get(port, pending!.verifyPath!);
     expect(verify.status).toBe(302);
-    expect(verify.headers.get("location")).toContain("/login/success?token=");
+    expect(verify.headers.get("location")).toContain("/login/success?code=");
     const login = await post(port, "/api/auth/login", {
       email: "alice@example.com",
       password: "abcd1234",

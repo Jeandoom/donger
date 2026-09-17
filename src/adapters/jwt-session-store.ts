@@ -1,13 +1,22 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Database } from "better-sqlite3";
+import { jwtVerify, SignJWT } from "jose";
 import type { SessionStore } from "../ports/session-store.js";
 
+/**
+ * JWT 会话存储（jose 实现，替代手写 HS256）。
+ * alg/签名校验交给库（杜绝 alg 混淆与时序侧信道）；黑名单（revoked_tokens）语义不变。
+ */
 export class JwtSessionStore implements SessionStore {
+  private readonly key: Uint8Array;
+
   constructor(
     private readonly db: Database,
-    private readonly secret: string,
+    secret: string,
     private readonly ttlMs: number = 30 * 24 * 60 * 60 * 1000,
-  ) {}
+  ) {
+    this.key = new TextEncoder().encode(secret);
+  }
 
   migrate(): void {
     this.db.exec(`
@@ -24,27 +33,29 @@ export class JwtSessionStore implements SessionStore {
 
   async create(userId: string): Promise<{ token: string; jti: string }> {
     const jti = randomUUID();
-    const now = Math.floor(Date.now() / 1000);
-    const payload = { sub: userId, jti, iat: now, exp: now + Math.floor(this.ttlMs / 1000) };
-    const token = this.encodeJwt(payload);
+    const token = await new SignJWT({ jti })
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setSubject(userId)
+      .setIssuedAt()
+      .setExpirationTime(Math.floor(this.ttlMs / 1000) + "s")
+      .sign(this.key);
     return { token, jti };
   }
 
   async verify(token: string): Promise<string | null> {
+    let payload: Record<string, unknown>;
     try {
-      const payload = this.decodeJwt(token);
-      if (!payload) return null;
-      // 检查过期
-      if (payload.exp && (payload.exp as number) * 1000 < Date.now()) return null;
-      // 检查黑名单
-      const revoked = this.db
-        .prepare("SELECT 1 FROM revoked_tokens WHERE jti = ?")
-        .get(payload.jti);
-      if (revoked) return null;
-      return payload.sub as string;
+      const result = await jwtVerify(token, this.key, { algorithms: ["HS256"] });
+      payload = result.payload as Record<string, unknown>;
     } catch {
       return null;
     }
+    // 检查黑名单
+    const jti = payload.jti as string | undefined;
+    if (!jti) return null;
+    const revoked = this.db.prepare("SELECT 1 FROM revoked_tokens WHERE jti = ?").get(jti);
+    if (revoked) return null;
+    return payload.sub as string;
   }
 
   async revoke(jti: string): Promise<void> {
@@ -56,27 +67,5 @@ export class JwtSessionStore implements SessionStore {
   async isRevoked(jti: string): Promise<boolean> {
     const row = this.db.prepare("SELECT 1 FROM revoked_tokens WHERE jti = ?").get(jti);
     return !!row;
-  }
-
-  private encodeJwt(payload: Record<string, unknown>): string {
-    const header = { alg: "HS256", typ: "JWT" };
-    const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
-    const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
-    const sig = createHmac("sha256", this.secret)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest("base64url");
-    return `${headerB64}.${payloadB64}.${sig}`;
-  }
-
-  private decodeJwt(token: string): Record<string, unknown> | null {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    // length 已验证为 3，默认值仅为满足类型（不会触发）
-    const [headerB64 = "", payloadB64 = "", sigB64 = ""] = parts;
-    const expectedSig = createHmac("sha256", this.secret)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest("base64url");
-    if (sigB64 !== expectedSig) return null;
-    return JSON.parse(Buffer.from(payloadB64, "base64url").toString());
   }
 }

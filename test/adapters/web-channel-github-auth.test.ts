@@ -8,6 +8,20 @@ import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import type { GithubUserInfo } from "../../src/util/github-oauth-api.js";
 
+/** 一次性 code 换 JWT（规格 M4：回调 302 改带 code） */
+async function exchangeToken(port: number, location: string): Promise<string> {
+  const code = new URLSearchParams(location.split("?")[1] ?? "").get("code") ?? "";
+  const res = await realFetch(`http://127.0.0.1:${port}/api/auth/code-exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  const body = (await res.json()) as { token?: string };
+  if (!body.token) throw new Error(`exchange failed: ${res.status}`);
+  return body.token;
+}
+
+
 /**
  * GitHub OAuth 登录/绑定契约测试。
  * 全局 fetch 仅拦截 github.com 域名（模拟 OAuth 端点），其余（本地服务器）透传真实 fetch。
@@ -162,9 +176,9 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
     );
     expect(res.status).toBe(302);
     const location = res.headers.get("location") ?? "";
-    expect(location.startsWith("/login/success?token=")).toBe(true);
+    expect(location.startsWith("/login/success?code=")).toBe(true);
 
-    const token = new URL(location, "http://x").searchParams.get("token") ?? "";
+    const token = await exchangeToken(port, location);
     const meRes = await realFetch(`http://127.0.0.1:${port}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -186,9 +200,7 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state2}`,
       { redirect: "manual" },
     );
-    const token2 = new URL(res2.headers.get("location") ?? "", "http://x").searchParams.get(
-      "token",
-    );
+    const token2 = await exchangeToken(port, res2.headers.get("location") ?? "");
     const me2 = await realFetch(`http://127.0.0.1:${port}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token2 ?? ""}` },
     });
@@ -212,13 +224,13 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
       { redirect: "manual" },
     );
-    const token = new URL(res.headers.get("location") ?? "", "http://x").searchParams.get("token");
+    const token = await exchangeToken(port, res.headers.get("location") ?? "");
     const me = (await (
       await realFetch(`http://127.0.0.1:${port}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${token ?? ""}` },
+        headers: { Authorization: `Bearer ${token}` },
       })
     ).json()) as { user: { id: string } };
-    return { token: token ?? "", userId: me.user.id };
+    return { token, userId: me.user.id };
   }
 
   it("未登录发起绑定 → 401", async () => {

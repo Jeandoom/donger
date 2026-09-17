@@ -930,7 +930,10 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
     const attachments = treeBody.nodes.find((node) => node.name === "attachments");
     expect(attachments?.children?.some((node) => node.name.endsWith("readme.md"))).toBe(true);
 
-    const preview = await fetch(`http://127.0.0.1:${port}${file.url}`);
+    // 附件读取已要求属主 token（规格 M4）：url 原样无 token → 401；带 token → 200
+    const denied = await fetch(`http://127.0.0.1:${port}${file.url}`);
+    expect(denied.status).toBe(401);
+    const preview = await fetch(`http://127.0.0.1:${port}${file.url}${file.url.includes("?") ? "&" : "?"}token=${token}`);
     expect(preview.status).toBe(200);
     expect(await preview.text()).toBe("# runtime");
   });
