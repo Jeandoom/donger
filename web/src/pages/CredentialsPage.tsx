@@ -15,6 +15,9 @@ import {
   upsertCredentialValue,
 } from "../lib/skills";
 
+/** git PAT 凭证固定键名（与服务端 GIT_PAT_KEY_SPECS 契约对齐，键名不可自定义） */
+const GIT_PAT_KEYS = ["access_token", "user"] as const;
+
 /** 新建/填写表单状态：code → 模板存在则只填值，否则先注册模板（键名逗号分隔） */
 interface Draft {
   code: string;
@@ -107,10 +110,14 @@ export function CredentialsPage() {
     }
   };
 
-  const keyNames = draft.keysText
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
+  // git PAT（新建模板场景）键名固定，不走自由编辑的 keysText
+  const keyNames =
+    !draftExists && draft.kind === "git"
+      ? [...GIT_PAT_KEYS]
+      : draft.keysText
+          .split(",")
+          .map((k) => k.trim())
+          .filter(Boolean);
 
   const save = async () => {
     if (!draft.code.trim() || !draft.name.trim() || keyNames.length === 0) return;
@@ -162,10 +169,14 @@ export function CredentialsPage() {
       setEditError("名称必填");
       return;
     }
-    const keys = editForm.keysText
-      .split(",")
-      .map((k) => k.trim())
-      .filter(Boolean);
+    // git PAT 键名固定不可编辑；generic 沿用表单键名
+    const keys =
+      editForm.kind === "git"
+        ? [...GIT_PAT_KEYS]
+        : editForm.keysText
+            .split(",")
+            .map((k) => k.trim())
+            .filter(Boolean);
     if (keys.length === 0) {
       setEditError("至少保留一个键名");
       return;
@@ -277,10 +288,14 @@ export function CredentialsPage() {
               <option value="git">git PAT（工具专用，不注入环境变量）</option>
             </select>
           )}
-          {draftExists ? null : (
+          {draftExists ? null : draft.kind === "git" ? (
+            <span className="self-center text-xs text-muted-foreground">
+              键名固定：access_token（访问令牌）、user（用户名，可留空）
+            </span>
+          ) : (
             <input
               className="w-56 rounded-md border border-border px-2 py-1.5 text-sm"
-              placeholder="键名（逗号分隔，如: token,region）"
+              placeholder="键名（逗号分隔，如: api_key,region）"
               value={draft.keysText}
               onChange={(e) => setDraft((d) => ({ ...d, keysText: e.target.value }))}
             />
@@ -616,12 +631,18 @@ function TemplateEditDialog(props: {
               />
             ) : null}
           </div>
-          <input
-            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
-            placeholder="键名（逗号分隔，如: token,region）"
-            value={form.keysText}
-            onChange={(e) => onFormChange({ keysText: e.target.value })}
-          />
+          {form.kind === "git" ? (
+            <p className="rounded border border-border bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+              git PAT 键名固定：access_token（访问令牌）、user（用户名，可留空），不可自定义
+            </p>
+          ) : (
+            <input
+              className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+              placeholder="键名（逗号分隔，如: api_key,region）"
+              value={form.keysText}
+              onChange={(e) => onFormChange({ keysText: e.target.value })}
+            />
+          )}
           <p className="text-xs text-muted-foreground">
             code 不可修改。删除键名后，用户已填的对应值不再注入；改为 git
             用途后该凭证不再注入环境变量。
