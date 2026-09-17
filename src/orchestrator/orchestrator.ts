@@ -5,6 +5,7 @@ import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { Conversation } from "../domain/conversation.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import { appendMentions } from "../domain/mentions.js";
 import { appendMessageFiles } from "../domain/message-files.js";
 import {
   type AgentPermissionMode,
@@ -874,8 +875,7 @@ export class Orchestrator {
       this.cancelConversation(victim.conversationId);
       // 立即释放额度（收口是异步的；unregisterActive 幂等，收口再删无害）
       this.unregisterActive(user.id, victim.conversationId);
-      const reason =
-        "并发已达上限，为执行新任务，系统自动结束了最早进入等待状态的任务。";
+      const reason = "并发已达上限，为执行新任务，系统自动结束了最早进入等待状态的任务。";
       const detail = [
         `任务内容：${victim.taskExcerpt}`,
         `开始时间：${victim.startedAt}`,
@@ -1014,7 +1014,10 @@ export class Orchestrator {
         channelId: msg.channelId,
         threadId: msg.threadId,
         requesterId: msg.requesterId,
-        prompt: appendDefaultSkill(appendMessageFiles(msg.text, msg.files), agent?.defaultSkill),
+        prompt: appendDefaultSkill(
+          appendMentions(appendMessageFiles(msg.text, msg.files), msg.mentions),
+          agent?.defaultSkill,
+        ),
         status: "created",
         skillChain: [],
         // builder 自动重派的消息：串联回触发补建的原 task

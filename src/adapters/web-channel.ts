@@ -29,8 +29,9 @@ import {
   parseCredentialCode,
   withGitPatKeySpecs,
 } from "../domain/credential.js";
+import { scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
-import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
+import { validateGitCredentialBindings } from "../domain/git.js";
 import {
   buildInvite,
   inviteBlockReason,
@@ -41,6 +42,7 @@ import {
 } from "../domain/invite.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
+import { type MentionInput, MentionInputSchema, type ResolvedMention } from "../domain/mentions.js";
 import type { UserModelConfig } from "../domain/model-config.js";
 import { parseUserModelConfig } from "../domain/model-config.js";
 import {
@@ -84,7 +86,7 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
-import type { FileBrowser } from "../ports/file-browser.js";
+import type { FileBrowser, FileScope } from "../ports/file-browser.js";
 import type { InviteStore } from "../ports/invite-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LoopStore } from "../ports/loop-store.js";
@@ -113,6 +115,7 @@ import {
 } from "../util/github-oauth-api.js";
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
+import { flattenWorkspaceFiles } from "./local-file-browser.js";
 import {
   handleInstall,
   handleInstallUpload,
@@ -1178,6 +1181,7 @@ export class WebChannel implements Channel {
     const body = JSON.parse(await this.readBody(req)) as {
       text: string;
       files?: MessageFile[];
+      mentions?: MentionInput[];
     };
     const parsedFiles = MessageFileSchema.array()
       .max(5)
@@ -1188,6 +1192,14 @@ export class WebChannel implements Channel {
       return;
     }
     const files = parsedFiles.data;
+    const parsedMentions = MentionInputSchema.array()
+      .max(20)
+      .safeParse(body.mentions ?? []);
+    if (!parsedMentions.success) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "引用参数无效或超过 20 条" }));
+      return;
+    }
     const sessionRoot = await this.resolveAttachmentDir(
       conversationId,
       (req as HttpRequest & { userId?: string }).userId,
@@ -1219,6 +1231,10 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // 解析 @/​/$ 引用：文件换算为经校验的绝对路径，技能/连接器按 agent 实际装配集过滤
+    // （fail-closed：未命中/越界的引用直接丢弃，不进 prompt）
+    const mentions = await this.resolveMentions(requestUserId, conversationId, parsedMentions.data);
+
     // 持久化用户消息
     if (this.messageStore) {
       await this.messageStore
@@ -1235,6 +1251,7 @@ export class WebChannel implements Channel {
         text: body.text,
         conversationId,
         files,
+        ...(mentions.length > 0 ? { mentions } : {}),
       });
     }
 
@@ -2371,6 +2388,23 @@ export class WebChannel implements Channel {
         tools: BUILTIN_TOOLS,
         llmPresets: this.agentMeta?.presets ?? [],
       });
+    }
+    // GET /api/agents/:id/mention-candidates?q= —— 输入框 @/​/$ 引用候选（可用者 = owner/被分享/admin）
+    const mentionCandidatesPathname = url.split("?")[0] ?? url;
+    const mentionCandidatesMatch = mentionCandidatesPathname.match(
+      /^\/api\/agents\/([\w-]+)\/mention-candidates$/,
+    );
+    if (mentionCandidatesMatch && req.method === "GET") {
+      const id = mentionCandidatesMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const a = await this.agentStore?.get(id);
+      if (!a) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
+      if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      const q = this.extractQuery(url, "q") ?? "";
+      return this.json(res, await this.mentionCandidates(me, a, q));
     }
     // GET /api/agents/:id/versions —— 版本历史（摘要，不含 mcp 密钥字段）
     const agentVersionsMatch = url.match(/^\/api\/agents\/([\w-]+)\/versions$/);
@@ -3640,6 +3674,127 @@ export class WebChannel implements Channel {
     });
   }
 
+  /**
+   * 解析消息中的 @/​/$ 引用（发送时执行，不落库）：
+   * - 文件：经 FileBrowser.resolveFilePath 换算为属主/边界/symlink 全校验的绝对路径；
+   * - 技能：按该 agent 实际装配集过滤（显式 skills 或用户启用 Pack）；
+   * - 连接器：须在 agent.connectorIds 内且对当前用户可见可用。
+   * fail-closed：任何未命中的引用直接丢弃，绝不让未校验路径进 prompt。
+   */
+  private async resolveMentions(
+    userId: string | undefined,
+    conversationId: string,
+    mentions: MentionInput[],
+  ): Promise<ResolvedMention[]> {
+    if (mentions.length === 0) return [];
+    const resolved: ResolvedMention[] = [];
+    const conversation = this.deps.conversationStore
+      ? await this.deps.conversationStore.get(conversationId)
+      : undefined;
+    const agent =
+      conversation?.agentId && this.agentStore
+        ? await this.agentStore.get(conversation.agentId)
+        : undefined;
+    const skillOptions = agent ? await this.effectiveAgentSkillOptions(agent.id, userId ?? "") : [];
+    for (const m of mentions) {
+      if (m.kind === "file") {
+        const abs = await this.resolveMentionFile(userId, conversationId, m.id);
+        if (abs) resolved.push({ kind: "file", label: m.label, path: abs });
+      } else if (m.kind === "skill" && agent) {
+        const hit = skillOptions.some((s) => s.id === m.id || s.name === m.label);
+        if (hit) resolved.push({ kind: "skill", label: m.label, name: m.id });
+      } else if (m.kind === "connector" && agent) {
+        const c = (await this.deps.connectorStore?.listByIds([m.id]))?.[0];
+        const visible =
+          c?.enabled &&
+          (c.shareScope === "global" || c.ownerId === userId) &&
+          agent.connectorIds.includes(c.id);
+        if (c && visible) resolved.push({ kind: "connector", label: m.label, name: c.name });
+      }
+    }
+    return resolved;
+  }
+
+  /** @ 文件引用 → 绝对路径；id 形如 "runtime:<relPath>"（与候选端点下发的 scope 口径一致） */
+  private async resolveMentionFile(
+    userId: string | undefined,
+    conversationId: string,
+    id: string,
+  ): Promise<string | undefined> {
+    if (!userId || !this.fileBrowser) return undefined;
+    const m = id.match(/^(runtime|extension):([\s\S]+)$/);
+    if (!m) return undefined;
+    try {
+      return await this.fileBrowser.resolveFilePath(
+        userId,
+        m[1] as FileScope,
+        m[2] ?? "",
+        conversationId,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 该 agent 实际装配的技能集（显式 skills 优先，否则用户启用 Pack 全集）——候选与发送校验共用 */
+  private async effectiveAgentSkillOptions(
+    agentId: string,
+    userId: string,
+  ): Promise<Array<{ id: string; name: string; description?: string }>> {
+    const all = await this.discoverAgentSkills(userId);
+    const agent = await this.agentStore?.get(agentId);
+    if (!agent || agent.skills.length === 0) return all;
+    const picked = new Set(agent.skills);
+    return all.filter((s) => picked.has(s.id));
+  }
+
+  /** GET /api/agents/:id/mention-candidates 的响应体（输入框 @/​/$ 引用候选） */
+  private async mentionCandidates(
+    viewerId: string,
+    agent: Agent,
+    query: string,
+  ): Promise<{
+    skills: Array<{ id: string; name: string; description?: string }>;
+    connectors: Array<{ id: string; name: string; description?: string }>;
+    files: Array<{ scope: "runtime"; path: string; label: string }>;
+  }> {
+    const skills = await this.effectiveAgentSkillOptions(agent.id, viewerId);
+    const connectors = this.deps.connectorStore
+      ? await this.deps.connectorStore.listByIds(agent.connectorIds ?? [])
+      : [];
+    const visible = connectors.filter(
+      (c) => c.enabled && (c.shareScope === "global" || c.ownerId === viewerId),
+    );
+    const lower = query.toLowerCase();
+    const seen = new Set<string>();
+    const files: Array<{ scope: "runtime"; path: string; label: string }> = [];
+    if (this.deps.userStore) {
+      const user = await this.deps.userStore.get(viewerId);
+      if (user) {
+        // 与 runtime scope 同根（agents/<id>/workspace）；引用标记以空白为界，路径含空白不可作候选
+        const root = scopeRoots("runtime", {
+          homeDir: resolve(user.homeDir),
+          workspaceDir: this.workspaceDir,
+          agentId: agent.id,
+        })[0];
+        if (root) {
+          for (const f of flattenWorkspaceFiles(root)) {
+            if (lower && !f.path.toLowerCase().includes(lower)) continue;
+            if (/\s/.test(f.path) || seen.has(f.path)) continue;
+            seen.add(f.path);
+            files.push({ scope: "runtime", path: f.path, label: f.path });
+            if (files.length >= 50) break;
+          }
+        }
+      }
+    }
+    return {
+      skills: skills.slice(0, 50),
+      connectors: visible.map((c) => ({ id: c.id, name: c.name, description: c.description })),
+      files,
+    };
+  }
+
   /** 写 JSON 响应 */
   private json(res: ServerResponse, body: unknown, status = 200): void {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -3827,11 +3982,6 @@ export class WebChannel implements Channel {
     );
     const errors = validateGitCredentialBindings(repositories, byCode);
     return errors.length > 0 ? errors.join("；") : undefined;
-  }
-
-  private requireGitAccessGate(): GitAccessGate {
-    if (!this.deps.gitAccessGate) throw new NotFoundError("GIT_GATE_MISSING", "Git 权限门未装配");
-    return this.deps.gitAccessGate;
   }
 
   private async checkConversationGitAccess(

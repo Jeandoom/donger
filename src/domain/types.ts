@@ -1,6 +1,7 @@
 // 领域数据形状（纯数据，不含行为/接口）。后续所有任务共享的词汇表。
 // IO 边界（持久化、外部输入）用 Zod 做运行时校验；内部传递类型用纯 TS。
 import { z } from "zod";
+import { ResolvedMentionSchema } from "./mentions.js";
 import { FlowStepSchema } from "./task-flow.js";
 
 // === Task ===
@@ -164,6 +165,8 @@ export const IncomingMessageSchema = z.object({
   text: z.string(),
   conversationId: z.string().optional(),
   files: z.array(MessageFileSchema).optional(),
+  /** Web 渠道：@/​/$ 引用（服务端已校验解析；仅发送时注入 prompt，不落库） */
+  mentions: z.array(ResolvedMentionSchema).max(20).optional(),
   /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
   builderFromTaskId: z.string().optional(),
   /** 无人值守触发（定时/钩子/工作流）：权限模式强制按变更前问询执行 */

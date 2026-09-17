@@ -31,4 +31,14 @@ export interface FileBrowser {
     conversationId?: string,
     opts?: ReadFileOptions,
   ): Promise<FileContent>;
+  /**
+   * 解析 scope 相对路径为绝对路径（属主/边界/symlink 校验与 readFile 同一链路）。
+   * 供消息 @引用 在发送前把前端路径换算为可信绝对路径；不存在/越界抛错。
+   */
+  resolveFilePath(
+    userId: string,
+    scope: FileScope,
+    relPath: string,
+    conversationId?: string,
+  ): Promise<string>;
 }

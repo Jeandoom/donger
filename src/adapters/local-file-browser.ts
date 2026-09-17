@@ -43,9 +43,55 @@ export class LocalFileBrowser implements FileBrowser {
     conversationId?: string,
     opts?: ReadFileOptions,
   ): Promise<FileContent> {
+    const abs = await this.resolveFilePath(userId, scope, relPath, conversationId);
+
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(abs);
+    } catch {
+      throw new NotFoundError("NOT_FOUND", "文件不存在");
+    }
+    if (st.isDirectory()) throw new NotFoundError("NOT_FOUND", "目标是目录");
+    if (opts?.maxBytes !== undefined && st.size > opts.maxBytes) {
+      throw new PayloadTooLargeError("TOO_LARGE", `文件超过 ${opts.maxBytes} 字节`);
+    }
+    const ext = abs.split(".").pop()?.toLowerCase() ?? "";
+    return {
+      buffer: readFileSync(abs),
+      mime: mimeForExt(ext),
+      size: st.size,
+    };
+  }
+
+  async resolveFilePath(
+    userId: string,
+    scope: FileScope,
+    relPath: string,
+    conversationId?: string,
+  ): Promise<string> {
+    const abs = await this.resolveAbsPath(userId, scope, relPath, conversationId);
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(abs);
+    } catch {
+      throw new NotFoundError("NOT_FOUND", "文件不存在");
+    }
+    if (!st.isFile()) throw new NotFoundError("NOT_FOUND", "目标是目录");
+    return abs;
+  }
+
+  /**
+   * scope 相对路径 → 经边界与 symlink 校验的绝对路径（readFile/resolveFilePath 共用）。
+   * runtime 树已拍平：relPath 直接相对唯一 runtime 根解析；其余 scope 的 path 形如
+   * "<label>[/<rest>]"，第一段选择根，其余是根内相对路径。兼容 / 与 \。
+   */
+  private async resolveAbsPath(
+    userId: string,
+    scope: FileScope,
+    relPath: string,
+    conversationId?: string,
+  ): Promise<string> {
     const { roots, labels } = await this.resolveRoots(userId, scope, conversationId);
-    // runtime 树已拍平：relPath 直接相对唯一 runtime 根解析；其余 scope 的 path 形如
-    // "<label>[/<rest>]"，第一段选择根，其余是根内相对路径。兼容 / 与 \。
     let root: string;
     let rest: string;
     if (scope === "runtime") {
@@ -72,24 +118,7 @@ export class LocalFileBrowser implements FileBrowser {
     if (relativeOfRoot(roots, realAbs) === undefined) {
       throw new ForbiddenError("FORBIDDEN", "symlink 越界");
     }
-    const abs = realAbs;
-
-    let st: ReturnType<typeof statSync>;
-    try {
-      st = statSync(abs);
-    } catch {
-      throw new NotFoundError("NOT_FOUND", "文件不存在");
-    }
-    if (st.isDirectory()) throw new NotFoundError("NOT_FOUND", "目标是目录");
-    if (opts?.maxBytes !== undefined && st.size > opts.maxBytes) {
-      throw new PayloadTooLargeError("TOO_LARGE", `文件超过 ${opts.maxBytes} 字节`);
-    }
-    const ext = abs.split(".").pop()?.toLowerCase() ?? "";
-    return {
-      buffer: readFileSync(abs),
-      mime: mimeForExt(ext),
-      size: st.size,
-    };
+    return realAbs;
   }
 
   private async resolveRoots(
@@ -148,32 +177,53 @@ export class LocalFileBrowser implements FileBrowser {
   }
 
   private buildDirNode(abs: string, name: string, parentRel: string): FileNode {
-    const path = parentRel ? posixJoin(parentRel, name) : name;
-    let entries: string[] = [];
-    try {
-      entries = readdirSync(abs);
-    } catch {
-      return { name, path, isDir: true, children: [] };
-    }
-    const children: FileNode[] = [];
-    for (const e of entries) {
-      if (IGNORED_NAMES.has(e)) continue;
-      const childAbs = join(abs, e);
-      let st: ReturnType<typeof lstatSync>;
-      try {
-        st = lstatSync(childAbs);
-      } catch {
-        continue;
-      }
-      if (st.isSymbolicLink()) continue; // 跳过 symlink，防逃逸
-      if (st.isDirectory()) {
-        children.push(this.buildDirNode(childAbs, e, path));
-      } else {
-        children.push({ name: e, path: posixJoin(path, e), isDir: false, size: st.size });
-      }
-    }
-    return { name, path, isDir: true, children };
+    return dirNode(abs, name, parentRel);
   }
+}
+
+/** 递归构建目录树节点；跳过忽略项与 symlink（防逃逸） */
+function dirNode(abs: string, name: string, parentRel: string): FileNode {
+  const path = parentRel ? posixJoin(parentRel, name) : name;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(abs);
+  } catch {
+    return { name, path, isDir: true, children: [] };
+  }
+  const children: FileNode[] = [];
+  for (const e of entries) {
+    if (IGNORED_NAMES.has(e)) continue;
+    const childAbs = join(abs, e);
+    let st: ReturnType<typeof lstatSync>;
+    try {
+      st = lstatSync(childAbs);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) continue; // 跳过 symlink，防逃逸
+    if (st.isDirectory()) {
+      children.push(dirNode(childAbs, e, path));
+    } else {
+      children.push({ name: e, path: posixJoin(path, e), isDir: false, size: st.size });
+    }
+  }
+  return { name, path, isDir: true, children };
+}
+
+/**
+ * 拍平根目录下全部文件（相对路径；忽略项/symlink 规则与目录树一致）。
+ * 供消息引用（mention）候选列表使用：给 @ 候选提供可搜索的扁平文件清单。
+ */
+export function flattenWorkspaceFiles(absRoot: string): FileNode[] {
+  const out: FileNode[] = [];
+  const visit = (node: FileNode): void => {
+    for (const child of node.children ?? []) {
+      if (child.isDir) visit(child);
+      else out.push(child);
+    }
+  };
+  visit(dirNode(absRoot, "", ""));
+  return out;
 }
 
 /** posix 风格 join（输出 / 分隔的逻辑路径，供前端/URL 统一） */

@@ -193,6 +193,58 @@ describe("LocalFileBrowser runtime scope", () => {
   });
 });
 
+describe("LocalFileBrowser resolveFilePath（@引用 解析）", () => {
+  it("runtime scope 相对路径 → 绝对路径", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.createWithAgent(user.id, "web", "t", "agent-r1");
+    write(user.homeDir, join("agents", "agent-r1", "workspace", "src", "config.ts"), "export {}");
+    const abs = await browser.resolveFilePath(user.id, "runtime", "src/config.ts", conv.id);
+    expect(abs).toBe(join(user.homeDir, "agents", "agent-r1", "workspace", "src", "config.ts"));
+  });
+
+  it("越界路径拒绝（Forbidden）", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.create(user.id, "web", "t");
+    await expect(
+      browser.resolveFilePath(user.id, "runtime", "../../secret", conv.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("指向根外的 symlink 拒绝", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.create(user.id, "web", "t");
+    const ws = join(user.homeDir, "sessions", conv.id, "workspace");
+    write(ws, "keep.md", "x"); // 先落一个文件，保证 workspace 目录存在
+    write(tmp, "outside.txt", "secret");
+    symlinkSync(join(tmp, "outside.txt"), join(ws, "lnk.md"));
+    await expect(
+      browser.resolveFilePath(user.id, "runtime", "lnk.md", conv.id),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("不存在 / 目录 → NotFound", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.create(user.id, "web", "t");
+    const ws = join(user.homeDir, "sessions", conv.id, "workspace");
+    write(ws, "dir/inner.md", "x");
+    await expect(
+      browser.resolveFilePath(user.id, "runtime", "nope.md", conv.id),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      browser.resolveFilePath(user.id, "runtime", "dir", conv.id),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("跨用户 conversationId → Forbidden", async () => {
+    const a = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const b = await userStore.getOrCreateByIdentity("internal", "u2", "bob");
+    const conv = await convStore.create(b.id, "web", "t");
+    await expect(browser.resolveFilePath(a.id, "runtime", "x.md", conv.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+});
+
 describe("LocalFileBrowser 历史相对 homeDir 兼容", () => {
   it("homeDir 为相对路径的用户 → realpath 复判仍通过（预览不误报越界）", async () => {
     const relUsersDir = join(".tmp-fb-rel-test", "users");
