@@ -27,6 +27,7 @@ import {
   CredentialValueInputSchema,
   type CredentialValueView,
   parseCredentialCode,
+  withGitPatKeySpecs,
 } from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
@@ -497,32 +498,34 @@ export class WebChannel implements Channel {
       title: card.title,
       summary: card.summary,
     });
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       this.approvalStreams.set(card.gateId, {
         write: (_event: SSEEvent) => {},
         close: () => {},
       });
 
-      // 超时分型（PM 评审）：生命周期门（方案/验收）是人工评审动作，放宽到 10 分钟；
-      // 工具高危门保持 60 秒（安全语义：执行前的确认应即时）。
-      const lifeCycleGate = card.gateId === "design" || card.gateId === "acceptance";
-      const timeoutMs = lifeCycleGate ? 600_000 : 60_000;
-      const timeout = setTimeout(() => {
-        this.approvalStreams.delete(card.gateId);
-        reject(new Error(`审批超时（${lifeCycleGate ? "10分钟" : "60秒"}）：${card.title}`));
-      }, timeoutMs);
-
+      // 审批不设超时：何时批由用户决定（人工评审可能数小时后处理）。挂起解除路径 =
+      // 用户批/拒（HTTP respond）| 停止任务（cancelPendingApprovals 统一解开）| 服务重启清扫。
       // 注意：实际的审批响应通过 HTTP POST /api/approvals/:id/respond 处理
       // 这里返回一个占位 Promise，实际响应由 HTTP 处理器调用 resolve
       this.pendingApprovalResolves.set(card.gateId, {
         conversationId: threadId,
         resolve: (result) => {
-          clearTimeout(timeout);
           this.approvalStreams.delete(card.gateId);
           resolve(result);
         },
       });
     });
+  }
+
+  /** 任务停止/中断时解开该会话全部挂起审批：以「任务已中断」deny，runner 侧 abort 后不消费决策，仅解除 canUseTool await 让轮次可收口。 */
+  cancelPendingApprovals(conversationId: string): void {
+    for (const [gateId, pending] of this.pendingApprovalResolves) {
+      if (pending.conversationId !== conversationId) continue;
+      this.pendingApprovalResolves.delete(gateId);
+      this.approvalStreams.delete(gateId);
+      pending.resolve({ approved: false, reason: "任务已中断" });
+    }
   }
 
   /** 存储审批响应的 resolve 函数（带会话归属，供 owner 校验） */
@@ -3175,7 +3178,7 @@ export class WebChannel implements Channel {
         send({ status: 409, json: { error: `凭证 code 已存在: ${code}` } });
         return true;
       }
-      await csets.createTemplate(code, parsed.data, uid);
+      await csets.createTemplate(code, withGitPatKeySpecs(parsed.data), uid);
       send({ status: 201, json: { ok: true, code } });
       return true;
     }
@@ -3207,7 +3210,7 @@ export class WebChannel implements Channel {
         send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
         return true;
       }
-      await csets.updateTemplate(code, parsed.data);
+      await csets.updateTemplate(code, withGitPatKeySpecs(parsed.data));
       send({ status: 200, json: { ok: true } });
       return true;
     }

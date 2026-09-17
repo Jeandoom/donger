@@ -11,6 +11,7 @@ import {
 import { z } from "zod";
 import { createGitPlatformApiResolver } from "../adapters/git-platform-api-resolver.js";
 import type { Agent } from "../domain/agent.js";
+import { gitPatFromValues } from "../domain/credential.js";
 import { type AgentGitRepository, GitProviderSchema, parseRepositoryUrl } from "../domain/git.js";
 import type { User } from "../domain/user.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
@@ -68,18 +69,18 @@ export async function credentialFor(
 ): Promise<{ username: string; accessToken: string } | undefined> {
   if (!repo.credentialCode || !deps.credentialSets) return undefined;
   const [filled] = await deps.credentialSets.getFilledValues(deps.user.id, [repo.credentialCode]);
-  const token = filled?.values.token;
-  if (!token) return undefined;
+  const pat = gitPatFromValues(filled?.values);
+  if (!pat) return undefined;
   return {
-    username: filled.values.username || defaultGitUsername(repo.provider),
-    accessToken: token,
+    username: pat.user || defaultGitUsername(repo.provider),
+    accessToken: pat.accessToken,
   };
 }
 
 /** 凭证缺失引导文案（引导填写模板值或绑定模板） */
 export function credentialMissingHint(repo: AgentGitRepository): string {
   return repo.credentialCode
-    ? `请在「我的凭证」填写模板 ${repo.credentialCode} 的值（key: token）`
+    ? `请在「我的凭证」填写模板 ${repo.credentialCode} 的值（key: access_token）`
     : `请为仓库 ${repo.name} 绑定凭证模板（credentialCode）`;
 }
 

@@ -4,6 +4,7 @@
 // 用户未配值时 pendingCredential（由 Orchestrator 挂起凭证缺失问询）。
 
 import type { Agent } from "../domain/agent.js";
+import { gitPatFromValues } from "../domain/credential.js";
 import {
   type AgentGitRepository,
   type GitAccessFailureReason,
@@ -121,11 +122,11 @@ export class GitAccessGate {
     const [filled] = await this.credentialSets.getFilledValues(userId, [
       repository.credentialCode as string,
     ]);
-    const token = filled?.values.token;
-    if (!token) return undefined;
+    const pat = gitPatFromValues(filled?.values);
+    if (!pat) return undefined;
     return {
-      username: filled.values.username || defaultGitUsername(repository.provider),
-      accessToken: token,
+      username: pat.user || defaultGitUsername(repository.provider),
+      accessToken: pat.accessToken,
     };
   }
 }

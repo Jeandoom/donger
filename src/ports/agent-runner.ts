@@ -76,4 +76,9 @@ export type ApprovalResolver = (req: ApprovalRequest) => Promise<ApprovalDecisio
 /** 执行引擎端口：消费任务，产出事件流，门内调用 approvalResolver */
 export interface AgentRunner {
   run(task: Task, opts: RunOptions, approvalResolver: ApprovalResolver): AsyncIterable<RunnerEvent>;
+  /**
+   * 该任务当前是否在等用户作答（AskUserQuestion 桥接挂起中）。停摆看门狗据此豁免：
+   * 等人工输入是合法阻塞而非流挂死。可选能力——未实现者视为恒不豁免。
+   */
+  isAwaitingUserInput?(taskId: string): boolean;
 }

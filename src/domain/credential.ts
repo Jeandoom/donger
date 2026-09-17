@@ -17,7 +17,7 @@ export const CredentialKindSchema = z.enum(["generic", "git"]).default("generic"
 export type CredentialKind = z.infer<typeof CredentialKindSchema>;
 
 export const CredentialKeySpecSchema = z.object({
-  /** 键名（凭证信息结构里的 k），如 token；注入时映射为 <CODE>_<KEY> 环境变量 */
+  /** 键名（凭证信息结构里的 k）；注入时映射为 <CODE>_<KEY> 环境变量 */
   key: z
     .string()
     .min(1)
@@ -27,6 +27,34 @@ export const CredentialKeySpecSchema = z.object({
   label: z.string().max(100).optional(),
 });
 export type CredentialKeySpec = z.infer<typeof CredentialKeySpecSchema>;
+
+/**
+ * git PAT 凭证的固定键名契约（读取与表单唯一来源，不允许自定义）：
+ * - access_token：令牌主体（与 Gitee/GitLab 平台 API 参数名对齐）；
+ * - user：可选 HTTP 认证用户名（留空走平台默认，见 defaultGitUsername）。
+ * 凭证桥（donger-git 工具/仓库物化）只认这两个键；2026-09-17 前历史键为
+ * token/username，存量值需重填或迁移。
+ */
+export const GIT_PAT_KEY_SPECS: CredentialKeySpec[] = [
+  { key: "access_token", label: "访问令牌（PAT）" },
+  { key: "user", label: "HTTP 认证用户名（可留空走平台默认）" },
+];
+
+/** 从已解密值按固定键提取 git PAT；缺 access_token 视为未填写 */
+export function gitPatFromValues(
+  values: Record<string, string> | undefined,
+): { accessToken: string; user?: string } | undefined {
+  const accessToken = values?.access_token;
+  if (!accessToken) return undefined;
+  return { accessToken, user: values?.user };
+}
+
+/** kind=git 模板键名收口：覆写为固定键（创建/编辑入参不允许自定义键名）；generic 原样 */
+export function withGitPatKeySpecs<
+  T extends { kind: CredentialKind; keySpecs: CredentialKeySpec[] },
+>(input: T): T {
+  return input.kind === "git" ? { ...input, keySpecs: GIT_PAT_KEY_SPECS } : input;
+}
 
 /** 全局凭证模板：结构元数据，不含任何值 */
 export const CredentialTemplateSchema = z.object({
@@ -46,7 +74,13 @@ export const CredentialTemplateSchema = z.object({
       if (!url) return true;
       try {
         const parsed = new URL(url);
-        return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+        return (
+          parsed.protocol === "https:" &&
+          !parsed.username &&
+          !parsed.password &&
+          !parsed.search &&
+          !parsed.hash
+        );
       } catch {
         return false;
       }

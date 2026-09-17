@@ -124,7 +124,7 @@ function setup(
   const deps = {
     user: USER,
     agent,
-    credentialSets: fakeCredentialSets("values" in opts ? opts.values : { token: "pat-1" }),
+    credentialSets: fakeCredentialSets("values" in opts ? opts.values : { access_token: "pat-1" }),
     reposRoot: opts.reposRoot ?? mkdtempSync(join(tmpdir(), "donger-git-tools-")),
     gitRunner: runner,
   };
@@ -181,7 +181,7 @@ describe("donger-git CLI 工作区工具", () => {
     expect(r.content[0]?.text).toContain("git_pull");
   });
 
-  it("git_push：无凭证给引导；有凭证时携带 username/token 且参数含目标分支", async () => {
+  it("git_push：无凭证给引导；有凭证时携带 username/access_token 且参数含目标分支", async () => {
     const noCred = setup(buildAgent({ credentialCode: undefined }), {
       values: undefined,
       runner: mockRunner(() => undefined),
@@ -297,7 +297,7 @@ describe("donger-git CLI 工作区工具", () => {
       ...gitPlatformToolDefinitions({
         user: USER,
         agent: buildAgent(),
-        credentialSets: fakeCredentialSets({ token: "t" }),
+        credentialSets: fakeCredentialSets({ access_token: "t" }),
       }),
     ].map((t) => t.name);
     expect(names).toContain("git_platform_list_branches");

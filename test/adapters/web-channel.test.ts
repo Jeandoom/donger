@@ -2083,3 +2083,43 @@ describe("WebChannel agent callback", () => {
     expect(r.status).toBe(401);
   });
 });
+
+describe("WebChannel 审批门不设超时", () => {
+  function makeChannel(): WebChannel {
+    return new WebChannel({ port: 0, workspaceDir: makeWebRoot() });
+  }
+
+  it("requestApproval 永不超时（200ms 后仍挂起）", async () => {
+    const web = makeChannel();
+    let settled = false;
+    const p = web.requestApproval("conv-1", { gateId: "deploy", title: "部署", summary: "s" });
+    void p.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(settled).toBe(false);
+  });
+
+  it("停止任务经 cancelPendingApprovals 解开挂起并以「任务已中断」deny", async () => {
+    const web = makeChannel();
+    const p = web.requestApproval("conv-1", { gateId: "deploy", title: "部署", summary: "s" });
+    web.cancelPendingApprovals("conv-1");
+    await expect(p).resolves.toMatchObject({ approved: false, reason: "任务已中断" });
+  });
+
+  it("cancelPendingApprovals 只解开目标会话的挂起", async () => {
+    const web = makeChannel();
+    // 挂起表按 gateId 键控（同 gateId 并发挂起会互相覆盖——既有约束，同会话串行下不触发），
+    // 跨会话隔离验证用不同 gateId
+    const p1 = web.requestApproval("conv-1", { gateId: "deploy", title: "d1", summary: "s" });
+    const p2 = web.requestApproval("conv-2", { gateId: "authoring", title: "d2", summary: "s" });
+    web.cancelPendingApprovals("conv-1");
+    await expect(p1).resolves.toMatchObject({ approved: false });
+    let settled = false;
+    void p2.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(settled).toBe(false);
+  });
+});
