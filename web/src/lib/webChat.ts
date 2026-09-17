@@ -33,9 +33,11 @@ export function useWebChat() {
     }
   }, []);
 
-  /** 创建新会话（agentId 缺省=默认会话） */
+  /** 创建新会话（agentId 缺省=默认会话；defaultPermissionMode=绑定智能体的默认对话模式，仅 UI 预填） */
   const newConversation = useCallback(
-    async (agentId?: string): Promise<ConversationSummary> => {
+    async (agentId?: string, defaultPermissionMode?: AgentPermissionMode): Promise<
+      ConversationSummary
+    > => {
       const now = new Date().toISOString();
       const conversation: ConversationSummary = {
         id: `draft-${makeId()}`,
@@ -44,6 +46,8 @@ export function useWebChat() {
         title: "新会话",
         channelId: "web",
         agentId: agentId ?? "",
+        // 仅预填展示值：permissionMode 保持空 = 跟随智能体默认，与转正后后端计算一致
+        effectivePermissionMode: defaultPermissionMode ?? "ask_before_change",
         createdAt: now,
         updatedAt: now,
         archived: false,
@@ -526,30 +530,38 @@ export function useWebChat() {
     [state.conversations],
   );
 
-  /** 切换会话权限模式：PATCH 落库 + 本地即时更新（失败回滚） */
+  /** 切换会话权限模式：草稿先落库转正 → PATCH 落库 + 本地乐观更新（失败回滚并提示） */
   const setPermissionMode = useCallback(
     async (mode: AgentPermissionMode) => {
-      const id = state.activeConversationId;
-      if (!id) return;
-      const conversation = state.conversations.find((item) => item.id === id);
-      if (!conversation || conversation.isDraft) return;
-      const previous = conversation.permissionMode;
+      const active = state.conversations.find((item) => item.id === state.activeConversationId);
+      if (!active) return;
+      // 草稿会话先转正：否则 PATCH 无目标，设置随草稿一并丢失（转正失败静默返回，发送时会重试）
+      const conversationId = await persistDraftConversation(active);
+      if (!conversationId) return;
+      const previous = active.permissionMode;
+      const previousEffective = active.effectivePermissionMode;
       dispatch({
         type: "update_conversation",
-        conversationId: id,
-        patch: { permissionMode: mode },
+        conversationId,
+        // UI 优先读 effectivePermissionMode（列表接口恒返回），乐观更新须一并改写
+        patch: { permissionMode: mode, effectivePermissionMode: mode },
       });
       try {
-        await setConversationPermissionMode(id, mode);
+        await setConversationPermissionMode(conversationId, mode);
       } catch {
         dispatch({
           type: "update_conversation",
-          conversationId: id,
-          patch: { permissionMode: previous },
+          conversationId,
+          patch: { permissionMode: previous, effectivePermissionMode: previousEffective },
+        });
+        dispatch({
+          type: "set_error",
+          key: "conversations",
+          message: "权限模式切换失败，已还原",
         });
       }
     },
-    [state.activeConversationId, state.conversations],
+    [persistDraftConversation, state.activeConversationId, state.conversations],
   );
 
   const dismissEviction = useCallback(() => dispatch({ type: "clear_eviction" }), []);

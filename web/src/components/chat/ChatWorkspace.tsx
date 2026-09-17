@@ -81,6 +81,30 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     title: conversation.title || "(无标题)",
     meta: new Date(conversation.updatedAt).toLocaleDateString(),
   }));
+  // 会话权限模式切换器：置于输入框底部、附件按钮左侧
+  const permissionModePicker = props.onPermissionModeChange ? (
+    <select
+      aria-label="会话权限模式"
+      title="会话权限模式"
+      value={effectiveMode}
+      onChange={(e) => {
+        const mode = e.target.value as AgentPermissionMode;
+        if (mode === "full_access" && effectiveMode !== "full_access") {
+          setConfirmFullAccess(true);
+        } else {
+          void props.onPermissionModeChange?.(mode);
+        }
+      }}
+      className={`h-9 shrink-0 rounded-lg border px-2 text-xs font-medium ${
+        effectiveMode === "full_access"
+          ? "border-amber-300 bg-warning-soft text-amber-800"
+          : "border-border bg-card text-muted-foreground hover:bg-muted"
+      }`}
+    >
+      <option value="ask_before_change">🛡️ 变更前问询</option>
+      <option value="full_access">⚡ 完全权限</option>
+    </select>
+  ) : null;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -133,28 +157,6 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {props.onPermissionModeChange ? (
-              <select
-                aria-label="会话权限模式"
-                value={effectiveMode}
-                onChange={(e) => {
-                  const mode = e.target.value as AgentPermissionMode;
-                  if (mode === "full_access" && effectiveMode !== "full_access") {
-                    setConfirmFullAccess(true);
-                  } else {
-                    void props.onPermissionModeChange?.(mode);
-                  }
-                }}
-                className={`rounded-lg border px-2 py-1.5 text-xs font-medium ${
-                  effectiveMode === "full_access"
-                    ? "border-amber-300 bg-warning-soft text-amber-800"
-                    : "border-border bg-card hover:bg-muted"
-                }`}
-              >
-                <option value="ask_before_change">🛡️ 变更前问询</option>
-                <option value="full_access">⚡ 完全权限</option>
-              </select>
-            ) : null}
             <button
               type="button"
               onClick={() => setDrawerOpen(true)}
@@ -219,6 +221,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onDecideCredentialMissing={props.onDecideCredentialMissing}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
               aboveComposer={props.aboveComposer}
+              composerLeading={permissionModePicker}
             />
           </AssistantRuntimeProvider>
         )}

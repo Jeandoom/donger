@@ -238,3 +238,67 @@ describe("chatReducer 并发淘汰通知", () => {
     expect(state.evictionNotice).toBeNull();
   });
 });
+
+describe("chatReducer 会话权限模式乐观更新", () => {
+  const baseConversation = {
+    id: "c1",
+    userId: "u1",
+    sdkSessionId: "",
+    title: "会话",
+    channelId: "web",
+    agentId: "",
+    createdAt: "2026-09-16T00:00:00.000Z",
+    updatedAt: "2026-09-16T00:00:00.000Z",
+    archived: false,
+  };
+
+  it("update_conversation 合并 permissionMode 与 effectivePermissionMode（UI 即时反映切换）", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "new_conversation",
+      conversation: { ...baseConversation, effectivePermissionMode: "ask_before_change" },
+    });
+    state = chatReducer(state, {
+      type: "update_conversation",
+      conversationId: "c1",
+      patch: { permissionMode: "full_access", effectivePermissionMode: "full_access" },
+    });
+    expect(state.conversations[0]?.permissionMode).toBe("full_access");
+    expect(state.conversations[0]?.effectivePermissionMode).toBe("full_access");
+  });
+
+  it("update_conversation 回滚置 undefined 时清除覆盖字段", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "new_conversation",
+      conversation: {
+        ...baseConversation,
+        permissionMode: "full_access",
+        effectivePermissionMode: "full_access",
+      },
+    });
+    state = chatReducer(state, {
+      type: "update_conversation",
+      conversationId: "c1",
+      patch: { permissionMode: undefined, effectivePermissionMode: undefined },
+    });
+    expect(state.conversations[0]?.permissionMode).toBeUndefined();
+    expect(state.conversations[0]?.effectivePermissionMode).toBeUndefined();
+  });
+
+  it("persist_conversation 草稿转正后 activeConversationId 跟随新 id（转正后可继续乐观更新）", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "new_conversation",
+      conversation: { ...baseConversation, id: "draft-1", isDraft: true },
+    });
+    expect(state.activeConversationId).toBe("draft-1");
+    state = chatReducer(state, {
+      type: "persist_conversation",
+      draftId: "draft-1",
+      conversation: { ...baseConversation, id: "real-1" },
+    });
+    expect(state.activeConversationId).toBe("real-1");
+    expect(state.conversations[0]?.id).toBe("real-1");
+  });
+});
