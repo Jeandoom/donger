@@ -77,6 +77,31 @@ export class SqliteAuditStore implements AuditStore {
     return rec;
   }
 
+  async listByConversationVisible(viewerId: string, conversationId: string): Promise<AuditEvent[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM audit_events a
+         JOIN conversations c ON c.id = a.conversationId
+         WHERE a.conversationId = ? AND c.userId = ?
+         ORDER BY a.recordedAt ASC, a.seq ASC`,
+      )
+      .all(conversationId, viewerId) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToEv(row));
+  }
+
+  async listByTaskVisible(viewerId: string, taskId: string): Promise<AuditEvent[]> {
+    // 任务属主判定经 tasks 表（requesterId 存于 data JSON）
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM audit_events a
+         JOIN tasks t ON t.id = a.taskId
+         WHERE a.taskId = ? AND json_extract(t.data, '$.requesterId') = ?
+         ORDER BY a.recordedAt ASC, a.seq ASC`,
+      )
+      .all(taskId, viewerId) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToEv(row));
+  }
+
   async listByConversation(conversationId: string): Promise<AuditEvent[]> {
     const rows = this.db
       .prepare(

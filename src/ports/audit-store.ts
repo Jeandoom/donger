@@ -20,4 +20,10 @@ export interface AuditStore {
   /** 按任务查全量审计事件（T17.3 观测面板数据源） */
   listByTask(taskId: string): Promise<AuditEvent[]>;
   listConversationSummaries(): Promise<AuditConversationSummary[]>;
+
+  // ---- 纵深防御 L2（设计规格 §4）：用户面查询强制 viewer 过滤 ----
+  /** 仅当会话属于 viewer 时返回其审计事件（否则空数组，含不存在） */
+  listByConversationVisible(viewerId: string, conversationId: string): Promise<AuditEvent[]>;
+  /** 仅当任务属于 viewer 时返回其审计事件（否则空数组，含不存在） */
+  listByTaskVisible(viewerId: string, taskId: string): Promise<AuditEvent[]>;
 }

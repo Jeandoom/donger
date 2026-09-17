@@ -17,6 +17,10 @@ export class InMemoryUsageStore implements UsageStore {
     return rec;
   }
 
+  async listByUser(userId: string, q: Omit<UsageQuery, "userId"> = {}): Promise<UsageRecord[]> {
+    return this.list({ ...q, userId });
+  }
+
   async list(q: UsageQuery = {}): Promise<UsageRecord[]> {
     let rows = [...this.byId.values()];
     if (q.userId) rows = rows.filter((r) => r.userId === q.userId);

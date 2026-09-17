@@ -5,6 +5,14 @@ import type { AuditConversationSummary, AuditStore } from "../ports/audit-store.
 export class InMemoryAuditStore implements AuditStore {
   private readonly byId = new Map<string, AuditEvent>();
 
+  constructor(
+    /** 会话/任务属主解析（L2 visible 查询用）。未提供时 visible 查询一律返回空（fail-closed） */
+    private readonly ownerResolver?: {
+      conversationOwner?: (id: string) => Promise<string | undefined>;
+      taskOwner?: (id: string) => Promise<string | undefined>;
+    },
+  ) {}
+
   async record(e: Omit<AuditEvent, "id">): Promise<AuditEvent> {
     const rec: AuditEvent = { ...e, id: crypto.randomUUID() };
     this.byId.set(rec.id, rec);
@@ -21,6 +29,18 @@ export class InMemoryAuditStore implements AuditStore {
     return [...this.byId.values()]
       .filter((e) => e.taskId === taskId)
       .sort((a, b) => a.recordedAt.localeCompare(b.recordedAt) || a.seq - b.seq);
+  }
+
+  async listByConversationVisible(viewerId: string, conversationId: string): Promise<AuditEvent[]> {
+    const owner = (await this.ownerResolver?.conversationOwner?.(conversationId)) ?? undefined;
+    if (owner !== viewerId) return [];
+    return this.listByConversation(conversationId);
+  }
+
+  async listByTaskVisible(viewerId: string, taskId: string): Promise<AuditEvent[]> {
+    const owner = (await this.ownerResolver?.taskOwner?.(taskId)) ?? undefined;
+    if (owner !== viewerId) return [];
+    return this.listByTask(taskId);
   }
 
   async listConversationSummaries(): Promise<AuditConversationSummary[]> {

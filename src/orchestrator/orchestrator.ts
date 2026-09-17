@@ -874,8 +874,7 @@ export class Orchestrator {
       this.cancelConversation(victim.conversationId);
       // 立即释放额度（收口是异步的；unregisterActive 幂等，收口再删无害）
       this.unregisterActive(user.id, victim.conversationId);
-      const reason =
-        "并发已达上限，为执行新任务，系统自动结束了最早进入等待状态的任务。";
+      const reason = "并发已达上限，为执行新任务，系统自动结束了最早进入等待状态的任务。";
       const detail = [
         `任务内容：${victim.taskExcerpt}`,
         `开始时间：${victim.startedAt}`,

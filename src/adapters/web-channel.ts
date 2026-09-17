@@ -2046,9 +2046,10 @@ export class WebChannel implements Channel {
       const viewer = this.currentViewer(req);
       const isAdmin = viewer.role === "admin";
       const status = this.extractQuery(url, "status");
+      // L2 纵深防御：member 走 store 层强制过滤（规格 §4）
       const collect = async (s: string) => {
-        const list = (await this.deps.taskStore?.listByStatus(s as never)) ?? [];
-        return isAdmin ? list : list.filter((t) => t.requesterId === viewer.id);
+        if (isAdmin) return (await this.deps.taskStore?.listByStatus(s as never)) ?? [];
+        return (await this.deps.taskStore?.listVisible(viewer.id, s as never)) ?? [];
       };
       const tasks = status
         ? await collect(status)
@@ -2066,7 +2067,11 @@ export class WebChannel implements Channel {
     // GET /api/tasks/:id
     const taskMatch = url.match(/^\/api\/tasks\/([\w-]+)$/);
     if (taskMatch && req.method === "GET") {
-      const task = await this.deps.taskStore?.get(taskMatch[1] ?? "");
+      const viewer = this.currentViewer(req);
+      const task =
+        viewer.role === "admin"
+          ? await this.deps.taskStore?.get(taskMatch[1] ?? "")
+          : await this.deps.taskStore?.getVisible(viewer.id, taskMatch[1] ?? "");
       res.writeHead(task ? 200 : 404);
       res.end(JSON.stringify(task ?? { error: "not found" }));
       return;
@@ -2075,7 +2080,12 @@ export class WebChannel implements Channel {
     // GET /api/tasks/:id/events —— 该任务全量审计事件（T17.3 观测数据源）
     const taskEventsMatch = url.match(/^\/api\/tasks\/([\w-]+)\/events$/);
     if (taskEventsMatch && req.method === "GET") {
-      const events = (await this.deps.auditStore?.listByTask(taskEventsMatch[1] ?? "")) ?? [];
+      const viewer = this.currentViewer(req);
+      const store = this.deps.auditStore;
+      const events =
+        viewer.role === "admin"
+          ? ((await store?.listByTask(taskEventsMatch[1] ?? "")) ?? [])
+          : ((await store?.listByTaskVisible(viewer.id, taskEventsMatch[1] ?? "")) ?? []);
       res.writeHead(200);
       res.end(JSON.stringify(events));
       return;
@@ -2086,6 +2096,17 @@ export class WebChannel implements Channel {
     if (taskCommentsMatch) {
       const taskId = taskCommentsMatch[1] ?? "";
       if (req.method === "GET") {
+        // L2：非属主不可读评论列表（属主判定经任务 store；admin 直通）
+        const viewer = this.currentViewer(req);
+        const visibleTask =
+          viewer.role === "admin"
+            ? await this.deps.taskStore?.get(taskId)
+            : await this.deps.taskStore?.getVisible(viewer.id, taskId);
+        if (!visibleTask) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "not found" }));
+          return;
+        }
         const comments = (await this.deps.commentStore?.listByTask(taskId)) ?? [];
         res.writeHead(200);
         res.end(JSON.stringify(comments));
@@ -2118,9 +2139,9 @@ export class WebChannel implements Channel {
     if (taskOptimizeMatch && req.method === "POST") {
       const taskId = taskOptimizeMatch[1] ?? "";
       const uid = this.requireRequestUser(req);
-      const task = await this.deps.taskStore?.get(taskId);
+      // L2：getVisible 语义即"非属主视为不存在"，与原 requesterId 校验等价
+      const task = await this.deps.taskStore?.getVisible(uid, taskId);
       if (!task) return this.json(res, { error: "task not found" }, 404);
-      if (task.requesterId !== uid) return this.json(res, { error: "forbidden" }, 403);
       if (!this.handler) return this.json(res, { error: "消息处理未就绪" }, 503);
 
       const events = (await this.deps.auditStore?.listByTask(taskId)) ?? [];
@@ -2211,7 +2232,12 @@ export class WebChannel implements Channel {
     const eventsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/events(?:\?.*)?$/);
     if (eventsMatch && req.method === "GET") {
       const conversationId = eventsMatch[1] ?? "";
-      const all = (await this.deps.auditStore?.listByConversation(conversationId)) ?? [];
+      const viewer = this.currentViewer(req);
+      const store = this.deps.auditStore;
+      const all =
+        viewer.role === "admin"
+          ? ((await store?.listByConversation(conversationId)) ?? [])
+          : ((await store?.listByConversationVisible(viewer.id, conversationId)) ?? []);
       // llm_input/llm_output 是调试级原始消息（体积大、含系统提示），不入回放流
       const light = this.extractQuery(url, "light") === "1";
       const events = all
@@ -2335,8 +2361,11 @@ export class WebChannel implements Channel {
     const patchConvMatch = url.match(/^\/api\/conversations\/([\w-]+)$/);
     if (patchConvMatch && req.method === "PATCH") {
       const conversationId = patchConvMatch[1] ?? "";
-      const uid = this.requireRequestUser(req);
-      const conv = await this.deps.conversationStore?.get(conversationId);
+      const viewer = this.currentViewer(req);
+      const conv =
+        viewer.role === "admin"
+          ? await this.deps.conversationStore?.get(conversationId)
+          : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
       if (!conv) {
         res.writeHead(404);
         res.end(JSON.stringify({ error: "conversation not found" }));
@@ -2359,7 +2388,7 @@ export class WebChannel implements Channel {
         await this.deps.auditStore?.record({
           conversationId,
           taskId: "",
-          userId: uid ?? "unknown",
+          userId: viewer.id,
           seq: -1,
           type: "permission_mode_change",
           text: `会话权限模式：${previous} → ${parsed.data}`,
@@ -2477,6 +2506,7 @@ export class WebChannel implements Channel {
       const viewer = this.currentViewer(req);
       const requested = this.extractQuery(url, "userId");
       const userId = viewer.role === "admin" ? requested : viewer.id;
+      // L2 纵深防御：member 恒走 listByUser（store 层强制过滤）
       const taskId = this.extractQuery(url, "taskId");
       const since = this.extractQuery(url, "since");
       const until = this.extractQuery(url, "until");
@@ -2492,7 +2522,10 @@ export class WebChannel implements Channel {
         limit = n;
       }
       const records =
-        (await this.deps.usageStore?.list({ userId, taskId, since, until, limit })) ?? [];
+        viewer.role === "admin" || !viewer.id
+          ? ((await this.deps.usageStore?.list({ userId, taskId, since, until, limit })) ?? [])
+          : ((await this.deps.usageStore?.listByUser(viewer.id, { taskId, since, until, limit })) ??
+            []);
       res.writeHead(200);
       res.end(JSON.stringify({ records }));
       return;

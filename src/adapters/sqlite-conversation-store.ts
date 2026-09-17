@@ -93,6 +93,13 @@ export class SqliteConversationStore implements ConversationStore {
     return row ? this.rowToConv(row) : undefined;
   }
 
+  async getVisible(viewerId: string, id: string): Promise<Conversation | undefined> {
+    const row = this.db
+      .prepare("SELECT * FROM conversations WHERE id = ? AND userId = ?")
+      .get(id, viewerId) as Record<string, unknown> | undefined;
+    return row ? this.rowToConv(row) : undefined;
+  }
+
   async listByUser(userId: string): Promise<Conversation[]> {
     const rows = this.db
       .prepare(

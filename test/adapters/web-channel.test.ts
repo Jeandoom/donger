@@ -391,7 +391,10 @@ describe("WebChannel auth", () => {
     if (!convId) throw new Error("no conversation");
 
     const { InMemoryAuditStore } = await import("../../src/adapters/in-memory-audit-store.js");
-    const auditStore = new InMemoryAuditStore();
+    // L2 visible 查询需属主源（规格 §4）
+    const auditStore = new InMemoryAuditStore({
+      conversationOwner: async (id) => (await convStore.get(id))?.userId,
+    });
     const mk = (id: string, type: "text" | "llm_input" | "tool_use") => ({
       id,
       conversationId: convId,
@@ -596,7 +599,9 @@ describe("WebChannel GET /api/audit/conversations", () => {
     const conversationStore = new SqliteConversationStore(db);
     conversationStore.migrate();
     const created = await conversationStore.create("u1", "web", "修登录bug");
-    const auditStore = new InMemoryAuditStore();
+    const auditStore = new InMemoryAuditStore({
+      conversationOwner: async (id) => (await conversationStore.get(id))?.userId,
+    });
     await auditStore.record(
       auditEvent({
         conversationId: created.id,
@@ -672,7 +677,9 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
     conversationStore.migrate();
     const created = await conversationStore.create("u1", "web", "t");
     const taskStore = new InMemoryTaskStore();
-    const auditStore = new InMemoryAuditStore();
+    const auditStore = new InMemoryAuditStore({
+      conversationOwner: async (id) => (await conversationStore.get(id))?.userId,
+    });
     await auditStore.record(
       auditEvent({
         conversationId: created.id,
