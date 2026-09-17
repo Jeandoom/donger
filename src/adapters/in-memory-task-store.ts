@@ -17,6 +17,18 @@ export class InMemoryTaskStore implements TaskStore {
     return this.byId.get(id);
   }
 
+  async getVisible(viewerId: string, id: string): Promise<Task | undefined> {
+    const task = this.byId.get(id);
+    if (!task || task.requesterId !== viewerId) return undefined;
+    return { ...task };
+  }
+
+  async listVisible(viewerId: string, status: TaskStatus): Promise<Task[]> {
+    return [...this.byId.values()]
+      .filter((t) => t.requesterId === viewerId && t.status === status)
+      .map((t) => ({ ...t }));
+  }
+
   async updateStatus(id: string, status: TaskStatus, patch: Partial<Task> = {}): Promise<void> {
     const cur = this.byId.get(id);
     if (!cur) throw new Error(`task 不存在: ${id}`);

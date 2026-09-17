@@ -59,7 +59,10 @@ describe("LoopRunner", () => {
     expect(s.orchestrator.handleMessage).toHaveBeenCalledTimes(1);
     const runs = await s.loopStore.listRuns(l.id);
     expect(runs[0]?.status).toBe("success");
-    expect(runs[0]?.renderedPrompt).toBe("do: hello");
+    // trigger source 按不可信内容包装（规格 §5.1）
+    expect(runs[0]?.renderedPrompt).toContain('source="trigger-source"');
+    expect(runs[0]?.renderedPrompt).toContain("do: ");
+    expect(runs[0]?.renderedPrompt).toContain("hello");
   });
 
   it("testTrigger returns matched=true for bodyContains matcher", async () => {

@@ -65,6 +65,28 @@ function post(port: number, path: string, body: unknown): Promise<Response> {
   });
 }
 
+/** 注册 + 直接核销验证（跳过方案 B 的线下转交环节），返回登录 token */
+async function registerVerified(
+  port: number,
+  email: string,
+  password: string,
+  invite?: string,
+): Promise<string> {
+  const reg = await post(port, "/api/auth/register", { email, password, invite });
+  // 202=新注册/复活；409=该账号已存在且未过期（已注册场景复用）
+  expect([202, 409]).toContain(reg.status);
+  const u = await userStore.findByIdentity("email", email);
+  if (!u) throw new Error(`user missing: ${email}`);
+  const v = await userStore.getEmailVerification(u.id);
+  if (!v?.token) throw new Error("verify token missing");
+  const marked = await userStore.markEmailVerified(v.token);
+  if (!marked) throw new Error("verify mark failed");
+  const login = await post(port, "/api/auth/login", { email, password });
+  const body = (await login.json()) as { token?: string };
+  if (!body.token) throw new Error(`login failed: ${JSON.stringify(body)}`);
+  return body.token;
+}
+
 beforeEach(() => {
   usersDir = mkdtempSync(join(tmpdir(), "email-users-"));
   tmpDir = mkdtempSync(join(tmpdir(), "email-ws-"));
@@ -98,19 +120,35 @@ describe("POST /api/auth/register", () => {
     expect(res.status).toBe(503);
   });
 
-  it("白名单命中 → 注册成功并直接获得 token", async () => {
+  it("白名单命中 → 注册受理 202（pending 不发 token），验证后可登录", async () => {
     const port = await startChannel({ domains: ["example.com"] });
     const res = await post(port, "/api/auth/register", {
       email: "Alice@Example.com",
       password: "abcd1234",
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { token: string; user: { name: string; role: string } };
-    expect(body.token).toBeTruthy();
-    expect(body.user.name).toBe("alice");
-    // token 可用（/api/auth/me 通过）
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { ok?: boolean; token?: string };
+    expect(body.ok).toBe(true);
+    expect(body.token).toBeUndefined();
+    // 未验证登录被拒
+    expect(
+      (await post(port, "/api/auth/login", { email: "alice@example.com", password: "abcd1234" }))
+        .status,
+    ).toBe(401);
+    // 管理员核销验证链接后可登录
+    const u = await userStore.findByIdentity("email", "alice@example.com");
+    if (!u) throw new Error("user missing");
+    const v = await userStore.getEmailVerification(u.id);
+    if (!v?.token) throw new Error("verify token missing");
+    expect(await userStore.markEmailVerified(v.token)).toBe(u.id);
+    const login = await post(port, "/api/auth/login", {
+      email: "alice@example.com",
+      password: "abcd1234",
+    });
+    expect(login.status).toBe(200);
+    const { token } = (await login.json()) as { token: string };
     const me = await realFetch(`http://127.0.0.1:${port}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${body.token}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
     expect(me.status).toBe(200);
   });
@@ -142,7 +180,7 @@ describe("POST /api/auth/register", () => {
       password: "abcd1234",
       invite: invite.token,
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     // 单次邀请已用尽 → 二次注册同邀请被拒
     const again = await post(port, "/api/auth/register", {
       email: "second@anywhere.io",
@@ -173,7 +211,7 @@ describe("POST /api/auth/register", () => {
     expect(
       (await post(port, "/api/auth/register", { email: "a@example.com", password: "abcd1234" }))
         .status,
-    ).toBe(200);
+    ).toBe(202);
     expect(
       (await post(port, "/api/auth/register", { email: "a@example.com", password: "abcd1234" }))
         .status,
@@ -196,11 +234,9 @@ describe("POST /api/auth/login", () => {
   it("注册后可登录；错误密码/不存在邮箱统一 401", async () => {
     const port = await startChannel({ domains: ["example.com"] });
     await post(port, "/api/auth/register", { email: "a@example.com", password: "abcd1234" });
-    // 注意：上面已消耗 1 次限流额度，同 IP 还有 4 次
-    expect(
-      (await post(port, "/api/auth/login", { email: "a@example.com", password: "abcd1234" }))
-        .status,
-    ).toBe(200);
+    // 注意：上面已消耗 1 次限流额度，同 IP 还有 4 次；registerVerified 复用该账号（409 容忍）
+    const token = await registerVerified(port, "a@example.com", "abcd1234");
+    expect(token).toBeTruthy();
     expect(
       (await post(port, "/api/auth/login", { email: "a@example.com", password: "wrong1234" }))
         .status,
@@ -221,11 +257,7 @@ describe("邀请管理端点", () => {
   it("生成 → 列表可见 → 禁用后注册被拒", async () => {
     const port = await startChannel({ domains: ["example.com"] });
     // 造一个已登录用户（直接走注册+白名单）
-    const reg = await post(port, "/api/auth/register", {
-      email: "owner@example.com",
-      password: "abcd1234",
-    });
-    const { token } = (await reg.json()) as { token: string };
+    const token = await registerVerified(port, "owner@example.com", "abcd1234");
     // 创建邀请（此刻起用新 IP 桶？同 IP 已用 1 次，继续可用）
     const createRes = await realFetch(`http://127.0.0.1:${port}/api/invites`, {
       method: "POST",

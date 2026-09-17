@@ -14,6 +14,8 @@ export interface ConversationStore {
   ): Promise<Conversation>;
   /** 按 ID 查 */
   get(id: string): Promise<Conversation | undefined>;
+  /** 纵深防御 L2（规格 §4）：仅当会话属于 viewer 时返回（否则 undefined，含不存在） */
+  getVisible(viewerId: string, id: string): Promise<Conversation | undefined>;
   /** 列出用户未归档会话（最新在前） */
   listByUser(userId: string): Promise<Conversation[]>;
   /** 取用户最新未归档会话 */

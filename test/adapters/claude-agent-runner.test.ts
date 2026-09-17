@@ -70,7 +70,8 @@ describe("ClaudeAgentRunner", () => {
     const runner = new ClaudeAgentRunner(new GateRouter());
     await collect(runner.run(task, opts, async () => ({ approved: true })));
 
-    expect(captured?.settingSources).toEqual(["project"]);
+    // settingSources 已移除（规格 §5.3）：workspace 的 .claude/settings.json 不得成为配置源
+    expect(captured?.settingSources).toBeUndefined();
     expect(captured?.sandbox).toEqual({
       enabled: true,
       failIfUnavailable: false,

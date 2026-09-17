@@ -53,6 +53,9 @@ const EnvSchema = z.object({
   // 邮箱注册域名白名单（逗号分隔，如 example.com,.corp.cn 支持子域通配）。
   // 空=关闭无邀请的自助注册（只能凭邀请链接注册，防 robot 漏配敞口）
   EMAIL_SIGNUP_ALLOWED_DOMAINS: z.string().optional().default(""),
+  // 仅在确有反向代理/网关时开启：取 X-Forwarded-For 首段作为限流 IP。
+  // false（默认）= 直连形态，取 socket.remoteAddress（防伪造头绕过限流）
+  TRUST_PROXY: z.coerce.boolean().optional().default(false),
   JWT_SECRET: z.string().optional(),
   JWT_TTL_DAYS: z.coerce.number().int().positive().default(30),
   // CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange 换 JWT；空=关闭该端点）
@@ -152,6 +155,8 @@ export interface AppConfig {
   githubProxyUrl: string;
   /** 邮箱注册域名白名单（规范化为小写集合；空=关闭无邀请自助注册） */
   emailSignupAllowedDomains: Set<string>;
+  /** 限流取 IP 是否信任 X-Forwarded-For（仅反代部署开启） */
+  trustProxy: boolean;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
@@ -200,6 +205,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     dingtalkLoginRedirectUri: e.DINGTALK_LOGIN_REDIRECT_URI.trim(),
     githubLoginRedirectUri: e.GITHUB_LOGIN_REDIRECT_URI.trim(),
     githubProxyUrl: e.GITHUB_OAUTH_PROXY.trim(),
+    trustProxy: e.TRUST_PROXY,
     emailSignupAllowedDomains: new Set(
       e.EMAIL_SIGNUP_ALLOWED_DOMAINS.split(",")
         .map((s) => s.trim().toLowerCase())

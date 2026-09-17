@@ -20,5 +20,9 @@ export interface AgentCallbackStore {
   /** 生成/重新生成：新 token + 重算有效期，旧链接立即失效 */
   upsert(agentId: string, ownerId: string, validityDays?: number): Promise<AgentCallback>;
   /** 吊销（删除配置行） */
+  /** 记录该 token 最近一次发起的回调会话（结果查询绑定用） */
+  recordConversation(token: string, conversationId: string): Promise<void>;
+  /** 读取绑定会话；未绑定的旧行返回 undefined */
+  getLastConversationId(token: string): Promise<string | undefined>;
   revoke(agentId: string): Promise<void>;
 }

@@ -10,4 +10,10 @@ export interface TaskStore {
   failStaleRunning(reason: string): Promise<number>;
   /** 服务启动时清理：挂起在审批门/凭证门的任务随进程失去 resolve 通道，重启后必然无法恢复 → 标记失败 */
   failStaleAwaiting(reason: string): Promise<number>;
+
+  // ---- 纵深防御 L2（设计规格 §4）：用户面查询强制 viewer 过滤 ----
+  /** 仅当任务属于 viewer 时返回（否则 undefined，含不存在——语义与"不存在"一致防枚举） */
+  getVisible(viewerId: string, id: string): Promise<Task | undefined>;
+  /** 仅返回 viewer 名下、处于指定状态的任务 */
+  listVisible(viewerId: string, status: TaskStatus): Promise<Task[]>;
 }

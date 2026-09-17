@@ -57,6 +57,10 @@ export class SqliteUsageStore implements UsageStore {
     return rec;
   }
 
+  async listByUser(userId: string, q: Omit<UsageQuery, "userId"> = {}): Promise<UsageRecord[]> {
+    return this.list({ ...q, userId });
+  }
+
   async list(q: UsageQuery = {}): Promise<UsageRecord[]> {
     const where: string[] = [];
     const params: unknown[] = [];

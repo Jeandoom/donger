@@ -53,6 +53,24 @@ export class SqliteTaskStore implements TaskStore {
     return rows.map((r) => JSON.parse(r.data) as Task);
   }
 
+  async getVisible(viewerId: string, id: string): Promise<Task | undefined> {
+    const row = this.db
+      .prepare("SELECT data FROM tasks WHERE id = ? AND json_extract(data, '$.requesterId') = ?")
+      .get(id, viewerId) as { data: string } | undefined;
+    return row ? (JSON.parse(row.data) as Task) : undefined;
+  }
+
+  async listVisible(viewerId: string, status: TaskStatus): Promise<Task[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT data FROM tasks
+         WHERE status = ? AND json_extract(data, '$.requesterId') = ?
+         ORDER BY updatedAt DESC`,
+      )
+      .all(status, viewerId) as { data: string }[];
+    return rows.map((r) => JSON.parse(r.data) as Task);
+  }
+
   async failStaleRunning(reason: string): Promise<number> {
     const stale = await this.listByStatus("running");
     for (const t of stale) {

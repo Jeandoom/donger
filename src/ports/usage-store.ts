@@ -32,4 +32,6 @@ export interface UsageStore {
   /** 调用方不传 totalTokens —— 由 store 据四项求和算出（不信任调用方）。 */
   record(r: Omit<UsageRecord, "id" | "recordedAt" | "totalTokens">): Promise<UsageRecord>;
   list(q?: UsageQuery): Promise<UsageRecord[]>;
+  /** 纵深防御 L2（规格 §4）：用户面查询，恒定按 userId 过滤 */
+  listByUser(userId: string, q?: Omit<UsageQuery, "userId">): Promise<UsageRecord[]>;
 }
