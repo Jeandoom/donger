@@ -14,6 +14,7 @@ import type { LLMConfig } from "../domain/llm-config.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
+import { UNTRUSTED_DATA_PREAMBLE } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
 import type { MissingCredentialItem } from "../ports/channel.js";
@@ -413,9 +414,9 @@ export class RuntimeManager {
 
   /** 合并 systemPromptAppend：默认始终在，extra（如记忆上下文）追加其后 */
   private combineSystemPromptAppend(extra?: string): string {
-    return extra
-      ? `${this.deps.config.defaultSystemPromptAppend}\n\n${extra}`
-      : this.deps.config.defaultSystemPromptAppend;
+    // 不可信数据信任规则随系统提示注入（规格 §5.1，与 wrapUntrusted 定界配套）
+    const base = `${this.deps.config.defaultSystemPromptAppend}\n\n${UNTRUSTED_DATA_PREAMBLE}`;
+    return extra ? `${base}\n\n${extra}` : base;
   }
 
   async commit(conversationId: string, patch: { sdkSessionId?: string }): Promise<void> {

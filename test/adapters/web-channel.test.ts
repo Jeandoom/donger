@@ -237,8 +237,21 @@ describe("WebChannel auth", () => {
     });
     userStore.migrate();
 
+    const { SqliteConversationStore } = await import(
+      "../../src/adapters/sqlite-conversation-store.js"
+    );
+    const conversationStore = new SqliteConversationStore(db);
+    conversationStore.migrate();
+
     const tmp = mkdtempSync(join(tmpdir(), "web-auth-"));
-    web = new WebChannel({ port: 0, workspaceDir: tmp, sessionStore, userStore, cliToken });
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: tmp,
+      sessionStore,
+      userStore,
+      conversationStore,
+      cliToken,
+    });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;
@@ -281,7 +294,7 @@ describe("WebChannel auth", () => {
   });
 
   // SSE 流鉴权：EventSource 无法设置 Authorization 头，必须支持 ?token= 查询参数
-  async function createSessionToken(): Promise<string> {
+  async function createSessionToken(): Promise<{ token: string; convId: string }> {
     const { SqliteUserStore } = await import("../../src/adapters/sqlite-user-store.js");
     const userStore = new SqliteUserStore(db, {
       adminExternalIds: new Set(),
@@ -292,8 +305,15 @@ describe("WebChannel auth", () => {
     const { JwtSessionStore } = await import("../../src/adapters/jwt-session-store.js");
     const sessionStore = new JwtSessionStore(db, "test-secret");
     sessionStore.migrate();
+    // 属主会话：stream/messages 等会话路由走 owner 守卫，须用真实会话 id
+    const { SqliteConversationStore } = await import(
+      "../../src/adapters/sqlite-conversation-store.js"
+    );
+    const convStore = new SqliteConversationStore(db);
+    convStore.migrate();
+    const conv = await convStore.create(user.id, "web", "stream-test");
     const { token } = await sessionStore.create(user.id);
-    return token;
+    return { token, convId: conv.id };
   }
 
   it("GET /api/conversations/:id/stream 无 token → 401", async () => {
@@ -304,9 +324,9 @@ describe("WebChannel auth", () => {
 
   it("GET /api/conversations/:id/stream?token=<有效> → 200 text/event-stream", async () => {
     const port = await createAuthChannel();
-    const token = await createSessionToken();
+    const { token, convId } = await createSessionToken();
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/conversations/abc-123/stream?token=${token}`,
+      `http://127.0.0.1:${port}/api/conversations/${convId}/stream?token=${token}`,
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
@@ -328,14 +348,14 @@ describe("WebChannel auth", () => {
     expect(res.status).toBe(401);
   });
 
-  it("POST /api/credentials/:reqId/submit 无 token → 401（凭证提交必须认证）", async () => {
+  it("POST /api/credentials/:reqId/submit 未登记路由 → 404（fail-closed；该路由已随凭证集体系移除）", async () => {
     const port = await createAuthChannel();
     const res = await fetch(`http://127.0.0.1:${port}/api/credentials/req-xyz/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ values: { API_KEY: "v" } }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(404);
   });
 
   /** 事件回放专用通道：带 sessionStore + conversationStore + auditStore，预置属主用户/会话/审计事件 */
@@ -700,11 +720,21 @@ describe("WebChannel GET /api/audit/conversations/:id", () => {
 describe("WebChannel POST /api/upload", () => {
   let webTmp: string;
   let port: number;
+  let convId: string;
   let receivedFiles: Array<{ path: string; name: string; type: string }> | undefined;
+  let uploadDb: Database.Database;
 
   beforeEach(async () => {
     webTmp = mkdtempSync(join(tmpdir(), "web-upload-"));
-    web = new WebChannel({ port: 0, workspaceDir: webTmp });
+    // 会话路由（messages/cancel）走 owner 守卫：本地免认证模式 viewer id 固定为 "local"
+    uploadDb = new Database(":memory:");
+    const { SqliteConversationStore } = await import(
+      "../../src/adapters/sqlite-conversation-store.js"
+    );
+    const convStore = new SqliteConversationStore(uploadDb);
+    convStore.migrate();
+    convId = (await convStore.create("local", "web", "upload-test")).id;
+    web = new WebChannel({ port: 0, workspaceDir: webTmp, conversationStore: convStore });
     web.onMessage((message) => {
       receivedFiles = message.files;
     });
@@ -716,6 +746,7 @@ describe("WebChannel POST /api/upload", () => {
 
   afterEach(async () => {
     await web?.stop();
+    uploadDb?.close();
     rmSync(webTmp, { recursive: true, force: true });
   });
 
@@ -723,7 +754,7 @@ describe("WebChannel POST /api/upload", () => {
     const body = new FormData();
     const blob = new Blob(["fake-png"], { type: "image/png" });
     body.append("file", blob, "test.png");
-    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
       body,
     });
@@ -732,13 +763,13 @@ describe("WebChannel POST /api/upload", () => {
     expect(j.name).toBe("test.png");
     expect(j.type).toBe("image");
     expect(j.path).toContain("sessions");
-    expect(j.path).toContain("web-1");
+    expect(j.path).toContain(convId);
   });
 
   it("上传 .md 文件成功", async () => {
     const body = new FormData();
     body.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
-    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
       body,
     });
@@ -751,7 +782,7 @@ describe("WebChannel POST /api/upload", () => {
   it("发送消息时把当前会话附件传给消息处理器", async () => {
     const upload = new FormData();
     upload.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
-    const uploadRes = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
+    const uploadRes = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
       body: upload,
     });
@@ -760,7 +791,7 @@ describe("WebChannel POST /api/upload", () => {
       name: string;
       type: "markdown";
     };
-    const sendRes = await fetch(`http://127.0.0.1:${port}/api/conversations/web-1/messages`, {
+    const sendRes = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "总结附件", files: [file] }),
@@ -776,18 +807,18 @@ describe("WebChannel POST /api/upload", () => {
       canceledId = conversationId;
       return true;
     });
-    const response = await fetch(`http://127.0.0.1:${port}/api/conversations/web-1/cancel`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/cancel`, {
       method: "POST",
     });
 
     expect(response.status).toBe(200);
-    expect(canceledId).toBe("web-1");
+    expect(canceledId).toBe(convId);
   });
 
   it("不支持的类型返回 400", async () => {
     const body = new FormData();
     body.append("file", new Blob(["<xml/>"], { type: "text/xml" }), "test.xml");
-    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
       body,
     });
@@ -807,7 +838,7 @@ describe("WebChannel POST /api/upload", () => {
   });
 
   it("非 multipart 返回 400", async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=web-1`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -1967,7 +1998,9 @@ describe("WebChannel agent callback", () => {
     expect(conv?.title.startsWith("[回调]")).toBe(true);
     const msgs = await f.messageStore.listByConversation(body.conversationId);
     expect(msgs.map((m) => m.role)).toEqual(["user"]);
-    expect(msgs[0]?.text).toBe("检查服务状态");
+    // 回调 query 按不可信内容包装落库（规格 §5.1）
+    expect(msgs[0]?.text).toContain('source="callback"');
+    expect(msgs[0]?.text).toContain("检查服务状态");
   });
 
   it("无效 token → 401；缺 query → 400", async () => {

@@ -31,6 +31,7 @@ import {
   withGitPatKeySpecs,
 } from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
+import { wrapUntrusted } from "../domain/untrusted-content.js";
 import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
 import {
   buildInvite,
@@ -1368,9 +1369,11 @@ export class WebChannel implements Channel {
       cb.agentId,
       { permissionMode: "full_access" },
     );
+    // 回调 query 是外部系统的不可信输入（规格 §5.1）：包装定界后再投递 agent
+    const guardedQuery = wrapUntrusted(query, "callback").wrapped;
     if (this.messageStore) {
       await this.messageStore
-        .add(conv.id, "user", query)
+        .add(conv.id, "user", guardedQuery)
         .catch((e) => console.error("[web] 保存回调消息失败", e));
     }
     // callbackSubmit 内部 await 整轮并在失败时落 bot 错误消息；此处不等待（异步裁决）
@@ -1379,7 +1382,7 @@ export class WebChannel implements Channel {
         channelId: "callback",
         threadId: conv.id,
         requesterId: cb.ownerId,
-        text: query,
+        text: guardedQuery,
         conversationId: conv.id,
       })
       .catch((e) => console.error("[web] 回调投递失败", e));

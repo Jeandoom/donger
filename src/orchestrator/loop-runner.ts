@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Trigger } from "../domain/trigger.js";
 import { evaluateMatcher } from "../domain/trigger-matcher.js";
 import type { IncomingMessage } from "../domain/types.js";
+import { wrapUntrusted } from "../domain/untrusted-content.js";
 import { renderPromptTemplate } from "../domain/workflow.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
@@ -89,7 +90,11 @@ export class LoopRunner {
     }
 
     try {
-      const prompt = renderPromptTemplate(workflow.promptTemplate, sourceOutput);
+      // hook body / 定时源内容是不可信外部数据（规格 §5.1）：包装定界后再插值进模板
+      const prompt = renderPromptTemplate(
+        workflow.promptTemplate,
+        wrapUntrusted(sourceOutput, "trigger-source").wrapped,
+      );
       await loopStore.updateRun(run.id, { renderedPrompt: prompt });
       if (loopDir) mkdirSync(loopDir, { recursive: true });
       const msg: IncomingMessage = {
