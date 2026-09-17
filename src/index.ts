@@ -313,6 +313,9 @@ async function main(): Promise<void> {
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
+  // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
+  webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
+    webOrch.setPermissionMode(conversationId, mode);
   // 回调链路专用投递：await 整轮，失败把错误落为 bot 消息（结果查询端点据此收敛 status）
   webChannelDeps.conversationBusyGetter = (conversationId) => webOrch.isBusy(conversationId);
   webChannelDeps.callbackSubmit = async (msg) => {

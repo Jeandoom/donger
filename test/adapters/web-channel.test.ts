@@ -17,6 +17,7 @@ import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
 import type { LlmPreset } from "../../src/config.js";
+import type { AgentPermissionMode } from "../../src/domain/permission-mode.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
 import type { GitAccessGate } from "../../src/orchestrator/git-access-gate.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
@@ -1096,7 +1097,11 @@ describe("/api/files/*", () => {
 });
 
 async function startWebWithAgents(
-  opts: { presets?: LlmPreset[]; skillPaths?: string[] } = {},
+  opts: {
+    presets?: LlmPreset[];
+    skillPaths?: string[];
+    onPermissionModeChange?: (conversationId: string, mode: AgentPermissionMode) => void;
+  } = {},
 ): Promise<{
   port: number;
   token: string;
@@ -1136,6 +1141,7 @@ async function startWebWithAgents(
     agentShareStore,
     skillPackStore,
     agentMeta: { presets: opts.presets ?? [], skillPaths: opts.skillPaths ?? [] },
+    onPermissionModeChange: opts.onPermissionModeChange,
   });
   web.onMessage(() => {});
   await web.ready();
@@ -1225,6 +1231,25 @@ describe("WebChannel /api/agents", () => {
     expect(dto.scenario).toBe("code-dev");
     expect(dto.gitAllowShellGit).toBe(true);
     expect(dto.version).toBe(1);
+  });
+
+  it("详情 DTO 返回 defaultPermissionMode（漏传会让编辑页刷新回落为问询并回写覆盖）", async () => {
+    const { port, token, agentStore, userId } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "PM",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      defaultPermissionMode: "full_access",
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const dto = (await r.json()) as { defaultPermissionMode?: string };
+    expect(dto.defaultPermissionMode).toBe("full_access");
   });
 
   it("PATCH/DELETE 仅 owner 可用（非 owner → 403）", async () => {
@@ -1833,6 +1858,21 @@ describe("PATCH /api/conversations/:id（会话权限模式）", () => {
     }>;
     const mine = items.find((c) => c.id === conv.id);
     expect(mine?.effectivePermissionMode).toBe("full_access");
+  });
+
+  it("PATCH 成功即通知 onPermissionModeChange（orchestrator registry 即时生效入口）", async () => {
+    const seen: Array<{ conversationId: string; mode: AgentPermissionMode }> = [];
+    const { port, token, userId, convStore } = await startWebWithAgents({
+      onPermissionModeChange: (conversationId, mode) => seen.push({ conversationId, mode }),
+    });
+    const conv = await convStore.create(userId, "web", "回调测试");
+
+    await fetch(`http://127.0.0.1:${port}/api/conversations/${conv.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ permissionMode: "full_access" }),
+    });
+    expect(seen).toEqual([{ conversationId: conv.id, mode: "full_access" }]);
   });
 
   it("非法模式值 → 400；不存在会话 → 404", async () => {
