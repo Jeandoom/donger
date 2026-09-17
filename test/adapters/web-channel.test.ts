@@ -1202,6 +1202,25 @@ describe("WebChannel /api/agents", () => {
     expect(dto.version).toBe(1);
   });
 
+  it("详情 DTO 返回 defaultPermissionMode（漏传会让编辑页刷新回落为问询并回写覆盖）", async () => {
+    const { port, token, agentStore, userId } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "PM",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      defaultPermissionMode: "full_access",
+      llm: {},
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const dto = (await r.json()) as { defaultPermissionMode?: string };
+    expect(dto.defaultPermissionMode).toBe("full_access");
+  });
+
   it("PATCH/DELETE 仅 owner 可用（非 owner → 403）", async () => {
     const { port, token, agentStore } = await startWebWithAgents();
     const a = await agentStore.create({
