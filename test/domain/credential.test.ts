@@ -3,7 +3,10 @@ import {
   CREDENTIAL_CODE_PATTERN,
   CredentialKeySpecSchema,
   CredentialTemplateInputSchema,
+  GIT_PAT_KEY_SPECS,
+  gitPatFromValues,
   parseCredentialCode,
+  withGitPatKeySpecs,
 } from "../../src/domain/credential.js";
 import { resolveInjectionEnv, toEnvName } from "../../src/domain/credential-injection.js";
 
@@ -47,6 +50,44 @@ describe("resolveInjectionEnv", () => {
     const { env, missing } = resolveInjectionEnv([{ code: "a", values: { k: "v" } }], ["a", "a"]);
     expect(missing).toEqual([]);
     expect(env.A_K).toBe("v");
+  });
+});
+
+describe("git PAT 固定键契约", () => {
+  it("GIT_PAT_KEY_SPECS 固定为 access_token + user", () => {
+    expect(GIT_PAT_KEY_SPECS.map((k) => k.key)).toEqual(["access_token", "user"]);
+  });
+
+  it("gitPatFromValues：按 access_token 取令牌，user 可选", () => {
+    expect(gitPatFromValues({ access_token: "t1" })).toEqual({
+      accessToken: "t1",
+      user: undefined,
+    });
+    expect(gitPatFromValues({ access_token: "t1", user: "alice" })).toEqual({
+      accessToken: "t1",
+      user: "alice",
+    });
+    // 旧键名 token 不再被识别（2026-09-17 键名契约收口）
+    expect(gitPatFromValues({ token: "t1" })).toBeUndefined();
+    expect(gitPatFromValues(undefined)).toBeUndefined();
+  });
+
+  it("withGitPatKeySpecs：git 覆写为固定键（忽略自定义键名），generic 原样保留", () => {
+    const git = withGitPatKeySpecs({
+      code: "c1",
+      name: "凭证",
+      kind: "git" as const,
+      keySpecs: [{ key: "whatever" }],
+    });
+    expect(git.keySpecs).toEqual(GIT_PAT_KEY_SPECS);
+
+    const generic = {
+      code: "c2",
+      name: "凭证",
+      kind: "generic" as const,
+      keySpecs: [{ key: "api_key" }],
+    };
+    expect(withGitPatKeySpecs(generic)).toBe(generic);
   });
 });
 

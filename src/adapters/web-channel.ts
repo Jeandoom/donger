@@ -27,6 +27,7 @@ import {
   CredentialValueInputSchema,
   type CredentialValueView,
   parseCredentialCode,
+  withGitPatKeySpecs,
 } from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
@@ -3177,7 +3178,7 @@ export class WebChannel implements Channel {
         send({ status: 409, json: { error: `凭证 code 已存在: ${code}` } });
         return true;
       }
-      await csets.createTemplate(code, parsed.data, uid);
+      await csets.createTemplate(code, withGitPatKeySpecs(parsed.data), uid);
       send({ status: 201, json: { ok: true, code } });
       return true;
     }
@@ -3209,7 +3210,7 @@ export class WebChannel implements Channel {
         send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
         return true;
       }
-      await csets.updateTemplate(code, parsed.data);
+      await csets.updateTemplate(code, withGitPatKeySpecs(parsed.data));
       send({ status: 200, json: { ok: true } });
       return true;
     }

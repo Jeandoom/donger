@@ -69,7 +69,7 @@ function setup(
   agent: Agent,
   opts?: { values?: Record<string, string> | undefined; fetchImpl?: typeof fetch },
 ) {
-  const values = opts && "values" in opts ? opts.values : { token: "pat-1" };
+  const values = opts && "values" in opts ? opts.values : { access_token: "pat-1" };
   return gitPlatformToolDefinitions({
     user: USER,
     agent,
@@ -115,7 +115,9 @@ describe("donger-git 平台工具", () => {
   });
 
   it("仓库未绑凭证模板 / 用户未填值时分别给引导", async () => {
-    const noCode = setup(buildAgent({ credentialCode: undefined }), { values: { token: "x" } });
+    const noCode = setup(buildAgent({ credentialCode: undefined }), {
+      values: { access_token: "x" },
+    });
     const r1 = await findTool(noCode, "git_platform_list_branches").handler({
       repoName: "aix-py",
     });
@@ -179,7 +181,7 @@ describe("donger-git 平台工具", () => {
     const tools = gitPlatformToolDefinitions({
       user: USER,
       agent: giteeOnly,
-      credentialSets: fakeCredentialSets({ token: "tok" }),
+      credentialSets: fakeCredentialSets({ access_token: "tok" }),
       platformApis: (provider) =>
         provider === "gitee"
           ? {
@@ -224,7 +226,7 @@ describe("donger-git 平台工具", () => {
     const tools = gitPlatformToolDefinitions({
       user: USER,
       agent: buildAgent(),
-      credentialSets: fakeCredentialSets({ token: "tok" }),
+      credentialSets: fakeCredentialSets({ access_token: "tok" }),
       platformApis: (provider) => ({
         provider,
         createRepo: async () => ({ ok: true, status: 201, body: "{}" }),

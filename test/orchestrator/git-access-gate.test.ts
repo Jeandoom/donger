@@ -133,16 +133,16 @@ describe("GitAccessGate（凭证桥单轨）", () => {
 
     it("用户已填值：用 PAT 凭证校验并物化，username 缺省用平台默认", async () => {
       const materializer = fakeMaterializer(false);
-      const gate = new GitAccessGate(materializer, fakeCredentialSets({ token: "tok" }));
+      const gate = new GitAccessGate(materializer, fakeCredentialSets({ access_token: "tok" }));
       const r = await gate.check(user, credAgent);
       expect(r.ready).toBe(true);
       expect(r.materializeItems[0]?.credential).toEqual({ username: "oauth2", accessToken: "tok" });
     });
 
-    it("模板提供 username 键时优先用模板值", async () => {
+    it("模板提供 user 键时优先用模板值", async () => {
       const gate = new GitAccessGate(
         fakeMaterializer(false),
-        fakeCredentialSets({ token: "tok", username: "alice" }),
+        fakeCredentialSets({ access_token: "tok", user: "alice" }),
       );
       const r = await gate.check(user, credAgent);
       expect(r.materializeItems[0]?.credential?.username).toBe("alice");
@@ -159,7 +159,7 @@ describe("GitAccessGate（凭证桥单轨）", () => {
     it("已填值但远端拒绝：聚合 access_denied 要求", async () => {
       const gate = new GitAccessGate(
         fakeMaterializer(false, { ok: false, reason: "access_denied", message: "403" }),
-        fakeCredentialSets({ token: "tok" }),
+        fakeCredentialSets({ access_token: "tok" }),
       );
       const r = await gate.check(user, credAgent);
       expect(r.ready).toBe(false);
