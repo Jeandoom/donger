@@ -1,7 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
+import { EMAIL_VERIFY_TTL_MS } from "../domain/invite.js";
 import { isAdminExternalId, type User, type UserIdentity, type UserRole } from "../domain/user.js";
-import type { UserStore } from "../ports/user-store.js";
+import type { EmailVerificationState, UserStore } from "../ports/user-store.js";
 import { initUserWorkspace } from "../util/workspace.js";
 
 export interface SqliteUserStoreOptions {
@@ -157,6 +159,31 @@ export class SqliteUserStore implements UserStore {
         updatedAt    TEXT NOT NULL
       )
     `);
+    // 邮箱验证状态机（规格 §6.1）：幂等补列
+    const cols = (
+      this.db.prepare("PRAGMA table_info(user_email_credentials)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    if (!cols.includes("verified")) {
+      this.db.exec(
+        "ALTER TABLE user_email_credentials ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
+      );
+    }
+    if (!cols.includes("verifyToken")) {
+      this.db.exec("ALTER TABLE user_email_credentials ADD COLUMN verifyToken TEXT");
+    }
+    if (!cols.includes("verifyExpiresAt")) {
+      this.db.exec("ALTER TABLE user_email_credentials ADD COLUMN verifyExpiresAt TEXT");
+    }
+    // 存量账号批量置 pending（裁决②：上线不宽限）——仅对"从未发放过 token"的未验证行
+    // 发放验证凭据（24h 窗口，自本次启动起算）；已有 token 的行与已验证行不受重启影响
+    const cutoff = new Date(Date.now() + EMAIL_VERIFY_TTL_MS).toISOString();
+    this.db
+      .prepare(
+        `UPDATE user_email_credentials
+         SET verifyToken = ?, verifyExpiresAt = ?
+         WHERE verified = 0 AND verifyToken IS NULL`,
+      )
+      .run(randomBytes(24).toString("base64url"), cutoff);
   }
 
   async setPasswordCredential(userId: string, passwordHash: string): Promise<void> {
@@ -173,6 +200,76 @@ export class SqliteUserStore implements UserStore {
       .prepare("SELECT passwordHash FROM user_email_credentials WHERE userId = ?")
       .get(userId) as { passwordHash: string } | undefined;
     return row?.passwordHash;
+  }
+
+  async setEmailVerification(
+    userId: string,
+    v: { token: string; expiresAt: string },
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE user_email_credentials
+         SET verified = 0, verifyToken = ?, verifyExpiresAt = ?
+         WHERE userId = ?`,
+      )
+      .run(v.token, v.expiresAt, userId);
+  }
+
+  async getEmailVerification(userId: string): Promise<EmailVerificationState | undefined> {
+    const row = this.db
+      .prepare(
+        "SELECT verified, verifyToken, verifyExpiresAt FROM user_email_credentials WHERE userId = ?",
+      )
+      .get(userId) as
+      | { verified: number; verifyToken: string | null; verifyExpiresAt: string | null }
+      | undefined;
+    if (!row) return undefined;
+    return { verified: row.verified === 1, token: row.verifyToken, expiresAt: row.verifyExpiresAt };
+  }
+
+  async markEmailVerified(token: string): Promise<string | undefined> {
+    const now = new Date().toISOString();
+    const row = this.db
+      .prepare(
+        `UPDATE user_email_credentials
+         SET verified = 1, verifyToken = NULL, verifyExpiresAt = NULL
+         WHERE verifyToken = ? AND verified = 0 AND verifyExpiresAt IS NOT NULL AND verifyExpiresAt > ?
+         RETURNING userId`,
+      )
+      .get(token, now) as { userId: string } | undefined;
+    return row?.userId;
+  }
+
+  async listEmailVerifications(): Promise<
+    Array<{
+      userId: string;
+      email: string | undefined;
+      verified: boolean;
+      expiresAt: string | null;
+      token: string | null;
+    }>
+  > {
+    const rows = this.db
+      .prepare(
+        `SELECT c.userId, c.verified, c.verifyToken, c.verifyExpiresAt, i.externalId AS email
+         FROM user_email_credentials c
+         LEFT JOIN user_identities i ON i.userId = c.userId AND i.provider = 'email'
+         ORDER BY c.updatedAt DESC`,
+      )
+      .all() as Array<{
+      userId: string;
+      verified: number;
+      verifyToken: string | null;
+      verifyExpiresAt: string | null;
+      email: string | undefined;
+    }>;
+    return rows.map((r) => ({
+      userId: r.userId,
+      email: r.email,
+      verified: r.verified === 1,
+      expiresAt: r.verifyExpiresAt,
+      token: r.verifyToken,
+    }));
   }
 
   async updateRole(id: string, role: UserRole): Promise<void> {

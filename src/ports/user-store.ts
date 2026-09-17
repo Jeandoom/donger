@@ -37,4 +37,29 @@ export interface UserStore {
   setPasswordCredential(userId: string, passwordHash: string): Promise<void>;
   /** 读取密码哈希；未设置过密码返回 undefined */
   getPasswordCredential(userId: string): Promise<string | undefined>;
+
+  // ---- 邮箱验证状态机（设计规格 §6.1：pending → verified；24h 不验证即失效） ----
+  /** 写入/刷新验证凭据（pending 状态；重复调用 = 重新发起验证，旧 token 失效） */
+  setEmailVerification(userId: string, v: { token: string; expiresAt: string }): Promise<void>;
+  /** 读取验证状态；无邮箱凭证返回 undefined */
+  getEmailVerification(userId: string): Promise<EmailVerificationState | undefined>;
+  /** 按 token 原子核销验证（未过期且未验证才成功），返回 userId；无效/过期返回 undefined */
+  markEmailVerified(token: string): Promise<string | undefined>;
+  /** 管理端：列出全部 pending/过期未验证账号及其验证链接路径（方案 B 线下转交的数据源） */
+  listEmailVerifications(): Promise<
+    Array<{
+      userId: string;
+      email: string | undefined;
+      verified: boolean;
+      expiresAt: string | null;
+      token: string | null;
+    }>
+  >;
+}
+
+/** 邮箱验证状态（verified=1 后 token/expiresAt 清空） */
+export interface EmailVerificationState {
+  verified: boolean;
+  token: string | null;
+  expiresAt: string | null;
 }

@@ -68,6 +68,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/auth/exchange", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/register", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },
+    { method: "GET", pattern: "/api/auth/verify", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/qrcode-url", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/dingtalk/callback", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/github/url", access: { kind: "public" } },
@@ -181,6 +182,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
 
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
+    { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/audit/conversations", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/audit/conversations/:id", access: { kind: "admin" } },
     {

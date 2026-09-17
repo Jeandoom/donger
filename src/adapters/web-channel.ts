@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
@@ -31,13 +31,15 @@ import {
   withGitPatKeySpecs,
 } from "../domain/credential.js";
 import { mimeForExt } from "../domain/file-mime.js";
-import { wrapUntrusted } from "../domain/untrusted-content.js";
 import { type GitProvider, validateGitCredentialBindings } from "../domain/git.js";
 import {
   buildInvite,
+  EMAIL_VERIFY_TTL_MS,
   inviteBlockReason,
+  inviteQuotaExceeded,
   isEmailDomainAllowed,
   isValidEmail,
+  monthStartIso,
   normalizeEmail,
   passwordPolicyError,
 } from "../domain/invite.js";
@@ -61,6 +63,7 @@ import {
   type QuestionItem,
   type QuestionResolution,
 } from "../domain/types.js";
+import { wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
@@ -92,6 +95,7 @@ import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { UserModelConfigStore } from "../ports/model-config-store.js";
+import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
@@ -116,6 +120,7 @@ import {
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import { ApiRouteGuard } from "./api-route-guard.js";
+import { MemoryRateLimiter } from "./memory-rate-limiter.js";
 import {
   handleInstall,
   handleInstallUpload,
@@ -325,6 +330,10 @@ export interface WebChannelDeps {
   inviteStore?: InviteStore;
   /** 邮箱注册域名白名单（小写集合；空=关闭无邀请自助注册） */
   emailSignupAllowedDomains?: Set<string>;
+  /** 限流实现（缺省内存滑动窗口；单实例够用） */
+  rateLimiter?: RateLimiter;
+  /** 仅反代部署开启：限流取 X-Forwarded-For 首段而非 socket.remoteAddress */
+  trustProxy?: boolean;
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
 }
@@ -367,8 +376,8 @@ export class WebChannel implements Channel {
   private readonly githubConfig?: { clientId: string; clientSecret: string };
   private readonly inviteStore?: InviteStore;
   private readonly oauthStateMap = new Map<string, number>();
-  /** 注册/登录的 IP 滑动窗口限流（次/分钟）；内存态，单实例部署即够 */
-  private readonly signupRateBuckets = new Map<string, number[]>();
+  /** 限流（注册/登录 IP、登录失败锁定、llm-debug 配额）；缺省内存实现 */
+  private readonly rateLimiter: RateLimiter;
   /** GitHub 绑定流程的 state → 意图（登录与绑定共用 authorize 端点，靠 state 区分） */
   private readonly githubBindStateMap = new Map<string, { userId: string; exp: number }>();
   /** /api 路由守卫：授权单点收口，未登记路由一律 404（fail-closed） */
@@ -388,6 +397,7 @@ export class WebChannel implements Channel {
     this.dingtalkConfig = deps.dingtalkConfig;
     this.githubConfig = deps.githubConfig;
     this.inviteStore = deps.inviteStore;
+    this.rateLimiter = deps.rateLimiter ?? new MemoryRateLimiter();
     this.routeGuard = new ApiRouteGuard(
       buildWebRouteGuardSpecs({
         conversationStore: deps.conversationStore,
@@ -428,17 +438,19 @@ export class WebChannel implements Channel {
     );
   }
 
-  /** 注册/登录限流：每 IP 每分钟 5 次（register 与 login 共用桶） */
-  private checkSignupRateLimit(ip: string): boolean {
-    const now = Date.now();
-    const hits = (this.signupRateBuckets.get(ip) ?? []).filter((t) => now - t < 60_000);
-    if (hits.length >= 5) {
-      this.signupRateBuckets.set(ip, hits);
-      return false;
+  /** 限流取 IP：TRUST_PROXY（反代部署）取 X-Forwarded-For 首段，否则 socket 直连地址 */
+  private clientIp(req: HttpRequest): string {
+    if (this.deps.trustProxy) {
+      const xff = req.headers["x-forwarded-for"];
+      const first = Array.isArray(xff) ? xff[0] : xff?.split(",")[0];
+      if (first?.trim()) return first.trim();
     }
-    hits.push(now);
-    this.signupRateBuckets.set(ip, hits);
-    return true;
+    return req.socket.remoteAddress ?? "unknown";
+  }
+
+  /** 注册/登录限流：每 IP 每分钟 5 次（register 与 login 共用键） */
+  private checkSignupRateLimit(ip: string): boolean {
+    return this.rateLimiter.hit(RateLimitKeys.signup(ip), 60_000, 5);
   }
 
   /** 惰性清理过期的 OAuth state（登录与绑定共用），防 Map 无界增长 */
@@ -1371,6 +1383,8 @@ export class WebChannel implements Channel {
     );
     // 回调 query 是外部系统的不可信输入（规格 §5.1）：包装定界后再投递 agent
     const guardedQuery = wrapUntrusted(query, "callback").wrapped;
+    // token↔会话绑定（规格 M4）：结果查询只放行该 token 发起的会话，堵跨 token 读他人回调结果
+    await this.agentCallbackStore.recordConversation(token, conv.id);
     if (this.messageStore) {
       await this.messageStore
         .add(conv.id, "user", guardedQuery)
@@ -1406,8 +1420,10 @@ export class WebChannel implements Channel {
     const cb = await this.agentCallbackStore.findByToken(token);
     if (!cb) return this.callbackDeny(res, 401, "invalid token");
     const conv = await this.deps.conversationStore.get(conversationId);
-    // 不区分「不存在」与「不属于该 agent」，统一 404 防会话枚举
-    if (!conv || conv.agentId !== cb.agentId) {
+    // 不区分「不存在」「不属于该 agent」「非本 token 发起」，统一 404 防会话枚举；
+    // 绑定为空（升级前旧行）保持旧行为按 agentId 校验
+    const bound = await this.agentCallbackStore.getLastConversationId(token);
+    if (!conv || conv.agentId !== cb.agentId || (bound && bound !== conversationId)) {
       return this.callbackDeny(res, 404, "conversation not found");
     }
     const busy = this.deps.conversationBusyGetter?.(conversationId) ?? false;
@@ -1513,12 +1529,16 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "缺少 code 参数" }));
         return;
       }
-      if (state) {
-        const exp = this.oauthStateMap.get(state);
-        if (!exp || Date.now() > exp) {
-          console.warn("[auth] OAuth state 校验失败或过期:", state);
-        }
-        this.oauthStateMap.delete(state ?? "");
+      // state 强校验（规格 M4）：CSRF 防护不可只告警不阻断；缺失/过期一律拒绝
+      const stateExp = state ? this.oauthStateMap.get(state) : undefined;
+      this.oauthStateMap.delete(state ?? "");
+      if (!stateExp || Date.now() > stateExp) {
+        console.warn("[auth] OAuth state 校验失败或过期:", state);
+        res.writeHead(302, {
+          Location: `/login?error=${encodeURIComponent("登录会话已过期，请重新扫码")}`,
+        });
+        res.end();
+        return;
       }
 
       if (!this.dingtalkConfig || !this.deps.userStore || !this.sessionStore) {
@@ -1686,7 +1706,13 @@ export class WebChannel implements Channel {
       }
 
       const existing = await this.deps.userStore.findByIdentity("email", email);
-      if (existing) return this.json(res, { error: "该邮箱已注册，请直接登录" }, 409);
+      if (existing) {
+        // 过期未验证的 pending 账号允许复注册（裁决②：24h 不验证即失效）；其余 409 防枚举
+        const v = await this.deps.userStore.getEmailVerification(existing.id);
+        const expired =
+          v && !v.verified && v.expiresAt !== null && new Date(v.expiresAt).getTime() <= Date.now();
+        if (!expired) return this.json(res, { error: "该邮箱已注册，请直接登录" }, 409);
+      }
 
       if (inviteToken) {
         // 原子核销（防并发超用）；步骤上方已做格式与查重校验，核销失败视为被并发用完
@@ -1697,8 +1723,21 @@ export class WebChannel implements Channel {
       const name = email.split("@")[0] ?? email;
       const user = await this.deps.userStore.getOrCreateByIdentity("email", email, name);
       await this.deps.userStore.setPasswordCredential(user.id, hashPassword(password));
-      const { token } = await this.sessionStore.create(user.id);
-      return this.json(res, { token, user });
+      // 验证状态机（裁决①方案 B / ②）：pending 不发 token；验证链接由管理员线下转交；
+      // 24h 不验证即失效（可凭新注册复活）。一期不接 SMTP，注册响应不含链接。
+      const verifyToken = randomBytes(24).toString("base64url");
+      await this.deps.userStore.setEmailVerification(user.id, {
+        token: verifyToken,
+        expiresAt: new Date(Date.now() + EMAIL_VERIFY_TTL_MS).toISOString(),
+      });
+      return this.json(
+        res,
+        {
+          ok: true,
+          message: "注册已受理，请通过管理员提供的验证链接完成邮箱验证（24 小时内有效）",
+        },
+        202,
+      );
     }
 
     // POST /api/auth/login { email, password }
@@ -1718,16 +1757,72 @@ export class WebChannel implements Channel {
       }
       const email = normalizeEmail(typeof body.email === "string" ? body.email : "");
       const password = typeof body.password === "string" ? body.password : "";
+      // 账号级锁定：连续失败达限后该邮箱登录被锁（窗口自然解封），防分布式 IP 绕过 IP 限流
+      if (this.rateLimiter.count(RateLimitKeys.loginFail(email), 15 * 60_000) >= 5) {
+        return this.json(res, { error: "失败次数过多，请稍后再试" }, 429);
+      }
       // 不区分「邮箱不存在」与「密码错误」，防账号枚举
       const user = await this.deps.userStore.findByIdentity("email", email);
       const storedHash = user
         ? await this.deps.userStore.getPasswordCredential(user.id)
         : undefined;
       if (!user || !storedHash || !verifyPassword(password, storedHash)) {
+        this.rateLimiter.hit(RateLimitKeys.loginFail(email), 15 * 60_000, 5);
         return this.json(res, { error: "邮箱或密码错误" }, 401);
+      }
+      // 验证状态机（规格 §6.1）：未验证不放行；过期即失效（不宽限）
+      const v = await this.deps.userStore.getEmailVerification(user.id);
+      if (v && !v.verified) {
+        const expired = v.expiresAt !== null && new Date(v.expiresAt).getTime() <= Date.now();
+        return this.json(
+          res,
+          {
+            error: expired
+              ? "邮箱验证已过期，该账号已失效，请重新注册"
+              : "邮箱尚未验证，请通过管理员提供的验证链接完成验证",
+          },
+          401,
+        );
       }
       const { token } = await this.sessionStore.create(user.id);
       return this.json(res, { token, user });
+    }
+
+    // GET /api/auth/verify?token=xxx —— 邮箱验证核销（公开路由；成功即登录）
+    if (url.split("?")[0] === "/api/auth/verify" && req.method === "GET") {
+      if (!this.deps.userStore || !this.sessionStore) {
+        return this.json(res, { error: "验证服务未启用" }, 503);
+      }
+      const token = this.extractQuery(url, "token") ?? "";
+      const userId = token ? await this.deps.userStore.markEmailVerified(token) : undefined;
+      if (!userId) {
+        res.writeHead(302, {
+          Location: `/login?error=${encodeURIComponent("验证链接无效或已过期")}`,
+        });
+        res.end();
+        return;
+      }
+      const user = await this.deps.userStore.get(userId);
+      const { token: jwt } = await this.sessionStore.create(userId);
+      res.writeHead(302, { Location: `/login/success?token=${jwt}&mode=verified` });
+      res.end();
+      return;
+    }
+
+    // GET /api/admin/email-verifications —— pending/过期账号及验证链接（admin；方案 B 转交数据源）
+    if (url.split("?")[0] === "/api/admin/email-verifications" && req.method === "GET") {
+      if (!this.deps.userStore) return this.json(res, { error: "服务未启用" }, 503);
+      const rows = await this.deps.userStore.listEmailVerifications();
+      const verifications = rows.map((r) => ({
+        userId: r.userId,
+        email: r.email,
+        verified: r.verified,
+        expiresAt: r.expiresAt,
+        expired:
+          !r.verified && r.expiresAt !== null && new Date(r.expiresAt).getTime() <= Date.now(),
+        verifyPath: !r.verified && r.token ? `/api/auth/verify?token=${r.token}` : null,
+      }));
+      return this.json(res, { verifications });
     }
 
     // GET /api/invites —— 当前用户的邀请列表
@@ -1741,6 +1836,13 @@ export class WebChannel implements Channel {
     if (url.split("?")[0] === "/api/invites" && req.method === "POST") {
       if (!this.inviteStore) return this.json(res, { error: "邀请服务未启用" }, 503);
       const userId = this.requireRequestUser(req);
+      // 月度配额（裁决⑤）：每账号每自然月最多 30 个，按创建计数判定
+      const createdThisMonth = (await this.inviteStore.listByCreator(userId)).filter(
+        (i) => i.createdAt >= monthStartIso(),
+      ).length;
+      if (inviteQuotaExceeded(createdThisMonth)) {
+        return this.json(res, { error: "本月邀请额度已用完（每账号每月 30 个）" }, 429);
+      }
       let body: { expiresInDays?: unknown; maxUses?: unknown } = {};
       try {
         body = JSON.parse(await this.readBody(req));
@@ -2251,8 +2353,11 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/llm/debug：用已配置模型对编辑后的历史输入做隔离调试调用
+    // POST /api/llm/debug：用已配置模型对编辑后的历史输入做隔离调试调用（限流防 LLM 配额滥用）
     if (url === "/api/llm/debug" && req.method === "POST") {
+      if (!this.rateLimiter.hit(RateLimitKeys.llmDebug(this.requireRequestUser(req)), 60_000, 10)) {
+        return this.json(res, { error: "请求过于频繁，请稍后再试" }, 429);
+      }
       const body = JSON.parse(await this.readBody(req)) as {
         input?: unknown;
         presetId?: unknown;

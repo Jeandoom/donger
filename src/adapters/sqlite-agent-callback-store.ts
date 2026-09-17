@@ -20,6 +20,13 @@ export class SqliteAgentCallbackStore implements AgentCallbackStore {
         createdAt TEXT NOT NULL
       )
     `);
+    // token↔会话绑定（规格 M4）：结果查询只放行该 token 发起的会话；NULL=升级前的旧行（宽松）
+    const cols = (
+      this.db.prepare("PRAGMA table_info(agent_callbacks)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    if (!cols.includes("lastConversationId")) {
+      this.db.exec("ALTER TABLE agent_callbacks ADD COLUMN lastConversationId TEXT");
+    }
   }
 
   async get(agentId: string): Promise<AgentCallback | undefined> {
@@ -34,6 +41,13 @@ export class SqliteAgentCallbackStore implements AgentCallbackStore {
       | Record<string, unknown>
       | undefined;
     return row ? this.rowToCallback(row) : undefined;
+  }
+
+  async getLastConversationId(token: string): Promise<string | undefined> {
+    const row = this.db
+      .prepare("SELECT lastConversationId FROM agent_callbacks WHERE token = ?")
+      .get(token) as { lastConversationId: string | null } | undefined;
+    return row?.lastConversationId ?? undefined;
   }
 
   async upsert(agentId: string, ownerId: string, validityDays?: number): Promise<AgentCallback> {
@@ -54,6 +68,12 @@ export class SqliteAgentCallbackStore implements AgentCallbackStore {
       )
       .run(callback.token, agentId, ownerId, callback.expiresAt, callback.createdAt);
     return callback;
+  }
+
+  async recordConversation(token: string, conversationId: string): Promise<void> {
+    this.db
+      .prepare("UPDATE agent_callbacks SET lastConversationId = ? WHERE token = ?")
+      .run(conversationId, token);
   }
 
   async revoke(agentId: string): Promise<void> {
