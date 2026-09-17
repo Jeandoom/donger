@@ -49,7 +49,13 @@ describe("file-browser domain", () => {
     expect(roots).toEqual([join("/h", "sessions", "c1", "workspace")]);
   });
 
-  it("scopeRoots(runtime) 缺 conversationId 抛错", () => {
+  it("scopeRoots(runtime) 仅 agentId（无 conversationId）→ homeDir/agents/<agentId>/workspace", () => {
+    // mention 候选按 agent 维度取 workspace 根，不依赖会话
+    const roots = scopeRoots("runtime", { homeDir: "/h", workspaceDir: "/w", agentId: "a1" });
+    expect(roots).toEqual([join("/h", "agents", "a1", "workspace")]);
+  });
+
+  it("scopeRoots(runtime) conversationId 与 agentId 双缺抛错", () => {
     expect(() => scopeRoots("runtime", { homeDir: "/h", workspaceDir: "/w" })).toThrow();
   });
 

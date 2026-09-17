@@ -19,19 +19,20 @@ export interface ScopeRootsContext {
   agentId?: string;
 }
 
-/** 计算 scope 允许的物理根（绝对路径）列表。runtime 必须带 conversationId。 */
+/** 计算 scope 允许的物理根（绝对路径）列表。runtime 按 agentId 或 conversationId 定根，须给其一。 */
 export function scopeRoots(scope: "user" | "runtime", ctx: ScopeRootsContext): string[] {
   if (scope === "user") {
     return USER_SUBDIRS.map((d) => join(ctx.homeDir, d));
   }
-  if (!ctx.conversationId) {
-    throw new Error("runtime scope 需要 conversationId");
+  // 与 RuntimeManager 对齐：绑定智能体的会话 cwd 在 homeDir/agents/<agentId>/workspace（产物跨
+  // 会话延续，mention 候选按 agent 维度取同一根）；闲聊会话在 homeDir/sessions/<conversationId>/workspace。
+  if (ctx.agentId) {
+    return [join(ctx.homeDir, "agents", ctx.agentId, "workspace")];
   }
-  // 与 RuntimeManager 对齐：绑定智能体的会话 cwd 在 homeDir/agents/<agentId>/workspace（产物跨会话延续），
-  // 闲聊会话在 homeDir/sessions/<conversationId>/workspace。
-  return ctx.agentId
-    ? [join(ctx.homeDir, "agents", ctx.agentId, "workspace")]
-    : [join(ctx.homeDir, "sessions", ctx.conversationId, "workspace")];
+  if (!ctx.conversationId) {
+    throw new Error("runtime scope 需要 conversationId 或 agentId");
+  }
+  return [join(ctx.homeDir, "sessions", ctx.conversationId, "workspace")];
 }
 
 export type ResolvedPath = { ok: true; abs: string } | { ok: false };
