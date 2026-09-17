@@ -30,21 +30,30 @@ function markerFormatter(prefix: string): Unstable_DirectiveFormatter {
 export function useMentionCandidatesState(enabled: boolean, agentId?: string) {
   const [candidates, setCandidates] = useState<MentionCandidates>(EMPTY_MENTION_CANDIDATES);
   const [loading, setLoading] = useState(false);
+  // 加载失败必须显式暴露——静默吞成空列表会把接口故障伪装成「无候选」（2026-09-17 生产事故教训）
+  const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(() => {
     if (!enabled || !agentId) {
       setCandidates(EMPTY_MENTION_CANDIDATES);
+      setError(null);
       return;
     }
     setLoading(true);
     fetchMentionCandidates(agentId)
-      .then(setCandidates)
-      .catch(() => setCandidates(EMPTY_MENTION_CANDIDATES))
+      .then((c) => {
+        setCandidates(c);
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        setCandidates(EMPTY_MENTION_CANDIDATES);
+        setError(e instanceof Error ? e.message : "候选加载失败");
+      })
       .finally(() => setLoading(false));
   }, [enabled, agentId]);
   useEffect(() => {
     refresh();
   }, [refresh]);
-  return { candidates, loading, refresh };
+  return { candidates, loading, error, refresh };
 }
 
 export interface ComposerPlusMenuProps {
@@ -185,6 +194,8 @@ function PlusMenuItem(props: {
 export interface ComposerMentionTriggersProps {
   candidates: MentionCandidates;
   loading: boolean;
+  /** 候选接口加载失败信息（非空时浮层显式报错而非伪装成空列表） */
+  error?: string | null;
   onMentionInserted: (mention: Mention) => void;
 }
 
@@ -244,6 +255,7 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
         adapter={fileAdapter.adapter}
         directive={fileAdapter.directive}
         isLoading={props.loading}
+        error={props.error}
         emptyText="暂无可引用的文件"
         rowLabel="文件"
       />
@@ -253,6 +265,7 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
         adapter={skillAdapter.adapter}
         directive={skillAdapter.directive}
         isLoading={props.loading}
+        error={props.error}
         emptyText="该智能体暂无可用技能"
         rowLabel="技能"
       />
@@ -262,6 +275,7 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
         adapter={connectorAdapter.adapter}
         directive={connectorAdapter.directive}
         isLoading={props.loading}
+        error={props.error}
         emptyText="该智能体暂无可用连接器"
         rowLabel="连接器"
       />
@@ -277,6 +291,7 @@ interface MentionTriggerProps {
   adapter: MentionAdapterBundle["adapter"];
   directive: MentionAdapterBundle["directive"];
   isLoading: boolean;
+  error?: string | null;
   emptyText: string;
   rowLabel: string;
 }
@@ -294,7 +309,14 @@ function MentionTrigger(props: MentionTriggerProps) {
       <ComposerPrimitive.Unstable_TriggerPopoverItems className="flex flex-col">
         {(items) =>
           items.length === 0 ? (
-            <div className="px-3 py-2.5 text-xs text-muted-foreground">{props.emptyText}</div>
+            <div
+              className={cn(
+                "px-3 py-2.5 text-xs",
+                props.error ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {props.error ? `候选加载失败：${props.error}` : props.emptyText}
+            </div>
           ) : (
             items.map((item, index) => (
               <ComposerPrimitive.Unstable_TriggerPopoverItem

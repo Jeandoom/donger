@@ -327,7 +327,10 @@ export interface AssistantThreadProps {
 export function AssistantThread(props: AssistantThreadProps) {
   const hasPendingInteraction = Boolean(props.pendingApproval || props.pendingCredential);
   const hasAgent = Boolean(props.agentId) && props.agentId !== BUILTIN_ASSIST_AGENT_ID;
-  const { candidates, loading, refresh } = useMentionCandidatesState(hasAgent, props.agentId);
+  const { candidates, loading, error, refresh } = useMentionCandidatesState(
+    hasAgent,
+    props.agentId,
+  );
   const aui = useAui();
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   // 菜单插入触发字符：追加到文本末尾（词首才触发检测，必要时先补空白），并把光标挪到末尾
@@ -389,6 +392,7 @@ export function AssistantThread(props: AssistantThreadProps) {
               <ComposerMentionTriggers
                 candidates={candidates}
                 loading={loading}
+                error={error}
                 onMentionInserted={props.onMentionInserted}
               />
             </div>
