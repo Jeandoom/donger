@@ -10,7 +10,7 @@ export function Shell() {
       {/* 离线横幅入文档流：不能用 fixed 覆盖，否则移动端会盖住汉堡菜单导致无法导航 */}
       <OfflineBanner />
       <div className="flex min-h-0 min-w-0 flex-1">
-        <NavigationSidebar className="hidden lg:flex" />
+        <NavigationSidebar className="hidden lg:flex" collapsible />
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-12 shrink-0 items-center border-b border-border bg-card px-2 lg:hidden">
             <MobileNavigationDrawer />
