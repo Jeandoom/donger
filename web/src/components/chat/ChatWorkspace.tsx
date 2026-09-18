@@ -17,8 +17,9 @@ import type {
   PendingQuestion,
 } from "../../types";
 import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
-import { SecondarySidebar } from "../layout/SecondarySidebar";
 import { ConfirmDialog } from "../ui/confirm-dialog";
+import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
+import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { AssistantThread } from "./AssistantThread";
 import { MobileConversationSheet } from "./MobileConversationSheet";
 
@@ -28,9 +29,8 @@ export interface ChatWorkspaceProps {
   activeConversationIsDraft?: boolean;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
-  onNewConversation: () => void;
-  sidebarTitle: string;
-  sidebarHeaderExtra?: React.ReactNode;
+  /** 分组侧栏（对话模块统一智能体会话）：桌面固定栏 + 移动端浮层共用 */
+  sidebar?: AgentConversationSidebarProps;
   messages: ChatMessage[];
   loadingMessages: boolean;
   isGenerating: boolean;
@@ -103,7 +103,6 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   const sidebarItems = props.conversations.map((conversation) => ({
     id: conversation.id,
     title: conversation.title || "(无标题)",
-    meta: new Date(conversation.updatedAt).toLocaleDateString(),
   }));
   // 会话权限模式切换器：置于输入框底部、附件按钮左侧
   const permissionModePicker = props.onPermissionModeChange ? (
@@ -150,29 +149,13 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <SecondarySidebar
-        className="hidden lg:flex"
-        title={props.sidebarTitle}
-        items={sidebarItems}
-        selectedId={props.activeConversationId}
-        onItemClick={props.onSelectConversation}
-        onNew={props.onNewConversation}
-        newLabel="新会话"
-        onItemDelete={props.onDeleteConversation}
-        headerExtra={props.sidebarHeaderExtra}
-      />
+      {props.sidebar ? (
+        <AgentConversationSidebar className="hidden lg:flex" {...props.sidebar} />
+      ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-between border-b border-border bg-card px-3 py-2 lg:px-4">
           <div className="flex min-w-0 items-center gap-2.5">
-            <MobileConversationSheet
-              title={props.sidebarTitle}
-              items={sidebarItems}
-              selectedId={props.activeConversationId}
-              onSelect={props.onSelectConversation}
-              onDelete={props.onDeleteConversation}
-              onNew={props.onNewConversation}
-              headerExtra={props.sidebarHeaderExtra}
-            />
+            <MobileConversationSheet sidebar={props.sidebar} />
             <span className="truncate text-sm font-semibold">
               {sidebarItems.find((i) => i.id === props.activeConversationId)?.title}
             </span>

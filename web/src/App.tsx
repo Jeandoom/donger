@@ -1,9 +1,8 @@
-import { Link, Navigate, Route, Routes, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import { AuthGuard } from "./components/auth/AuthGuard";
 import { Shell } from "./components/layout/Shell";
 import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
-import { AgentSessionsPage } from "./pages/AgentSessionsPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -48,7 +47,7 @@ export function App() {
             <Route path="/agents/new" element={<AgentEditorPage />} />
             <Route path="/agents/:id" element={<AgentEditorPage />} />
             <Route path="/agents/:id/chat" element={<AgentChatRedirect />} />
-            <Route path="/agent-sessions" element={<AgentSessionsPage />} />
+            <Route path="/agent-sessions" element={<AgentSessionsRedirect />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/workflows/new" element={<WorkflowEditorPage />} />
             <Route path="/workflows/:id" element={<WorkflowEditorPage />} />
@@ -93,8 +92,14 @@ function NotFoundPage() {
   );
 }
 
-/** /agents/:id/chat → 智能体会话页并定位该智能体（继续最近会话；没有才新建） */
+/** /agents/:id/chat → 对话模块并定位该智能体（继续最近会话；没有才新建） */
 function AgentChatRedirect() {
   const { id } = useParams();
-  return <Navigate to={id ? `/agent-sessions?agent=${id}` : "/agent-sessions"} replace />;
+  return <Navigate to={id ? `/?agent=${id}` : "/"} replace />;
+}
+
+/** /agent-sessions → 对话模块（智能体会话已并入；?agent= 深链透传，保住旧书签/PWA 入口） */
+function AgentSessionsRedirect() {
+  const [params] = useSearchParams();
+  return <Navigate to={{ pathname: "/", search: params.toString() }} replace />;
 }

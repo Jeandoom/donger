@@ -1,7 +1,21 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { type ComponentProps, createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
+import type { AgentConversationSidebarProps } from "../src/components/chat/AgentConversationSidebar";
 import { ChatWorkspace } from "../src/components/chat/ChatWorkspace";
+
+function sidebarProps(): AgentConversationSidebarProps {
+  return {
+    agents: [],
+    conversations: [],
+    activeConversationId: null,
+    prefs: { starredAgentIds: [], agentOrder: [] },
+    onPrefsChange: vi.fn(),
+    onSelectConversation: vi.fn(),
+    onDeleteConversation: vi.fn(),
+    onNewConversation: vi.fn(),
+  };
+}
 
 function renderWorkspace(overrides: Partial<ComponentProps<typeof ChatWorkspace>> = {}): void {
   render(
@@ -10,8 +24,7 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof ChatWorkspace>
       activeConversationId: null,
       onSelectConversation: vi.fn(),
       onDeleteConversation: vi.fn(),
-      onNewConversation: vi.fn(),
-      sidebarTitle: "会话（0）",
+      sidebar: sidebarProps(),
       messages: [],
       loadingMessages: false,
       isGenerating: false,
@@ -34,7 +47,7 @@ describe("ChatWorkspace", () => {
   it("renders the shared conversation and composer workspace", () => {
     renderWorkspace();
 
-    expect(screen.getByText("会话（0）")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ 新会话" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "添加内容" })).toBeInTheDocument();
     expect(screen.getByText("已连接")).toBeInTheDocument();
   });
@@ -105,7 +118,7 @@ describe("ChatWorkspace", () => {
   });
 
   it("keeps the mobile composer inside the safe area with touch-sized controls", () => {
-    renderWorkspace({ sidebarTitle: "会话" });
+    renderWorkspace();
 
     const addContent = screen.getByRole("button", { name: "添加内容" });
     expect(addContent).toHaveClass("min-h-11");
@@ -123,8 +136,7 @@ describe("ChatWorkspace", () => {
         activeConversationId: null,
         onSelectConversation: vi.fn(),
         onDeleteConversation: vi.fn(),
-        onNewConversation: vi.fn(),
-        sidebarTitle: "会话",
+        sidebar: sidebarProps(),
         messages: [],
         loadingMessages: false,
         isGenerating: false,

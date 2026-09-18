@@ -1,16 +1,11 @@
 import { MessagesSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { SecondarySidebarItem } from "../layout/SecondarySidebar";
-import { SecondarySidebar } from "../layout/SecondarySidebar";
+import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
+import { AgentConversationSidebar } from "./AgentConversationSidebar";
 
 export interface MobileConversationSheetProps {
-  title: string;
-  items: SecondarySidebarItem[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onDelete: (id: string) => void;
-  onNew: () => void;
-  headerExtra?: React.ReactNode;
+  /** 分组侧栏内容；选中会话后自动关闭浮层 */
+  sidebar?: AgentConversationSidebarProps;
 }
 
 export function MobileConversationSheet(props: MobileConversationSheetProps) {
@@ -61,21 +56,17 @@ export function MobileConversationSheet(props: MobileConversationSheetProps) {
             >
               <X size={20} />
             </button>
-            <SecondarySidebar
-              className="h-full w-full border-r-0"
-              title={props.title}
-              items={props.items}
-              selectedId={props.selectedId}
-              onItemClick={props.onSelect}
-              onItemSelected={() => setOpen(false)}
-              onItemDelete={props.onDelete}
-              onNew={() => {
-                props.onNew();
-                setOpen(false);
-              }}
-              newLabel="新会话"
-              headerExtra={props.headerExtra}
-            />
+            {props.sidebar ? (
+              <AgentConversationSidebar
+                className="h-full w-full border-r-0"
+                {...props.sidebar}
+                onItemSelected={() => setOpen(false)}
+                onNewConversation={(agentId) => {
+                  props.sidebar?.onNewConversation(agentId);
+                  setOpen(false);
+                }}
+              />
+            ) : null}
           </div>
         </div>
       ) : null}

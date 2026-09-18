@@ -1,19 +1,62 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
+import type { AgentConversationSidebarProps } from "../src/components/chat/AgentConversationSidebar";
 import { MobileConversationSheet } from "../src/components/chat/MobileConversationSheet";
+import type { AgentListDTO } from "../src/lib/agents";
+import type { SidebarPrefs } from "../src/lib/agentSidebar";
+import type { ConversationSummary } from "../src/types";
+
+function agentDto(id: string, name: string): AgentListDTO {
+  return {
+    id,
+    ownerId: "",
+    _mine: true,
+    name,
+    skills: [],
+    tools: { mode: "whitelist", whitelist: [] },
+    mcpServers: [],
+    llm: {},
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+const prefs: SidebarPrefs = { starredAgentIds: [], agentOrder: ["a1"] };
+
+function sidebarProps(
+  onSelect: ReturnType<typeof vi.fn>,
+  onNew: ReturnType<typeof vi.fn>,
+): AgentConversationSidebarProps {
+  const first: ConversationSummary = {
+    id: "c1",
+    userId: "u",
+    sdkSessionId: "",
+    title: "第一条",
+    channelId: "web",
+    agentId: "a1",
+    createdAt: "2026-09-18T10:00:00Z",
+    updatedAt: "2026-09-18T10:00:00Z",
+    archived: false,
+  };
+  return {
+    agents: [agentDto("a1", "分析助手")],
+    conversations: [first],
+    activeConversationId: null,
+    prefs,
+    onPrefsChange: vi.fn(),
+    onSelectConversation: onSelect,
+    onDeleteConversation: vi.fn(),
+    onNewConversation: onNew,
+  };
+}
 
 describe("MobileConversationSheet", () => {
   it("closes after selecting a conversation and restores focus", () => {
     const onSelect = vi.fn();
     render(
       createElement(MobileConversationSheet, {
-        title: "会话",
-        items: [{ id: "c1", title: "第一条" }],
-        selectedId: null,
-        onSelect,
-        onDelete: vi.fn(),
-        onNew: vi.fn(),
+        sidebar: sidebarProps(onSelect, vi.fn()),
       }),
     );
     const trigger = screen.getByRole("button", { name: "打开历史会话" });
@@ -30,17 +73,13 @@ describe("MobileConversationSheet", () => {
     const onNew = vi.fn();
     render(
       createElement(MobileConversationSheet, {
-        title: "会话",
-        items: [],
-        selectedId: null,
-        onSelect: vi.fn(),
-        onDelete: vi.fn(),
-        onNew,
+        sidebar: sidebarProps(vi.fn(), onNew),
       }),
     );
     fireEvent.click(screen.getByRole("button", { name: "打开历史会话" }));
     fireEvent.click(screen.getByRole("button", { name: /新会话/ }));
-    expect(onNew).toHaveBeenCalledTimes(1);
+    // 全局「+ 新会话」落到默认对话agent（无星标时=普通区第一位）
+    expect(onNew).toHaveBeenCalledWith("a1");
     expect(screen.queryByRole("dialog", { name: "历史会话" })).not.toBeInTheDocument();
   });
 });

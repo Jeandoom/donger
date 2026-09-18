@@ -1,18 +1,55 @@
 import { render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { AgentConversationSidebar } from "../src/components/chat/AgentConversationSidebar";
+import type { AgentListDTO } from "../src/lib/agents";
+import type { SidebarPrefs } from "../src/lib/agentSidebar";
+import type { ConversationSummary } from "../src/types";
 import { FileBrowserDrawer } from "../src/components/files/FileBrowserDrawer";
-import { SecondarySidebar } from "../src/components/layout/SecondarySidebar";
+
+function agentDto(id: string, name: string): AgentListDTO {
+  return {
+    id,
+    ownerId: "",
+    _mine: true,
+    name,
+    skills: [],
+    tools: { mode: "whitelist", whitelist: [] },
+    mcpServers: [],
+    llm: {},
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+function conv(id: string, agentId: string, title: string): ConversationSummary {
+  return {
+    id,
+    userId: "u",
+    sdkSessionId: "",
+    title,
+    channelId: "web",
+    agentId,
+    createdAt: "2026-09-18T10:00:00Z",
+    updatedAt: "2026-09-18T10:00:00Z",
+    archived: false,
+  };
+}
+
+const prefs: SidebarPrefs = { starredAgentIds: [], agentOrder: ["a1"] };
 
 describe("mobile interactions", () => {
   it("gives each conversation delete action an explicit accessible name", () => {
     render(
-      createElement(SecondarySidebar, {
-        title: "会话",
-        items: [{ id: "c1", title: "第一条" }],
-        selectedId: null,
-        onItemClick: vi.fn(),
-        onItemDelete: vi.fn(),
+      createElement(AgentConversationSidebar, {
+        agents: [agentDto("a1", "分析助手")],
+        conversations: [conv("c1", "a1", "第一条")],
+        activeConversationId: null,
+        prefs,
+        onPrefsChange: vi.fn(),
+        onSelectConversation: vi.fn(),
+        onDeleteConversation: vi.fn(),
+        onNewConversation: vi.fn(),
       }),
     );
 

@@ -57,7 +57,7 @@ export function AgentsPage() {
           <>
             <Button
               variant="secondary"
-              onClick={() => navigate(`/agent-sessions?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
+              onClick={() => navigate(`/?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
             >
               <Sparkles aria-hidden="true" size={14} className="inline" />
               AI 生成

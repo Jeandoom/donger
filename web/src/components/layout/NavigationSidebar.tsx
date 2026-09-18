@@ -27,7 +27,7 @@ interface LeafItem {
   end?: boolean;
 }
 interface ParentItem {
-  key: "agents" | "workflows" | "settings" | "observation";
+  key: "workflows" | "settings" | "observation";
   label: string;
   icon: LucideIcon;
   /** 命中即视为该父项激活（用于自动展开） */
@@ -38,16 +38,8 @@ type NavEntry = LeafItem | ParentItem;
 
 const entries: NavEntry[] = [
   { to: "/", label: "对话", icon: MessageSquare, end: true },
-  {
-    key: "agents",
-    label: "智能体",
-    icon: Bot,
-    match: ["/agents", "/agent-sessions"],
-    children: [
-      { to: "/agents", label: "智能体管理" },
-      { to: "/agent-sessions", label: "智能体会话" },
-    ],
-  },
+  // 智能体会话已并入对话模块（/），智能体入口收敛为管理页叶节点
+  { to: "/agents", label: "智能体", icon: Bot },
   {
     key: "workflows",
     label: "工作流",
@@ -145,13 +137,12 @@ export function NavigationSidebar({
   const [openParents, setOpenParents] = useState<Record<ParentItem["key"], boolean>>(() => {
     try {
       return {
-        agents: localStorage.getItem("donger_nav_agents_open") === "1",
         workflows: localStorage.getItem("donger_nav_workflows_open") === "1",
         settings: localStorage.getItem("donger_nav_settings_open") === "1",
         observation: localStorage.getItem("donger_nav_observation_open") === "1",
       };
     } catch {
-      return { agents: false, workflows: false, settings: false, observation: false };
+      return { workflows: false, settings: false, observation: false };
     }
   });
 
