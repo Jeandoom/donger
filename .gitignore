@@ -31,3 +31,9 @@ Thumbs.db
 # 工具自动生成（codex / codegraph 等）
 .codex/
 .mimosa/
+
+# AI 工具与本地运行时产物（不上库）
+.e2e-token.tmp
+/.claude/
+/.codegraph/
+/.superpowers/
