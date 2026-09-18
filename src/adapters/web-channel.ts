@@ -350,6 +350,8 @@ export interface WebChannelDeps {
   inviteStore?: InviteStore;
   /** 邮箱注册域名白名单（小写集合；空=关闭无邀请自助注册） */
   emailSignupAllowedDomains?: Set<string>;
+  /** 邮箱登录开关（默认 true；false=登录页不展示邮箱表单，见 GET /api/auth/methods） */
+  emailLoginEnabled?: boolean;
   /** 限流实现（缺省内存滑动窗口；单实例够用） */
   rateLimiter?: RateLimiter;
   /** 仅反代部署开启：限流取 X-Forwarded-For 首段而非 socket.remoteAddress */
@@ -1549,6 +1551,17 @@ export class WebChannel implements Channel {
     }
 
     // === Auth 路由 ===
+
+    // GET /api/auth/methods —— 登录方式动态探测：按 .env 实际配置返回可用方式，
+    // 顺序即展示优先级（邮箱 > 钉钉 > GitHub）；登录页据此渲染，未配置的方式不展示
+    if (url === "/api/auth/methods" && req.method === "GET") {
+      const methods: string[] = [];
+      if (this.deps.emailLoginEnabled !== false) methods.push("email");
+      if (this.dingtalkConfig) methods.push("dingtalk");
+      if (this.githubConfig) methods.push("github");
+      this.json(res, { methods });
+      return;
+    }
 
     // POST /api/auth/exchange —— CLI 共享密钥换 JWT（CLI_TOKEN 未配置时端点关闭）
     if (url === "/api/auth/exchange" && req.method === "POST") {
