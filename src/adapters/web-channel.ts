@@ -11,6 +11,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import { ZodError } from "zod";
+import type { LlmTester } from "../adapters/llm-provider-tester.js";
 import type { LlmPreset } from "../config.js";
 import type { Viewer } from "../domain/access-policy.js";
 import { type Agent, parseAgent, parseAgentInput } from "../domain/agent.js";
@@ -45,10 +46,9 @@ import {
   passwordPolicyError,
 } from "../domain/invite.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
 import { type MentionInput, MentionInputSchema, type ResolvedMention } from "../domain/mentions.js";
-import type { UserModelConfig } from "../domain/model-config.js";
-import { parseUserModelConfig } from "../domain/model-config.js";
 import {
   type AgentPermissionMode,
   AgentPermissionModeSchema,
@@ -67,6 +67,10 @@ import {
 } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
+import {
+  normalizeLlmProviderInput,
+  UserLlmProviderInputSchema,
+} from "../domain/user-llm-provider.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
@@ -94,9 +98,9 @@ import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
 import type { InviteStore } from "../ports/invite-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
+import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
-import type { UserModelConfigStore } from "../ports/model-config-store.js";
 import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
@@ -122,8 +126,8 @@ import {
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import { ApiRouteGuard } from "./api-route-guard.js";
-import { MemoryRateLimiter } from "./memory-rate-limiter.js";
 import { flattenWorkspaceFiles } from "./local-file-browser.js";
+import { MemoryRateLimiter } from "./memory-rate-limiter.js";
 import {
   handleInstall,
   handleInstallUpload,
@@ -211,9 +215,7 @@ function resolveRealFile(distRoot: string, urlPath: string): string | null {
   // existsSync 对目录同样为 true——须 isFile 判定，否则 /assets/ 目录路径会直通
   // readFileSync 抛 EISDIR（未捕获即打死整个进程，2026-09-18 生产实测复现）
   try {
-    return resolved.startsWith(distRoot + sep) && statSync(resolved).isFile()
-      ? resolved
-      : null;
+    return resolved.startsWith(distRoot + sep) && statSync(resolved).isFile() ? resolved : null;
   } catch {
     // statSync 理论上仅 ENOENT（exists 检查已隐含），其余异常按不可托管处理
     return null;
@@ -302,7 +304,10 @@ export interface WebChannelDeps {
   credentialSets?: CredentialSetStore;
   /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
   connectorStore?: ConnectorStore;
-  modelConfigStore?: UserModelConfigStore;
+  /** 用户 LLM 供应商配置（多平台多配置）；缺省=模型配置端点不可用 */
+  llmProviderStore?: LlmProviderStore;
+  /** Anthropic 协议连通性校验；缺省=测试连接端点不可用 */
+  llmProviderTester?: LlmTester;
   agentStore?: AgentStore;
   agentShareStore?: AgentShareStore;
   /** 智能体回调链接（缺省=回调端点不可用） */
@@ -1984,68 +1989,119 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET/PUT /api/settings/models：用户级 Claude Agent 模型配置
-    if (url === "/api/settings/models" && (req.method === "GET" || req.method === "PUT")) {
+    // —— 用户 LLM 供应商多配置（specs/2026-09-18-llm-multi-provider-design.md §6）——
+    if (url === "/api/settings/llm-platforms" && req.method === "GET") {
+      return this.json(res, { platforms: LLM_PLATFORMS });
+    }
+
+    const llmProviderPath = url.split("?")[0] ?? url;
+    // 集合路径（字符串精确匹配）在前、id 正则在后：路由覆盖扫描按邻近行归因 method，
+    // 顺序颠倒会把集合分支的 method 错算进 id 正则（test/security/route-coverage.test.ts）。
+
+    // GET /api/settings/llm-providers：列表（不含 key）+ 系统默认模型（.env，仅名称）
+    if (llmProviderPath === "/api/settings/llm-providers" && req.method === "GET") {
       const userId = this.requireRequestUser(req);
-      const store = this.deps.modelConfigStore;
+      const store = this.deps.llmProviderStore;
       if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
+      const providers = await store.list(userId);
+      return this.json(res, {
+        providers,
+        systemDefaultModel: this.deps.llm?.model ?? "",
+        systemPresets: (this.agentMeta?.presets ?? []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          model: p.model,
+        })),
+      });
+    }
 
-      if (req.method === "GET") {
-        const config = await store.get(userId);
-        const fallbackModels = [
-          ...(this.agentMeta?.presets.map((preset) => preset.model) ?? []),
-          this.deps.llm?.model,
-        ].filter((model): model is string => Boolean(model));
-        const defaults: UserModelConfig | undefined = this.deps.llm
-          ? {
-              url: this.deps.llm.baseUrl,
-              key: this.deps.llm.authToken,
-              models: [...new Set(fallbackModels)],
-              defaultModel: this.deps.llm.model,
-            }
-          : undefined;
-        const current = config ?? defaults;
-        if (!current) return this.json(res, { error: "默认模型配置未就绪" }, 503);
-        return this.json(res, {
-          url: current.url,
-          models: current.models,
-          defaultModel: current.defaultModel,
-          keyConfigured: Boolean(current.key),
-        });
+    // POST /api/settings/llm-providers：新建（key 必填；平台锁定 baseUrl/sdkType）
+    if (llmProviderPath === "/api/settings/llm-providers" && req.method === "POST") {
+      const userId = this.requireRequestUser(req);
+      const store = this.deps.llmProviderStore;
+      if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
+      const parsed = UserLlmProviderInputSchema.safeParse(JSON.parse(await this.readBody(req)));
+      if (!parsed.success) {
+        return this.json(res, { error: parsed.error.issues[0]?.message ?? "参数无效" }, 400);
       }
+      const key = parsed.data.key.trim();
+      if (!key) return this.json(res, { error: "API Key 不能为空" }, 400);
+      const normalized = normalizeLlmProviderInput(parsed.data);
+      if ("error" in normalized) return this.json(res, { error: normalized.error }, 400);
+      const created = await store.create(userId, {
+        ...normalized,
+        key,
+        isDefault: parsed.data.isDefault,
+      });
+      return this.json(res, created, 201);
+    }
 
-      const body = JSON.parse(await this.readBody(req)) as {
-        url?: unknown;
-        key?: unknown;
-        models?: unknown;
-        defaultModel?: unknown;
+    const llmProviderIdMatch = llmProviderPath.match(/^\/api\/settings\/llm-providers\/([\w-]+)$/);
+
+    // PUT /api/settings/llm-providers/:id：更新（key 留空 = 保持原值）
+    if (llmProviderIdMatch && req.method === "PUT") {
+      const userId = this.requireRequestUser(req);
+      const store = this.deps.llmProviderStore;
+      if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
+      const id = llmProviderIdMatch[1] ?? "";
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const existing = await store.getWithKey(userId, id);
+      if (!existing) return this.json(res, { error: "配置不存在" }, 404);
+      const merged = {
+        name: typeof body.name === "string" ? body.name : existing.name,
+        platform: existing.platform,
+        baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : existing.baseUrl,
+        key: typeof body.key === "string" && body.key.trim() ? body.key : "",
+        models: Array.isArray(body.models) ? body.models : existing.models,
+        sdkType: existing.sdkType,
+        isDefault: typeof body.isDefault === "boolean" ? body.isDefault : existing.isDefault,
       };
-      const existing = await store.get(userId);
-      const key =
-        typeof body.key === "string" && body.key.trim()
-          ? body.key.trim()
-          : (existing?.key ?? this.deps.llm?.authToken ?? "");
-      try {
-        const config = parseUserModelConfig({
-          url: body.url,
-          key,
-          models: body.models,
-          defaultModel: body.defaultModel,
-        });
-        await store.save(userId, config);
-        return this.json(res, {
-          url: config.url,
-          models: config.models,
-          defaultModel: config.defaultModel,
-          keyConfigured: true,
-        });
-      } catch (error) {
-        return this.json(
-          res,
-          { error: error instanceof Error ? error.message : "模型配置无效" },
-          400,
-        );
+      const parsed = UserLlmProviderInputSchema.safeParse(merged);
+      if (!parsed.success) {
+        return this.json(res, { error: parsed.error.issues[0]?.message ?? "参数无效" }, 400);
       }
+      const normalized = normalizeLlmProviderInput(parsed.data);
+      if ("error" in normalized) return this.json(res, { error: normalized.error }, 400);
+      // baseUrl/sdkType 校验后仍以归一化结果落库（custom 平台可改 baseUrl）
+      const updated = await store.update(userId, id, {
+        name: normalized.name,
+        baseUrl: normalized.baseUrl,
+        ...(parsed.data.key ? { key: parsed.data.key.trim() } : {}),
+        models: normalized.models,
+        isDefault: parsed.data.isDefault,
+      });
+      if (!updated) return this.json(res, { error: "配置不存在" }, 404);
+      return this.json(res, updated);
+    }
+
+    // DELETE /api/settings/llm-providers/:id
+    if (llmProviderIdMatch && req.method === "DELETE") {
+      const userId = this.requireRequestUser(req);
+      const store = this.deps.llmProviderStore;
+      if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
+      const removed = await store.remove(userId, llmProviderIdMatch[1] ?? "");
+      if (!removed) return this.json(res, { error: "配置不存在" }, 404);
+      return this.json(res, { ok: true });
+    }
+
+    // POST /api/settings/llm-providers/:id/test：Anthropic 协议连通性校验（限流防 key 探测滥用）
+    const llmProviderTestMatch = llmProviderPath.match(
+      /^\/api\/settings\/llm-providers\/([\w-]+)\/test$/,
+    );
+    if (llmProviderTestMatch && req.method === "POST") {
+      const userId = this.requireRequestUser(req);
+      if (!this.rateLimiter.hit(RateLimitKeys.llmProviderTest(userId), 60_000, 10)) {
+        return this.json(res, { error: "请求过于频繁，请稍后再试" }, 429);
+      }
+      const store = this.deps.llmProviderStore;
+      const tester = this.deps.llmProviderTester;
+      if (!store || !tester) return this.json(res, { error: "测试服务未启用" }, 503);
+      const provider = await store.getWithKey(userId, llmProviderTestMatch[1] ?? "");
+      if (!provider) return this.json(res, { error: "配置不存在" }, 404);
+      const model = provider.models[0] ?? "";
+      if (!model) return this.json(res, { error: "该配置没有可用模型" }, 400);
+      const result = await tester.test({ baseUrl: provider.baseUrl, key: provider.key, model });
+      return this.json(res, result);
     }
 
     // POST /api/auth/merge-confirm —— 已废弃：统一身份模型下不再需要合并流程

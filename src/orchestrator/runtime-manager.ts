@@ -22,7 +22,7 @@ import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
-import type { UserModelConfigStore } from "../ports/model-config-store.js";
+import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type {
   RepositoryMaterializeItem,
   RepositoryMaterializer,
@@ -64,7 +64,8 @@ interface RuntimeManagerDeps {
   credentialSets: CredentialSetStore;
   /** 连接器注册表：agent.connectorIds → http McpServerConfig（headers 按访问者解析） */
   connectorStore?: ConnectorStore;
-  modelConfigStore?: UserModelConfigStore;
+  /** 用户 LLM 供应商配置：默认 provider 作会话 LLM 基底（无则全局 .env） */
+  llmProviderStore?: LlmProviderStore;
   installer: SkillInstaller;
   builtinSkillsDir: string;
   repositoryMaterializer?: RepositoryMaterializer;
@@ -125,12 +126,13 @@ export class RuntimeManager {
 
     // agent 分支：显式 agent 可覆盖 skills/llm/工具/mcp/系统提示；否则用 Pack 派生默认
     let skills = resolved.whitelist;
-    const userModelConfig = await this.deps.modelConfigStore?.get(user.id);
-    let llm: LLMConfig = userModelConfig
+    // LLM 基底：用户默认 provider（迁移后 defaultModel 置于 models[0]）→ 全局 .env
+    const defaultProvider = await this.deps.llmProviderStore?.findDefaultWithKey(user.id);
+    let llm: LLMConfig = defaultProvider
       ? {
-          model: userModelConfig.defaultModel,
-          baseUrl: userModelConfig.url,
-          authToken: userModelConfig.key,
+          model: defaultProvider.models[0] ?? this.deps.config.llm.model,
+          baseUrl: defaultProvider.baseUrl,
+          authToken: defaultProvider.key,
         }
       : this.deps.config.llm;
     let allowedTools: string[] | undefined;

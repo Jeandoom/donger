@@ -352,27 +352,48 @@ describe("RuntimeManager agent 分支", () => {
     ws = mkdtempSync(join(tmpdir(), "rtmgr-"));
   });
 
-  it("使用用户 Models 配置覆盖系统默认 LLM", async () => {
+  it("使用用户默认 LLM provider 覆盖系统默认（models[0] 作默认模型）", async () => {
     const conv = baseConv();
     const convStore = fakeConvStore([conv]);
-    const modelConfigStore = {
+    const llmProviderStore = {
       migrate() {},
-      async get() {
+      async list() {
+        return [];
+      },
+      async getWithKey() {
+        return undefined;
+      },
+      async findDefaultWithKey() {
         return {
-          url: "https://user-llm.example.com/anthropic",
+          id: "p1",
+          userId: "u1",
+          name: "我的配置",
+          platform: "custom",
+          baseUrl: "https://user-llm.example.com/anthropic",
           key: "user-key",
-          models: ["claude-sonnet"],
-          defaultModel: "claude-sonnet",
+          models: ["claude-sonnet", "claude-haiku"],
+          sdkType: "anthropic" as const,
+          isDefault: true,
+          createdAt: "",
+          updatedAt: "",
         };
       },
-      async save() {},
+      async create() {
+        throw new Error("unused");
+      },
+      async update() {
+        return undefined;
+      },
+      async remove() {
+        return false;
+      },
     };
     const m = new RuntimeManager({
       transcriptStore: fakeTranscriptStore(() => null),
       conversationStore: convStore as unknown as ConversationStore,
       config: baseConfig(ws),
       ...emptySkillDeps(),
-      modelConfigStore,
+      llmProviderStore,
     });
 
     const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {});

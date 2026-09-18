@@ -20,4 +20,7 @@ export const RateLimitKeys = {
   llmDebug(userId: string): string {
     return `llm-debug:${userId}`;
   },
+  llmProviderTest(userId: string): string {
+    return `llm-provider-test:${userId}`;
+  },
 } as const;

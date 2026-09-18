@@ -197,8 +197,24 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/auth/me", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/auth/github/bind", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/auth/logout", access: { kind: "authenticated" } },
-    { method: "GET", pattern: "/api/settings/models", access: { kind: "authenticated" } },
-    { method: "PUT", pattern: "/api/settings/models", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/settings/llm-platforms", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/settings/llm-providers", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/settings/llm-providers", access: { kind: "authenticated" } },
+    {
+      method: "PUT",
+      pattern: "/api/settings/llm-providers/:id",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "DELETE",
+      pattern: "/api/settings/llm-providers/:id",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "POST",
+      pattern: "/api/settings/llm-providers/:id/test",
+      access: { kind: "authenticated" },
+    },
     { method: "GET", pattern: "/api/invites", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/invites", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/invites/:id/disable", access: { kind: "authenticated" } },
@@ -241,7 +257,11 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/agents/:id/callback", access: { kind: "authenticated" } },
     { method: "DELETE", pattern: "/api/agents/:id/callback", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/agents/:id/accept-share", access: { kind: "authenticated" } },
-    { method: "GET", pattern: "/api/agents/:id/mention-candidates", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/agents/:id/mention-candidates",
+      access: { kind: "authenticated" },
+    },
 
     // 文件浏览（fileBrowser 内部做属主与路径越界校验）
     { method: "GET", pattern: "/api/files/tree", access: { kind: "authenticated" } },

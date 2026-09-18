@@ -9,6 +9,7 @@ import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
+import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
@@ -21,9 +22,9 @@ import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
+import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
-import { SqliteModelConfigStore } from "./adapters/sqlite-model-config-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
@@ -165,7 +166,7 @@ async function main(): Promise<void> {
       skillPackStore,
       credentialSets,
       connectorStore,
-      modelConfigStore,
+      llmProviderStore,
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
@@ -197,8 +198,8 @@ async function main(): Promise<void> {
   // 技能 store/installer（WebChannel 与 Orchestrator 共享同一实例）
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const modelConfigStore = new SqliteModelConfigStore(db, secretCipher);
-  modelConfigStore.migrate();
+  const llmProviderStore = new SqliteLlmProviderStore(db, secretCipher);
+  llmProviderStore.migrate();
   const skillInstaller = new LocalSkillInstaller({
     packStore: skillPackStore,
     getHomeDir: (uid) => join(usersDir, uid),
@@ -254,7 +255,8 @@ async function main(): Promise<void> {
     installer: skillInstaller,
     credentialSets,
     connectorStore,
-    modelConfigStore,
+    llmProviderStore,
+    llmProviderTester: new LlmProviderTester(),
     agentStore,
     agentShareStore,
     agentCallbackStore,
