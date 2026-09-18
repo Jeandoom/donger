@@ -104,6 +104,28 @@ describe("resolveStaticFile", () => {
     const r = resolveStaticFile(root, "/agents");
     expect(r).toBeNull();
   });
+
+  // 2026-09-18 生产实测：GET /assets/（目录）曾直通 readFileSync 抛 EISDIR 打死进程
+  it("有 dist 时，/assets/ 目录请求返回 null（404），不得把目录当文件托管", () => {
+    write(root, "dist/index.html", "built");
+    write(root, "dist/assets/app.js", "// js");
+    expect(resolveStaticFile(root, "/assets/")).toBeNull();
+  });
+
+  it("有 dist 时，任意存在的子目录路径绝不指向目录本身", () => {
+    write(root, "dist/index.html", "built");
+    write(root, "dist/icons/nested.png", "png");
+    // /icons 是目录但非 /assets 前缀 → SPA fallback（指向真实文件，安全）
+    const spa = resolveStaticFile(root, "/icons");
+    expect(spa?.absPath).toBe(join(root, "dist", "index.html"));
+    // /icons/ 带尾斜杠 → resolveRealFile 命中目录须判非文件拒绝 → 同样 SPA fallback
+    const spa2 = resolveStaticFile(root, "/icons/");
+    expect(spa2?.absPath).toBe(join(root, "dist", "index.html"));
+    // 真实文件不受影响
+    expect(resolveStaticFile(root, "/icons/nested.png")?.absPath).toBe(
+      join(root, "dist", "icons", "nested.png"),
+    );
+  });
 });
 
 let web: WebChannel;

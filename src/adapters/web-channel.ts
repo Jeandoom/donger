@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
   type IncomingMessage as HttpRequest,
@@ -204,11 +204,20 @@ export function resolveStaticFile(webRoot: string, urlPath: string): StaticTarge
   return { kind: "file", absPath: join(distRoot, "index.html") };
 }
 
-/** 解析 dist 内真实文件；防路径穿越（必须仍落在 dist 内），不存在返回 null */
+/** 解析 dist 内真实文件；防路径穿越（必须仍落在 dist 内），不存在或非普通文件（目录等）返回 null */
 function resolveRealFile(distRoot: string, urlPath: string): string | null {
   // join 会把开头的 "/" 当普通段拼接（resolve 则会当绝对路径跳出 dist）
   const resolved = resolve(join(distRoot, urlPath));
-  return resolved.startsWith(distRoot + sep) && existsSync(resolved) ? resolved : null;
+  // existsSync 对目录同样为 true——须 isFile 判定，否则 /assets/ 目录路径会直通
+  // readFileSync 抛 EISDIR（未捕获即打死整个进程，2026-09-18 生产实测复现）
+  try {
+    return resolved.startsWith(distRoot + sep) && statSync(resolved).isFile()
+      ? resolved
+      : null;
+  } catch {
+    // statSync 理论上仅 ENOENT（exists 检查已隐含），其余异常按不可托管处理
+    return null;
+  }
 }
 
 function contentType(absPath: string): string {
@@ -952,9 +961,18 @@ export class WebChannel implements Channel {
 
     // 静态托管
     const target = resolveStaticFile(this.webRoot, url);
-    if (target?.kind === "file" && existsSync(target.absPath)) {
-      res.writeHead(200, { "Content-Type": contentType(target.absPath) });
-      res.end(readFileSync(target.absPath));
+    if (target?.kind === "file") {
+      // 读失败（残留句柄、权限等不可预期错误）降级 404，绝不让单个静态请求打死进程
+      try {
+        res.writeHead(200, { "Content-Type": contentType(target.absPath) });
+        res.end(readFileSync(target.absPath));
+      } catch (err) {
+        console.warn("[web] 静态文件读取失败，降级 404:", url, err);
+        if (!res.headersSent) {
+          res.writeHead(404);
+          res.end("Not found");
+        }
+      }
       return;
     }
 
