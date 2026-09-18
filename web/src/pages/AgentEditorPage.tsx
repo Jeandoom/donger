@@ -1,69 +1,57 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { PageHeader } from "../components/ui/page-header";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import {
-  type AgentCallbackCreated,
-  type AgentCallbackInfo,
-  type AgentDTO,
   type AgentMeta,
   createAgent,
   fetchAgent,
-  fetchAgentCallback,
   fetchAgentMeta,
-  generateAgentCallback,
-  revokeAgentCallback,
   updateAgent,
 } from "../lib/agents";
 import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
+import { fetchCredentialTemplates } from "../lib/skills";
+import { cn } from "../lib/utils";
+import { BasicSection } from "./agent-editor/BasicSection";
+import { IntegrationSection } from "./agent-editor/IntegrationSection";
 import {
-  fetchShareStatus,
-  removeShareGrant,
-  type ShareStatus,
-  setShareEnabled,
-} from "../lib/share";
-import {
-  filterSkillSelectorOptions,
-  getDefaultSkillOptions,
-  mergeSkillSelectorOptions,
-  type SkillSelectorOption,
-} from "../lib/skillSelector";
-import { fetchCredentialTemplates, fetchMyCredentials } from "../lib/skills";
-import type { AgentPermissionMode } from "../types";
+  AGENT_EDITOR_SECTIONS,
+  type AgentEditorForm,
+  emptyAgent,
+  REPO_NAME_PATTERN,
+  scenarioIssues,
+} from "./agent-editor/model";
+import { PromptSkillsSection } from "./agent-editor/PromptSkillsSection";
+import { ResourcesSection } from "./agent-editor/ResourcesSection";
+import { ToolsPermsSection } from "./agent-editor/ToolsPermsSection";
 
-const empty: Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt"> = {
-  name: "",
-  description: "",
-  systemPrompt: "",
-  skills: [],
-  defaultSkill: undefined,
-  tools: { mode: "all", whitelist: [] },
-  mcpServers: [],
-  connectorIds: [],
-  credentials: [],
-  gitRepositories: [],
-  extensionDirectories: [],
-  scenario: undefined,
-  gitAllowShellGit: false,
-  defaultPermissionMode: "ask_before_change",
-  llm: {},
-};
-
+/**
+ * 智能体配置页（重构版，specs/2026-09-18-agent-editor-redesign.md）：
+ * sticky 顶栏/底栏 + 左锚点导航（scrollspy）+ 五分区卡片。
+ */
 export function AgentEditorPage() {
   const { id } = useParams();
   const isNew = !id || id === "new";
   const navigate = useNavigate();
+
   const [meta, setMeta] = useState<AgentMeta>({ skills: [], tools: [], llmPresets: [] });
-  const [form, setForm] = useState<typeof empty>(empty);
+  const [form, setForm] = useState<AgentEditorForm>(emptyAgent);
+  const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const nameInputRef = useRef<HTMLInputElement>(null);
   const [warnings, setWarnings] = useState<string[]>();
   const [readOnly, setReadOnly] = useState(false);
-  const [hostMismatch, setHostMismatch] = useState<Record<number, boolean>>({});
+  const [activeSection, setActiveSection] = useState<string>(AGENT_EDITOR_SECTIONS[0].id);
+  const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
   const [gitCredentialOptions, setGitCredentialOptions] = useState<
     Array<{ code: string; name: string; repoUrl?: string }>
   >([]);
-  const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
+  const [mcpJsonText, setMcpJsonText] = useState("[]");
+  const [mcpJsonError, setMcpJsonError] = useState<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const scrollRootRef = useRef<HTMLDivElement>(null);
+
+  const patch = (p: Partial<AgentEditorForm>) => setForm((f) => ({ ...f, ...p }));
 
   useEffect(() => {
     fetchAgentMeta()
@@ -84,7 +72,6 @@ export function AgentEditorPage() {
       .catch(() => {});
   }, []);
 
-  // 连接器列表：MCP 工具区域的勾选项
   useEffect(() => {
     fetchConnectors()
       .then(setConnectors)
@@ -96,13 +83,12 @@ export function AgentEditorPage() {
       setReadOnly(false);
       fetchAgent(id)
         .then((a) => {
-          const editable = a.editable !== false && Array.isArray(a.skills);
-          if (!editable) {
+          if (a.editable === false || !Array.isArray(a.skills)) {
             setReadOnly(true);
-            setForm({ ...empty, name: a.name, description: a.description ?? "" });
+            setForm({ ...emptyAgent, name: a.name, description: a.description ?? "" });
             return;
           }
-          setForm({
+          const loaded: AgentEditorForm = {
             name: a.name,
             description: a.description ?? "",
             systemPrompt: a.systemPrompt ?? "",
@@ -118,18 +104,58 @@ export function AgentEditorPage() {
             gitAllowShellGit: a.gitAllowShellGit ?? false,
             defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
             llm: a.llm,
-          });
+          };
+          setForm(loaded);
+          setBaseline(JSON.stringify(loaded));
         })
         .catch(() => navigate("/agents"));
     }
   }, [id, isNew, navigate]);
+
+  // scrollspy：观察 5 个分区进入滚动容器上沿区域时高亮导航
+  // biome-ignore lint/correctness/useExhaustiveDependencies: readOnly/isNew 驱动集成分区条件挂载，形态切换后需重建观察
+  useEffect(() => {
+    const root = scrollRootRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setActiveSection(entry.target.id);
+        }
+      },
+      { root, rootMargin: "-72px 0px -65% 0px", threshold: 0 },
+    );
+    for (const s of AGENT_EDITOR_SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, [readOnly, isNew]);
+
+  const dirty = JSON.stringify(form) !== baseline;
+  const issues = useMemo(() => scenarioIssues(form), [form]);
+  const issuesBySection = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const issue of issues) map.set(issue.section, (map.get(issue.section) ?? 0) + 1);
+    return map;
+  }, [issues]);
 
   async function save() {
     setError(undefined);
     if (!form.name.trim()) {
       setError("请填写名称");
       nameInputRef.current?.focus();
-      nameInputRef.current?.scrollIntoView({ block: "center" });
+      document
+        .getElementById(AGENT_EDITOR_SECTIONS[0].id)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (mcpJsonError) {
+      setError(`内联 MCP JSON 未修复（${mcpJsonError}），保存已阻断`);
+      setActiveSection(AGENT_EDITOR_SECTIONS[2].id);
+      document
+        .getElementById(AGENT_EDITOR_SECTIONS[2].id)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
     // 与后端 AgentGitRepositorySchema 同源校验：非法目录名一旦落库，读路径会让整个 agent 列表 500
@@ -138,6 +164,10 @@ export function AgentEditorPage() {
         setError(
           `仓库目录名「${r.name || "（空）"}」不合法：需以字母/数字开头，仅含字母数字 . _ -，长度 1-64`,
         );
+        setActiveSection(AGENT_EDITOR_SECTIONS[3].id);
+        document
+          .getElementById(AGENT_EDITOR_SECTIONS[3].id)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
         return;
       }
     }
@@ -146,8 +176,9 @@ export function AgentEditorPage() {
     try {
       const saved = isNew ? await createAgent(form) : await updateAgent(id ?? "", form);
       if (saved.warnings && saved.warnings.length > 0) {
-        // 装备告警不阻断：留在编辑页展示（场景校验/凭证缺值提示）
+        // 装备告警不阻断：后端已保存成功，更新基线消除未保存标记，留在编辑页展示告警
         setWarnings(saved.warnings);
+        setBaseline(JSON.stringify(form));
         setSaving(false);
         return;
       }
@@ -163,17 +194,15 @@ export function AgentEditorPage() {
     return (
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl space-y-4 p-6">
-          <PageHeader
-            title={form.name}
-            actions={
-              <Link
-                to={`/agents/${id}/chat`}
-                className="rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:opacity-90"
-              >
-                对话
-              </Link>
-            }
-          />
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-[22px] font-bold leading-7">{form.name}</h1>
+            <Link
+              to={`/agents/${id}/chat`}
+              className="rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:opacity-90"
+            >
+              对话
+            </Link>
+          </div>
           {form.description ? (
             <p className="text-sm text-muted-foreground">{form.description}</p>
           ) : null}
@@ -192,1176 +221,168 @@ export function AgentEditorPage() {
     );
   }
 
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-2xl space-y-4 p-6">
-        <PageHeader
-          title={isNew ? "新建智能体" : "编辑智能体"}
-          description={isNew ? undefined : form.name}
-          actions={
-            !isNew && id ? (
-              <Link
-                to={`/agents/${id}/chat`}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
-              >
-                对话
-              </Link>
-            ) : undefined
-          }
-        />
-
-        {error ? <p className="text-destructive">{error}</p> : null}
-        {warnings && warnings.length > 0 ? (
-          <div className="space-y-1 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-            <p className="font-medium">装备提示（已保存，可稍后处理）</p>
-            <ul className="list-inside list-disc text-muted-foreground">
-              {warnings.map((w) => (
-                <li key={w}>{w}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
-        <Field label="名称（必填）">
-          <input
-            ref={nameInputRef}
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-          />
-        </Field>
-
-        <Field label="描述">
-          <input
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            value={form.description ?? ""}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-          />
-        </Field>
-
-        <Field label="System Prompt（追加到默认之后）">
-          <textarea
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            rows={4}
-            value={form.systemPrompt ?? ""}
-            onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
-          />
-        </Field>
-
-        <Field label="Skills（可多选，支持模糊搜索）">
-          <SkillPicker
-            options={meta.skills}
-            value={form.skills}
-            onChange={(skills) =>
-              setForm({
-                ...form,
-                skills,
-                defaultSkill:
-                  skills.length > 0 && form.defaultSkill && !skills.includes(form.defaultSkill)
-                    ? undefined
-                    : form.defaultSkill,
-              })
-            }
-          />
-        </Field>
-
-        <CredentialPicker
-          value={form.credentials ?? []}
-          onChange={(credentials) => setForm({ ...form, credentials })}
-          lockedCodes={[
-            ...new Set(
-              form.gitRepositories
-                .map((r) => r.credentialCode)
-                .filter((c): c is string => Boolean(c)),
-            ),
-          ]}
-        />
-
-        <Field label="场景">
-          <select
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            value={form.scenario ?? ""}
-            onChange={(event) =>
-              setForm({
-                ...form,
-                scenario: (event.target.value || undefined) as typeof form.scenario,
-              })
-            }
-          >
-            <option value="">不设置</option>
-            <option value="code-dev">code-dev（代码项目开发运维）</option>
-            <option value="kb-qa">kb-qa（知识库问答，只读）</option>
-            <option value="research">research（调研分析，可写知识库）</option>
-            <option value="ops">ops（运维操作）</option>
-          </select>
-          <p className="text-xs text-muted-foreground">
-            场景决定装配校验：code-dev 需绑定 git 仓库；kb-qa 要求只读白名单；research 需含
-            kb_write。
-          </p>
-        </Field>
-
-        <Field label="默认 Skill（可选）">
-          <select
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            value={form.defaultSkill ?? ""}
-            onChange={(event) =>
-              setForm({ ...form, defaultSkill: event.target.value || undefined })
-            }
-          >
-            <option value="">不设置</option>
-            {getDefaultSkillOptions(meta.skills, form.skills).map((skill) => (
-              <option key={skill.id} value={skill.id}>
-                {skill.name || skill.id}
-                {skill.name && skill.name !== skill.id ? `（${skill.id}）` : ""}
-              </option>
-            ))}
-          </select>
-          <p className="text-xs text-muted-foreground">
-            对话时会在每次用户输入后自动追加 /{`{默认 Skill}`}，触发对应技能。
-          </p>
-        </Field>
-
-        <Field label="默认对话模式">
-          <select
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            value={form.defaultPermissionMode ?? "ask_before_change"}
-            onChange={(event) =>
-              setForm({
-                ...form,
-                defaultPermissionMode: event.target.value as AgentPermissionMode,
-              })
-            }
-          >
-            <option value="ask_before_change">变更前问询（默认）</option>
-            <option value="full_access">完全权限（跳过审批卡，高危操作直接执行）</option>
-          </select>
-          <p className="text-xs text-muted-foreground">
-            会话默认按此模式校验工具调用，用户可在聊天头部临时切换（完全权限下 deploy/push
-            等高危操作不再弹审批卡；白名单与文件写入边界不受影响；无人值守任务恒按变更前问询）。
-          </p>
-        </Field>
-
-        <Field label="工具">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              checked={form.tools.mode === "all"}
-              onChange={() => setForm({ ...form, tools: { mode: "all", whitelist: [] } })}
-            />
-            全部工具
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              checked={form.tools.mode === "whitelist"}
-              onChange={() =>
-                setForm({ ...form, tools: { mode: "whitelist", whitelist: form.tools.whitelist } })
-              }
-            />
-            白名单
-          </label>
-          {form.tools.mode === "whitelist" ? (
-            <div className="mt-1 flex flex-wrap gap-2">
-              {meta.tools.map((t) => (
-                <label key={t} className="flex items-center gap-1 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={form.tools.whitelist.includes(t)}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        tools: {
-                          mode: "whitelist",
-                          whitelist: e.target.checked
-                            ? [...form.tools.whitelist, t]
-                            : form.tools.whitelist.filter((x) => x !== t),
-                        },
-                      })
-                    }
-                  />
-                  {t}
-                </label>
-              ))}
-            </div>
-          ) : null}
-        </Field>
-
-        <Field label="LLM 预设">
-          <select
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none"
-            value={form.llm.presetId ?? ""}
-            onChange={(e) => setForm({ ...form, llm: { presetId: e.target.value || undefined } })}
-          >
-            <option value="">系统默认</option>
-            {meta.llmPresets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}（{p.model}）
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        <Field label="MCP 工具">
-          <div className="space-y-3 rounded border p-3">
-            {/* 内置：随配置自动挂载，只读标注（spec 2026-09-11-connectors §7.2） */}
-            <div>
-              <div className="mb-1 text-xs text-muted-foreground">
-                内置（随配置自动挂载，不可编辑）
-              </div>
-              <div className="space-y-0.5 text-xs">
-                <div className="flex items-center gap-2">
-                  <span>🔒 donger-kb</span>
-                  <span className="text-muted-foreground">知识库读写检索 · 恒挂载</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span>🔒 donger-git</span>
-                  <span className="text-muted-foreground">Git 工作区/平台 · 绑定仓库后挂载</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span>🔒 donger-platform</span>
-                  <span className="text-muted-foreground">平台元工具 · 仅内置智能体</span>
-                </div>
-              </div>
-            </div>
-            {/* 连接器勾选：连接器模块注册的 HTTP MCP */}
-            <div>
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">连接器（勾选启用）</span>
-                <Link to="/connectors" className="text-xs text-primary hover:underline">
-                  管理连接器 →
-                </Link>
-              </div>
-              {connectors.length === 0 ? (
-                <div className="text-xs text-muted-foreground">
-                  暂无可用连接器，可到「连接器」页创建。
-                </div>
-              ) : (
-                <div className="space-y-0.5">
-                  {connectors.map((c) => {
-                    const checked = (form.connectorIds ?? []).includes(c.id);
-                    let host = c.url;
-                    try {
-                      host = new URL(c.url).host;
-                    } catch {
-                      // 非法 URL 原样展示
-                    }
-                    return (
-                      <label
-                        key={c.id}
-                        className={`flex items-center gap-2 text-sm ${c.enabled ? "" : "opacity-50"}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) =>
-                            setForm({
-                              ...form,
-                              connectorIds: e.target.checked
-                                ? [...(form.connectorIds ?? []), c.id]
-                                : (form.connectorIds ?? []).filter((x) => x !== c.id),
-                            })
-                          }
-                        />
-                        <span className="font-mono">{c.name}</span>
-                        <span className="text-xs text-muted-foreground">{host}</span>
-                        {c.shareScope === "global" && (
-                          <span className="rounded bg-emerald-500/10 px-1 text-xs text-emerald-600">
-                            全局
-                          </span>
-                        )}
-                        {!c.enabled && (
-                          <span className="text-xs font-medium text-amber-600">
-                            已停用（运行时跳过）
-                          </span>
-                        )}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            {/* 高级：内联 mcpServers JSON（与连接器重名会被后端硬拦） */}
-            <details>
-              <summary className="cursor-pointer text-xs text-muted-foreground">
-                高级：内联 MCP Servers（JSON）
-              </summary>
-              <div className="mt-1 space-y-1">
-                <textarea
-                  className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none font-mono text-xs"
-                  rows={5}
-                  value={JSON.stringify(form.mcpServers, null, 2)}
-                  onChange={(e) => {
-                    try {
-                      setForm({ ...form, mcpServers: JSON.parse(e.target.value) });
-                    } catch {
-                      /* 编辑中，忽略解析错误 */
-                    }
-                  }}
-                />
-                <p className="text-xs text-muted-foreground">
-                  env/headers 中的密钥会加密入库；编辑时显示为掩码，留掩码即保留原值。
-                  与连接器重名时保存会被拒绝（LLM 工具命名空间不可重名）。
-                </p>
-              </div>
-            </details>
-          </div>
-        </Field>
-
-        <Field label="Git 仓库">
-          <div className="space-y-3">
-            {form.gitRepositories.map((repository, index) => (
-              <div key={repository.id} className="space-y-2 rounded border p-3">
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <select
-                    className="rounded border px-2 py-1 text-sm"
-                    value={repository.provider}
-                    onChange={(event) => {
-                      const provider = event.target.value as typeof repository.provider;
-                      const detected = inferProviderFromUrl(repository.url);
-                      // 用户已输入的地址与新平台 host 不匹配时提示（不强制清空）
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, provider } : item,
-                        ),
-                      });
-                      setHostMismatch((m) => ({
-                        ...m,
-                        [index]: Boolean(detected && detected !== provider),
-                      }));
-                    }}
-                  >
-                    <option value="github">GitHub（含 GHE）</option>
-                    <option value="gitee">Gitee（含私有化）</option>
-                    <option value="jihulab">GitLab 兼容（极狐/自建）</option>
-                  </select>
-                  <input
-                    className="rounded border px-2 py-1 text-sm"
-                    placeholder="目录名，如 backend"
-                    value={repository.name}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, name: event.target.value } : item,
-                        ),
-                      })
-                    }
-                  />
-                  <input
-                    className="rounded border px-2 py-1 text-sm"
-                    placeholder="分支/tag，默认仓库默认分支"
-                    value={repository.ref ?? ""}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                          itemIndex === index
-                            ? { ...item, ref: event.target.value || undefined }
-                            : item,
-                        ),
-                      })
-                    }
-                  />
-                </div>
-                <input
-                  className="w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none text-sm"
-                  placeholder={`https://github.com|gitee.com|jihulab.com|自建host/org/repo.git（仅 HTTPS）`}
-                  value={repository.url}
-                  onChange={(event) => {
-                    const url = event.target.value;
-                    const detected = inferProviderFromUrl(url);
-                    setForm({
-                      ...form,
-                      gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? {
-                              ...item,
-                              url,
-                              provider: detected ?? item.provider,
-                              // 目录名未填时从 URL 尾段预填，避免留空保存被拒
-                              name: item.name || inferRepoNameFromUrl(url),
-                            }
-                          : item,
-                      ),
-                    });
-                    setHostMismatch((m) => ({
-                      ...m,
-                      [index]: Boolean(detected && detected !== repository.provider),
-                    }));
-                  }}
-                />
-                {hostMismatch[index] ? (
-                  <p className="text-xs text-destructive">
-                    地址域名与所选协议方言不匹配（github.com / gitee.com / jihulab.com
-                    会自动识别方言）
-                  </p>
-                ) : null}
-                {(() => {
-                  try {
-                    const u = new URL(repository.url);
-                    if (
-                      u.protocol === "https:" &&
-                      !["github.com", "gitee.com", "jihulab.com"].includes(u.hostname.toLowerCase())
-                    ) {
-                      return (
-                        <p className="text-xs text-muted-foreground">
-                          自建/私有化地址：将按上方所选协议方言访问（{u.hostname}）
-                        </p>
-                      );
-                    }
-                    return null;
-                  } catch {
-                    return null;
-                  }
-                })()}
-                <div className="flex flex-wrap items-center gap-4 text-xs">
-                  <span>平台：{repository.provider}</span>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={repository.required}
-                      onChange={(event) =>
-                        setForm({
-                          ...form,
-                          gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, required: event.target.checked }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                    必需仓库
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={repository.shallow}
-                      onChange={(event) =>
-                        setForm({
-                          ...form,
-                          gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, shallow: event.target.checked } : item,
-                          ),
-                        })
-                      }
-                    />
-                    浅克隆
-                  </label>
-                  <select
-                    className="rounded border px-2 py-1"
-                    value={repository.syncMode}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                          itemIndex === index
-                            ? {
-                                ...item,
-                                syncMode: event.target.value as "cloneOnce" | "fastForward",
-                              }
-                            : item,
-                        ),
-                      })
-                    }
-                  >
-                    <option value="fastForward">安全同步</option>
-                    <option value="cloneOnce">仅首次克隆</option>
-                  </select>
-                  <button
-                    type="button"
-                    className="ml-auto text-destructive"
-                    onClick={() =>
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.filter(
-                          (_, itemIndex) => itemIndex !== index,
-                        ),
-                      })
-                    }
-                  >
-                    删除
-                  </button>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <select
-                    className="rounded border px-2 py-1 text-sm"
-                    value={repository.credentialCode ?? ""}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                          itemIndex === index
-                            ? { ...item, credentialCode: event.target.value || undefined }
-                            : item,
-                        ),
-                      })
-                    }
-                  >
-                    <option value="">凭证模板（私有仓库必选，git PAT 类）</option>
-                    {gitCredentialOptions.map((t) => (
-                      <option key={t.code} value={t.code}>
-                        {t.code}（{t.name}
-                        {t.repoUrl ? ` · ${t.repoUrl}` : " · 平台级"}）
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    className="rounded border px-2 py-1 text-sm"
-                    placeholder="浅克隆历史窗口（如 1 year ago，仅浅克隆生效）"
-                    value={repository.shallowSince ?? ""}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        gitRepositories: form.gitRepositories.map((item, itemIndex) =>
-                          itemIndex === index
-                            ? { ...item, shallowSince: event.target.value || undefined }
-                            : item,
-                        ),
-                      })
-                    }
-                  />
-                </div>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="rounded border px-3 py-1.5 text-sm"
-              onClick={() =>
-                setForm({
-                  ...form,
-                  gitRepositories: [
-                    ...form.gitRepositories,
-                    {
-                      id: crypto.randomUUID(),
-                      name: "",
-                      provider: "github",
-                      url: "",
-                      required: true,
-                      shallow: true,
-                      syncMode: "fastForward",
-                    },
-                  ],
-                })
-              }
-            >
-              添加仓库
-            </button>
-            <label className="flex items-center gap-2 pt-1 text-sm">
-              <input
-                type="checkbox"
-                checked={form.gitAllowShellGit ?? false}
-                onChange={(event) => setForm({ ...form, gitAllowShellGit: event.target.checked })}
-              />
-              允许 shell git（默认关闭：git 操作只准走 donger-git 工具；开启后 agent 可绕过工具直跑
-              git 命令，git push 仍会弹审批卡。除非明确需要，请保持关闭）
-            </label>
-          </div>
-        </Field>
-
-        <Field label="扩展工作目录">
-          <div className="space-y-2">
-            {form.extensionDirectories.map((directory, index) => (
-              <div key={directory.id} className="grid gap-2 rounded border p-3 sm:grid-cols-6">
-                <input
-                  className="rounded border px-2 py-1 text-sm sm:col-span-2"
-                  placeholder="显示名称"
-                  value={directory.name}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      extensionDirectories: form.extensionDirectories.map((item, itemIndex) =>
-                        itemIndex === index ? { ...item, name: event.target.value } : item,
-                      ),
-                    })
-                  }
-                />
-                <input
-                  className="rounded border px-2 py-1 text-sm sm:col-span-3"
-                  placeholder="宿主机绝对目录"
-                  value={directory.path}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      extensionDirectories: form.extensionDirectories.map((item, itemIndex) =>
-                        itemIndex === index ? { ...item, path: event.target.value } : item,
-                      ),
-                    })
-                  }
-                />
-                <select
-                  className="rounded border px-2 py-1 text-sm"
-                  value={directory.access}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      extensionDirectories: form.extensionDirectories.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? {
-                              ...item,
-                              access: event.target.value as "readOnly" | "readWrite",
-                            }
-                          : item,
-                      ),
-                    })
-                  }
-                >
-                  <option value="readWrite">读写</option>
-                  <option value="readOnly">只读</option>
-                </select>
-                <button
-                  type="button"
-                  className="text-left text-xs text-destructive sm:col-span-6"
-                  onClick={() =>
-                    setForm({
-                      ...form,
-                      extensionDirectories: form.extensionDirectories.filter(
-                        (_, itemIndex) => itemIndex !== index,
-                      ),
-                    })
-                  }
-                >
-                  删除目录
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="rounded border px-3 py-1.5 text-sm"
-              onClick={() =>
-                setForm({
-                  ...form,
-                  extensionDirectories: [
-                    ...form.extensionDirectories,
-                    { id: crypto.randomUUID(), name: "", path: "", access: "readWrite" },
-                  ],
-                })
-              }
-            >
-              添加工作目录
-            </button>
-            <p className="text-xs text-muted-foreground">
-              目录仅在智能体创建者自己的会话中生效；共享用户不会获得宿主目录权限。
-            </p>
-          </div>
-        </Field>
-
-        {!isNew && id ? <CallbackPanel agentId={id} /> : null}
-        {!isNew && id ? <SharePanel agentId={id} /> : null}
-
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className="rounded bg-primary px-3 py-1.5 text-primary-foreground disabled:opacity-50"
-            onClick={save}
-            disabled={saving || !form.name}
-          >
-            {saving ? "保存中…" : "保存"}
-          </button>
-          <button
-            type="button"
-            className="rounded border px-3 py-1.5"
-            onClick={() => navigate("/agents")}
-          >
-            取消
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <div className="text-sm font-medium">{label}</div>
-      {children}
-    </div>
-  );
-}
-
-function SkillPicker({
-  options,
-  value,
-  onChange,
-}: {
-  options: SkillSelectorOption[];
-  value: string[];
-  onChange: (skills: string[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
-  const allOptions = useMemo(() => mergeSkillSelectorOptions(options, value), [options, value]);
-  const filteredOptions = useMemo(
-    () => filterSkillSelectorOptions(allOptions, query),
-    [allOptions, query],
-  );
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
-  }, [open]);
-
-  const toggle = (id: string) => {
-    onChange(value.includes(id) ? value.filter((item) => item !== id) : [...value, id]);
-  };
+  const sectionProps = { form, patch };
 
   return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        className="flex min-h-9 w-full items-center justify-between rounded border px-2 py-1 text-left text-sm"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className={value.length ? "truncate" : "text-muted-foreground"}>
-          {value.length ? `已选择 ${value.length} 个技能` : "请选择技能"}
-        </span>
-        <span className="ml-2 text-muted-foreground">{open ? "▴" : "▾"}</span>
-      </button>
-      {value.length > 0 ? (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {value.map((id) => (
-            <button
-              key={id}
-              type="button"
-              className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
-              onClick={() => toggle(id)}
-              title="点击移除"
-            >
-              {id} ×
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {open ? (
-        <div className="absolute z-30 mt-1 w-full rounded-lg border border-border bg-card p-2 shadow-lg">
-          <input
-            className="mb-2 w-full rounded-lg border border-border bg-card px-3 py-2 focus:border-primary focus:outline-none text-sm"
-            placeholder="搜索技能名称、ID或描述"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <div className="max-h-64 space-y-1 overflow-y-auto">
-            {filteredOptions.length ? (
-              filteredOptions.map((option) => (
-                <label
-                  key={option.id}
-                  className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                >
-                  <input
-                    type="checkbox"
-                    className="mt-0.5"
-                    checked={value.includes(option.id)}
-                    onChange={() => toggle(option.id)}
-                  />
-                  <span className="min-w-0">
-                    <span className="block truncate">{option.name || option.id}</span>
-                    {option.description ? (
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {option.id} · {option.description}
-                      </span>
-                    ) : null}
-                  </span>
-                </label>
-              ))
-            ) : (
-              <p className="px-2 py-3 text-center text-xs text-muted-foreground">
-                {allOptions.length ? "没有匹配的技能" : "暂无可选技能"}
-              </p>
-            )}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-const CALLBACK_VALIDITY_OPTIONS: Array<{ days: number; label: string }> = [
-  { days: 360, label: "360 天" },
-  { days: 180, label: "180 天" },
-  { days: 30, label: "30 天" },
-  { days: 0, label: "不过期" },
-];
-
-function formatExpiry(expiresAt: string | null): string {
-  if (!expiresAt) return "永久有效";
-  const t = new Date(expiresAt).getTime();
-  if (Number.isNaN(t)) return "未知";
-  if (t <= Date.now()) return `已于 ${new Date(t).toLocaleString()} 过期`;
-  return `有效期至 ${new Date(t).toLocaleString()}`;
-}
-
-/**
- * 回调链接面板：生成带有效期的回调 URL，调用方 GET ?query=xxx 即与该智能体对话。
- * 链接等同该智能体的 API 密钥——完整 URL 仅生成时展示一次，之后只显尾 4 位。
- */
-function CallbackPanel({ agentId }: { agentId: string }) {
-  const [info, setInfo] = useState<AgentCallbackInfo | null>(null);
-  const [validityDays, setValidityDays] = useState<number>(30);
-  const [created, setCreated] = useState<AgentCallbackCreated | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    fetchAgentCallback(agentId)
-      .then(setInfo)
-      .catch(() => setInfo(null));
-  }, [agentId]);
-
-  const generate = async (isRegenerate: boolean) => {
-    if (isRegenerate && !window.confirm("重新生成将立即作废当前回调链接，确认？")) return;
-    setBusy(true);
-    setError("");
-    try {
-      const res = await generateAgentCallback(agentId, validityDays || undefined);
-      setCreated(res);
-      setCopied(false);
-      setInfo({
-        configured: true,
-        tokenTail: res.token.slice(-4),
-        expiresAt: res.expiresAt,
-        createdAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const revoke = async () => {
-    if (!window.confirm("吊销后调用方将立即无法使用该链接，确认吊销？")) return;
-    setBusy(true);
-    setError("");
-    try {
-      await revokeAgentCallback(agentId);
-      setCreated(null);
-      setInfo({ configured: false, tokenTail: null, expiresAt: null, createdAt: null });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copyUrl = async () => {
-    if (!created) return;
-    try {
-      await navigator.clipboard.writeText(created.url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // 剪贴板不可用时用户可手动选中输入框文本复制
-      setCopied(false);
-    }
-  };
-
-  const expired = !!info?.expiresAt && new Date(info.expiresAt).getTime() <= Date.now();
-
-  return (
-    <div className="space-y-2 rounded border p-3">
-      <div className="flex items-center justify-between">
-        <span className="font-medium">回调</span>
-        <div className="flex items-center gap-2">
-          <select
-            className="rounded border bg-background px-2 py-1 text-sm"
-            value={validityDays}
-            onChange={(e) => setValidityDays(Number(e.target.value))}
-          >
-            {CALLBACK_VALIDITY_OPTIONS.map((o) => (
-              <option key={o.days} value={o.days}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="rounded border px-2 py-1 text-sm disabled:opacity-50"
-            disabled={busy}
-            onClick={() => generate(info?.configured ?? false)}
-          >
-            {info?.configured ? "重新生成" : "生成链接"}
-          </button>
-          {info?.configured ? (
-            <button
-              type="button"
-              className="rounded border border-destructive/40 px-2 py-1 text-sm text-destructive disabled:opacity-50"
-              disabled={busy}
-              onClick={revoke}
-            >
-              吊销
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      {info?.configured ? (
-        <div className="text-xs text-muted-foreground">
-          当前链接：…{info.tokenTail} · {formatExpiry(info.expiresAt)}
-          {expired ? (
-            <span className="ml-1 rounded bg-destructive/10 px-1 text-destructive">已过期</span>
-          ) : null}
-        </div>
-      ) : (
-        <div className="text-xs text-muted-foreground">
-          未配置。生成后调用方访问该链接即可与本智能体对话。
-        </div>
-      )}
-
-      {created ? (
-        <div className="space-y-1">
-          <input
-            readOnly
-            className="w-full rounded border bg-muted px-2 py-1 text-xs"
-            value={`${created.url}?query=你的问题`}
-            onClick={(e) => (e.target as HTMLInputElement).select()}
-          />
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-amber-600">
-              完整链接仅此次显示，请立即复制保存；重新生成将使其失效。
-            </span>
-            <button type="button" className="text-xs underline" onClick={copyUrl}>
-              {copied ? "已复制" : "复制带示例参数的链接"}
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {error ? <div className="text-xs text-destructive">{error}</div> : null}
-
-      <div className="text-xs text-muted-foreground">
-        用法：<code>GET 回调链接?query=问题</code> 即发起一次对话（每次独立会话），响应返回
-        conversationId；再访问 <code>回调链接/conversations/&lt;conversationId&gt;</code>
-        轮询执行结果。注意：链接等同该智能体的 API 密钥，请勿外传；回调对话以 Full access
-        执行（免人工审批，工具白名单与写入边界守卫仍生效）；query 经 URL
-        明文传输，请勿传递敏感内容。
-      </div>
-    </div>
-  );
-}
-
-function SharePanel({ agentId }: { agentId: string }) {
-  const [status, setStatus] = useState<ShareStatus | null>(null);
-
-  useEffect(() => {
-    fetchShareStatus(agentId)
-      .then(setStatus)
-      .catch(() => {});
-  }, [agentId]);
-
-  if (!status) return null;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-
-  const toggle = async () => {
-    const next = await setShareEnabled(agentId, !status.enabled);
-    setStatus({ ...status, ...next });
-  };
-
-  return (
-    <div className="space-y-2 rounded border p-3">
-      <div className="flex items-center justify-between">
-        <span className="font-medium">分享</span>
-        <button type="button" className="rounded border px-2 py-1 text-sm" onClick={toggle}>
-          {status.enabled ? "关闭分享" : "开启分享"}
-        </button>
-      </div>
-      {status.enabled && status.url ? (
-        <>
-          <input
-            readOnly
-            className="w-full rounded border bg-muted px-2 py-1 text-xs"
-            value={`${origin}${status.url}`}
-            onClick={(e) => (e.target as HTMLInputElement).select()}
-          />
-          <div className="text-xs text-muted-foreground">
-            访问者名单（{status.grants.length}）：
-          </div>
-          <ul className="text-xs">
-            {status.grants.map((g) => (
-              <li key={g.userId} className="flex items-center justify-between">
-                <span>{g.userId}</span>
-                <button
-                  type="button"
-                  className="text-destructive"
-                  onClick={async () => {
-                    await removeShareGrant(agentId, g.userId);
-                    setStatus({
-                      ...status,
-                      grants: status.grants.filter((x) => x.userId !== g.userId),
-                    });
-                  }}
-                >
-                  移除
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-/** 凭证勾选：选项 = 我的凭证 ∪ 全局模板；运行时按当前用户已配置的值注入 */
-function CredentialPicker({
-  value,
-  onChange,
-  lockedCodes = [],
-}: {
-  value: string[];
-  onChange: (codes: string[]) => void;
-  /** 被 git 仓库绑定 credentialCode 引用的模板：后端会强制并入 credentials，UI 锁定为勾选并标注来源 */
-  lockedCodes?: string[];
-}) {
-  const [options, setOptions] = useState<
-    Array<{ code: string; name: string; keys: string[]; configured: boolean }>
-  >([]);
-  const [loadError, setLoadError] = useState(false);
-  const [reloadTick, setReloadTick] = useState(0);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 仅用于手动重试时触发重新加载
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [mine, templates] = await Promise.all([
-          fetchMyCredentials(),
-          fetchCredentialTemplates(),
-        ]);
-        if (cancelled) return;
-        setLoadError(false);
-        const seen = new Set<string>();
-        const options: Array<{
-          code: string;
-          name: string;
-          keys: string[];
-          configured: boolean;
-        }> = [];
-        for (const m of mine) {
-          if (seen.has(m.code)) continue;
-          seen.add(m.code);
-          options.push({
-            code: m.code,
-            name: m.name,
-            keys: m.keySpecs.map((k) => k.key),
-            configured: true,
-          });
-        }
-        for (const t of templates) {
-          if (seen.has(t.code)) continue;
-          seen.add(t.code);
-          options.push({
-            code: t.code,
-            name: t.name,
-            keys: t.keySpecs.map((k) => k.key),
-            configured: false,
-          });
-        }
-        setOptions(options);
-      } catch {
-        // 加载失败显式呈现（可重试），不再静默显示"暂无"
-        if (!cancelled) setLoadError(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadTick]);
-
-  const toggle = (code: string) => {
-    if (lockedCodes.includes(code)) return;
-    onChange(value.includes(code) ? value.filter((c) => c !== code) : [...value, code]);
-  };
-
-  return (
-    <Field label="凭证（勾选后运行时按当前用户已配置的值注入）">
-      {loadError ? (
+    <div ref={scrollRootRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      {/* Sticky 顶栏 */}
+      <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-card/95 px-5 backdrop-blur">
         <button
           type="button"
-          className="rounded border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-          onClick={() => setReloadTick((t) => t + 1)}
+          onClick={() => navigate("/agents")}
+          title="返回智能体管理"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
         >
-          凭证列表加载失败，点击重试
+          ←
         </button>
-      ) : options.length === 0 ? (
-        <div className="text-xs text-muted-foreground">
-          暂无可选凭证。可先到「凭证管理」页创建。
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="text-[15px] font-semibold">{isNew ? "新建智能体" : "编辑智能体"}</h1>
+          {!isNew && form.name ? (
+            <span className="truncate text-[13px] text-muted-foreground">· {form.name}</span>
+          ) : null}
         </div>
-      ) : (
-        <div className="space-y-1">
-          {options.map((o) => {
-            const locked = lockedCodes.includes(o.code);
-            const checked = locked || value.includes(o.code);
+        {dirty ? (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true" />
+            未保存
+          </span>
+        ) : null}
+        <span className="flex-1" />
+        {!isNew && id ? (
+          <Link
+            to={`/agents/${id}/chat`}
+            className="hidden rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted sm:inline-flex"
+          >
+            对话
+          </Link>
+        ) : null}
+        <Button variant="secondary" size="sm" onClick={() => navigate("/agents")}>
+          取消
+        </Button>
+        <Button size="sm" onClick={() => void save()} disabled={saving || !form.name}>
+          {saving ? "保存中…" : "保存"}
+        </Button>
+      </header>
+
+      {/* 移动端：横向分区 chips（sticky 于顶栏下） */}
+      <nav className="sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur md:hidden">
+        {AGENT_EDITOR_SECTIONS.map((s) => {
+          const hidden = s.id === "agent-sec-integration" && isNew;
+          if (hidden) return null;
+          const count = issuesBySection.get(s.id) ?? 0;
+          const active = activeSection === s.id;
+          return (
+            <a
+              key={s.id}
+              href={`#${s.id}`}
+              className={cn(
+                "shrink-0 rounded-full px-3 py-1 text-xs transition-colors",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-foreground hover:opacity-80",
+              )}
+            >
+              {s.label}
+              {count > 0 ? <span className="ml-1 font-semibold text-warning">①</span> : null}
+            </a>
+          );
+        })}
+      </nav>
+
+      <div className="flex flex-1 items-start">
+        {/* 桌面：左锚点导航（sticky） */}
+        <nav className="sticky top-28 hidden w-56 shrink-0 flex-col gap-1 self-stretch border-r border-border bg-card/60 p-4 md:flex">
+          <p className="px-3 pb-1 text-[11px] font-semibold text-muted-foreground/70">配置分区</p>
+          {AGENT_EDITOR_SECTIONS.map((s) => {
+            if (s.id === "agent-sec-integration" && isNew) return null;
+            const count = issuesBySection.get(s.id) ?? 0;
+            const active = activeSection === s.id;
             return (
-              <label key={o.code} className="flex items-center gap-2 overflow-hidden text-sm">
-                <input
-                  type="checkbox"
-                  className="shrink-0"
-                  checked={checked}
-                  disabled={locked}
-                  onChange={() => toggle(o.code)}
-                />
-                <span className="shrink-0 whitespace-nowrap font-mono">{o.code}</span>
-                <span className="min-w-0 flex-1 truncate" title={o.name}>
-                  {o.name}
-                </span>
-                <span
-                  className="min-w-0 shrink truncate text-xs text-muted-foreground"
-                  title={
-                    locked
-                      ? "由 git 仓库绑定的凭证引用强制勾选；如需移除请在下方「git 仓库」绑定的凭证下拉中改选"
-                      : `keys=[${o.keys.join(",")}]${o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}`
-                  }
-                >
-                  {locked
-                    ? "由仓库绑定引入（在下方 git 仓库绑定中修改）"
-                    : `keys=[${o.keys.join(",")}]${o.configured ? " · 已配置" : " · 未配置（执行时会询问）"}`}
-                </span>
-              </label>
+              <a
+                key={s.id}
+                href={`#${s.id}`}
+                onClick={() => setActiveSection(s.id)}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] transition-colors",
+                  active
+                    ? "bg-primary-soft font-semibold text-primary"
+                    : "text-foreground hover:bg-muted",
+                )}
+              >
+                {s.label}
+                <span className="flex-1" />
+                {count > 0 ? <Badge tone="warning">{count}</Badge> : null}
+              </a>
             );
           })}
-        </div>
-      )}
-    </Field>
+          <div className="flex-1" />
+          <p className="px-3 text-[10px] leading-snug text-muted-foreground/60">
+            徽标 = 该区有需处理的场景提示
+          </p>
+        </nav>
+
+        {/* 内容滚动区：五分区 */}
+        <main className="min-w-0 flex-1 space-y-5 p-5 pb-28 md:p-6">
+          {error ? (
+            <p className="rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2.5 text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+          {warnings && warnings.length > 0 ? (
+            <div className="space-y-1 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm">
+              <p className="font-medium">装备提示（已保存，可稍后处理）</p>
+              <ul className="list-inside list-disc text-muted-foreground">
+                {warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <BasicSection
+            {...sectionProps}
+            issues={issues.filter((i) => i.section === "agent-sec-basic")}
+            nameInputRef={nameInputRef}
+          />
+          <PromptSkillsSection {...sectionProps} meta={meta} />
+          <ToolsPermsSection
+            {...sectionProps}
+            tools={meta.tools}
+            connectors={connectors}
+            issues={issues.filter((i) => i.section === "agent-sec-tools")}
+            mcpJsonText={mcpJsonText}
+            onMcpJsonTextChange={setMcpJsonText}
+            mcpJsonError={mcpJsonError}
+            onMcpJsonErrorChange={setMcpJsonError}
+          />
+          <ResourcesSection {...sectionProps} gitCredentialOptions={gitCredentialOptions} />
+          {!isNew && id ? <IntegrationSection agentId={id} /> : null}
+        </main>
+      </div>
+
+      {/* Sticky 底部保存栏 */}
+      <footer className="sticky bottom-0 z-20 flex h-14 shrink-0 items-center gap-3 border-t border-border bg-card/95 px-5 backdrop-blur">
+        {dirty ? (
+          <span className="flex items-center gap-2 text-[13px]">
+            <span className="h-[7px] w-[7px] rounded-full bg-warning" aria-hidden="true" />
+            有未保存的更改
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">所有更改已保存</span>
+        )}
+        <span className="flex-1" />
+        <Button variant="secondary" size="sm" onClick={() => navigate("/agents")}>
+          取消
+        </Button>
+        <Button
+          size="sm"
+          className="px-5"
+          onClick={() => void save()}
+          disabled={saving || !form.name}
+        >
+          {saving ? "保存中…" : "保存"}
+        </Button>
+      </footer>
+    </div>
   );
-}
-
-/** 仓库目录名约束（与后端 src/domain/git.ts AgentGitRepositorySchema 同源） */
-const REPO_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
-
-/** 从 URL 推断平台（host 精确匹配三平台；非 HTTPS/未知域名返回 undefined） */
-function inferProviderFromUrl(url: string): "github" | "gitee" | "jihulab" | undefined {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return undefined;
-    const host = parsed.hostname.toLowerCase();
-    if (host === "github.com") return "github";
-    if (host === "gitee.com") return "gitee";
-    if (host === "jihulab.com") return "jihulab";
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** 从 URL 路径尾段推断默认目录名（非法字符转 -、掐掉头部符号；解析失败返回空串） */
-function inferRepoNameFromUrl(url: string): string {
-  try {
-    const last = new URL(url).pathname
-      .replace(/\.git$/i, "")
-      .split("/")
-      .filter(Boolean)
-      .pop();
-    return last?.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^[._-]+/, "") ?? "";
-  } catch {
-    return "";
-  }
 }
