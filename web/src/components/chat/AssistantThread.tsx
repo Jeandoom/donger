@@ -24,6 +24,7 @@ import { Button } from "../ui/button";
 import {
   ComposerMentionTriggers,
   ComposerPlusMenu,
+  MentionBackdrop,
   useMentionCandidatesState,
 } from "./ComposerMentions";
 import { MarkdownCodeHeader, MarkdownSyntaxHighlighter } from "./MarkdownCodeBlock";
@@ -142,7 +143,7 @@ function MessageTime() {
   return <span className="font-normal opacity-75"> · {text}</span>;
 }
 
-/** 用户消息正文：@/​/$ 引用标记高亮（保守分词，邮箱/金额/路径不误伤） */
+/** 用户消息正文：@/​/$ 引用标记渲染为 pill 徽标（与输入框背衬一致；保守分词不误伤邮箱/金额） */
 function UserText(props: TextMessagePartProps) {
   const tokens = tokenizeMentionMarkers(props.text);
   return (
@@ -152,7 +153,7 @@ function UserText(props: TextMessagePartProps) {
         return token.type === "mention" ? (
           <span
             key={key}
-            className="rounded bg-black/20 px-1 font-medium text-inherit dark:bg-white/20"
+            className="rounded bg-black/20 px-0.5 -mx-0.5 font-medium text-inherit ring-1 ring-inset ring-white/30"
           >
             {token.text}
           </span>
@@ -336,6 +337,16 @@ export function AssistantThread(props: AssistantThreadProps) {
   );
   const aui = useAui();
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+  const composerText = useAuiState((s) => s.composer.text) ?? "";
+  const getTextarea = useCallback(
+    () => inputWrapRef.current?.querySelector("textarea") ?? null,
+    [],
+  );
+  const syncBackdropScroll = useCallback(() => {
+    const ta = inputWrapRef.current?.querySelector("textarea");
+    if (backdropRef.current && ta) backdropRef.current.scrollTop = ta.scrollTop;
+  }, []);
   // 菜单插入触发字符：经原生 value setter + input 事件写入（等同真实键入）。
   // 库的光标检测只在 textarea onChange/onSelect 中同步内部光标位置，纯 setText
   // 不触发该链路，导致插入的 @ 不弹候选浮层（2026-09-17 e2e 实锤）。
@@ -395,8 +406,14 @@ export function AssistantThread(props: AssistantThreadProps) {
               <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
             </div>
             <div ref={inputWrapRef} className="relative">
+              {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
+              {hasAgent ? <MentionBackdrop text={composerText} backdropRef={backdropRef} /> : null}
               <ComposerPrimitive.Input
-                className="max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground"
+                className={cn(
+                  "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground",
+                  hasAgent && "text-transparent caret-primary selection:bg-primary/30",
+                )}
+                onScroll={syncBackdropScroll}
                 placeholder={props.placeholder}
               />
               {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
@@ -406,6 +423,7 @@ export function AssistantThread(props: AssistantThreadProps) {
                   loading={loading}
                   error={error}
                   onMentionInserted={props.onMentionInserted}
+                  getTextarea={getTextarea}
                 />
               ) : null}
             </div>

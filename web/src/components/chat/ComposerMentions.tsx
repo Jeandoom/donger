@@ -13,17 +13,57 @@ import {
   fetchMentionCandidates,
   type MentionCandidates,
 } from "../../lib/mentionCandidates";
-import type { Mention, MentionKind } from "../../lib/mentions";
+import {
+  fileMarkerLabel,
+  type Mention,
+  type MentionKind,
+  tokenizeMentionMarkers,
+} from "../../lib/mentions";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
-/** 引用标记的插入格式：纯文本前缀 + label（textarea 无法渲染 chip，文本标记即展示形态） */
-function markerFormatter(prefix: string): Unstable_DirectiveFormatter {
+/** 引用标记的插入格式：纯文本前缀 + 标记文本（文件取 basename，展示为短 chip） */
+function markerFormatter(
+  prefix: string,
+  labelText: (item: Unstable_TriggerItem) => string = (item) => item.label,
+): Unstable_DirectiveFormatter {
   return {
-    serialize: (item) => `${prefix}${item.label}`,
+    serialize: (item) => `${prefix}${labelText(item)}`,
     // 纯文本输入框不做 chip 解析，恒等回传
     parse: (text) => [{ kind: "text", text }],
   };
+}
+
+/**
+ * 引用标记背衬层（react-mentions 的 highlight-backdrop 模式）：
+ * textarea 文字透明，本层渲染同字体/同换行的文本并把 @//​/$ 标记画成 pill 徽标。
+ * 标记文本与真实文本一致（文件插入时即取短名），布局零漂移。
+ */
+export function MentionBackdrop(props: {
+  text: string;
+  backdropRef: React.MutableRefObject<HTMLDivElement | null>;
+}) {
+  const tokens = tokenizeMentionMarkers(props.text);
+  return (
+    <div
+      ref={props.backdropRef}
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 overflow-hidden px-3 py-2 text-sm leading-6 whitespace-pre-wrap break-words text-foreground"
+    >
+      {tokens.map((token, i) =>
+        token.type === "mention" ? (
+          <span
+            key={`${token.kind}:${i}`}
+            className="rounded bg-primary-soft px-0.5 -mx-0.5 text-primary ring-1 ring-primary/20 ring-inset"
+          >
+            {token.text}
+          </span>
+        ) : (
+          <span key={i}>{token.text}</span>
+        ),
+      )}
+    </div>
+  );
 }
 
 /** 候选数据：挂载/agent 变更时拉取；+ 菜单打开时可手动 refresh（文件会随任务执行变化） */
@@ -197,10 +237,23 @@ export interface ComposerMentionTriggersProps {
   /** 候选接口加载失败信息（非空时浮层显式报错而非伪装成空列表） */
   error?: string | null;
   onMentionInserted: (mention: Mention) => void;
+  /** 取 composer 的 textarea（插入后同步库内光标状态，驱动浮层关闭） */
+  getTextarea: () => HTMLTextAreaElement | null;
 }
 
 /** @/​/$ 三个触发字符的候选浮层（须置于 ComposerPrimitive.Unstable_TriggerPopoverRoot 内） */
 export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
+  // 插入标记后把 DOM 光标推到末尾并补发 input 事件：库的光标检测只在 textarea
+  // onChange/onSelect 中同步内部光标，不补发则浮层停留在空 query 状态不关闭
+  // （2026-09-17 e2e/用户实测：鼠标单击选中后浮层不自动关闭）。
+  const syncCaretAfterInsert = useCallback(() => {
+    const ta = props.getTextarea();
+    if (!ta) return;
+    ta.focus();
+    const end = ta.value.length;
+    ta.setSelectionRange(end, end);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }, [props]);
   const fileItems = useMemo(
     () =>
       props.candidates.files.map(
@@ -210,8 +263,13 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
   );
   const fileAdapter = unstable_useMentionAdapter({
     items: fileItems,
-    formatter: markerFormatter("@"),
-    onInserted: (item) => props.onMentionInserted({ kind: "file", id: item.id, label: item.label }),
+    // 标记只展示 basename（唯一性由 mentions[].id 的 scope:全路径承担）
+    formatter: markerFormatter("@", (item) => fileMarkerLabel(item.label)),
+    onInserted: (item) => {
+      const label = fileMarkerLabel(item.label);
+      props.onMentionInserted({ kind: "file", id: item.id, label });
+      syncCaretAfterInsert();
+    },
   });
   const skillAdapter = unstable_useMentionAdapter({
     items: useMemo(
@@ -227,8 +285,10 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
       [props.candidates.skills],
     ),
     formatter: markerFormatter("/"),
-    onInserted: (item) =>
-      props.onMentionInserted({ kind: "skill", id: item.id, label: item.label }),
+    onInserted: (item) => {
+      props.onMentionInserted({ kind: "skill", id: item.id, label: item.label });
+      syncCaretAfterInsert();
+    },
   });
   const connectorAdapter = unstable_useMentionAdapter({
     items: useMemo(

@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { type Mention, mentionMarker, reconcileMentions, tokenizeMentionMarkers } from "./mentions";
+import {
+  fileMarkerLabel,
+  type Mention,
+  mentionMarker,
+  reconcileMentions,
+  tokenizeMentionMarkers,
+} from "./mentions";
 
 const FILE: Mention = { kind: "file", id: "runtime:src/config.ts", label: "src/config.ts" };
 const SKILL: Mention = { kind: "skill", id: "donger:web-ui-iterate", label: "web-ui-iterate" };
 const CONN: Mention = { kind: "connector", id: "conn-1", label: "lark" };
+
+describe("fileMarkerLabel", () => {
+  it("文件标记取 basename（正反斜杠均兼容）", () => {
+    expect(fileMarkerLabel("repos/donger/AGENTS.md")).toBe("AGENTS.md");
+    expect(fileMarkerLabel("src\\config.ts")).toBe("config.ts");
+    expect(fileMarkerLabel("README.md")).toBe("README.md");
+  });
+
+  it("空段兜底返回原值", () => {
+    expect(fileMarkerLabel("dir/")).toBe("dir/");
+  });
+});
 
 describe("mentionMarker", () => {
   it("按类别生成标记", () => {

@@ -18,6 +18,16 @@ export function mentionMarker(m: Mention): string {
 }
 
 /**
+ * 文件引用的展示/标记文本：仅取 basename（@AGENTS.md 而非 @repos/donger/AGENTS.md）。
+ * 唯一性由 mentions[].id（scope:全路径）承担，标记只是给人和模型看的短锚点；
+ * 候选列表已在源头排除含空白的路径，basename 必然无空白（触发检测以空白为界）。
+ */
+export function fileMarkerLabel(label: string): string {
+  const base = label.split(/[\\/]/).pop() ?? label;
+  return base.length > 0 ? base : label;
+}
+
+/**
  * 发送前对账：用户选中后又删除了文本中的标记的引用不再上送。
  * mentions 仅是发送时的临时指令（不落库），文本标记即唯一事实源。
  */
