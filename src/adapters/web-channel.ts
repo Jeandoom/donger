@@ -2446,9 +2446,13 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/audit/conversations
+    // GET /api/audit/conversations —— admin 全量；member 仅本人会话（store 层 L2 visible 过滤）
     if (url === "/api/audit/conversations" && req.method === "GET") {
-      const summaries = (await this.deps.auditStore?.listConversationSummaries()) ?? [];
+      const viewer = this.currentViewer(req);
+      const summaries =
+        viewer.role === "admin"
+          ? ((await this.deps.auditStore?.listConversationSummaries()) ?? [])
+          : ((await this.deps.auditStore?.listConversationSummariesVisible(viewer.id)) ?? []);
       const out = await Promise.all(
         summaries.map(async (s) => {
           const conv = await this.deps.conversationStore?.get(s.conversationId);
@@ -2499,11 +2503,16 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // GET /api/audit/conversations/:id
+    // GET /api/audit/conversations/:id —— 守卫已限属主或 admin；member 再走 L2 visible 双保险
     const auditDetailMatch = url.match(/^\/api\/audit\/conversations\/([\w-]+)$/);
     if (auditDetailMatch && req.method === "GET") {
       const conversationId = auditDetailMatch[1] ?? "";
-      const events = (await this.deps.auditStore?.listByConversation(conversationId)) ?? [];
+      const viewer = this.currentViewer(req);
+      const events =
+        viewer.role === "admin"
+          ? ((await this.deps.auditStore?.listByConversation(conversationId)) ?? [])
+          : ((await this.deps.auditStore?.listByConversationVisible(viewer.id, conversationId)) ??
+            []);
       if (events.length === 0) {
         res.writeHead(404);
         res.end(JSON.stringify({ error: "no audit data" }));

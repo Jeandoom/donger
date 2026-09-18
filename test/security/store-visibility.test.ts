@@ -117,11 +117,33 @@ describe("AuditStore visible（L2）", () => {
     db.close();
   });
 
+  it("sqlite：listConversationSummariesVisible 仅本人会话", async () => {
+    const db = new Database(":memory:");
+    const convs = new SqliteConversationStore(db);
+    convs.migrate();
+    const audits = new SqliteAuditStore(db);
+    audits.migrate();
+
+    const convAlice = await convs.create(ALICE, "web", "alice 会话");
+    const convBob = await convs.create(BOB, "web", "bob 会话");
+    await audits.record(ev("1", convAlice.id, "t-alice"));
+    await audits.record(ev("2", convBob.id, "t-bob"));
+
+    const aliceSums = await audits.listConversationSummariesVisible(ALICE);
+    expect(aliceSums.map((s) => s.conversationId)).toEqual([convAlice.id]);
+    const bobSums = await audits.listConversationSummariesVisible(BOB);
+    expect(bobSums.map((s) => s.conversationId)).toEqual([convBob.id]);
+    // 全量管理方法不受影响（对照）
+    expect((await audits.listConversationSummaries()).length).toBe(2);
+    db.close();
+  });
+
   it("in-memory：未装配属主源 → visible 恒空（fail-closed）", async () => {
     const audits = new InMemoryAuditStore();
     await audits.record(ev("1", "conv-x", "t-x"));
     expect(await audits.listByConversationVisible(ALICE, "conv-x")).toEqual([]);
     expect(await audits.listByTaskVisible(ALICE, "t-x")).toEqual([]);
+    expect(await audits.listConversationSummariesVisible(ALICE)).toEqual([]);
   });
 
   it("in-memory：装配属主源后按属主过滤", async () => {
@@ -134,6 +156,9 @@ describe("AuditStore visible（L2）", () => {
     expect(await audits.listByConversationVisible(BOB, "conv-alice")).toEqual([]);
     expect((await audits.listByTaskVisible(ALICE, "t-alice")).length).toBe(1);
     expect(await audits.listByTaskVisible(BOB, "t-alice")).toEqual([]);
+    const aliceSums = await audits.listConversationSummariesVisible(ALICE);
+    expect(aliceSums.map((s) => s.conversationId)).toEqual(["conv-alice"]);
+    expect(await audits.listConversationSummariesVisible(BOB)).toEqual([]);
   });
 });
 
