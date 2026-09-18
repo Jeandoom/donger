@@ -269,6 +269,7 @@ async function main(): Promise<void> {
     githubProxyUrl: cfg.githubProxyUrl,
     inviteStore,
     emailSignupAllowedDomains: cfg.emailSignupAllowedDomains,
+    emailLoginEnabled: cfg.emailLoginEnabled,
     trustProxy: cfg.trustProxy,
     triggerStore,
     workflowStore,

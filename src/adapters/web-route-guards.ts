@@ -70,6 +70,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/verify", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/code-exchange", access: { kind: "public" } },
+    { method: "GET", pattern: "/api/auth/methods", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/qrcode-url", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/dingtalk/callback", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/github/url", access: { kind: "public" } },
