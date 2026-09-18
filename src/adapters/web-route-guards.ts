@@ -208,6 +208,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
 
     // ===== 登录即可（属主/共享判定在 handler 领域逻辑中）=====
     { method: "GET", pattern: "/api/auth/me", access: { kind: "authenticated" } },
+    // 对话模块侧栏偏好：仅本人（handler 用 requireRequestUser，路径无 id 参数）
+    {
+      method: "PATCH",
+      pattern: "/api/users/me/sidebar-prefs",
+      access: { kind: "authenticated" },
+    },
     { method: "GET", pattern: "/api/auth/github/bind", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/auth/logout", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/settings/llm-platforms", access: { kind: "authenticated" } },

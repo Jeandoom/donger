@@ -146,6 +146,7 @@ function mockUserStore(): UserStore {
     },
     async updateProfile() {},
     async updateRole() {},
+    async updateSidebarPrefs() {},
     async setPasswordCredential() {},
     async getPasswordCredential() {
       return undefined;
@@ -499,7 +500,11 @@ describe("并发满载淘汰最早挂起任务", () => {
     release(): void {
       this.gates.shift()?.();
     }
-    async *run(task: Task, _opts: RunOptions, resolver: ApprovalResolver): AsyncIterable<RunnerEvent> {
+    async *run(
+      task: Task,
+      _opts: RunOptions,
+      resolver: ApprovalResolver,
+    ): AsyncIterable<RunnerEvent> {
       const idx = this.prompts.push(task.prompt) - 1;
       yield { type: "session_init", taskId: task.id, sessionId: `sdk-${idx}` };
       if (idx === this.pendAt) {
@@ -511,7 +516,12 @@ describe("并发满载淘汰最早挂起任务", () => {
           input: { command: "deploy prod" },
           summary: "部署审批",
         });
-        yield { type: "result", taskId: task.id, subtype: "success", result: `approved:${task.prompt}` };
+        yield {
+          type: "result",
+          taskId: task.id,
+          subtype: "success",
+          result: `approved:${task.prompt}`,
+        };
         return;
       }
       await new Promise<void>((resolve) => this.gates.push(resolve));
@@ -561,7 +571,9 @@ describe("并发满载淘汰最早挂起任务", () => {
       const p1 = orch.handleMessage({ ...MSG("任务1-等审批"), conversationId: "conv-1" });
       const p2 = orch.handleMessage({ ...MSG("任务2-执行中"), conversationId: "conv-2" });
       await vi.waitFor(async () =>
-        expect((await allTasks(store)).filter((t) => t.status === "awaiting_approval").length).toBe(1),
+        expect((await allTasks(store)).filter((t) => t.status === "awaiting_approval").length).toBe(
+          1,
+        ),
       );
 
       // 第 3 个任务：淘汰最早挂起的任务1（而非活跃执行中的任务2）
@@ -570,7 +582,9 @@ describe("并发满载淘汰最早挂起任务", () => {
 
       // 被淘汰任务收口为 canceled，审批挂起被解开
       await vi.waitFor(async () => {
-        expect((await allTasks(store)).find((t) => t.prompt.includes("任务1"))?.status).toBe("canceled");
+        expect((await allTasks(store)).find((t) => t.prompt.includes("任务1"))?.status).toBe(
+          "canceled",
+        );
       });
       // 新任务的会话收到弹窗事件：含任务摘要与三个时间
       expect(channel.evictions).toHaveLength(1);
@@ -580,9 +594,9 @@ describe("并发满载淘汰最早挂起任务", () => {
       expect(channel.evictions[0].pendingSince).toBeTruthy();
       expect(channel.evictions[0].canceledAt).toBeTruthy();
       // 渠道文本兜底：说明情况 + 详情
-      expect(channel.texts.some((t) => t.includes("并发已达上限") && t.includes("任务1-等审批"))).toBe(
-        true,
-      );
+      expect(
+        channel.texts.some((t) => t.includes("并发已达上限") && t.includes("任务1-等审批")),
+      ).toBe(true);
       // 未误伤活跃执行中的任务2
       expect((await allTasks(store)).find((t) => t.prompt.includes("任务2"))?.status).not.toBe(
         "canceled",

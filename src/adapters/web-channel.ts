@@ -69,6 +69,7 @@ import {
 } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
+import { SidebarPrefsSchema } from "../domain/user.js";
 import {
   normalizeLlmProviderInput,
   UserLlmProviderInputSchema,
@@ -1993,11 +1994,29 @@ export class WebChannel implements Channel {
             avatar: user.avatar,
             role: user.role,
             createdAt: user.createdAt,
+            starredAgentIds: user.starredAgentIds ?? [],
+            agentOrder: user.agentOrder ?? [],
           },
           identities,
         }),
       );
       return;
+    }
+
+    // PATCH /api/users/me/sidebar-prefs —— 对话模块侧栏偏好（星标置顶/分组排序；仅本人，全量替换）
+    if (url === "/api/users/me/sidebar-prefs" && req.method === "PATCH") {
+      if (!this.deps.userStore) return this.json(res, { error: "user store 未启用" }, 503);
+      const uid = this.requireRequestUser(req);
+      const parsed = SidebarPrefsSchema.safeParse(JSON.parse(await this.readBody(req)));
+      if (!parsed.success) {
+        return this.json(
+          res,
+          { error: "sidebar prefs 无效（starredAgentIds/agentOrder 须为字符串数组）" },
+          400,
+        );
+      }
+      await this.deps.userStore.updateSidebarPrefs(uid, parsed.data);
+      return this.json(res, { ok: true, ...parsed.data });
     }
 
     // —— 用户 LLM 供应商多配置（specs/2026-09-18-llm-multi-provider-design.md §6）——

@@ -2,7 +2,13 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { EMAIL_VERIFY_TTL_MS } from "../domain/invite.js";
-import { isAdminExternalId, type User, type UserIdentity, type UserRole } from "../domain/user.js";
+import {
+  isAdminExternalId,
+  type SidebarPrefs,
+  type User,
+  type UserIdentity,
+  type UserRole,
+} from "../domain/user.js";
 import type { EmailVerificationState, UserStore } from "../ports/user-store.js";
 import { initUserWorkspace } from "../util/workspace.js";
 
@@ -347,6 +353,21 @@ export class SqliteUserStore implements UserStore {
     const cur = await this.get(id);
     if (!cur) throw new Error(`user 不存在: ${id}`);
     const updated: User = { ...cur, ...partial, updatedAt: new Date().toISOString() };
+    this.db
+      .prepare("UPDATE users SET data = ?, updatedAt = ? WHERE id = ?")
+      .run(JSON.stringify(updated), updated.updatedAt, id);
+  }
+
+  async updateSidebarPrefs(id: string, prefs: SidebarPrefs): Promise<void> {
+    const cur = await this.get(id);
+    if (!cur) throw new Error(`user 不存在: ${id}`);
+    // 去重防御：客户端可容忍，服务端不落脏数据
+    const updated: User = {
+      ...cur,
+      starredAgentIds: [...new Set(prefs.starredAgentIds)],
+      agentOrder: [...new Set(prefs.agentOrder)],
+      updatedAt: new Date().toISOString(),
+    };
     this.db
       .prepare("UPDATE users SET data = ?, updatedAt = ? WHERE id = ?")
       .run(JSON.stringify(updated), updated.updatedAt, id);

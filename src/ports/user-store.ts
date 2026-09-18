@@ -1,4 +1,4 @@
-import type { User, UserIdentity, UserRole } from "../domain/user.js";
+import type { SidebarPrefs, User, UserIdentity, UserRole } from "../domain/user.js";
 
 /**
  * 用户存储端口。
@@ -31,6 +31,8 @@ export interface UserStore {
   updateProfile(id: string, partial: Partial<Pick<User, "name" | "avatar">>): Promise<void>;
   /** 更新用户角色 */
   updateRole(id: string, role: UserRole): Promise<void>;
+  /** 更新对话模块侧栏偏好（星标置顶智能体/分组排序，全量替换；随 User JSON 持久化） */
+  updateSidebarPrefs(id: string, prefs: SidebarPrefs): Promise<void>;
 
   // ---- 邮箱注册的密码凭证（passwordHash 存独立表，见 SqliteUserStore.migrateCredentials） ----
   /** 写入/更新密码哈希（upsert） */

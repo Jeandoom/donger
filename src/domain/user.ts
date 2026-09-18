@@ -14,8 +14,19 @@ export const UserSchema = z.object({
   updatedAt: z.string(),
   avatar: z.string().optional(),
   mergedFrom: z.array(z.string()).optional(),
+  /** 对话模块侧栏偏好：星标置顶的智能体（有序，[0] 即默认对话agent；id 不做存在性校验，渲染侧过滤） */
+  starredAgentIds: z.array(z.string()).optional(),
+  /** 普通分组区的智能体排序（有序；缺省=加载序，新增智能体追加尾部） */
+  agentOrder: z.array(z.string()).optional(),
 });
 export type User = z.infer<typeof UserSchema>;
+
+/** 对话模块侧栏偏好（PATCH /api/users/me/sidebar-prefs 的入参；全量替换语义） */
+export const SidebarPrefsSchema = z.object({
+  starredAgentIds: z.array(z.string()).max(100),
+  agentOrder: z.array(z.string()).max(1000),
+});
+export type SidebarPrefs = z.infer<typeof SidebarPrefsSchema>;
 
 /** 多通道身份绑定 */
 export interface UserIdentity {
