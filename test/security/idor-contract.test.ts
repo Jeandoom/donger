@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { InMemoryAuditStore } from "../../src/adapters/in-memory-audit-store.js";
 import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import { InMemoryUsageStore } from "../../src/adapters/in-memory-usage-store.js";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
@@ -25,6 +26,8 @@ let userStore: SqliteUserStore;
 let taskStore: InMemoryTaskStore;
 let usageStore: InMemoryUsageStore;
 let sessionStore: JwtSessionStore;
+let convStore: SqliteConversationStore;
+let auditStore: InMemoryAuditStore;
 const realFetch = globalThis.fetch;
 
 const ALICE = "u-alice";
@@ -39,10 +42,14 @@ async function startChannel(): Promise<number> {
   userStore.migrateCredentials();
   const conversations = new SqliteConversationStore(db);
   conversations.migrate();
+  convStore = conversations;
   const messages = new SqliteMessageStore(db);
   messages.migrate();
   taskStore = new InMemoryTaskStore();
   usageStore = new InMemoryUsageStore();
+  auditStore = new InMemoryAuditStore({
+    conversationOwner: async (id) => (await conversations.get(id))?.userId,
+  });
 
   // 两个普通用户 + admin 用户 + 各自资源
   await userStore.getOrCreateByIdentity("test", ALICE, "Alice");
@@ -51,6 +58,15 @@ async function startChannel(): Promise<number> {
   await userStore.updateRole(adminSeed.id, "admin");
   const bobConv = await conversations.create(BOB, "web", "bob 的会话");
   await messages.add(bobConv.id, "user", "bob 的私密消息");
+  await auditStore.record({
+    conversationId: bobConv.id,
+    taskId: "task-bob",
+    userId: BOB,
+    seq: 0,
+    type: "user_message",
+    text: "bob 的私密消息",
+    recordedAt: new Date().toISOString(),
+  });
   await taskStore.create(makeTask("task-bob", BOB));
   await usageStore.record({
     conversationId: bobConv.id,
@@ -73,6 +89,7 @@ async function startChannel(): Promise<number> {
     messageStore: messages,
     taskStore,
     usageStore,
+    auditStore,
   });
   web.onMessage(() => {});
   await web.ready();
@@ -229,9 +246,11 @@ describe("IDOR 契约：alice（普通用户）访问 bob 的资源", () => {
     expect(tasks.map((t) => t.id)).not.toContain("task-bob");
   });
 
-  it("审计端点：member 403（P0-2）", async () => {
+  it("审计列表仅本人会话；他人会话详情 403（P0-2，收口为按属主可见）", async () => {
     const list = await request(port, "GET", "/api/audit/conversations", alice);
-    expect(list.status).toBe(403);
+    expect(list.status).toBe(200);
+    const items = (await list.json()) as Array<{ conversationId: string }>;
+    expect(items.map((i) => i.conversationId)).not.toContain(bobConvId);
     const detail = await request(port, "GET", `/api/audit/conversations/${bobConvId}`, alice);
     expect(detail.status).toBe(403);
   });
@@ -275,6 +294,8 @@ describe("IDOR 契约：admin 直通与 fail-closed", () => {
     expect(r.status).toBe(200);
     const audit = await request(port, "GET", "/api/audit/conversations", admin);
     expect(audit.status).toBe(200);
+    const items = (await audit.json()) as Array<{ conversationId: string }>;
+    expect(items.map((i) => i.conversationId)).toContain(bobFirst.id);
   });
 
   it("未登记路由 fail-closed：已登录也 404", async () => {
@@ -288,5 +309,43 @@ describe("IDOR 契约：admin 直通与 fail-closed", () => {
     const port = await startChannel();
     const r = await request(port, "GET", "/api/tasks", "not-a-token");
     expect(r.status).toBe(401);
+  });
+});
+
+describe("IDOR 契约：member 可读本人审计（历史会话/LLM 观测面向本人开放）", () => {
+  /** 给 alice 建一个带审计事件的本人会话（属主用内部用户 id，与 viewer.id 对齐） */
+  async function seedAliceAudit(): Promise<string> {
+    const aliceId = await userIdOf(ALICE);
+    const conv = await convStore.create(aliceId, "web", "alice 的会话");
+    await auditStore.record({
+      conversationId: conv.id,
+      taskId: "task-alice",
+      userId: aliceId,
+      seq: 0,
+      type: "user_message",
+      text: "alice 的消息",
+      recordedAt: new Date().toISOString(),
+    });
+    return conv.id;
+  }
+
+  it("审计列表：member 200 且含本人会话", async () => {
+    const port = await startChannel();
+    const alice = await tokenFor(ALICE);
+    const convId = await seedAliceAudit();
+    const r = await request(port, "GET", "/api/audit/conversations", alice);
+    expect(r.status).toBe(200);
+    const items = (await r.json()) as Array<{ conversationId: string }>;
+    expect(items.map((i) => i.conversationId)).toContain(convId);
+  });
+
+  it("审计详情：member 读本人会话 200 且按轮返回", async () => {
+    const port = await startChannel();
+    const alice = await tokenFor(ALICE);
+    const convId = await seedAliceAudit();
+    const r = await request(port, "GET", `/api/audit/conversations/${convId}`, alice);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { turns: unknown[] };
+    expect(body.turns).toHaveLength(1);
   });
 });

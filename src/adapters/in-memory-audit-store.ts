@@ -78,4 +78,14 @@ export class InMemoryAuditStore implements AuditStore {
       })
       .sort((a, b) => b.lastAt.localeCompare(a.lastAt));
   }
+
+  async listConversationSummariesVisible(viewerId: string): Promise<AuditConversationSummary[]> {
+    const all = await this.listConversationSummaries();
+    const visible: AuditConversationSummary[] = [];
+    for (const s of all) {
+      const owner = (await this.ownerResolver?.conversationOwner?.(s.conversationId)) ?? undefined;
+      if (owner === viewerId) visible.push(s);
+    }
+    return visible;
+  }
 }

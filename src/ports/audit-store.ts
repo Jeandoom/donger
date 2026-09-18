@@ -26,4 +26,6 @@ export interface AuditStore {
   listByConversationVisible(viewerId: string, conversationId: string): Promise<AuditEvent[]>;
   /** 仅当任务属于 viewer 时返回其审计事件（否则空数组，含不存在） */
   listByTaskVisible(viewerId: string, taskId: string): Promise<AuditEvent[]>;
+  /** 仅返回属于 viewer 的会话审计汇总（经 conversations.userId 判属主） */
+  listConversationSummariesVisible(viewerId: string): Promise<AuditConversationSummary[]>;
 }

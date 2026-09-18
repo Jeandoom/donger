@@ -21,7 +21,7 @@ export interface WebRouteGuardDeps {
  *    loadOwner 用对应 store.get，资源不存在统一 404。
  *  - authenticated：仅需登录；属主/共享判定由 handler 内既有领域逻辑
  *    （canUseAgent / canManageAgent / requireOwned* / store 按 viewer 过滤）执行——M1 保留内联，避免双轨漂移。
- *  - admin：审计与用户管理面。
+ *  - admin：用户管理面。
  *  - public：显式枚举（含 token 自鉴权的 callbacks/by-share——凭证在路径上，handler 内校验）。
  */
 export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec[] {
@@ -190,8 +190,15 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },
-    { method: "GET", pattern: "/api/audit/conversations", access: { kind: "admin" } },
-    { method: "GET", pattern: "/api/audit/conversations/:id", access: { kind: "admin" } },
+    // 审计面：member 可看本人会话的审计——列表由 handler 按 role 分流
+    // （admin 全量 / member 走 store 层 L2 visible 过滤）；详情按会话属主判定，admin 直通。
+    { method: "GET", pattern: "/api/audit/conversations", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/audit/conversations/:id",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
     {
       method: "GET",
       pattern: "/api/users/:id/memory",

@@ -102,6 +102,33 @@ export class SqliteAuditStore implements AuditStore {
     return rows.map((row) => this.rowToEv(row));
   }
 
+  async listConversationSummariesVisible(viewerId: string): Promise<AuditConversationSummary[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT a.conversationId AS conversationId,
+                COUNT(DISTINCT a.taskId) AS turnCount,
+                COALESCE(SUM(a.inputTokens),0) + COALESCE(SUM(a.outputTokens),0)
+                  + COALESCE(SUM(a.cacheCreationInputTokens),0) + COALESCE(SUM(a.cacheReadInputTokens),0) AS totalTokens,
+                COALESCE(SUM(CASE WHEN a.type='result' THEN a.durationMs END),0) AS totalDurationMs,
+                MIN(a.recordedAt) AS firstAt,
+                MAX(a.recordedAt) AS lastAt
+         FROM audit_events a
+         JOIN conversations c ON c.id = a.conversationId
+         WHERE c.userId = ?
+         GROUP BY a.conversationId
+         ORDER BY lastAt DESC`,
+      )
+      .all(viewerId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      conversationId: r.conversationId as string,
+      turnCount: r.turnCount as number,
+      totalTokens: r.totalTokens as number,
+      totalDurationMs: r.totalDurationMs as number,
+      firstAt: r.firstAt as string,
+      lastAt: r.lastAt as string,
+    }));
+  }
+
   async listByConversation(conversationId: string): Promise<AuditEvent[]> {
     const rows = this.db
       .prepare(
