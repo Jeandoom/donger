@@ -290,8 +290,9 @@ export function AgentEditorPage() {
       </nav>
 
       <div className="flex flex-1 items-start">
-        {/* 桌面：左锚点导航（sticky） */}
-        <nav className="sticky top-28 hidden w-56 shrink-0 flex-col gap-1 self-stretch border-r border-border bg-card/60 p-4 md:flex">
+        {/* 桌面：左锚点导航（sticky）——高度必须保持内容自然高度（items-start 下的 auto），
+            一旦 self-stretch 拉满父容器高度，sticky 将无滚动余量而失效（2026-09-18 生产实测） */}
+        <nav className="sticky top-16 hidden w-56 shrink-0 flex-col gap-1 border-r border-border bg-card/60 p-4 md:flex">
           <p className="px-3 pb-1 text-[11px] font-semibold text-muted-foreground/70">配置分区</p>
           {AGENT_EDITOR_SECTIONS.map((s) => {
             if (s.id === "agent-sec-integration" && isNew) return null;
@@ -315,8 +316,7 @@ export function AgentEditorPage() {
               </a>
             );
           })}
-          <div className="flex-1" />
-          <p className="px-3 text-[10px] leading-snug text-muted-foreground/60">
+          <p className="mt-4 px-3 text-[10px] leading-snug text-muted-foreground/60">
             徽标 = 该区有需处理的场景提示
           </p>
         </nav>
