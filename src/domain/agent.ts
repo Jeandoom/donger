@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AgentExtensionDirectoriesSchema } from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
+import { isModelRef } from "./model-ref.js";
 import { AgentPermissionModeSchema } from "./permission-mode.js";
 import { SCENARIO_KEYS } from "./scenario-preset.js";
 
@@ -21,7 +22,14 @@ export const AgentToolsSchema = z.object({
 });
 export type AgentTools = z.infer<typeof AgentToolsSchema>;
 
-export const AgentLLMSchema = z.object({ presetId: z.string().optional() });
+export const AgentLLMSchema = z.object({
+  presetId: z.string().optional(),
+  /** 可选模型范围（M2）：ref 形态见 domain/model-ref.ts；空/缺省 = 不限（对话时全量可选） */
+  modelRefs: z
+    .array(z.string().refine(isModelRef, { message: "非法的模型引用格式" }))
+    .max(50)
+    .optional(),
+});
 export type AgentLLM = z.infer<typeof AgentLLMSchema>;
 
 export const AgentSchema = z.object({

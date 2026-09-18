@@ -47,6 +47,10 @@ export interface ChatWorkspaceProps {
   inputPlaceholder?: string;
   /** 切换会话权限模式（undefined=不支持，隐藏切换器） */
   onPermissionModeChange?: (mode: AgentPermissionMode) => Promise<void>;
+  /** 对话可选模型（M2）：空数组/undefined=不支持，隐藏选择器 */
+  modelOptions?: { ref: string; label: string }[];
+  modelRef?: string;
+  onModelRefChange?: (ref: string) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
   errors: ChatErrors;
@@ -125,6 +129,24 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       <option value="full_access">⚡ 完全权限</option>
     </select>
   ) : null;
+
+  // 会话模型选择器：置于权限模式旁（当前选中的 LLM 随下一条消息生效）
+  const modelPicker =
+    props.onModelRefChange && props.modelOptions && props.modelOptions.length > 0 ? (
+      <select
+        aria-label="对话模型"
+        title="对话使用的 LLM（随下一条消息生效）"
+        value={props.modelRef ?? ""}
+        onChange={(e) => props.onModelRefChange?.(e.target.value)}
+        className="h-9 max-w-[180px] shrink-0 rounded-lg border border-border bg-card px-2 text-xs font-medium text-muted-foreground hover:bg-muted"
+      >
+        {props.modelOptions.map((option) => (
+          <option key={option.ref} value={option.ref}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    ) : null;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -248,7 +270,14 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               }
               onMentionInserted={collectMention}
               aboveComposer={props.aboveComposer}
-              composerLeading={permissionModePicker}
+              composerLeading={
+                permissionModePicker || modelPicker ? (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {permissionModePicker}
+                    {modelPicker}
+                  </div>
+                ) : undefined
+              }
             />
           </AssistantRuntimeProvider>
         )}

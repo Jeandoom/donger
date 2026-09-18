@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AgentPermissionMode, ConversationSummary, PendingQuestion, SSEEvent } from "../types";
 import { getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
 import { setConversationPermissionMode } from "./conversations";
+import type { LlmOptionsDTO } from "./llmProviders";
 import type { Mention } from "./mentions";
 import { assembleTurnMessages, type HistoryEvent, type HistoryMessage } from "./turnAssembly";
 
@@ -21,6 +22,13 @@ export function useWebChat() {
   const messagesRequestRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const persistDraftRef = useRef<Promise<string | null> | null>(null);
+  // 会话可选模型（M2 对话选模型）：随会话切换加载；modelRef 为空 = 不指定（走服务端 fallback）
+  const [llmOptions, setLlmOptions] = useState<LlmOptionsDTO>({
+    options: [],
+    restricted: false,
+    current: "",
+  });
+  const [modelRef, setModelRef] = useState("");
 
   // 从 JWT 中解析 userId
   const getUserId = useCallback((): string => {
@@ -36,9 +44,10 @@ export function useWebChat() {
 
   /** 创建新会话（agentId 缺省=默认会话；defaultPermissionMode=绑定智能体的默认对话模式，仅 UI 预填） */
   const newConversation = useCallback(
-    async (agentId?: string, defaultPermissionMode?: AgentPermissionMode): Promise<
-      ConversationSummary
-    > => {
+    async (
+      agentId?: string,
+      defaultPermissionMode?: AgentPermissionMode,
+    ): Promise<ConversationSummary> => {
       const now = new Date().toISOString();
       const conversation: ConversationSummary = {
         id: `draft-${makeId()}`,
@@ -281,6 +290,9 @@ export function useWebChat() {
       messagesRequestRef.current = controller;
       const token = getToken();
       const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      // 重置模型选择（新会话的选项异步加载后回填）
+      setLlmOptions({ options: [], restricted: false, current: "" });
+      setModelRef("");
       Promise.all([
         fetch(`/api/conversations/${conversationId}/messages`, {
           headers: authHeaders,
@@ -309,11 +321,29 @@ export function useWebChat() {
               : { question: null },
           )
           .catch(() => ({ question: null })),
+        // 可选模型集（agent 范围/用户配置决定）；失败降级为空（隐藏选择器即可，不打断会话）
+        fetch(`/api/conversations/${conversationId}/llm-options`, {
+          headers: authHeaders,
+          signal: controller.signal,
+        })
+          .then((response) =>
+            response.ok
+              ? (response.json() as Promise<LlmOptionsDTO>)
+              : { options: [], restricted: false, current: "" },
+          )
+          .catch(() => ({ options: [], restricted: false, current: "" })),
       ])
-        .then(([messages, { events }, { question }]) => {
+        .then(([messages, { events }, { question }, llmOpts]) => {
           if (messagesRequestRef.current === controller) {
             dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events) });
             dispatch({ type: "set_pending_question", question: question ?? null });
+            setLlmOptions(llmOpts);
+            // 恢复上次选择；不在当前可选集（配置已变）则回落首项
+            const restored =
+              llmOpts.current && llmOpts.options.some((o) => o.ref === llmOpts.current)
+                ? llmOpts.current
+                : (llmOpts.options[0]?.ref ?? "");
+            setModelRef(restored);
           }
         })
         .catch((error: unknown) => {
@@ -404,6 +434,7 @@ export function useWebChat() {
             text,
             files,
             ...(mentions && mentions.length > 0 ? { mentions } : {}),
+            ...(modelRef ? { modelRef } : {}),
           }),
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -412,7 +443,13 @@ export function useWebChat() {
         dispatch({ type: "message_delivery", id, delivery: "failed" });
       }
     },
-    [newConversation, persistDraftConversation, state.activeConversationId, state.conversations],
+    [
+      modelRef,
+      newConversation,
+      persistDraftConversation,
+      state.activeConversationId,
+      state.conversations,
+    ],
   );
 
   const cancel = useCallback(async () => {
@@ -585,5 +622,8 @@ export function useWebChat() {
     loadConversations,
     deleteConversation,
     setPermissionMode,
+    llmOptions,
+    modelRef,
+    setModelRef,
   };
 }

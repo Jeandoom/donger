@@ -47,8 +47,10 @@ import {
 } from "../domain/invite.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
+import { resolveLlmOptions } from "../domain/llm-selection.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
 import { type MentionInput, MentionInputSchema, type ResolvedMention } from "../domain/mentions.js";
+import { isModelRef, parseModelRef } from "../domain/model-ref.js";
 import {
   type AgentPermissionMode,
   AgentPermissionModeSchema,
@@ -1300,7 +1302,15 @@ export class WebChannel implements Channel {
       text: string;
       files?: MessageFile[];
       mentions?: MentionInput[];
+      modelRef?: unknown;
     };
+    if (body.modelRef !== undefined && body.modelRef !== "") {
+      if (typeof body.modelRef !== "string" || !isModelRef(body.modelRef)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "modelRef 格式非法" }));
+        return;
+      }
+    }
     const parsedFiles = MessageFileSchema.array()
       .max(5)
       .safeParse(body.files ?? []);
@@ -1370,6 +1380,7 @@ export class WebChannel implements Channel {
         conversationId,
         files,
         ...(mentions.length > 0 ? { mentions } : {}),
+        ...(typeof body.modelRef === "string" && body.modelRef ? { modelRef: body.modelRef } : {}),
       });
     }
 
@@ -2074,12 +2085,25 @@ export class WebChannel implements Channel {
       return this.json(res, updated);
     }
 
-    // DELETE /api/settings/llm-providers/:id
+    // DELETE /api/settings/llm-providers/:id（被 agent.modelRefs 引用时拒绝，fail-closed）
     if (llmProviderIdMatch && req.method === "DELETE") {
       const userId = this.requireRequestUser(req);
       const store = this.deps.llmProviderStore;
       if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
-      const removed = await store.remove(userId, llmProviderIdMatch[1] ?? "");
+      const id = llmProviderIdMatch[1] ?? "";
+      const prefix = `provider:${id}:`;
+      const referencing =
+        (await this.deps.agentStore?.listByOwner(userId))?.find((a) =>
+          (a.llm.modelRefs ?? []).some((ref) => ref.startsWith(prefix)),
+        ) ?? undefined;
+      if (referencing) {
+        return this.json(
+          res,
+          { error: `智能体「${referencing.name}」仍在引用该配置，请先移除其模型范围引用` },
+          400,
+        );
+      }
+      const removed = await store.remove(userId, id);
       if (!removed) return this.json(res, { error: "配置不存在" }, 404);
       return this.json(res, { ok: true });
     }
@@ -2102,6 +2126,33 @@ export class WebChannel implements Channel {
       if (!model) return this.json(res, { error: "该配置没有可用模型" }, 400);
       const result = await tester.test({ baseUrl: provider.baseUrl, key: provider.key, model });
       return this.json(res, result);
+    }
+
+    // GET /api/conversations/:id/llm-options —— 对话底栏可选模型集
+    // （agent 配置范围优先且过滤访问者不可用项=共享降级；未配置/全失效=系统默认+presets+我的配置全量）
+    const llmOptionsMatch = llmProviderPath.match(/^\/api\/conversations\/([\w-]+)\/llm-options$/);
+    if (llmOptionsMatch && req.method === "GET") {
+      const userId = this.requireRequestUser(req);
+      const conversation = await this.deps.conversationStore?.getVisible(
+        userId,
+        llmOptionsMatch[1] ?? "",
+      );
+      if (!conversation) return this.json(res, { error: "会话不存在或不属于当前用户" }, 404);
+      const agent = conversation.agentId
+        ? await this.deps.agentStore?.get(conversation.agentId)
+        : undefined;
+      const providers = (await this.deps.llmProviderStore?.list(userId)) ?? [];
+      const { options, restricted } = resolveLlmOptions({
+        agent,
+        providers,
+        presets: this.agentMeta?.presets ?? [],
+        systemDefaultModel: this.deps.llm?.model ?? "",
+      });
+      return this.json(res, {
+        options,
+        restricted,
+        current: conversation.lastModelRef ?? "",
+      });
     }
 
     // POST /api/auth/merge-confirm —— 已废弃：统一身份模型下不再需要合并流程
@@ -2530,6 +2581,7 @@ export class WebChannel implements Channel {
       const body = JSON.parse(await this.readBody(req)) as {
         input?: unknown;
         presetId?: unknown;
+        modelRef?: unknown;
       };
       if (typeof body.input !== "string" || !body.input.trim()) {
         this.json(res, { error: "input is required" }, 400);
@@ -2539,17 +2591,40 @@ export class WebChannel implements Channel {
         this.json(res, { error: "LLM debug runner is not configured" }, 503);
         return;
       }
+      // modelRef（system|preset:x|provider:id:model）优先；兼容旧 presetId 入参
+      const modelRef = typeof body.modelRef === "string" ? body.modelRef : undefined;
       const presetId = typeof body.presetId === "string" ? body.presetId : undefined;
-      const preset = presetId
-        ? this.agentMeta?.presets.find((item) => item.id === presetId)
-        : undefined;
-      if (presetId && !preset) {
-        this.json(res, { error: "unknown LLM preset" }, 400);
-        return;
+      let llm: LLMConfig = this.deps.llm;
+      if (modelRef) {
+        const parsed = parseModelRef(modelRef);
+        if (!parsed) {
+          this.json(res, { error: "modelRef 格式非法" }, 400);
+          return;
+        }
+        if (parsed.kind === "preset") {
+          const preset = this.agentMeta?.presets.find((item) => item.id === parsed.id);
+          if (!preset) {
+            this.json(res, { error: "unknown LLM preset" }, 400);
+            return;
+          }
+          llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
+        } else if (parsed.kind === "provider") {
+          const userId = this.requireRequestUser(req);
+          const provider = await this.deps.llmProviderStore?.getWithKey(userId, parsed.providerId);
+          if (!provider?.models.includes(parsed.model)) {
+            this.json(res, { error: "模型配置不存在或不含该模型" }, 400);
+            return;
+          }
+          llm = { model: parsed.model, baseUrl: provider.baseUrl, authToken: provider.key };
+        }
+      } else if (presetId) {
+        const preset = this.agentMeta?.presets.find((item) => item.id === presetId);
+        if (!preset) {
+          this.json(res, { error: "unknown LLM preset" }, 400);
+          return;
+        }
+        llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
       }
-      const llm = preset
-        ? { ...this.deps.llm, model: preset.model, baseUrl: preset.baseUrl }
-        : this.deps.llm;
       const result = await this.deps.llmDebugRunner.run(body.input, llm);
       this.json(res, { ...result, model: llm.model }, 200);
       return;
@@ -2660,10 +2735,19 @@ export class WebChannel implements Channel {
     }
     if (url === "/api/agents/meta/options" && req.method === "GET") {
       const userId = this.requireUserId(req);
+      // 模型范围多选的全量选项源（system + .env presets + 当前用户 provider 模型；ref 前端原样回存）
+      const providers = (await this.deps.llmProviderStore?.list(userId)) ?? [];
+      const { options: llmOptions } = resolveLlmOptions({
+        agent: null,
+        providers,
+        presets: this.agentMeta?.presets ?? [],
+        systemDefaultModel: this.deps.llm?.model ?? "",
+      });
       return this.json(res, {
         skills: await this.discoverAgentSkills(userId),
         tools: BUILTIN_TOOLS,
         llmPresets: this.agentMeta?.presets ?? [],
+        llmOptions,
       });
     }
     // GET /api/agents/:id/mention-candidates?q= —— 输入框 @/​/$ 引用候选（可用者 = owner/被分享/admin）

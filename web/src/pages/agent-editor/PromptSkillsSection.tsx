@@ -46,6 +46,13 @@ export function PromptSkillsSection({
     patch({ skills, defaultSkill });
   };
 
+  const toggleModelRef = (ref: string) => {
+    const current = form.llm.modelRefs ?? [];
+    const next = current.includes(ref) ? current.filter((r) => r !== ref) : [...current, ref];
+    // 空数组语义等同未配置（不限），置 undefined 避免存空壳
+    patch({ llm: { ...form.llm, ...(next.length > 0 ? { modelRefs: next } : {}) } });
+  };
+
   return (
     <FormSection
       id="agent-sec-prompt"
@@ -150,7 +157,7 @@ export function PromptSkillsSection({
         <FormField label="LLM 预设" hint="留空则使用系统默认">
           <Select
             value={form.llm.presetId ?? ""}
-            onChange={(e) => patch({ llm: { presetId: e.target.value || undefined } })}
+            onChange={(e) => patch({ llm: { ...form.llm, presetId: e.target.value || undefined } })}
           >
             <option value="">系统默认</option>
             {meta.llmPresets.map((p) => (
@@ -161,6 +168,37 @@ export function PromptSkillsSection({
           </Select>
         </FormField>
       </div>
+
+      <FormField
+        label={`可选模型范围（已选 ${form.llm.modelRefs?.length ?? 0} 个）`}
+        hint="勾选后该智能体的对话仅可在范围内选择模型；不勾选 = 不限（系统默认 + 使用者自己的全部配置）"
+      >
+        <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto rounded-[10px] border border-border bg-muted/40 p-2">
+          {meta.llmOptions.length ? (
+            meta.llmOptions.map((option) => {
+              const checked = form.llm.modelRefs?.includes(option.ref) ?? false;
+              return (
+                <label
+                  key={option.ref}
+                  htmlFor={`agent-model-ref-${option.ref}`}
+                  className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/70"
+                >
+                  <Checkbox
+                    id={`agent-model-ref-${option.ref}`}
+                    checked={checked}
+                    onChange={() => toggleModelRef(option.ref)}
+                  />
+                  <span className="truncate text-[13px]">{option.label}</span>
+                </label>
+              );
+            })
+          ) : (
+            <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+              暂无可选模型（系统未配置默认 LLM）
+            </p>
+          )}
+        </div>
+      </FormField>
     </FormSection>
   );
 }

@@ -10,6 +10,9 @@ export const ConversationSchema = z.object({
   agentId: z.string(),
   /** 会话权限模式覆盖；空 = 跟随绑定智能体的 defaultPermissionMode */
   permissionMode: AgentPermissionModeSchema.optional(),
+  /** 用户最近一次显式选择的 LLM（modelRef）；空 = 未选过（fallback 系统默认/用户默认 provider）。
+   *  兼作钉钉/CLI/回调等无选择 UI 渠道的 fallback。 */
+  lastModelRef: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   archived: z.boolean(),

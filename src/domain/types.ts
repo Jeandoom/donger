@@ -167,6 +167,8 @@ export const IncomingMessageSchema = z.object({
   files: z.array(MessageFileSchema).optional(),
   /** Web 渠道：@/​/$ 引用（服务端已校验解析；仅发送时注入 prompt，不落库） */
   mentions: z.array(ResolvedMentionSchema).max(20).optional(),
+  /** Web 渠道：用户在对话底栏显式选择的 LLM（modelRef；system|preset:x|provider:id:model） */
+  modelRef: z.string().optional(),
   /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
   builderFromTaskId: z.string().optional(),
   /** 无人值守触发（定时/钩子/工作流）：权限模式强制按变更前问询执行 */

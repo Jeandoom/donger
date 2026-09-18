@@ -52,6 +52,9 @@ export function ChatPage() {
         onEnsureConversation={wc.ensureConversation}
         onCancel={wc.cancel}
         onPermissionModeChange={wc.setPermissionMode}
+        modelOptions={wc.llmOptions.options}
+        modelRef={wc.modelRef}
+        onModelRefChange={wc.setModelRef}
         onResolveApproval={wc.resolveApproval}
         onDecideCredentialMissing={wc.decideCredentialMissing}
         onAnswerQuestion={wc.answerQuestion}

@@ -53,6 +53,9 @@ describe("chat errors", () => {
         if (url.includes('/c1/events')) {
           return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
         }
+        if (url.endsWith('/llm-options')) {
+          return Promise.resolve(new Response(JSON.stringify({ options: [], restricted: false, current: "" }), { status: 200 }));
+        }
         if (url.endsWith('/pending-question')) {
           return Promise.resolve(new Response(JSON.stringify({ question: null }), { status: 200 }));
         }
@@ -80,6 +83,9 @@ describe("chat errors", () => {
         }
         if (url.includes('/c1/events')) {
           return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
+        }
+        if (url.endsWith('/llm-options')) {
+          return Promise.resolve(new Response(JSON.stringify({ options: [], restricted: false, current: "" }), { status: 200 }));
         }
         if (url.endsWith('/pending-question')) {
           return Promise.resolve(new Response(JSON.stringify({ question: null }), { status: 200 }));

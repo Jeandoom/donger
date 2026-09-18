@@ -54,7 +54,8 @@ export interface AgentDTO {
   gitAllowShellGit?: boolean;
   /** 会话权限模式默认值（缺省=变更前问询） */
   defaultPermissionMode?: "ask_before_change" | "full_access";
-  llm: { presetId?: string };
+  /** presetId=agent 默认 LLM 预设；modelRefs=可选模型范围（空/缺省=不限） */
+  llm: { presetId?: string; modelRefs?: string[] };
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +70,8 @@ export interface AgentMeta {
   skills: { id: string; name: string; description?: string }[];
   tools: string[];
   llmPresets: { id: string; name: string; model: string; baseUrl: string }[];
+  /** 可选模型范围的全量选项源（system + .env presets + 我的 provider 模型；ref 原样回存） */
+  llmOptions: { ref: string; label: string; group: "system" | "preset" | "provider" }[];
 }
 
 export type AgentInput = Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt">;

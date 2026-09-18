@@ -11,6 +11,8 @@ import {
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import { isRefAllowed } from "../domain/llm-selection.js";
+import { parseModelRef } from "../domain/model-ref.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
@@ -53,6 +55,8 @@ export interface PrepareOpts {
   /** 共享智能体的创建者，仅用于复制其配置中实际选中的技能。 */
   sharedAgentSkillOwner?: User;
   gitMaterializeItems?: RepositoryMaterializeItem[];
+  /** 用户显式选择的 LLM（消息级 modelRef；最高优先级，覆盖 agent preset 与基底） */
+  modelRef?: string;
 }
 
 interface RuntimeManagerDeps {
@@ -126,15 +130,43 @@ export class RuntimeManager {
 
     // agent 分支：显式 agent 可覆盖 skills/llm/工具/mcp/系统提示；否则用 Pack 派生默认
     let skills = resolved.whitelist;
-    // LLM 基底：用户默认 provider（迁移后 defaultModel 置于 models[0]）→ 全局 .env
+    // —— LLM 解析（M2，优先级从高到低；specs/2026-09-18-llm-multi-provider-design.md §8）——
+    // ① 消息显式 modelRef ② conversation.lastModelRef（上次选择，兼作无选择 UI 渠道 fallback）
+    // ③ agent llm.presetId（.env 预设，覆盖 model/baseUrl）④ 用户默认 provider ⑤ 全局 .env
     const defaultProvider = await this.deps.llmProviderStore?.findDefaultWithKey(user.id);
-    let llm: LLMConfig = defaultProvider
+    const baseLlm: LLMConfig = defaultProvider
       ? {
           model: defaultProvider.models[0] ?? this.deps.config.llm.model,
           baseUrl: defaultProvider.baseUrl,
           authToken: defaultProvider.key,
         }
       : this.deps.config.llm;
+    let llm: LLMConfig = baseLlm;
+    if (opts.agent?.llm.presetId) {
+      const preset = this.deps.config.agentLlmPresets.find(
+        (p) => p.id === opts.agent?.llm.presetId,
+      );
+      if (preset) llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
+    }
+    // 用户选择（显式优先，上次选择兜底）：显式无效/越界即报错（用户可感知），历史失效静默降级
+    const selectedRef = opts.modelRef ?? conversation.lastModelRef;
+    if (selectedRef) {
+      const resolvedLlm = await this.resolveModelRef(selectedRef, user, baseLlm);
+      if (resolvedLlm) {
+        if (opts.modelRef && !isRefAllowed(opts.agent, opts.modelRef)) {
+          throw new Error("所选模型不在该智能体配置的可用范围内");
+        }
+        llm = resolvedLlm;
+      } else if (opts.modelRef) {
+        throw new Error(`所选模型不可用（配置可能已删除或不在你的模型配置中）：${opts.modelRef}`);
+      }
+      // 回写仅限显式选择（内部轮/历史命中不刷新）
+      if (opts.modelRef) {
+        await this.deps.conversationStore.update(conversation.id, {
+          lastModelRef: opts.modelRef,
+        });
+      }
+    }
     let allowedTools: string[] | undefined;
     let mcpServers: McpServerConfig[] | undefined;
     let gitAllowShellGit = false;
@@ -147,10 +179,6 @@ export class RuntimeManager {
       const a = opts.agent;
       // agent 指定 skills 时直接用；否则沿用 Pack 白名单
       if (a.skills.length > 0) skills = a.skills;
-      const preset = a.llm.presetId
-        ? this.deps.config.agentLlmPresets.find((p) => p.id === a.llm.presetId)
-        : undefined;
-      if (preset) llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
       allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
       mcpServers = a.mcpServers;
       // 连接器注入：勾选的 HTTP MCP 按访问者解析后并入（重名连接器优先，防工具命名空间幻觉）
@@ -298,6 +326,30 @@ export class RuntimeManager {
     };
 
     return { context, runOptions };
+  }
+
+  /**
+   * 解析 modelRef → LLMConfig。
+   * system=全局；preset=.env 预设（叠加基底 token，沿 preset 既有语义）；
+   * provider=当前用户自建（getWithKey 按属主查询，天然越权拦截；模型须在清单内）。
+   * 无法解析（格式非法/引用失效/非本人 provider）返回 undefined，由调用方决定报错或降级。
+   */
+  private async resolveModelRef(
+    ref: string,
+    user: User,
+    baseLlm: LLMConfig,
+  ): Promise<LLMConfig | undefined> {
+    const parsed = parseModelRef(ref);
+    if (!parsed) return undefined;
+    if (parsed.kind === "system") return this.deps.config.llm;
+    if (parsed.kind === "preset") {
+      const preset = this.deps.config.agentLlmPresets.find((p) => p.id === parsed.id);
+      if (!preset) return undefined;
+      return { ...baseLlm, model: preset.model, baseUrl: preset.baseUrl };
+    }
+    const provider = await this.deps.llmProviderStore?.getWithKey(user.id, parsed.providerId);
+    if (!provider?.models.includes(parsed.model)) return undefined;
+    return { model: parsed.model, baseUrl: provider.baseUrl, authToken: provider.key };
   }
 
   /**

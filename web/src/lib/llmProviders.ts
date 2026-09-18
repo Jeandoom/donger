@@ -1,5 +1,26 @@
 import { apiFetch } from "./auth";
 
+/** 会话可选模型（GET /api/conversations/:id/llm-options） */
+export interface LlmOptionDTO {
+  ref: string;
+  label: string;
+  group: "system" | "preset" | "provider";
+}
+
+export interface LlmOptionsDTO {
+  options: LlmOptionDTO[];
+  /** true=智能体配置了模型范围 */
+  restricted: boolean;
+  /** 会话上次选择的 modelRef（空=未选过） */
+  current: string;
+}
+
+export async function fetchLlmOptions(conversationId: string): Promise<LlmOptionsDTO> {
+  const response = await apiFetch(`/api/conversations/${conversationId}/llm-options`);
+  if (!response.ok) throw new Error(`加载可选模型失败：HTTP ${response.status}`);
+  return (await response.json()) as LlmOptionsDTO;
+}
+
 export interface LlmPlatformInfo {
   id: string;
   name: string;

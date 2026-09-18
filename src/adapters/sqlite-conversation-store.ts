@@ -22,6 +22,7 @@ export class SqliteConversationStore implements ConversationStore {
     `);
     this.ensureAgentIdColumn();
     this.ensurePermissionModeColumn();
+    this.ensureLastModelRefColumn();
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(userId, archived, updatedAt DESC)",
     );
@@ -40,6 +41,14 @@ export class SqliteConversationStore implements ConversationStore {
     const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "permissionMode")) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN permissionMode TEXT");
+    }
+  }
+
+  /** 用户最近选择的 LLM 引用列（M2 对话选模型）；NULL = 未选过 */
+  private ensureLastModelRefColumn(): void {
+    const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "lastModelRef")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN lastModelRef TEXT");
     }
   }
 
@@ -124,13 +133,14 @@ export class SqliteConversationStore implements ConversationStore {
     const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
     this.db
       .prepare(
-        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, permissionMode = ?, archived = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, permissionMode = ?, lastModelRef = ?, archived = ?, updatedAt = ? WHERE id = ?",
       )
       .run(
         updated.sdkSessionId,
         updated.title,
         updated.agentId,
         updated.permissionMode ?? null,
+        updated.lastModelRef ?? null,
         updated.archived ? 1 : 0,
         updated.updatedAt,
         id,
@@ -150,6 +160,7 @@ export class SqliteConversationStore implements ConversationStore {
       channelId: row.channelId as string,
       agentId: (row.agentId as string) ?? "",
       permissionMode,
+      lastModelRef: (row.lastModelRef as string) || undefined,
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,
       archived: row.archived === 1,

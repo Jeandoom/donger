@@ -34,7 +34,12 @@ export function AgentEditorPage() {
   const isNew = !id || id === "new";
   const navigate = useNavigate();
 
-  const [meta, setMeta] = useState<AgentMeta>({ skills: [], tools: [], llmPresets: [] });
+  const [meta, setMeta] = useState<AgentMeta>({
+    skills: [],
+    tools: [],
+    llmPresets: [],
+    llmOptions: [],
+  });
   const [form, setForm] = useState<AgentEditorForm>(emptyAgent);
   const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
   const [saving, setSaving] = useState(false);

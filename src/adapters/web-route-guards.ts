@@ -117,6 +117,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       ...ownerConversation,
     },
     {
+      method: "GET",
+      pattern: "/api/conversations/:id/llm-options",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
+    {
       method: "PATCH",
       pattern: "/api/conversations/:id",
       access: { kind: "owner", resource: "conversation" },

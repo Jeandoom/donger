@@ -332,6 +332,8 @@ export class Orchestrator {
     noResume?: boolean;
     /** 内部轮（dispatcher）：事件只落审计，不推送渠道、不持久化消息 */
     silent?: boolean;
+    /** 用户显式选择的 LLM（消息级 modelRef；透传 prepare 最高优先级解析） */
+    modelRef?: string;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
     const prepareOnce = async (): Promise<RunOptions> => {
@@ -341,6 +343,7 @@ export class Orchestrator {
         agent: p.agent,
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
         gitMaterializeItems: p.gitMaterializeItems,
+        modelRef: p.modelRef,
       });
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
@@ -758,6 +761,8 @@ export class Orchestrator {
     /** 首轮提示词（如 builder 的缺口引导）；缺省用 task.prompt。不改写 task，保持原始任务入库/审计/标题 */
     firstTurnPrompt?: string;
     runController: AbortController;
+    /** 用户显式选择的 LLM（消息级 modelRef） */
+    modelRef?: string;
   }): Promise<string | undefined> {
     const { store, channel } = this.deps;
     await store.updateStatus(p.task.id, nextStatus("planning", "start"));
@@ -776,6 +781,7 @@ export class Orchestrator {
       gitMaterializeItems: p.gitMaterializeItems,
       runController: p.runController,
       titleText: p.task.prompt,
+      modelRef: p.modelRef,
     });
 
     if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
@@ -1229,6 +1235,7 @@ export class Orchestrator {
           gitMaterializeItems,
           firstTurnPrompt,
           runController,
+          modelRef: msg.modelRef,
         });
         await this.completeTaskSteps(task);
         return convId;
@@ -1246,6 +1253,7 @@ export class Orchestrator {
         sharedAgentSkillOwner,
         gitMaterializeItems,
         runController,
+        modelRef: msg.modelRef,
       });
 
       if (r.aborted) return await this.finishCanceled(task, conversation);

@@ -404,6 +404,181 @@ describe("RuntimeManager agent 分支", () => {
     });
   });
 
+  it("M2：显式 modelRef（provider）优先于 agent presetId 与基底，且回写 lastModelRef", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const convStore = fakeConvStore([conv]);
+    const provider = {
+      id: "prov-1",
+      userId: "u1",
+      name: "我的智谱",
+      platform: "zhipu-cn",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      key: "prov-key",
+      models: ["glm-4.6", "glm-4.5"],
+      sdkType: "anthropic" as const,
+      isDefault: false,
+      createdAt: "",
+      updatedAt: "",
+    };
+    const llmProviderStore = {
+      migrate() {},
+      async list() {
+        return [];
+      },
+      async getWithKey(_userId: string, id: string) {
+        return id === provider.id ? provider : undefined;
+      },
+      async findDefaultWithKey() {
+        return undefined;
+      },
+      async create() {
+        throw new Error("unused");
+      },
+      async update() {
+        return undefined;
+      },
+      async remove() {
+        return false;
+      },
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: convStore as unknown as ConversationStore,
+      config: baseConfig(ws, {
+        agentLlmPresets: [{ id: "p1", name: "GLM", model: "glm-4.6", baseUrl: "https://a" }],
+      }),
+      ...emptySkillDeps(),
+      llmProviderStore,
+    });
+    const agent = {
+      id: "a1",
+      ownerId: "u1",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: { presetId: "p1" },
+      createdAt: "",
+      updatedAt: "",
+    };
+    const user = baseUser(join(ws, "users", "u1"));
+    const { runOptions } = await m.prepare(user, conv, {
+      agent: agent as never,
+      modelRef: "provider:prov-1:glm-4.5",
+    });
+    expect(runOptions.llm).toEqual({
+      model: "glm-4.5",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      authToken: "prov-key",
+    });
+    expect(convStore.snapshot(conv.id)?.lastModelRef).toBe("provider:prov-1:glm-4.5");
+  });
+
+  it("M2：显式 modelRef 无效（非本人 provider）抛错；lastModelRef 失效静默降级", async () => {
+    const conv = baseConv({ lastModelRef: "provider:gone:m" });
+    const convStore = fakeConvStore([conv]);
+    const llmProviderStore = {
+      migrate() {},
+      async list() {
+        return [];
+      },
+      async getWithKey() {
+        return undefined;
+      },
+      async findDefaultWithKey() {
+        return undefined;
+      },
+      async create() {
+        throw new Error("unused");
+      },
+      async update() {
+        return undefined;
+      },
+      async remove() {
+        return false;
+      },
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: convStore as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+      llmProviderStore,
+    });
+    const user = baseUser(join(ws, "users", "u1"));
+    // 显式无效：抛错（用户可感知）
+    await expect(m.prepare(user, conv, { modelRef: "provider:gone:m" })).rejects.toThrow(
+      /所选模型不可用/,
+    );
+    // 历史失效（无显式）：静默降级到全局默认
+    const { runOptions } = await m.prepare(user, conv, {});
+    expect(runOptions.llm.model).toBe(baseConfig(ws).llm.model);
+  });
+
+  it("M2：agent 配置范围时显式越界 modelRef 抛错", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const convStore = fakeConvStore([conv]);
+    const provider = {
+      id: "prov-1",
+      userId: "u1",
+      name: "我的智谱",
+      platform: "zhipu-cn",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      key: "prov-key",
+      models: ["glm-4.6", "glm-4.5"],
+      sdkType: "anthropic" as const,
+      isDefault: false,
+      createdAt: "",
+      updatedAt: "",
+    };
+    const llmProviderStore = {
+      migrate() {},
+      async list() {
+        return [];
+      },
+      async getWithKey(_userId: string, id: string) {
+        return id === provider.id ? provider : undefined;
+      },
+      async findDefaultWithKey() {
+        return undefined;
+      },
+      async create() {
+        throw new Error("unused");
+      },
+      async update() {
+        return undefined;
+      },
+      async remove() {
+        return false;
+      },
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: convStore as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+      llmProviderStore,
+    });
+    const agent = {
+      id: "a1",
+      ownerId: "u1",
+      name: "A",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      // 范围只有 glm-4.6
+      llm: { modelRefs: ["provider:prov-1:glm-4.6"] },
+      createdAt: "",
+      updatedAt: "",
+    };
+    await expect(
+      m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+        agent: agent as never,
+        modelRef: "provider:prov-1:glm-4.5",
+      }),
+    ).rejects.toThrow(/不在该智能体配置的可用范围内/);
+  });
+
   it("传 agent 时 skills/systemPrompt/llm/allowedTools/mcpServers 覆盖", async () => {
     const conv = baseConv({ agentId: "a1" });
     const convStore = fakeConvStore([conv]);
