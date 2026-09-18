@@ -324,7 +324,7 @@ export interface AssistantThreadProps {
   onMentionInserted: (mention: Mention) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
-  /** 输入框底部行插槽：附件按钮左侧（会话权限模式切换器等） */
+  /** 输入框底部行插槽：➕ 菜单右侧（会话权限模式切换器等） */
   composerLeading?: React.ReactNode;
 }
 
@@ -429,12 +429,12 @@ export function AssistantThread(props: AssistantThreadProps) {
             </div>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1">
-                {props.composerLeading}
                 <ComposerPlusMenu
                   hasAgent={hasAgent}
                   onInsertTrigger={insertTrigger}
                   onOpen={refresh}
                 />
+                {props.composerLeading}
               </div>
               <ThreadPrimitive.If running={false}>
                 <ComposerPrimitive.Send asChild>
