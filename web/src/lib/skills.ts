@@ -132,7 +132,7 @@ export async function fetchMyCredentials(): Promise<CredentialValueViewDTO[]> {
   return data.credentials;
 }
 
-/** 填写/覆写凭证值（整体覆写） */
+/** 填写凭证值（合并语义：新值覆盖同键，未提及的既有键保留） */
 export async function upsertCredentialValue(
   code: string,
   values: Record<string, string>,

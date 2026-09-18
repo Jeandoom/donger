@@ -199,13 +199,16 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     return out;
   }
 
+  // 合并语义：新值覆盖同键、未提及的既有键保留。值不回显，前端「补填缺失键」
+  // 只提交新键；整体清除走 DELETE。损坏密文（密钥轮换等）按空值处理。
   async upsertValue(
     userId: string,
     code: string,
     values: Record<string, string>,
     name?: string,
   ): Promise<void> {
-    const ct = encryptValue(this.keyHex, JSON.stringify(values));
+    const existing = (await this.getFilledValues(userId, [code]))[0]?.values ?? {};
+    const ct = encryptValue(this.keyHex, JSON.stringify({ ...existing, ...values }));
     this.db
       .prepare(
         `INSERT INTO user_credential_values (userId,code,name,valuesCipher,createdAt,updatedAt)

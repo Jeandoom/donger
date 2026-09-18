@@ -48,7 +48,7 @@ describe("SqliteCredentialSetStore", () => {
     expect(await store.getTemplate("aliyun-ak")).toBeUndefined();
   });
 
-  it("用户值：隔离、整体覆写、解密取回、删除", async () => {
+  it("用户值：隔离、合并写入、解密取回、删除", async () => {
     await store.createTemplate("jihulab-pat", templateInput, owner);
     await store.upsertValue(owner, "jihulab-pat", { token: "secret-1" });
     await store.upsertValue(other, "jihulab-pat", { token: "secret-2" });
@@ -57,10 +57,13 @@ describe("SqliteCredentialSetStore", () => {
     expect((await store.getFilledValues(owner, ["jihulab-pat"]))[0]?.values.token).toBe("secret-1");
     expect(await store.getFilledValues(randomUUID(), ["jihulab-pat"])).toEqual([]);
 
-    // 整体覆写
+    // 合并写入：同键覆盖、新键并入、未提及键保留
     await store.upsertValue(owner, "jihulab-pat", { token: "rotated", extra: "e" });
-    const entry = (await store.getFilledValues(owner, ["jihulab-pat"]))[0];
+    let entry = (await store.getFilledValues(owner, ["jihulab-pat"]))[0];
     expect(entry?.values).toEqual({ token: "rotated", extra: "e" });
+    await store.upsertValue(owner, "jihulab-pat", { token: "rotated-2" });
+    entry = (await store.getFilledValues(owner, ["jihulab-pat"]))[0];
+    expect(entry?.values).toEqual({ token: "rotated-2", extra: "e" });
     expect(await store.listValueCodes(owner)).toEqual(["jihulab-pat"]);
 
     // 密文确实落库（非明文）

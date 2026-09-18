@@ -31,7 +31,7 @@ export interface CredentialSetStore {
   listValueCodes(userId: string): Promise<string[]>;
   /** 解密取回；缺失的 code 不出现在结果中 */
   getFilledValues(userId: string, codes: string[]): Promise<CredentialValueEntry[]>;
-  /** 创建/整体覆写 values；name 缺省时保留既有别名（COALESCE 语义） */
+  /** 创建/合并写入 values：新值覆盖同键，未提及的既有键保留；name 缺省时保留既有别名（COALESCE 语义） */
   upsertValue(
     userId: string,
     code: string,

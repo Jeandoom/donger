@@ -83,7 +83,16 @@ function MissingCredentialsCard({
         ))}
       </ul>
       <div className="mt-1 text-xs text-blue-600">
-        请先在「凭证管理」页填写缺失项（可新开标签页），完成后点「重试」。
+        请先到
+        <a
+          className="mx-0.5 font-medium underline"
+          href={`/settings/credentials?fill=${encodeURIComponent(items[0]?.code ?? "")}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          凭证管理
+        </a>
+        页填写缺失项，完成后点「重试」。
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => onDecide("continue")}>

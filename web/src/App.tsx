@@ -7,7 +7,7 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
-import { CredentialsPage } from "./pages/CredentialsPage";
+import { CredentialsPage } from "./pages/credentials/CredentialsPage";
 import { InvitesPage } from "./pages/InvitesPage";
 import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
