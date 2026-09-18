@@ -1,0 +1,84 @@
+import type { McpSdkServerConfigWithInstance, SessionStore } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "../domain/agent.js";
+import type { LLMConfig } from "../domain/llm-config.js";
+import type { AgentPermissionMode } from "../domain/permission-mode.js";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  QuestionRequest,
+  QuestionResolution,
+  RunnerEvent,
+  Task,
+} from "../domain/types.js";
+
+/** 运行一个任务所需的环境（由编排层从 LLMConfig + 任务上下文注入） */
+export interface RunOptions {
+  cwd: string;
+  skills: string[];
+  /** 要加载的插件路径（runner 转成 SDK 的 [{type:"local",path}]） */
+  pluginPaths?: string[];
+  llm: LLMConfig;
+  systemPromptAppend?: string;
+  abortSignal?: AbortSignal;
+  /** Claude Agent SDK session ID，续接历史对话 */
+  resume?: string;
+  /** 写入边界：写入路径必须落在此目录内（该用户工作区） */
+  workspaceRoot?: string;
+  /** SDK cwd 之外允许访问的扩展目录。 */
+  additionalDirectories?: string[];
+  /** workspaceRoot 之外允许 direct write tools 写入的目录。 */
+  allowedWriteRoots?: string[];
+  /** SDK sandbox 尽力阻止写入的扩展目录。 */
+  readOnlyRoots?: string[];
+  /** RuntimeManager 注入的 transcript 适配器（SDK Alpha SessionStore） */
+  sessionStore?: SessionStore;
+  /** 能力快照版本号（审计/回溯用，M1 仅记录，不消费） */
+  capabilityVersion?: number;
+  /** 启用 pack 声明的凭证值（运行时注入 SDK env）。 */
+  credentialsEnv?: Record<string, string>;
+  /** 透传 SDK allowedTools（工具白名单） */
+  allowedTools?: string[];
+  /**
+   * shell git 守卫（收口防线 2）：所有会话缺省禁止 Bash 跑 git（引导用 donger-git
+   * 工具）；仅 agent 显式配置 true 时放行（push 仍有 deploy 审批门）。
+   */
+  gitAllowShellGit?: boolean;
+  /**
+   * 会话权限模式取值器（每次工具调用现取，轮内切换立即生效）：
+   * full_access 时命中审批门的调用直接放行；白名单/写边界/shell git 守卫不受影响。
+   */
+  permissionMode?: () => AgentPermissionMode;
+  /** 透传 SDK mcpServers（已解密） */
+  mcpServers?: McpServerConfig[];
+  /** 插件共享运行库目录（<plugin>/scripts，存在才注入）：
+   *  runner 并入 PYTHONPATH，供技能脚本 `from credentials import ...` 等共享包导入 */
+  pythonPaths?: string[];
+  /** in-process 平台工具 MCP server（assist 会话注入；instance 不可序列化，仅运行时使用） */
+  platformTools?: McpSdkServerConfigWithInstance;
+  /** in-process git 平台元数据 MCP server（agent 绑定 git 仓库时注入） */
+  gitPlatformTools?: McpSdkServerConfigWithInstance;
+  /** in-process 业务知识库 MCP server（恒挂载，可用性由 agent tools 白名单控制） */
+  kbTools?: McpSdkServerConfigWithInstance;
+  /**
+   * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
+   * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按
+   * 原样放行（空答案 → 模型收到 "The user did not answer the questions."，即历史行为）。
+   */
+  questionResolver?: QuestionResolver;
+}
+
+/** runner 命中 AskUserQuestion 时回调；由 Orchestrator 实现（推问题卡 → 等用户作答 → 返回答案） */
+export type QuestionResolver = (req: QuestionRequest) => Promise<QuestionResolution>;
+
+/** runner 命中审批门时回调；由 Orchestrator 实现（推卡 → 等用户 → 返回决议） */
+export type ApprovalResolver = (req: ApprovalRequest) => Promise<ApprovalDecision>;
+
+/** 执行引擎端口：消费任务，产出事件流，门内调用 approvalResolver */
+export interface AgentRunner {
+  run(task: Task, opts: RunOptions, approvalResolver: ApprovalResolver): AsyncIterable<RunnerEvent>;
+  /**
+   * 该任务当前是否在等用户作答（AskUserQuestion 桥接挂起中）。停摆看门狗据此豁免：
+   * 等人工输入是合法阻塞而非流挂死。可选能力——未实现者视为恒不豁免。
+   */
+  isAwaitingUserInput?(taskId: string): boolean;
+}

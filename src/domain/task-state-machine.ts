@@ -1,0 +1,58 @@
+import type { TaskStatus } from "./types.js";
+
+/** 状态机触发事件（状态机专属词汇，定义在本文件内） */
+export type TaskEvent =
+  | "plan"
+  | "start"
+  | "request_approval"
+  | "resume"
+  | "redesign"
+  | "request_credentials"
+  | "credentials_provided"
+  | "bypass"
+  | "finish"
+  | "fail"
+  | "cancel";
+
+const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = {
+  created: { plan: "planning", cancel: "canceled" },
+  planning: {
+    start: "running",
+    request_approval: "awaiting_approval",
+    request_credentials: "awaiting_credentials",
+    cancel: "canceled",
+  },
+  running: {
+    request_approval: "awaiting_approval",
+    finish: "done",
+    fail: "failed",
+    cancel: "canceled",
+  },
+  awaiting_approval: {
+    resume: "running",
+    redesign: "planning",
+    fail: "failed",
+    cancel: "canceled",
+  },
+  awaiting_credentials: {
+    /** bypass：缺失凭证问询中用户选择「继续执行」，带病运行（缺失凭证注入 _MISSING 标记） */
+    bypass: "running",
+    credentials_provided: "planning",
+    fail: "failed",
+    cancel: "canceled",
+  },
+  done: {},
+  failed: {},
+  canceled: {},
+};
+
+export function canTransition(from: TaskStatus, ev: TaskEvent): boolean {
+  return ev in (TRANSITIONS[from] ?? {});
+}
+
+/** 返回下一状态；非法转换抛普通 Error（domain 保持纯，不依赖 util） */
+export function nextStatus(from: TaskStatus, ev: TaskEvent): TaskStatus {
+  const next = TRANSITIONS[from]?.[ev];
+  if (!next) throw new Error(`非法状态转换: ${from} --${ev}-->`);
+  return next;
+}

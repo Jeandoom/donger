@@ -1,0 +1,49 @@
+{
+  "name": "donger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "donger": "bin/donger.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src test scripts cli/src cli/test",
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:e2e": "tsx scripts/smoke-e2e.ts",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build",
+    "dev:cli": "tsx cli/src/index.ts",
+    "test:cli": "npm --prefix cli run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/busboy": "^1.5.4",
+    "@types/node": "^26.0.1",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.263",
+    "better-sqlite3": "^12.11.1",
+    "busboy": "^1.6.0",
+    "dingtalk-stream": "^2.1.6-beta.1",
+    "donger-web": "file:web",
+    "dotenv": "^17.4.2",
+    "jose": "^6.2.12",
+    "node-cron": "^4.6.0",
+    "pino": "^10.3.1",
+    "undici": "^8.10.2",
+    "zod": "^4.4.3"
+  }
+}

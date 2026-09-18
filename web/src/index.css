@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * donger 设计体系 · 2026 重设计（与 Penpot 「01 · 设计体系」一致）
+ * 品牌墨黑侧边栏 + 靛蓝主色 + 浅板岩内容区
+ */
+:root {
+  --background: 210 40% 98%; /* #F8FAFC */
+  --foreground: 222 47% 11%; /* #0F172A */
+  --card: 0 0% 100%; /* #FFFFFF */
+  --muted: 210 40% 96%; /* #F1F5F9 */
+  --muted-foreground: 215 16% 47%; /* #64748B */
+  --primary: 244 76% 59%; /* #4F46E5 */
+  --primary-foreground: 0 0% 100%;
+  --primary-soft: 236 100% 97%; /* #EEF2FF */
+  --accent: 236 100% 97%; /* #EEF2FF */
+  --accent-foreground: 244 76% 59%;
+  --border: 214 32% 91%; /* #E2E8F0 */
+  --radius: 0.75rem; /* 12px */
+
+  --success: 160 84% 39%; /* #10B981 */
+  --success-soft: 152 95% 96%; /* #ECFDF5 */
+  --warning: 38 92% 50%; /* #FBBF24 */
+  --warning-soft: 48 100% 96%; /* #FFFBEB */
+  --destructive: 0 84% 60%; /* #EF4444 */
+  --destructive-soft: 0 86% 98%; /* #FEF2F2 */
+
+  --sidebar: 222 47% 11%; /* #0F172A */
+  --sidebar-hover: 217 33% 14%; /* #1E293B */
+  --sidebar-active: 244 76% 59%; /* #4F46E5 */
+  --sidebar-foreground: 210 25% 80%; /* #CBD5E1 */
+}
+
+/* 暗色模式仅预留（阶段 0 不实装） */
+.dark {
+  --background: 222 47% 11%;
+  --foreground: 210 40% 98%;
+  --muted: 217 33% 14%;
+  --muted-foreground: 215 20% 65%;
+  --primary: 244 76% 59%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 217 33% 14%;
+  --accent-foreground: 210 40% 98%;
+  --border: 217 33% 20%;
+}
+
+body {
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family:
+    "Inter Tight", "Inter", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* Markdown 预览最小样式（FilePreview） */
+.markdown h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.markdown h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.markdown h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.markdown p {
+  margin: 0.4em 0;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.markdown li {
+  margin: 0.15em 0;
+}
+.markdown code {
+  background: hsl(var(--muted));
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.markdown pre {
+  background: hsl(var(--muted));
+  padding: 0.6em;
+  border-radius: 6px;
+  overflow: auto;
+}
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+}
+.markdown table {
+  border-collapse: collapse;
+  margin: 0.4em 0;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.2em 0.5em;
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+}

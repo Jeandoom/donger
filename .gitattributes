@@ -1,0 +1,11 @@
+# 统一行尾为 LF：仓库与工作区一致，消除 Windows autocrlf 与 biome 的冲突
+* text=auto eol=lf
+
+# 二进制资源
+*.png binary
+*.ico binary
+*.jpg binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.node binary
