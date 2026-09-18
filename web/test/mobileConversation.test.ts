@@ -3,8 +3,8 @@ import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentConversationSidebarProps } from "../src/components/chat/AgentConversationSidebar";
 import { MobileConversationSheet } from "../src/components/chat/MobileConversationSheet";
-import type { AgentListDTO } from "../src/lib/agents";
 import type { SidebarPrefs } from "../src/lib/agentSidebar";
+import type { AgentListDTO } from "../src/lib/agents";
 import type { ConversationSummary } from "../src/types";
 
 function agentDto(id: string, name: string): AgentListDTO {
@@ -77,8 +77,8 @@ describe("MobileConversationSheet", () => {
       }),
     );
     fireEvent.click(screen.getByRole("button", { name: "打开历史会话" }));
-    fireEvent.click(screen.getByRole("button", { name: /新会话/ }));
-    // 全局「+ 新会话」落到默认对话agent（无星标时=普通区第一位）
+    // 分组头「+」：在该 agent 下新建会话
+    fireEvent.click(screen.getByRole("button", { name: "在「分析助手」下新建会话" }));
     expect(onNew).toHaveBeenCalledWith("a1");
     expect(screen.queryByRole("dialog", { name: "历史会话" })).not.toBeInTheDocument();
   });

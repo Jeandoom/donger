@@ -65,14 +65,8 @@ export function reorderIds(list: readonly string[], from: number, to: number): s
   return next;
 }
 
-/** 默认对话agent：固定区第一位，否则普通区第一位；无任何智能体返回空串 */
-export function resolveDefaultAgentId(managedIds: readonly string[], prefs: SidebarPrefs): string {
-  const managed = new Set(managedIds);
-  const starred = prefs.starredAgentIds.find((id) => managed.has(id));
-  if (starred) return starred;
-  const ordered = prefs.agentOrder.find((id) => managed.has(id));
-  return ordered ?? managedIds[0] ?? "";
-}
+// 「默认对话agent」概念已移除：新建会话一律经分组头「+」显式指定 agent；
+// 星标仅保留置顶收藏语义，不再决定默认目标。
 
 /**
  * 会话按 agentId 分组（列表接口按 updatedAt DESC 返回，组内保序）。

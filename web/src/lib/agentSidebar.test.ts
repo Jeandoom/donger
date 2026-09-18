@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationSummary } from "../types";
 import {
-  emptyPrefs,
   formatRelativeTime,
   groupConversations,
   normalizeSidebarPrefs,
   reorderIds,
-  resolveDefaultAgentId,
   toggleStarred,
 } from "./agentSidebar";
 
@@ -63,21 +61,6 @@ describe("reorderIds", () => {
     expect(reorderIds(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
     expect(reorderIds(["a", "b", "c"], 5, 0)).toEqual(["c", "a", "b"]);
     expect(reorderIds([], 0, 1)).toEqual([]);
-  });
-});
-
-describe("resolveDefaultAgentId", () => {
-  it("固定区第一位优先，其次普通区第一位，再次加载序", () => {
-    expect(resolveDefaultAgentId(["a", "b"], { starredAgentIds: [], agentOrder: ["b"] })).toBe("b");
-    expect(resolveDefaultAgentId(["a", "b"], { starredAgentIds: ["b"], agentOrder: [] })).toBe("b");
-    expect(resolveDefaultAgentId(["a", "b"], emptyPrefs())).toBe("a");
-    expect(resolveDefaultAgentId([], emptyPrefs())).toBe("");
-  });
-
-  it("忽略已删除智能体的残留偏好", () => {
-    expect(
-      resolveDefaultAgentId(["b"], { starredAgentIds: ["gone"], agentOrder: ["also-gone", "b"] }),
-    ).toBe("b");
   });
 });
 

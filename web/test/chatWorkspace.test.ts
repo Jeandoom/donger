@@ -47,7 +47,8 @@ describe("ChatWorkspace", () => {
   it("renders the shared conversation and composer workspace", () => {
     renderWorkspace();
 
-    expect(screen.getByRole("button", { name: "+ 新会话" })).toBeDisabled();
+    // 顶部「+ 新会话」已移除：新建会话唯一入口是各智能体分组的「+」
+    expect(screen.queryByRole("button", { name: "+ 新会话" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "添加内容" })).toBeInTheDocument();
     expect(screen.getByText("已连接")).toBeInTheDocument();
   });
