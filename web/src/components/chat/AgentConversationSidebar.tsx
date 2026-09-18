@@ -8,13 +8,12 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, GripVertical, Plus, Star } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, Star } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   formatRelativeTime,
   groupConversations,
   reorderIds,
-  resolveDefaultAgentId,
   type SidebarPrefs,
   toggleStarred,
 } from "../../lib/agentSidebar";
@@ -22,6 +21,7 @@ import type { AgentListDTO } from "../../lib/agents";
 import { BUILTIN_ASSIST_AGENT_ID } from "../../lib/assist";
 import { cn } from "../../lib/utils";
 import type { ConversationSummary } from "../../types";
+import { PlusIcon } from "../icons/PlusIcon";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 
 export interface AgentConversationSidebarProps {
@@ -34,7 +34,7 @@ export interface AgentConversationSidebarProps {
   onPrefsChange: (next: SidebarPrefs) => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
-  /** 新建会话（全局头部=默认 agent；分组头=该 agent） */
+  /** 新建会话（分组头「+」=该 agent；由调用方决定如何落库） */
   onNewConversation: (agentId: string) => void;
   /** 移动端 sheet 选中会话后回调关闭 */
   onItemSelected?: () => void;
@@ -68,7 +68,6 @@ interface GroupView {
   title?: string;
   conversations: ConversationSummary[];
   starred: boolean;
-  isDefault: boolean;
 }
 
 interface GroupCallbacks {
@@ -117,35 +116,29 @@ function AgentGroup(props: { view: GroupView; callbacks: GroupCallbacks }) {
           <span className="truncate text-[13px] font-medium" title={view.title || view.name}>
             {view.name}
           </span>
-          {view.isDefault ? (
-            <span className="shrink-0 rounded-full bg-primary-soft px-1.5 text-[10px] font-medium text-primary">
-              默认
-            </span>
-          ) : null}
           {hasConversations ? (
             <span className="shrink-0 text-[10px] text-muted-foreground">
               {view.conversations.length}
             </span>
           ) : null}
         </button>
+        {/* 智能体右侧常显「+」：直接创建该 agent 的对话（全站唯一的新建会话入口） */}
+        {callbacks.onNew ? (
+          <button
+            type="button"
+            title={`在「${view.name}」下新建会话`}
+            aria-label={`在「${view.name}」下新建会话`}
+            onClick={callbacks.onNew}
+            className="inline-flex min-h-7 min-w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-primary-soft hover:text-primary"
+          >
+            <PlusIcon size={14} />
+          </button>
+        ) : null}
         <div className="flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          {callbacks.onNew ? (
-            <button
-              type="button"
-              title={`在「${view.name}」下新建会话`}
-              aria-label={`在「${view.name}」下新建会话`}
-              onClick={callbacks.onNew}
-              className="inline-flex min-h-7 min-w-7 items-center justify-center rounded text-muted-foreground hover:bg-primary-soft hover:text-primary"
-            >
-              <Plus size={14} />
-            </button>
-          ) : null}
           {callbacks.onToggleStar ? (
             <button
               type="button"
-              title={
-                view.starred ? "取消置顶（移回智能体区）" : "星标置顶；固定区第一位即默认对话agent"
-              }
+              title={view.starred ? "取消置顶（移回智能体区）" : "星标置顶固定区（收藏）"}
               aria-label={view.starred ? "取消置顶" : "星标置顶"}
               onClick={callbacks.onToggleStar}
               className="inline-flex min-h-7 min-w-7 items-center justify-center rounded text-muted-foreground hover:bg-warning-soft hover:text-amber-600"
@@ -254,7 +247,6 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
     () => props.agents.filter((a) => a.id !== BUILTIN_ASSIST_AGENT_ID).map((a) => a.id),
     [props.agents],
   );
-  const defaultId = resolveDefaultAgentId(managedIds, props.prefs);
   const kw = keyword.trim().toLowerCase();
   const searching = kw.length > 0;
   const match = (list: ConversationSummary[]) =>
@@ -271,7 +263,6 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
       title: agent.description,
       conversations,
       starred: props.prefs.starredAgentIds.includes(agentId),
-      isDefault: agentId === defaultId,
     };
   };
 
@@ -335,6 +326,7 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
       view={view}
       callbacks={{
         ...groupCallbacks,
+        onNew: () => props.onNewConversation(view.agentId),
         onToggleStar: () => props.onPrefsChange(toggleStarred(props.prefs, view.agentId)),
       }}
     />
@@ -349,14 +341,6 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
     >
       <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
         <span className="text-xs font-semibold text-muted-foreground">会话</span>
-        <button
-          type="button"
-          onClick={() => props.onNewConversation(defaultId)}
-          disabled={!defaultId}
-          className="rounded-md bg-primary-soft px-2 py-0.5 text-xs font-medium text-primary hover:opacity-80 disabled:opacity-40"
-        >
-          + 新会话
-        </button>
       </div>
       {totalConversations >= 8 ? (
         <div className="border-b border-border px-2 py-1.5">
@@ -424,20 +408,23 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
                 name: "系统会话",
                 conversations: match(orphans),
                 starred: false,
-                isDefault: false,
               }}
               callbacks={{ ...groupCallbacks, onNew: undefined, onToggleStar: undefined }}
             />
           </div>
         ) : null}
-        {assistView && assistView.conversations.length > 0 ? (
+        {assistView ? (
           <div className="mt-2 border-t border-border pt-1.5">
             <div className="px-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               内置
             </div>
             <AgentGroup
               view={assistView}
-              callbacks={{ ...groupCallbacks, onToggleStar: undefined }}
+              callbacks={{
+                ...groupCallbacks,
+                onNew: () => props.onNewConversation(BUILTIN_ASSIST_AGENT_ID),
+                onToggleStar: undefined,
+              }}
             />
           </div>
         ) : null}

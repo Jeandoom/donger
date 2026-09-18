@@ -4,12 +4,7 @@ import { AssistDraftBanner } from "../components/chat/AssistDraftBanner";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { EvictionNoticeDialog } from "../components/chat/EvictionNoticeDialog";
 import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
-import {
-  emptyPrefs,
-  normalizeSidebarPrefs,
-  resolveDefaultAgentId,
-  type SidebarPrefs,
-} from "../lib/agentSidebar";
+import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/agentSidebar";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { apiFetch } from "../lib/auth";
@@ -178,29 +173,32 @@ export function ChatPage() {
   }, [deepLinkAgent]);
 
   // 初始定位（仅一次）：?agent= 深链优先（继续该 agent 最近会话，没有才新建草稿）；
-  // 无深链则打开默认对话agent 的最近会话。列表/智能体/偏好三者就绪后才执行。
+  // 无深链则打开最近一条智能体会话（「默认对话agent」概念已移除，新建一律走分组头「+」）。
+  // 列表/智能体/偏好三者就绪后才执行。
   useEffect(() => {
     if (bootstrappedRef.current) return;
     if (!agentsLoaded || !prefsLoaded || wc.loadingConversations) return;
     bootstrappedRef.current = true;
     const deepLinkValid = deepLinkAgent !== null && agents.some((a) => a.id === deepLinkAgent);
-    const targetAgentId = deepLinkValid
-      ? deepLinkAgent
-      : resolveDefaultAgentId(managedIds, normalizedPrefs);
-    if (!targetAgentId) return;
-    const latest = wc.conversations.find((conversation) => conversation.agentId === targetAgentId);
-    if (latest) {
-      wc.switchConversation(latest.id);
+    if (deepLinkValid && deepLinkAgent) {
+      const latestOfAgent = wc.conversations.find(
+        (conversation) => conversation.agentId === deepLinkAgent,
+      );
+      if (latestOfAgent) {
+        wc.switchConversation(latestOfAgent.id);
+        return;
+      }
+      const agent = agents.find((a) => a.id === deepLinkAgent);
+      void wc.newConversation(deepLinkAgent, agent?.defaultPermissionMode);
       return;
     }
-    const agent = agents.find((a) => a.id === targetAgentId);
-    void wc.newConversation(targetAgentId, agent?.defaultPermissionMode);
+    // 列表按 updatedAt DESC 返回；跳过旧版 task-flow 会话（agentId 为空）与草稿
+    const latest = wc.conversations.find((conversation) => conversation.agentId);
+    if (latest) wc.switchConversation(latest.id);
   }, [
     agents,
     agentsLoaded,
     deepLinkAgent,
-    managedIds,
-    normalizedPrefs,
     prefsLoaded,
     wc.conversations,
     wc.loadingConversations,
