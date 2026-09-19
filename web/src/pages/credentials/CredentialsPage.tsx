@@ -11,6 +11,7 @@ import { Segmented } from "../../components/ui/segmented";
 import { getUserId } from "../../lib/auth";
 import {
   type CredentialTemplateDTO,
+  type CredentialValueViewDTO,
   deleteCredentialValue,
   fetchCredentialTemplates,
   fetchMyCredentials,
@@ -26,7 +27,7 @@ import {
 import { TemplateFormDialog } from "./TemplateFormDialog";
 
 export function CredentialsPage() {
-  const [mine, setMine] = useState<CredentialRow[]>([]);
+  const [mine, setMine] = useState<CredentialValueViewDTO[]>([]);
   const [templates, setTemplates] = useState<CredentialTemplateDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);

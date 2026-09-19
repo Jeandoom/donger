@@ -33,8 +33,8 @@ describe("mergeCredentialRows", () => {
 
   it("模板删除后值条目标记 orphan", () => {
     const rows = mergeCredentialRows([mine("ghost", [], [])], []);
-    expect(rows[0].orphan).toBe(true);
-    expect(rows[0].missingKeys).toEqual([]);
+    expect(rows[0]?.orphan).toBe(true);
+    expect(rows[0]?.missingKeys).toEqual([]);
   });
 
   it("别名优先展示", () => {
@@ -42,15 +42,15 @@ describe("mergeCredentialRows", () => {
       [{ ...mine("a", ["k"], []), name: "别名", alias: "别名" }],
       [tpl("a", ["k"])],
     );
-    expect(rows[0].name).toBe("别名");
+    expect(rows[0]?.name).toBe("别名");
   });
 });
 
 describe("filterCredentialRows", () => {
-  const rows = mergeCredentialRows([mine("alpha", ["k1"], ["k2"])], [
-    tpl("alpha", ["k1", "k2"]),
-    tpl("beta", ["k3"]),
-  ]);
+  const rows = mergeCredentialRows(
+    [mine("alpha", ["k1"], ["k2"])],
+    [tpl("alpha", ["k1", "k2"]), tpl("beta", ["k3"])],
+  );
 
   it("状态分段", () => {
     expect(filterCredentialRows(rows, "todo", "").map((r) => r.code)).toEqual(["alpha", "beta"]);
