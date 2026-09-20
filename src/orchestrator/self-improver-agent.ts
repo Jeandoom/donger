@@ -1,4 +1,4 @@
-import type { Agent } from "../domain/agent.js";
+import { normalizeAgentCredentialRefs, type Agent } from "../domain/agent.js";
 import type { AgentGitRepository } from "../domain/git.js";
 
 /** 内置平台进化官智能体 ID（会话绑定用；不入库，resolveAgentForUse 短路解析；须匹配 [\w-]+） */
@@ -28,7 +28,9 @@ const SELF_IMPROVER_SYSTEM_PROMPT = `你是 donger 平台的进化官：把管�
  * 实现/推送环节不可用）。
  */
 export function buildSelfImproverAgent(repository?: AgentGitRepository): Agent {
-  return {
+  // credentialCode 并入 credentials（normalizeAgentCredentialRefs）：凭证缺失三选问询
+  // 与 Orchestrator 预检按 agent.credentials 感知，未并入则私有仓库问询不触发
+  return normalizeAgentCredentialRefs({
     id: BUILTIN_SELF_IMPROVER_AGENT_ID,
     ownerId: "",
     name: "平台进化官",
@@ -50,5 +52,5 @@ export function buildSelfImproverAgent(repository?: AgentGitRepository): Agent {
     version: 1,
     createdAt: "",
     updatedAt: "",
-  };
+  });
 }
