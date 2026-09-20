@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { apiFetch, getToken, setLoginNext, setToken } from "../lib/auth";
 
-/** 邮箱注册页。持邀请链接（?invite=）注册不受邮箱域名白名单限制。 */
+/** 邮箱注册页。持邀请链接（?invite=）注册不受邮箱域名白名单限制；注册后需凭管理员发放的验证链接完成验证。 */
 export function RegisterPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -15,6 +15,7 @@ export function RegisterPage() {
   const [confirm, setConfirm] = useState("");
   const [invite, setInvite] = useState(inviteFromUrl);
   const [error, setError] = useState<string | null>(null);
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -25,6 +26,7 @@ export function RegisterPage() {
   const submit = (ev: React.FormEvent) => {
     ev.preventDefault();
     setError(null);
+    setPendingMessage(null);
     if (password !== confirm) {
       setError("两次输入的密码不一致");
       return;
@@ -40,9 +42,16 @@ export function RegisterPage() {
           const data = (await r.json().catch(() => ({}))) as { error?: string };
           throw new Error(data.error ?? `注册失败（HTTP ${r.status}）`);
         }
-        return (await r.json()) as { token: string };
+        return (await r.json()) as { token?: string; message?: string };
       })
       .then((data) => {
+        // 验证状态机（后端 202 受理）：pending 账号不发 token，验证链接由管理员线下转交
+        if (!data.token) {
+          setPendingMessage(
+            data.message ?? "注册已受理，请通过管理员提供的验证链接完成邮箱验证（24 小时内有效）",
+          );
+          return;
+        }
         setToken(data.token);
         navigate(next, { replace: true });
       })
@@ -68,6 +77,20 @@ export function RegisterPage() {
           {error ? (
             <div className="mb-4 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
               {error}
+            </div>
+          ) : null}
+
+          {pendingMessage ? (
+            <div className="mb-4 rounded-lg bg-success-soft p-3 text-sm text-success" role="status">
+              {pendingMessage}
+              <div className="mt-2">
+                <Link
+                  to={`/login${next !== "/" ? `?next=${encodeURIComponent(next)}` : ""}`}
+                  className="underline"
+                >
+                  前往登录
+                </Link>
+              </div>
             </div>
           ) : null}
 
@@ -107,7 +130,7 @@ export function RegisterPage() {
               className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
             />
             <Button type="submit" className="w-full" disabled={busy}>
-              {busy ? "注册中…" : "注册并登录"}
+              {busy ? "注册中…" : "注册"}
             </Button>
           </form>
 

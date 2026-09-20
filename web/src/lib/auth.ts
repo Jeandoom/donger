@@ -2,7 +2,13 @@ const TOKEN_KEY = "donger_jwt";
 
 export function getToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    const token = localStorage.getItem(TOKEN_KEY);
+    // 历史脏值防御：旧版注册页曾把 202 响应（无 token 字段）当 token 写入，视为未登录并清理
+    if (token === "undefined" || token === "null" || token === "") {
+      localStorage.removeItem(TOKEN_KEY);
+      return null;
+    }
+    return token;
   } catch {
     return null;
   }
