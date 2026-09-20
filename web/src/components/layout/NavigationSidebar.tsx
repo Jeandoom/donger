@@ -13,6 +13,7 @@ import {
   Settings,
   Sparkles,
   Workflow,
+  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
@@ -27,7 +28,7 @@ interface LeafItem {
   end?: boolean;
 }
 interface ParentItem {
-  key: "workflows" | "settings" | "observation";
+  key: "settings" | "observation";
   label: string;
   icon: LucideIcon;
   /** 命中即视为该父项激活（用于自动展开） */
@@ -40,16 +41,8 @@ const entries: NavEntry[] = [
   { to: "/", label: "对话", icon: MessageSquare, end: true },
   // 智能体会话已并入对话模块（/），智能体入口收敛为管理页叶节点
   { to: "/agents", label: "智能体", icon: Bot },
-  {
-    key: "workflows",
-    label: "工作流",
-    icon: Workflow,
-    match: ["/workflows", "/triggers"],
-    children: [
-      { to: "/workflows", label: "工作流管理" },
-      { to: "/triggers", label: "触发器管理" },
-    ],
-  },
+  { to: "/workflows", label: "工作流", icon: Workflow },
+  { to: "/triggers", label: "触发器", icon: Zap },
   { to: "/loops", label: "LOOPs", icon: Repeat },
   { to: "/skills", label: "技能", icon: Sparkles },
   { to: "/connectors", label: "连接器", icon: Plug },
@@ -137,12 +130,11 @@ export function NavigationSidebar({
   const [openParents, setOpenParents] = useState<Record<ParentItem["key"], boolean>>(() => {
     try {
       return {
-        workflows: localStorage.getItem("donger_nav_workflows_open") === "1",
         settings: localStorage.getItem("donger_nav_settings_open") === "1",
         observation: localStorage.getItem("donger_nav_observation_open") === "1",
       };
     } catch {
-      return { workflows: false, settings: false, observation: false };
+      return { settings: false, observation: false };
     }
   });
 
