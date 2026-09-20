@@ -1,6 +1,7 @@
 import {
   Bot,
   LogOut,
+  Megaphone,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -51,6 +52,7 @@ const bottomEntries: LeafItem[] = [
   { to: "/models", label: "模型", icon: ModelIcon },
   { to: "/credentials", label: "凭证", icon: CredentialIcon },
   { to: "/invites", label: "邀请", icon: InviteIcon },
+  { to: "/feedback", label: "反馈", icon: Megaphone },
 ];
 
 interface UserInfo {

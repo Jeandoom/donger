@@ -23,4 +23,8 @@ export const RateLimitKeys = {
   llmProviderTest(userId: string): string {
     return `llm-provider-test:${userId}`;
   },
+  /** 反馈提交（spec 2026-09-20-feedback-module-design R4 防刷量） */
+  feedback(userId: string): string {
+    return `feedback:${userId}`;
+  },
 } as const;

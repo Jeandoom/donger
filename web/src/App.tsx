@@ -8,6 +8,7 @@ import { AuditPage } from "./pages/AuditPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
 import { CredentialsPage } from "./pages/credentials/CredentialsPage";
+import { FeedbackPage } from "./pages/FeedbackPage";
 import { InvitesPage } from "./pages/InvitesPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
@@ -62,6 +63,7 @@ export function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/credentials" element={<CredentialsPage />} />
             <Route path="/invites" element={<InvitesPage />} />
+            <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/settings" element={<Navigate to="/profile" replace />} />
             <Route path="/settings/profile" element={<Navigate to="/profile" replace />} />
             <Route path="/settings/models" element={<Navigate to="/models" replace />} />
