@@ -9,10 +9,16 @@ import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { type AgentListDTO, deleteAgent, fetchAgents, scenarioLabel } from "../lib/agents";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
+import {
+  BUILTIN_AGENT_ENTRIES,
+  BUILTIN_SELF_IMPROVER_AGENT_ID,
+} from "../lib/builtinAgents";
+import { fetchMe } from "../lib/auth";
 
 export function AgentsPage() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
+  const [admin, setAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [keyword, setKeyword] = useState("");
@@ -21,8 +27,11 @@ export function AgentsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchAgents()
-      .then(setAgents)
+    Promise.all([fetchAgents(), fetchMe()])
+      .then(([list, me]) => {
+        setAgents(list);
+        setAdmin(me?.role === "admin");
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
@@ -45,6 +54,9 @@ export function AgentsPage() {
   const kw = keyword.trim().toLowerCase();
   const match = (a: AgentListDTO) =>
     !kw || a.name.toLowerCase().includes(kw) || (a.description ?? "").toLowerCase().includes(kw);
+  const builtins = BUILTIN_AGENT_ENTRIES.filter(
+    (a) => (admin || a.id !== BUILTIN_SELF_IMPROVER_AGENT_ID) && match(a),
+  );
   const mine = agents.filter((a) => a._mine && match(a));
   const shared = agents.filter((a) => !a._mine && match(a));
 
@@ -77,6 +89,12 @@ export function AgentsPage() {
       {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
+      <Section
+        title="系统默认"
+        items={builtins}
+        builtin
+        onChat={(a) => navigate(`/?agent=${a.id}`)}
+      />
       <Section
         title="我创建的"
         items={mine}
@@ -112,58 +130,90 @@ function Section({
   items,
   onDelete,
   empty,
+  builtin = false,
+  onChat,
 }: {
   title: string;
   items: AgentListDTO[];
   onDelete?: (a: AgentListDTO) => void;
   empty?: string;
+  /** 系统默认智能体：不入库，不可编辑/删除，卡片只保留「对话」 */
+  builtin?: boolean;
+  /** builtin 卡的「对话」回调（跳转 /?agent=<id> 深链） */
+  onChat?: (a: AgentListDTO) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
       <h2 className="text-sm font-semibold text-muted-foreground">{title}</h2>
       {items.length ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {items.map((a) => (
-            <Card key={a.id} className="flex flex-col gap-2.5 p-4">
-              <div className="flex items-start justify-between gap-2">
-                <Link to={`/agents/${a.id}`} className="flex min-w-0 items-center gap-2">
-                  <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft text-xs font-bold text-primary">
-                    {a.name.charAt(0).toUpperCase()}
+          {items.map((a) =>
+            builtin ? (
+              <Card key={a.id} className="flex flex-col gap-2.5 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft text-xs font-bold text-primary">
+                      {a.name.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="truncate text-[13px] font-semibold">{a.name}</span>
                   </span>
-                  <span className="truncate text-[13px] font-semibold hover:underline">
-                    {a.name}
-                  </span>
-                </Link>
-                {a.scenario ? <Badge tone="success">{a.scenario}</Badge> : <Badge>通用</Badge>}
-              </div>
-              <Link
-                to={`/agents/${a.id}`}
-                className="line-clamp-2 min-h-8 text-xs text-muted-foreground hover:bg-muted/60"
-              >
-                {a.description ?? "—"}
-              </Link>
-              <div className="mt-auto flex items-center justify-between">
-                <Badge tone="success">{scenarioLabel(a.scenario)}</Badge>
-                <div className="flex items-center gap-1.5">
-                  <Link to={`/agents/${a.id}/chat`}>
-                    <Button variant="secondary" size="sm">
-                      对话
-                    </Button>
-                  </Link>
-                  {onDelete ? (
-                    <button
-                      type="button"
-                      onClick={() => onDelete(a)}
-                      title="删除智能体"
-                      className="rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      删除
-                    </button>
-                  ) : null}
+                  <Badge tone="info">内置</Badge>
                 </div>
-              </div>
-            </Card>
-          ))}
+                <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
+                  {a.description ?? "—"}
+                </p>
+                <div className="mt-auto flex items-center justify-end">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onChat?.(a)}
+                  >
+                    对话
+                  </Button>
+                </div>
+              </Card>
+            ) : (
+              <Card key={a.id} className="flex flex-col gap-2.5 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <Link to={`/agents/${a.id}`} className="flex min-w-0 items-center gap-2">
+                    <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft text-xs font-bold text-primary">
+                      {a.name.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="truncate text-[13px] font-semibold hover:underline">
+                      {a.name}
+                    </span>
+                  </Link>
+                  {a.scenario ? <Badge tone="success">{a.scenario}</Badge> : <Badge>通用</Badge>}
+                </div>
+                <Link
+                  to={`/agents/${a.id}`}
+                  className="line-clamp-2 min-h-8 text-xs text-muted-foreground hover:bg-muted/60"
+                >
+                  {a.description ?? "—"}
+                </Link>
+                <div className="mt-auto flex items-center justify-between">
+                  <Badge tone="success">{scenarioLabel(a.scenario)}</Badge>
+                  <div className="flex items-center gap-1.5">
+                    <Link to={`/agents/${a.id}/chat`}>
+                      <Button variant="secondary" size="sm">
+                        对话
+                      </Button>
+                    </Link>
+                    {onDelete ? (
+                      <button
+                        type="button"
+                        onClick={() => onDelete(a)}
+                        title="删除智能体"
+                        className="rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        删除
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </Card>
+            ),
+          )}
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">{empty ?? "暂无"}</p>
@@ -171,3 +221,4 @@ function Section({
     </div>
   );
 }
+
