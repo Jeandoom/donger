@@ -88,4 +88,35 @@ export class InMemoryAuditStore implements AuditStore {
     }
     return visible;
   }
+
+  async searchByKeyword(keyword: string, limit: number): Promise<AuditEvent[]> {
+    return [...this.byId.values()]
+      .filter((e) => e.text?.includes(keyword))
+      .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+      .slice(0, limit);
+  }
+
+  async searchByKeywordVisible(
+    viewerId: string,
+    keyword: string,
+    limit: number,
+  ): Promise<AuditEvent[]> {
+    const out: AuditEvent[] = [];
+    const ownerCache = new Map<string, string | undefined>();
+    for (const e of [...this.byId.values()].sort((a, b) =>
+      b.recordedAt.localeCompare(a.recordedAt),
+    )) {
+      if (!e.text?.includes(keyword)) continue;
+      if (!ownerCache.has(e.conversationId)) {
+        ownerCache.set(
+          e.conversationId,
+          (await this.ownerResolver?.conversationOwner?.(e.conversationId)) ?? undefined,
+        );
+      }
+      if (ownerCache.get(e.conversationId) !== viewerId) continue;
+      out.push(e);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
 }

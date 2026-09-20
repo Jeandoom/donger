@@ -1,6 +1,8 @@
 import { GateRouter } from "../domain/gate-router.js";
 
 /** 默认审批门策略：高危操作（部署/发布/推送）→ deploy 门。 */
+// 三道门均为 force 门：full_access 权限模式不豁免（admin 高权限会话仍须人工确认外发写；
+// 自我迭代智能体的安全前提，specs/2026-09-17-agent-self-deploy-design.md §3.6）。
 export function createDefaultGates(): GateRouter {
   const gates = new GateRouter();
   gates.describe({ id: "deploy", description: "部署/发布/推送操作审批" });
@@ -10,11 +12,12 @@ export function createDefaultGates(): GateRouter {
     gateId: "deploy",
     toolName: "Bash",
     commandPattern: /\b(deploy|publish|git\s+push)\b|\brelease(?![-\w])/i,
+    force: true,
   });
   // AI 生成子模块：平台工具写操作确认（SDK 中工具全名 = mcp__donger-platform__<tool>）
   gates.describe({ id: "authoring", description: "智能体/技能写入确认" });
   for (const t of ["create_agent", "update_agent", "write_skill", "update_skill"]) {
-    gates.add({ gateId: "authoring", toolName: `mcp__donger-platform__${t}` });
+    gates.add({ gateId: "authoring", toolName: `mcp__donger-platform__${t}`, force: true });
   }
   // git 收口防线 3：donger-git 外发写操作人工确认（本地可撤销操作 commit/merge 不设门）
   gates.describe({ id: "git-write", description: "Git 写操作审批（push/建仓/建分支/MR/合并）" });
@@ -25,7 +28,7 @@ export function createDefaultGates(): GateRouter {
     "git_create_mr",
     "git_merge_mr",
   ]) {
-    gates.add({ gateId: "git-write", toolName: `mcp__donger-git__${t}` });
+    gates.add({ gateId: "git-write", toolName: `mcp__donger-git__${t}`, force: true });
   }
   return gates;
 }

@@ -59,6 +59,8 @@ export interface RunOptions {
   gitPlatformTools?: McpSdkServerConfigWithInstance;
   /** in-process 业务知识库 MCP server（恒挂载，可用性由 agent tools 白名单控制） */
   kbTools?: McpSdkServerConfigWithInstance;
+  /** in-process 审计读取 MCP server（内置审计/技能工坊智能体注入；viewer 在构造时闭包绑定） */
+  auditTools?: McpSdkServerConfigWithInstance;
   /**
    * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
    * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按

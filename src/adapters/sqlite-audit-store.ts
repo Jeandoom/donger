@@ -2,6 +2,11 @@ import type { Database } from "better-sqlite3";
 import type { AuditEvent } from "../domain/types.js";
 import type { AuditConversationSummary, AuditStore } from "../ports/audit-store.js";
 
+/** LIKE 通配符转义（配合 ESCAPE '\'）：%/_/反斜杠按字面匹配 */
+function likePattern(keyword: string): string {
+  return `%${keyword.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+}
+
 export class SqliteAuditStore implements AuditStore {
   constructor(private readonly db: Database) {}
 
@@ -168,6 +173,33 @@ export class SqliteAuditStore implements AuditStore {
       firstAt: r.firstAt as string,
       lastAt: r.lastAt as string,
     }));
+  }
+
+  async searchByKeyword(keyword: string, limit: number): Promise<AuditEvent[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM audit_events
+         WHERE text LIKE ? ESCAPE '\\'
+         ORDER BY recordedAt DESC, seq DESC LIMIT ?`,
+      )
+      .all(likePattern(keyword), limit) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToEv(r));
+  }
+
+  async searchByKeywordVisible(
+    viewerId: string,
+    keyword: string,
+    limit: number,
+  ): Promise<AuditEvent[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM audit_events a
+         JOIN conversations c ON c.id = a.conversationId
+         WHERE c.userId = ? AND a.text LIKE ? ESCAPE '\\'
+         ORDER BY a.recordedAt DESC, a.seq DESC LIMIT ?`,
+      )
+      .all(viewerId, likePattern(keyword), limit) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToEv(r));
   }
 
   private rowToEv(row: Record<string, unknown>): AuditEvent {

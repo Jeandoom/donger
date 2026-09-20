@@ -38,4 +38,15 @@ describe("GateRouter", () => {
     expect(g.getGate("design")?.description).toBe("方案审批");
     expect(g.getGate("nope")).toBeUndefined();
   });
+
+  it("force 规则命中时透传 force 标记；非 force 规则不带该字段", () => {
+    const g = new GateRouter();
+    g.add({ gateId: "git-write", toolName: "mcp__donger-git__git_push", force: true });
+    g.add({ gateId: "plain", toolName: "Bash", commandPattern: /deploy/ });
+    expect(g.match("mcp__donger-git__git_push", { repo: "r" })).toEqual({
+      gateId: "git-write",
+      force: true,
+    });
+    expect(g.match("Bash", { command: "npm run deploy" })).toEqual({ gateId: "plain" });
+  });
 });

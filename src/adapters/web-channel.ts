@@ -33,6 +33,7 @@ import {
 } from "../domain/credential.js";
 import { scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
+import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
 import {
   buildInvite,
@@ -79,11 +80,20 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
+import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "../orchestrator/auditor-agent.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
+import {
+  BUILTIN_SELF_IMPROVER_AGENT_ID,
+  buildSelfImproverAgent,
+} from "../orchestrator/self-improver-agent.js";
+import {
+  BUILTIN_SKILL_FORGE_AGENT,
+  BUILTIN_SKILL_FORGE_AGENT_ID,
+} from "../orchestrator/skill-forge-agent.js";
 import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
@@ -322,6 +332,8 @@ export interface WebChannelDeps {
   /** 回调发起限流（次/分钟/token，默认 10） */
   callbackRateLimitPerMin?: number;
   gitAccessGate?: GitAccessGate;
+  /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库） */
+  selfImproveGitRepository?: AgentGitRepository;
   /** 工作流模块（M14+M15+M6）—— 缺省=不支持 */
   triggerStore?: TriggerStore;
   workflowStore?: WorkflowStore;
@@ -2895,13 +2907,26 @@ export class WebChannel implements Channel {
     if (agentConvMatch && req.method === "GET") {
       const id = agentConvMatch[1] ?? "";
       const me = this.requireUserId(req);
-      // 内置智能体（assist/builder）：代码常量不入库，直接 get-or-create 其会话
+      // 平台进化官：内置且仅管理员可用（会话建立与消息入口双重校验）
+      if (id === BUILTIN_SELF_IMPROVER_AGENT_ID) {
+        const meUser = await this.deps.userStore?.get(me);
+        if (meUser?.role !== "admin") {
+          return this.json(res, { error: "forbidden" }, 403);
+        }
+      }
+      // 内置智能体：代码常量不入库，直接 get-or-create 其会话
       const builtinName =
         id === BUILTIN_ASSIST_AGENT_ID
           ? BUILTIN_ASSIST_AGENT.name
           : id === AGENT_BUILDER_ID
             ? AGENT_BUILDER_AGENT.name
-            : undefined;
+            : id === BUILTIN_SKILL_FORGE_AGENT_ID
+              ? BUILTIN_SKILL_FORGE_AGENT.name
+              : id === BUILTIN_AUDITOR_AGENT_ID
+                ? BUILTIN_AUDITOR_AGENT.name
+                : id === BUILTIN_SELF_IMPROVER_AGENT_ID
+                  ? buildSelfImproverAgent(this.deps.selfImproveGitRepository).name
+                  : undefined;
       if (builtinName) {
         const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
         const existing = latestConversationFor(list, id);
@@ -4423,23 +4448,31 @@ export class WebChannel implements Channel {
       throw new ForbiddenError("CONVERSATION_FORBIDDEN", "会话不存在或不属于当前用户");
     }
     if (!conversation.agentId) return undefined;
-    // 内置智能体（assist/builder）不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
+    // 内置智能体（assist/builder/skill-forge/auditor）不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
     if (
       conversation.agentId === BUILTIN_ASSIST_AGENT_ID ||
-      conversation.agentId === AGENT_BUILDER_ID
+      conversation.agentId === AGENT_BUILDER_ID ||
+      conversation.agentId === BUILTIN_SKILL_FORGE_AGENT_ID ||
+      conversation.agentId === BUILTIN_AUDITOR_AGENT_ID
     ) {
       return undefined;
     }
-    const user = await this.deps.userStore?.get(userId);
-    const agent = await this.deps.agentStore?.get(conversation.agentId);
-    if (!user || !agent) throw new NotFoundError("AGENT_NOT_FOUND", "智能体不存在");
+    // 平台进化官：内置但绑定 donger 仓库；返回常量 agent 后由调用方统一做 git 就绪检查
+    if (conversation.agentId === BUILTIN_SELF_IMPROVER_AGENT_ID) {
+      const user = await this.deps.userStore?.get(userId);
+      if (!user) return undefined;
+      return { user, agent: buildSelfImproverAgent(this.deps.selfImproveGitRepository) };
+    }
+    const user2 = await this.deps.userStore?.get(userId);
+    const agent2 = await this.deps.agentStore?.get(conversation.agentId);
+    if (!user2 || !agent2) throw new NotFoundError("AGENT_NOT_FOUND", "智能体不存在");
     const granted = this.deps.agentShareStore
-      ? await this.deps.agentShareStore.isGranted(agent.id, user.id)
+      ? await this.deps.agentShareStore.isGranted(agent2.id, userId)
       : false;
-    if (!canUseAgent(agent, user, granted)) {
+    if (!canUseAgent(agent2, user2, granted)) {
       throw new ForbiddenError("AGENT_FORBIDDEN", "无权使用该智能体");
     }
-    return { user, agent };
+    return { user: user2, agent: agent2 };
   }
 
   /** 等 HTTP 服务监听就绪 */

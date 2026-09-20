@@ -5,6 +5,7 @@ import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { Conversation } from "../domain/conversation.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import type { AgentGitRepository } from "../domain/git.js";
 import { appendMentions } from "../domain/mentions.js";
 import { appendMessageFiles } from "../domain/message-files.js";
 import {
@@ -45,6 +46,8 @@ import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
+import { createAuditToolsServer } from "./audit-tools.js";
+import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent.js";
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
@@ -54,8 +57,9 @@ import { createKbToolsServer } from "./kb-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
-import { guardStreamStall } from "./stream-stall-guard.js";
+import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
 import { BUILTIN_SKILL_FORGE_AGENT, BUILTIN_SKILL_FORGE_AGENT_ID } from "./skill-forge-agent.js";
+import { guardStreamStall } from "./stream-stall-guard.js";
 
 export interface OrchestratorDeps {
   store: TaskStore;
@@ -82,6 +86,8 @@ export interface OrchestratorDeps {
   skillPackStore?: SkillPackStore;
   /** 连接器注册表（技能工坊 list_connectors 用；未装配时该工具提示不可用） */
   connectorStore?: ConnectorStore;
+  /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库，agent 不可推送） */
+  selfImproveGitRepository?: AgentGitRepository;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
   commentStore?: CommentStore;
   /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
@@ -267,7 +273,27 @@ export class Orchestrator {
     // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
     if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
     if (agentId === BUILTIN_SKILL_FORGE_AGENT_ID) return { agent: BUILTIN_SKILL_FORGE_AGENT };
+    if (agentId === BUILTIN_AUDITOR_AGENT_ID) return { agent: BUILTIN_AUDITOR_AGENT };
     if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
+    // 平台进化官：内置但仅管理员可用；绑定 donger 仓库时走与 DB agent 相同的 git 就绪检查
+    if (agentId === BUILTIN_SELF_IMPROVER_AGENT_ID) {
+      if (user.role !== "admin") {
+        throw new ForbiddenError("AGENT_FORBIDDEN", "平台进化官仅管理员可用");
+      }
+      const agent = buildSelfImproverAgent(this.deps.selfImproveGitRepository);
+      if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
+        const gitAccess = await this.deps.gitAccessGate.check(user, agent);
+        if (!gitAccess.ready) {
+          return {
+            agent,
+            gitBlocked:
+              "请先完成平台进化官所需 Git 仓库授权（凭证集配置 donger 仓库 PAT）后再对话。",
+          };
+        }
+        return { agent, gitMaterializeItems: gitAccess.materializeItems };
+      }
+      return { agent };
+    }
     if (!this.deps.agentStore) {
       throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
     }
@@ -358,6 +384,22 @@ export class Orchestrator {
         ...base,
         kbTools: createKbToolsServer({ kbRoot: join(p.user.homeDir, "knowledge_base") }),
       };
+      // 审计读取工具（donger-audit）：内置审计智能体、技能工坊、平台进化官挂载。
+      // viewer=发起用户，构造时闭包绑定——member 仅本人 / admin 全量，store L2 visible 兜底。
+      if (
+        p.agent?.id === BUILTIN_AUDITOR_AGENT_ID ||
+        p.agent?.id === BUILTIN_SKILL_FORGE_AGENT_ID ||
+        p.agent?.id === BUILTIN_SELF_IMPROVER_AGENT_ID
+      ) {
+        base = {
+          ...base,
+          auditTools: createAuditToolsServer({
+            viewer: p.user,
+            auditStore: this.deps.auditStore,
+            conversationStore: this.deps.conversationStore,
+          }),
+        };
+      }
       // agent 绑定了 git 仓库时注入 git 工具（donger-git）：CLI 工作区工具（reposRoot=
       // 会话 repos 目录，与后台物化共享）+ 平台 API 工具；凭证按访问者现取
       if (p.agent && p.agent.gitRepositories.length > 0) {

@@ -7,8 +7,12 @@ import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/agentSidebar";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
-import { apiFetch } from "../lib/auth";
-import { BUILTIN_AGENT_ENTRIES, isBuiltinAgentId } from "../lib/builtinAgents";
+import { apiFetch, fetchMe } from "../lib/auth";
+import {
+  BUILTIN_AGENT_ENTRIES,
+  BUILTIN_SELF_IMPROVER_AGENT_ID,
+  isBuiltinAgentId,
+} from "../lib/builtinAgents";
 import { fetchGitPreflight, type GitPreflightDTO } from "../lib/gitSettings";
 import { useWebChat } from "../lib/webChat";
 
@@ -55,11 +59,13 @@ export function ChatPage() {
   const [gitError, setGitError] = useState("");
   const [assistDraft, setAssistDraft] = useState("");
 
-  // 载入智能体列表（内置条目置顶）
+  // 载入智能体列表（内置条目置顶；平台进化官仅管理员可见）
   useEffect(() => {
-    fetchAgents()
-      .then((list) => setAgents([...BUILTIN_AGENT_ENTRIES, ...list]))
-      .catch(() => {})
+    const visibleBuiltins = (admin: boolean) =>
+      BUILTIN_AGENT_ENTRIES.filter((e) => admin || e.id !== BUILTIN_SELF_IMPROVER_AGENT_ID);
+    Promise.all([fetchAgents(), fetchMe()])
+      .then(([list, me]) => setAgents([...visibleBuiltins(me?.role === "admin"), ...list]))
+      .catch(() => setAgents(visibleBuiltins(false)))
       .finally(() => setAgentsLoaded(true));
   }, []);
 

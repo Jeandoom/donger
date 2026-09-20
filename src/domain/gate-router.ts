@@ -5,10 +5,18 @@ export interface GateRule {
   gateId: string;
   toolName: string;
   commandPattern?: RegExp;
+  /**
+   * force 门：full_access 权限模式也不豁免（仍走审批卡）。
+   * 自我迭代智能体的安全前提——admin 切 full_access 后 git-write/deploy/authoring
+   * 门不得失效（specs/2026-09-17-agent-self-deploy-design.md §3.6）。
+   */
+  force?: boolean;
 }
 
 export interface GateMatch {
   gateId: string;
+  /** 命中的规则是否 force 门（full_access 不豁免） */
+  force?: boolean;
 }
 
 /** 把「工具调用」映射到「审批门」的纯逻辑。 */
@@ -35,7 +43,7 @@ export class GateRouter {
     for (const rule of this.rules) {
       if (rule.toolName !== toolName) continue;
       if (rule.commandPattern && !rule.commandPattern.test(command)) continue;
-      return { gateId: rule.gateId };
+      return { gateId: rule.gateId, ...(rule.force ? { force: true } : {}) };
     }
     return undefined;
   }

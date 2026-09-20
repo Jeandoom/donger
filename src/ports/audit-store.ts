@@ -28,4 +28,10 @@ export interface AuditStore {
   listByTaskVisible(viewerId: string, taskId: string): Promise<AuditEvent[]>;
   /** 仅返回属于 viewer 的会话审计汇总（经 conversations.userId 判属主） */
   listConversationSummariesVisible(viewerId: string): Promise<AuditConversationSummary[]>;
+
+  // ---- 关键词检索（donger-audit 工具）：admin 全量 / member visible 成对提供 ----
+  /** 全量事件 text 关键词检索（LIKE，含转义），按时间倒序截 limit 条 */
+  searchByKeyword(keyword: string, limit: number): Promise<AuditEvent[]>;
+  /** 仅检索属于 viewer 的会话事件 text 关键词检索（同样经 conversations.userId 收口） */
+  searchByKeywordVisible(viewerId: string, keyword: string, limit: number): Promise<AuditEvent[]>;
 }

@@ -34,6 +34,7 @@ import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
+import type { AgentGitRepository } from "./domain/git.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
@@ -191,6 +192,7 @@ async function main(): Promise<void> {
       installer: skillInstaller,
       skillPackStore,
       connectorStore,
+      selfImproveGitRepository,
       agentChain: cfg.agentChain,
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
     });
@@ -205,6 +207,22 @@ async function main(): Promise<void> {
     packStore: skillPackStore,
     getHomeDir: (uid) => join(usersDir, uid),
   });
+
+  // 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配=undefined，实现/推送环节不可用）
+  const selfImproveGitRepository: AgentGitRepository | undefined = cfg.selfImproveGit
+    ? {
+        id: "donger-self",
+        name: "donger",
+        provider: cfg.selfImproveGit.provider,
+        url: cfg.selfImproveGit.url,
+        required: true,
+        shallow: true,
+        syncMode: "fastForward",
+        ...(cfg.selfImproveGit.credentialCode
+          ? { credentialCode: cfg.selfImproveGit.credentialCode }
+          : {}),
+      }
+    : undefined;
 
   // agent 链配置校验（D2）：自定义 dispatcher/builder/chat agent 须已登记，缺失仅告警（运行时兜底内置）
   for (const [env, id] of [
@@ -263,6 +281,7 @@ async function main(): Promise<void> {
     agentCallbackStore,
     callbackRateLimitPerMin: cfg.callbackRateLimitPerMin,
     gitAccessGate,
+    selfImproveGitRepository: selfImproveGitRepository,
     publicBaseUrl: cfg.publicBaseUrl,
     dingtalkLoginRedirectUri: cfg.dingtalkLoginRedirectUri,
     githubLoginRedirectUri: cfg.githubLoginRedirectUri,

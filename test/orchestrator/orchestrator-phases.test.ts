@@ -451,3 +451,97 @@ describe("dispatch 权限降级", () => {
     expect(runner.prompts).toEqual([MSG.text]);
   });
 });
+
+describe("内置智能体扩充（技能工坊/会话审计师/平台进化官）", () => {
+  function adminUserStore(): UserStore {
+    const base = mockUserStore();
+    const dir = mkdtempSync(join(tmpdir(), "donger-test-admin-"));
+    const admin: User = {
+      id: "u-admin",
+      name: "admin",
+      role: "admin" as UserRole,
+      homeDir: dir,
+      createdAt: "t",
+      updatedAt: "t",
+    };
+    return {
+      ...base,
+      async get(id) {
+        return id === "u-admin" ? admin : undefined;
+      },
+      async getOrCreateByIdentity(_p, externalId, _name) {
+        return externalId === "u-admin" ? admin : undefined;
+      },
+    } as unknown as UserStore;
+  }
+
+  function buildWithUserStore(
+    userStore: UserStore,
+    convStore: ConversationStore,
+    runner: AgentRunner,
+  ): { orch: Orchestrator; store: InMemoryTaskStore } {
+    const store = new InMemoryTaskStore();
+    const { mgr: runtimeMgr, credentialSets, packStore, installer } = makeRuntimeMgr(convStore);
+    const orch = new Orchestrator({
+      store,
+      userStore,
+      conversationStore: convStore,
+      usageStore: new InMemoryUsageStore(),
+      auditStore: new InMemoryAuditStore(),
+      gates: createDefaultGates(),
+      runner,
+      channel: seqChannel(),
+      runtimeMgr,
+      credentialSets,
+      installer,
+      skillPackStore: packStore,
+      agentStore: {
+        get: async () => undefined,
+        listByOwner: async () => [],
+        listSharedWith: async () => [],
+        listAll: async () => [],
+      } as unknown as import("../../src/ports/agent-store.js").AgentStore,
+    });
+    return { orch, store };
+  }
+
+  it("平台进化官：非管理员直接拒绝（AGENT_FORBIDDEN）", async () => {
+    const runner = new ScriptedRunner([{ result: "ok" }]);
+    const { orch } = build(runner, seqChannel(), statefulConvStore("builtin-self-improver"));
+    // direct 路径的无权语义与 DB agent 一致：resolveAgentForUse 抛 ForbiddenError 向上传播
+    await expect(orch.handleMessage(MSG)).rejects.toThrow("仅管理员可用");
+    expect(runner.prompts).toEqual([]);
+  });
+
+  it("平台进化官：管理员可用，注入 donger-audit，系统提示含红线", async () => {
+    const runner = new ScriptedRunner([{ result: "已产出评估" }]);
+    const { orch, store } = buildWithUserStore(
+      adminUserStore(),
+      statefulConvStore("builtin-self-improver"),
+      runner,
+    );
+    await orch.handleMessage({ ...MSG, requesterId: "u-admin" });
+    expect(await store.listByStatus("done")).toHaveLength(1);
+    expect(runner.optsList[0]?.auditTools?.name).toBe("donger-audit");
+    expect(runner.optsList[0]?.systemPromptAppend).toContain("安全红线");
+  });
+
+  it("技能工坊：注入 platformTools 与 donger-audit，挂载双技能", async () => {
+    const runner = new ScriptedRunner([{ result: "技能已写入" }]);
+    const { orch, store } = build(runner, seqChannel(), statefulConvStore("builtin-skill-forge"));
+    await orch.handleMessage(MSG);
+    expect(await store.listByStatus("done")).toHaveLength(1);
+    expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
+    expect(runner.optsList[0]?.auditTools?.name).toBe("donger-audit");
+    expect(runner.optsList[0]?.skills).toEqual(["skill-create", "skill-upgrade"]);
+  });
+
+  it("会话审计师：注入 donger-audit，工具白名单仅 donger-audit", async () => {
+    const runner = new ScriptedRunner([{ result: "分析完成" }]);
+    const { orch, store } = build(runner, seqChannel(), statefulConvStore("builtin-auditor"));
+    await orch.handleMessage(MSG);
+    expect(await store.listByStatus("done")).toHaveLength(1);
+    expect(runner.optsList[0]?.auditTools?.name).toBe("donger-audit");
+    expect(runner.optsList[0]?.allowedTools).toEqual(["mcp__donger-audit"]);
+  });
+});

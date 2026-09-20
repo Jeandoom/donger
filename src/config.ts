@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { type GitProvider, inferGitProvider } from "./domain/git.js";
 import type { LLMConfig } from "./domain/llm-config.js";
 
 /** 路径类配置统一绝对化（相对值按进程 cwd 解析）：路径会传给 SDK/CLI 子进程，
@@ -73,6 +74,10 @@ const EnvSchema = z.object({
   DISPATCHER_AGENT_ID: z.string().optional(),
   BUILDER_AGENT_ID: z.string().optional(),
   CHAT_AGENT_ID: z.string().optional(),
+  // 平台进化官（内置自我迭代智能体）绑定的 donger 仓库 HTTPS 地址；空=不绑仓库（仅评估/设计/审计）
+  SELF_IMPROVE_GIT_URL: z.string().optional(),
+  // 私有仓库凭证模板 code（须 kind=git 且 repoUrl 与上者一致；空=匿名访问）
+  SELF_IMPROVE_GIT_CREDENTIAL: z.string().optional(),
   PUBLIC_BASE_URL: z.string().optional().default(""),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
@@ -152,6 +157,8 @@ export interface AppConfig {
   agentLlmPresets: LlmPreset[];
   /** task-flow agent 链（DISPATCHER_AGENT_ID/BUILDER_AGENT_ID/CHAT_AGENT_ID，均可选） */
   agentChain: AgentChainEnvConfig;
+  /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL 未配或非法=undefined，不绑仓库） */
+  selfImproveGit?: { url: string; provider: GitProvider; credentialCode?: string };
   publicBaseUrl: string;
   /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
   dingtalkLoginRedirectUri: string;
@@ -209,6 +216,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       builderAgentId: e.BUILDER_AGENT_ID || undefined,
       chatAgentId: e.CHAT_AGENT_ID || undefined,
     },
+    selfImproveGit: parseSelfImproveGit(e.SELF_IMPROVE_GIT_URL, e.SELF_IMPROVE_GIT_CREDENTIAL),
     publicBaseUrl: e.PUBLIC_BASE_URL.replace(/\/$/, ""),
     dingtalkLoginRedirectUri: e.DINGTALK_LOGIN_REDIRECT_URI.trim(),
     githubLoginRedirectUri: e.GITHUB_LOGIN_REDIRECT_URI.trim(),
@@ -261,6 +269,22 @@ function parseHttpsConfig(
     keyPath: toAbs(keyPath),
     ...(chainPath ? { chainPath: toAbs(chainPath) } : {}),
   };
+}
+
+/**
+ * 解析平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL）。
+ * 未配置 / 非法（无法推断方言）→ undefined（不绑仓库，进化的实现/推送环节不可用）。
+ */
+function parseSelfImproveGit(
+  url: string | undefined,
+  credentialCode: string | undefined,
+): { url: string; provider: GitProvider; credentialCode?: string } | undefined {
+  const trimmed = url?.trim();
+  if (!trimmed) return undefined;
+  const provider = inferGitProvider(trimmed);
+  if (!provider) return undefined;
+  const code = credentialCode?.trim();
+  return { url: trimmed.replace(/\/$/, ""), provider, ...(code ? { credentialCode: code } : {}) };
 }
 
 /**

@@ -308,6 +308,35 @@ describe("ClaudeAgentRunner", () => {
     expect(calls).toBe(0);
   });
 
+  it("canUseTool：full_access 不豁免 force 门（仍走审批 resolver）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    gates.add({ gateId: "git-write", toolName: "mcp__donger-git__git_push", force: true });
+    gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /deploy/ });
+    const runner = new ClaudeAgentRunner(gates);
+    const seen: string[] = [];
+    await collect(
+      runner.run(task, { ...opts, permissionMode: () => "full_access" }, async (req) => {
+        seen.push(req.gateId);
+        return { approved: false, reason: "force 门须人工确认" };
+      }),
+    );
+    const push = await captured?.canUseTool?.(
+      "mcp__donger-git__git_push",
+      { repo: "r" },
+      { toolUseID: "tu1" },
+    );
+    expect(push?.behavior).toBe("deny");
+    expect(seen).toEqual(["git-write"]);
+    // 非 force 门在 full_access 下照旧豁免
+    const bash = await captured?.canUseTool?.(
+      "Bash",
+      { command: "bash deploy.sh" },
+      { toolUseID: "tu2" },
+    );
+    expect(bash?.behavior).toBe("allow");
+  });
+
   it("canUseTool：permissionMode 为取值器，轮内切换立即生效", async () => {
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const gates = new GateRouter();

@@ -46,6 +46,7 @@ export class ClaudeAgentRunner implements AgentRunner {
       ...(opts.platformTools ? { "donger-platform": opts.platformTools } : {}),
       ...(opts.gitPlatformTools ? { "donger-git": opts.gitPlatformTools } : {}),
       ...(opts.kbTools ? { "donger-kb": opts.kbTools } : {}),
+      ...(opts.auditTools ? { "donger-audit": opts.auditTools } : {}),
     };
 
     const stream = query({
@@ -204,7 +205,9 @@ export class ClaudeAgentRunner implements AgentRunner {
           }
           // 完全权限模式：命中审批门的调用直接放行（每次调用现取，轮内切换立即生效）。
           // 只跳过审批门——白名单/写入边界/shell git 守卫/只读豁免在到达此处前已生效。
-          if (opts.permissionMode?.() === "full_access") {
+          // force 门例外：full_access 不豁免（git-write/deploy/authoring 仍走审批，
+          // 防高权限会话绕过外发写防线；自我迭代智能体的安全前提）。
+          if (opts.permissionMode?.() === "full_access" && !gated.force) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
           }
           const summary =
