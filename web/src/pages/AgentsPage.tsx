@@ -107,12 +107,6 @@ export function AgentsPage() {
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
       <Section
-        title="系统默认"
-        items={builtins}
-        builtin
-        onChat={(a) => navigate(`/?agent=${a.id}`)}
-      />
-      <Section
         title="我创建的"
         items={mine}
         openHref={(a) => `/agents/${a.id}`}
@@ -128,6 +122,12 @@ export function AgentsPage() {
         onDuplicate={(a) => void handleDuplicate(a)}
         duplicatingId={duplicatingId}
         empty={kw ? "没有匹配的智能体" : "暂无他人分享的智能体；通过分享链接授权后会出现在这里"}
+      />
+      <Section
+        title="系统默认"
+        items={builtins}
+        builtin
+        onChat={(a) => navigate(`/?agent=${a.id}`)}
       />
 
       <ConfirmDialog
