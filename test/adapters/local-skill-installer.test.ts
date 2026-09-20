@@ -180,4 +180,132 @@ describe("LocalSkillInstaller", () => {
     ).rejects.toThrow("技能目录不存在或非法");
     expect(existsSync(join(homeDir, "u1", ".skills", "aiops-skills-invalid"))).toBe(false);
   }, 15_000);
+
+  // ---- 技能工坊：readSkillDoc / updateSkillDoc ----
+
+  it("readSkillDoc：读 paste pack 的 SKILL.md 全文；技能不存在报错", async () => {
+    const pack = await installer.installFromPaste("u1", {
+      content: `---
+name: hello
+description: "打招呼"
+---
+# hello 正文`,
+      slug: "hello",
+    });
+    const doc = await installer.readSkillDoc("u1", pack.id, "hello");
+    expect(doc).toContain("# hello 正文");
+    await expect(installer.readSkillDoc("u1", pack.id, "nope")).rejects.toThrow("无技能");
+  });
+
+  it("updateSkillDoc：正常更新落盘 + 描述刷新 + 启停状态保留", async () => {
+    const pack = await installer.installFromPaste("u1", {
+      content: `---
+name: hello
+description: "旧描述"
+---
+# v1`,
+      slug: "hello",
+    });
+    const first = (await packStore.listSkills("u1", pack.id))[0];
+    if (!first) throw new Error("listSkills 为空");
+    await packStore.setSkillEnabled("u1", first.id, false);
+    const updated = await installer.updateSkillDoc(
+      "u1",
+      pack.id,
+      "hello",
+      `---
+name: hello
+description: "新描述"
+---
+# v2 修订`,
+    );
+    const skills = await packStore.listSkills("u1", updated.id);
+    expect(skills[0]?.description).toBe("新描述");
+    expect(skills[0]?.enabled).toBe(false);
+    const doc = await installer.readSkillDoc("u1", updated.id, "hello");
+    expect(doc).toContain("# v2 修订");
+  });
+
+  it("updateSkillDoc：builtin 拒改 / git 源拒改 / name 不一致拒改 / 他人 pack 不可见", async () => {
+    const shared = mkdtempSync(join(tmpdir(), "b-"));
+    mkdirSync(join(shared, "fw", ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(shared, "fw", ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "fw" }),
+    );
+    mkdirSync(join(shared, "fw", "skills", "s"), { recursive: true });
+    writeFileSync(
+      join(shared, "fw", "skills", "s", "SKILL.md"),
+      `---
+name: s
+description: d
+---
+`,
+    );
+    const builtin = await installer.installBuiltin("u1", "fw", join(shared, "fw"));
+    await expect(
+      installer.updateSkillDoc(
+        "u1",
+        builtin.id,
+        "s",
+        `---
+name: s
+description: d
+---
+x`,
+      ),
+    ).rejects.toThrow("预装技能不可修改");
+
+    const src = mkdtempSync(join(tmpdir(), "git-src-"));
+    mkdirSync(join(src, "skills", "g"), { recursive: true });
+    writeFileSync(
+      join(src, "skills", "g", "SKILL.md"),
+      `---
+name: g
+description: d
+---
+`,
+    );
+    const { execSync } = await import("node:child_process");
+    execSync(
+      "git init -q && git -c user.email=a@b.c -c user.name=a add -A && git -c user.email=a@b.c -c user.name=a commit -qm i",
+      { cwd: src },
+    );
+    const gitPack = await installer.installFromGit("u1", { url: src, slug: "gp" });
+    await expect(
+      installer.updateSkillDoc(
+        "u1",
+        gitPack.id,
+        "g",
+        `---
+name: g
+description: d
+---
+x`,
+      ),
+    ).rejects.toThrow("git 源技能");
+
+    const paste = await installer.installFromPaste("u1", {
+      content: `---
+name: x
+description: d
+---
+`,
+      slug: "x",
+    });
+    await expect(
+      installer.updateSkillDoc(
+        "u1",
+        paste.id,
+        "x",
+        `---
+name: y
+description: d
+---
+`,
+      ),
+    ).rejects.toThrow("不一致");
+
+    await expect(packStore.getPack("u2", paste.id)).resolves.toBeUndefined();
+  });
 });

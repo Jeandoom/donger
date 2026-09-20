@@ -18,6 +18,7 @@ import {
 } from "../domain/scenario-preset.js";
 import type { User } from "../domain/user.js";
 import type { AgentStore } from "../ports/agent-store.js";
+import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
@@ -31,6 +32,8 @@ export interface PlatformToolsDeps {
   packStore: SkillPackStore;
   /** credentials 存在性探测（缺失值执行时触发问询，这里仅提示） */
   credentialSets?: CredentialSetStore;
+  /** list_connectors 用：当前用户可见连接器清单（仅安全字段，不含 headers 凭证） */
+  connectorStore?: ConnectorStore;
   /** finish_builder 用：会话上下文缺省时该工具不可用 */
   conversationStore?: ConversationStore;
   conversationId?: string;
@@ -118,6 +121,14 @@ const WriteSkillShape = {
     .min(1)
     .describe("SKILL.md 全文，含 --- frontmatter ---（name/description 与本参数一致）"),
   slug: z.string().optional().describe("pack slug（缺省用技能名；冲突自动加 -2 后缀）"),
+};
+const SkillRefShape = {
+  pack: z.string().min(1).describe("pack slug（list_skills 返回的 pack 字段）"),
+  name: z.string().min(1).describe("技能名"),
+};
+const UpdateSkillShape = {
+  ...SkillRefShape,
+  content: z.string().min(1).describe("SKILL.md 新全文（frontmatter name 必须与现有技能名一致）"),
 };
 
 /** 六个平台工具定义（导出供单测直接调 handler） */
@@ -249,6 +260,67 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           description: a.description,
         });
         return ok(`已写入技能（pack slug=${pack.slug}）`);
+      },
+    },
+    {
+      name: "read_skill",
+      description: "读取技能 SKILL.md 全文（升级分析用；预装技能只读可读）",
+      inputSchema: SkillRefShape,
+      handler: async (args): Promise<ToolResult> => {
+        const a = z.object(SkillRefShape).parse(args);
+        const pack = await deps.packStore.getPackBySlug(deps.user.id, a.pack);
+        if (!pack) return fail(`pack 不存在: ${a.pack}`);
+        try {
+          return ok(await deps.installer.readSkillDoc(deps.user.id, pack.id, a.name));
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+      },
+    },
+    {
+      name: "update_skill",
+      description:
+        "更新已有技能的 SKILL.md 全文（仅限自己名下、非预装、非 git 源的技能；frontmatter name 须与现有技能名一致）。写入操作，会弹审批卡确认。",
+      inputSchema: UpdateSkillShape,
+      handler: async (args): Promise<ToolResult> => {
+        const a = z.object(UpdateSkillShape).parse(args);
+        const pack = await deps.packStore.getPackBySlug(deps.user.id, a.pack);
+        if (!pack) return fail(`pack 不存在: ${a.pack}`);
+        try {
+          const updated = await deps.installer.updateSkillDoc(
+            deps.user.id,
+            pack.id,
+            a.name,
+            a.content,
+          );
+          return ok(`已更新技能 ${a.name}（pack slug=${updated.slug}）`);
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+      },
+    },
+    {
+      name: "list_connectors",
+      description:
+        "列出当前用户可见的连接器（HTTP MCP）：名称/描述/URL/启停。技能引用外部服务时对齐命名；凭证值不出现在结果中。",
+      inputSchema: {},
+      handler: async (): Promise<ToolResult> => {
+        if (!deps.connectorStore) return fail("连接器存储未装配");
+        const rows = await deps.connectorStore.listForUser(deps.user.id);
+        return ok(
+          JSON.stringify(
+            rows.map((c) => ({
+              id: c.id,
+              name: c.name,
+              description: c.description,
+              url: c.url,
+              enabled: c.enabled,
+              shareScope: c.shareScope,
+            })),
+            null,
+            2,
+          ),
+        );
       },
     },
     {

@@ -1,7 +1,7 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BUILTIN_ASSIST_AGENT_ID } from "../../lib/assist";
 import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
+import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
 import type { Mention } from "../../lib/mentions";
@@ -246,8 +246,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onDecideCredentialMissing={props.onDecideCredentialMissing}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
               agentId={
-                activeConversation?.agentId &&
-                activeConversation.agentId !== BUILTIN_ASSIST_AGENT_ID
+                activeConversation?.agentId && !isBuiltinAgentId(activeConversation.agentId)
                   ? activeConversation.agentId
                   : undefined
               }

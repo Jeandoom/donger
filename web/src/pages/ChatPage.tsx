@@ -8,23 +8,11 @@ import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/age
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { apiFetch } from "../lib/auth";
+import { BUILTIN_AGENT_ENTRIES, isBuiltinAgentId } from "../lib/builtinAgents";
 import { fetchGitPreflight, type GitPreflightDTO } from "../lib/gitSettings";
 import { useWebChat } from "../lib/webChat";
 
-/** 内置协助智能体的合成侧栏条目（不入库，前端常量；固定置底，不参与星标/拖拽） */
-const BUILTIN_ASSIST_ENTRY: AgentListDTO = {
-  id: BUILTIN_ASSIST_AGENT_ID,
-  ownerId: "",
-  _mine: true,
-  name: "AI 生成助手",
-  description: "对话式创建 agent / skill",
-  skills: [],
-  tools: { mode: "whitelist", whitelist: [] },
-  mcpServers: [],
-  llm: {},
-  createdAt: "",
-  updatedAt: "",
-};
+/** 内置协助智能体的合成侧栏条目见 lib/builtinAgents.ts（BUILTIN_AGENT_ENTRIES） */
 
 const PREFS_STORAGE_KEY = "donger.sidebarPrefs.v1";
 const PREFS_SAVE_DEBOUNCE_MS = 500;
@@ -67,10 +55,10 @@ export function ChatPage() {
   const [gitError, setGitError] = useState("");
   const [assistDraft, setAssistDraft] = useState("");
 
-  // 载入智能体列表（内置 assist 条目置顶）
+  // 载入智能体列表（内置条目置顶）
   useEffect(() => {
     fetchAgents()
-      .then((list) => setAgents([BUILTIN_ASSIST_ENTRY, ...list]))
+      .then((list) => setAgents([...BUILTIN_AGENT_ENTRIES, ...list]))
       .catch(() => {})
       .finally(() => setAgentsLoaded(true));
   }, []);
@@ -101,7 +89,7 @@ export function ChatPage() {
   }, []);
 
   const managedIds = useMemo(
-    () => agents.filter((a) => a.id !== BUILTIN_ASSIST_AGENT_ID).map((a) => a.id),
+    () => agents.filter((a) => !isBuiltinAgentId(a.id)).map((a) => a.id),
     [agents],
   );
   // 剔除已删除智能体 + 新增智能体补位；渲染与持久化统一用规范化后的值

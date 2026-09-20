@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
 import { parseFrontmatter, scanSkillPack } from "../domain/skill-scan.js";
@@ -112,7 +112,7 @@ export class LocalSkillInstaller implements SkillInstaller {
     }
     this.ensurePluginManifest(dir, pack.slug);
     const before = new Map(
-      (await this.deps.packStore.listSkills(userId, packId)).map((s) => [s.name, s]),
+      (await this.deps.packStore.listSkills(userId, pack.id)).map((s) => [s.name, s]),
     );
     const skillRoot = this.resolveSkillRoot(dir, pack.source);
     return this.persistScanned(
@@ -123,7 +123,80 @@ export class LocalSkillInstaller implements SkillInstaller {
       pack.builtin,
       before,
       skillRoot,
+      pack.id,
     );
+  }
+
+  // ---- 技能文档读写（技能工坊升级路径）----
+
+  async readSkillDoc(userId: string, packId: string, skillName: string): Promise<string> {
+    const pack = await this.deps.packStore.getPack(userId, packId);
+    if (!pack) throw new SkillInstallError("PACK_NOT_FOUND", `pack 不存在: ${packId}`);
+    const { docPath } = await this.locateSkillDoc(userId, pack, skillName);
+    return readFileSync(docPath, "utf8");
+  }
+
+  async updateSkillDoc(
+    userId: string,
+    packId: string,
+    skillName: string,
+    content: string,
+  ): Promise<SkillPack> {
+    const pack = await this.deps.packStore.getPack(userId, packId);
+    if (!pack) throw new SkillInstallError("PACK_NOT_FOUND", `pack 不存在: ${packId}`);
+    if (pack.builtin) {
+      throw new SkillInstallError("BUILTIN_READ_ONLY", `预装技能不可修改: ${pack.slug}`);
+    }
+    if (pack.source.kind === "git") {
+      throw new SkillInstallError(
+        "GIT_PACK_READ_ONLY",
+        "git 源技能请在上游仓库修改后用「更新」同步，此处不做本地改写",
+      );
+    }
+    const { docPath, skill } = await this.locateSkillDoc(userId, pack, skillName);
+    const fm = parseFrontmatter(content);
+    if (fm.name && fm.name !== skill.name) {
+      throw new SkillInstallError(
+        "NAME_MISMATCH",
+        `frontmatter name（${fm.name}）与现有技能名（${skill.name}）不一致；改名请先卸载再重建`,
+      );
+    }
+    writeFileSync(docPath, content);
+    const before = new Map(
+      (await this.deps.packStore.listSkills(userId, packId)).map((s) => [s.name, s]),
+    );
+    const packDir = this.resolvePackDir(userId, pack);
+    return this.persistScanned(
+      userId,
+      pack.slug,
+      packDir,
+      pack.source,
+      pack.builtin,
+      before,
+      this.resolveSkillRoot(packDir, pack.source),
+      packId,
+    );
+  }
+
+  /** 归属校验 + 定位技能文档：pack 内 realPath 不得逃出 packDir */
+  private async locateSkillDoc(
+    userId: string,
+    pack: SkillPack,
+    skillName: string,
+  ): Promise<{ docPath: string; skill: PackSkill }> {
+    const skills = await this.deps.packStore.listSkills(userId, pack.id);
+    const skill = skills.find((s) => s.name === skillName);
+    if (!skill) throw new SkillInstallError("SKILL_NOT_FOUND", `该 pack 中无技能: ${skillName}`);
+    const packDir = this.resolvePackDir(userId, pack);
+    const skillRoot = this.resolveSkillRoot(packDir, pack.source);
+    const docPath = resolve(skillRoot, skill.relativePath);
+    if (!isInside(docPath, packDir)) {
+      throw new SkillInstallError("SKILL_PATH_INVALID", `技能文档路径非法: ${skill.relativePath}`);
+    }
+    if (!existsSync(docPath)) {
+      throw new SkillInstallError("SKILL_DOC_MISSING", `SKILL.md 不存在: ${skill.relativePath}`);
+    }
+    return { docPath, skill };
   }
 
   // ---- 内部 ----
@@ -161,6 +234,8 @@ export class LocalSkillInstaller implements SkillInstaller {
     builtin = false,
     preserveSkillFlags?: Map<string, PackSkill>,
     skillRoot = packDir,
+    /** 更新语义传原 packId 保持 id 稳定（skill 引用/启停状态不悬空） */
+    keepPackId?: string,
   ): Promise<SkillPack> {
     const scanned = scanSkillPack(packDir, skillRoot);
     if (source.kind === "git" && scanned.skills.length === 0) {
@@ -169,7 +244,7 @@ export class LocalSkillInstaller implements SkillInstaller {
     const now = new Date().toISOString();
     // plugin.json name 与白名单前缀绑定：用户 pack 强制 = slug；预装沿用其 plugin.json name
     const name = builtin ? scanned.packMeta.name : slug;
-    const packId = crypto.randomUUID();
+    const packId = keepPackId ?? crypto.randomUUID();
     const skills: PackSkill[] = scanned.skills.map((s) => {
       const prev = preserveSkillFlags?.get(s.name);
       return {

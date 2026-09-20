@@ -18,14 +18,14 @@ import {
   toggleStarred,
 } from "../../lib/agentSidebar";
 import type { AgentListDTO } from "../../lib/agents";
-import { BUILTIN_ASSIST_AGENT_ID } from "../../lib/assist";
+import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import { cn } from "../../lib/utils";
 import type { ConversationSummary } from "../../types";
 import { PlusIcon } from "../icons/PlusIcon";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 
 export interface AgentConversationSidebarProps {
-  /** 全量智能体（含内置 assist 合成条目；assist 固定置底、不参与星标/拖拽） */
+  /** 全量智能体（含内置合成条目；内置固定置底、不参与星标/拖拽） */
   agents: AgentListDTO[];
   conversations: ConversationSummary[];
   activeConversationId: string | null;
@@ -244,7 +244,7 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
     [props.conversations, knownIds],
   );
   const managedIds = useMemo(
-    () => props.agents.filter((a) => a.id !== BUILTIN_ASSIST_AGENT_ID).map((a) => a.id),
+    () => props.agents.filter((a) => !isBuiltinAgentId(a.id)).map((a) => a.id),
     [props.agents],
   );
   const kw = keyword.trim().toLowerCase();
@@ -272,8 +272,10 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
   const normalViews = props.prefs.agentOrder
     .map(buildView)
     .filter((v): v is GroupView => v !== null);
-  const assistAgent = props.agents.find((a) => a.id === BUILTIN_ASSIST_AGENT_ID);
-  const assistView = assistAgent ? buildView(assistAgent.id) : null;
+  const builtinViews = props.agents
+    .filter((a) => isBuiltinAgentId(a.id))
+    .map((a) => buildView(a.id))
+    .filter((v): v is GroupView => v !== null);
   const totalConversations = props.conversations.filter((c) => c.agentId).length;
 
   const toggleIn = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
@@ -413,26 +415,29 @@ export function AgentConversationSidebar(props: AgentConversationSidebarProps) {
             />
           </div>
         ) : null}
-        {assistView ? (
+        {builtinViews.length > 0 ? (
           <div className="mt-2 border-t border-border pt-1.5">
             <div className="px-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               内置
             </div>
-            <AgentGroup
-              view={assistView}
-              callbacks={{
-                ...groupCallbacks,
-                onNew: () => props.onNewConversation(BUILTIN_ASSIST_AGENT_ID),
-                onToggleStar: undefined,
-              }}
-            />
+            {builtinViews.map((view) => (
+              <AgentGroup
+                key={view.agentId}
+                view={view}
+                callbacks={{
+                  ...groupCallbacks,
+                  onNew: () => props.onNewConversation(view.agentId),
+                  onToggleStar: undefined,
+                }}
+              />
+            ))}
           </div>
         ) : null}
         {searching &&
         starredViews.length === 0 &&
         normalViews.length === 0 &&
         match(orphans).length === 0 &&
-        (!assistView || assistView.conversations.length === 0) ? (
+        builtinViews.every((v) => v.conversations.length === 0) ? (
           <div className="px-2 py-3 text-xs text-muted-foreground">没有匹配的会话</div>
         ) : null}
       </div>

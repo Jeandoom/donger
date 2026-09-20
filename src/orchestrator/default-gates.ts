@@ -13,7 +13,7 @@ export function createDefaultGates(): GateRouter {
   });
   // AI 生成子模块：平台工具写操作确认（SDK 中工具全名 = mcp__donger-platform__<tool>）
   gates.describe({ id: "authoring", description: "智能体/技能写入确认" });
-  for (const t of ["create_agent", "update_agent", "write_skill"]) {
+  for (const t of ["create_agent", "update_agent", "write_skill", "update_skill"]) {
     gates.add({ gateId: "authoring", toolName: `mcp__donger-platform__${t}` });
   }
   // git 收口防线 3：donger-git 外发写操作人工确认（本地可撤销操作 commit/merge 不设门）

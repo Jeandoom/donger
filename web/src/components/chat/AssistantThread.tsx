@@ -11,8 +11,8 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { ArrowUp, Bot, Square, UserRound, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import remarkGfm from "remark-gfm";
-import { BUILTIN_ASSIST_AGENT_ID } from "../../lib/assist";
 import { fetchMe, getToken } from "../../lib/auth";
+import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
 import { lineRefBadge } from "../../lib/lineRefBadge";
 import type { Mention } from "../../lib/mentions";
@@ -330,7 +330,7 @@ export interface AssistantThreadProps {
 
 export function AssistantThread(props: AssistantThreadProps) {
   const hasPendingInteraction = Boolean(props.pendingApproval || props.pendingCredential);
-  const hasAgent = Boolean(props.agentId) && props.agentId !== BUILTIN_ASSIST_AGENT_ID;
+  const hasAgent = Boolean(props.agentId) && !isBuiltinAgentId(props.agentId);
   const { candidates, loading, error, refresh } = useMentionCandidatesState(
     hasAgent,
     props.agentId,

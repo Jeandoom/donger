@@ -93,6 +93,30 @@ const INSTALLER: SkillInstaller = {
   update: async () => {
     throw new Error("不支持");
   },
+  readSkillDoc: async (_userId, _packId, skillName) => `# mock ${skillName}`,
+  updateSkillDoc: async (_userId, _packId, skillName, content) => {
+    recorded.updateSkillCalls.push({ skillName, content });
+    return {
+      id: "p1",
+      userId: _userId,
+      slug: "s",
+      name: skillName,
+      description: "",
+      version: "0.1.0",
+      source: { kind: "paste" },
+      installedPath: ".skills/s",
+      enabled: true,
+      builtin: false,
+      credentials: [],
+      createdAt: "t",
+      updatedAt: "t",
+    };
+  },
+};
+
+/** update_skill 调用记录（测试内断言透传） */
+const recorded: { updateSkillCalls: Array<{ skillName: string; content: string }> } = {
+  updateSkillCalls: [],
 };
 
 const PACK_STORE: SkillPackStore = {
@@ -141,6 +165,26 @@ const PACK_STORE: SkillPackStore = {
           createdAt: "t",
           updatedAt: "t",
         },
+      },
+    ];
+  },
+};
+
+const CONNECTOR_STORE = {
+  async listForUser(_userId: string) {
+    return [
+      {
+        id: "c1",
+        name: "crm-api",
+        description: "CRM 查询",
+        transport: "http" as const,
+        url: "https://crm.example.com/mcp",
+        headers: { Authorization: "{{credential:CRM}}" },
+        enabled: true,
+        shareScope: "global" as const,
+        ownerId: "someone-else",
+        createdAt: "t",
+        updatedAt: "t",
       },
     ];
   },
@@ -372,5 +416,72 @@ describe("平台工具", () => {
     const r = await findTool(deps, "create_agent").handler({ name: "dev", scenario: "code-dev" });
     expect(r.isError).toBeUndefined();
     expect(r.content[0]?.text).toContain("至少绑定一个 git 仓库");
+  });
+
+  it("read_skill：按 slug 找 pack 后透传 readSkillDoc；pack 不存在报错", async () => {
+    const store = mockAgentStore();
+    const packStore = {
+      ...PACK_STORE,
+      async getPackBySlug(_uid: string, slug: string) {
+        return slug === "s"
+          ? ({
+              id: "p1",
+              userId: USER.id,
+              slug: "s",
+              name: "s",
+              description: "",
+              source: { kind: "paste" },
+              installedPath: ".skills/s",
+              enabled: true,
+              builtin: false,
+              createdAt: "t",
+              updatedAt: "t",
+            } as SkillPack)
+          : undefined;
+      },
+    } as SkillPackStore;
+    const okR = await findTool({ ...baseDeps(store), packStore }, "read_skill").handler({
+      pack: "s",
+      name: "hello",
+    });
+    expect(okR.isError).toBeUndefined();
+    expect(okR.content[0]?.text).toBe("# mock hello");
+    const bad = await findTool({ ...baseDeps(store), packStore }, "read_skill").handler({
+      pack: "nope",
+      name: "hello",
+    });
+    expect(bad.isError).toBe(true);
+  });
+
+  it("update_skill：pack 不存在时不落盘", async () => {
+    recorded.updateSkillCalls.length = 0;
+    const store = mockAgentStore();
+    const r = await findTool(baseDeps(store), "update_skill").handler({
+      pack: "missing",
+      name: "x",
+      content: `---
+name: x
+description: d
+---
+`,
+    });
+    expect(r.isError).toBe(true);
+    expect(recorded.updateSkillCalls).toHaveLength(0);
+  });
+
+  it("list_connectors：仅安全字段（不含 headers 凭证）；未装配时提示不可用", async () => {
+    const withConn = await findTool(
+      { ...baseDeps(mockAgentStore()), connectorStore: CONNECTOR_STORE as never },
+      "list_connectors",
+    ).handler({});
+    expect(withConn.isError).toBeUndefined();
+    const text = withConn.content[0]?.text ?? "";
+    expect(text).toContain("crm-api");
+    expect(text).toContain("https://crm.example.com/mcp");
+    expect(text).not.toContain("{{credential:CRM}}");
+    expect(text).not.toContain("Authorization");
+    const without = await findTool(baseDeps(mockAgentStore()), "list_connectors").handler({});
+    expect(without.isError).toBe(true);
+    expect(without.content[0]?.text).toContain("未装配");
   });
 });

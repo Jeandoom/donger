@@ -29,6 +29,7 @@ import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
+import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { MessageStore } from "../ports/message-store.js";
@@ -54,6 +55,7 @@ import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 import { guardStreamStall } from "./stream-stall-guard.js";
+import { BUILTIN_SKILL_FORGE_AGENT, BUILTIN_SKILL_FORGE_AGENT_ID } from "./skill-forge-agent.js";
 
 export interface OrchestratorDeps {
   store: TaskStore;
@@ -78,6 +80,8 @@ export interface OrchestratorDeps {
   installer?: SkillInstaller;
   /** AI 生成子模块：技能 pack 存储（assist 会话列技能用） */
   skillPackStore?: SkillPackStore;
+  /** 连接器注册表（技能工坊 list_connectors 用；未装配时该工具提示不可用） */
+  connectorStore?: ConnectorStore;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
   commentStore?: CommentStore;
   /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
@@ -262,6 +266,7 @@ export class Orchestrator {
   }> {
     // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
     if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
+    if (agentId === BUILTIN_SKILL_FORGE_AGENT_ID) return { agent: BUILTIN_SKILL_FORGE_AGENT };
     if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
     if (!this.deps.agentStore) {
       throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
@@ -371,7 +376,9 @@ export class Orchestrator {
       }
       // 内置创作/构建智能体注入平台工具（write_skill / create_agent / finish_builder 等）
       const isBuiltinAuthor =
-        p.agent?.id === BUILTIN_ASSIST_AGENT_ID || p.agent?.id === AGENT_BUILDER_ID;
+        p.agent?.id === BUILTIN_ASSIST_AGENT_ID ||
+        p.agent?.id === BUILTIN_SKILL_FORGE_AGENT_ID ||
+        p.agent?.id === AGENT_BUILDER_ID;
       if (!isBuiltinAuthor) return base;
       if (!this.deps.agentStore || !this.deps.installer || !this.deps.skillPackStore) {
         throw new ForbiddenError(
@@ -387,6 +394,7 @@ export class Orchestrator {
           installer: this.deps.installer,
           packStore: this.deps.skillPackStore,
           credentialSets: this.deps.credentialSets,
+          connectorStore: this.deps.connectorStore,
           conversationStore: this.deps.conversationStore,
           conversationId: p.conversation.id,
           onBuilderFinish: () => this.builderFinished.add(p.conversation.id),

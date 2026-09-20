@@ -190,6 +190,7 @@ async function main(): Promise<void> {
       gitAccessGate,
       installer: skillInstaller,
       skillPackStore,
+      connectorStore,
       agentChain: cfg.agentChain,
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
     });
