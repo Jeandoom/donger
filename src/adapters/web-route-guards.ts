@@ -188,6 +188,22 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       ...ownerTask,
     },
 
+    // ===== 反馈模块（spec 2026-09-20-feedback-module-design）=====
+    // 属主/管理员分流在 handler 内按 viewer.role 判定（范式同审计面）；
+    // 仅状态流转收口为 admin。附件文件名已 ASCII 安全化，URL 段兼容守卫 [\w.-] 约束。
+    { method: "POST", pattern: "/api/feedback", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/feedback", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/feedback/attachments", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/feedback/:id", access: { kind: "authenticated" } },
+    { method: "PATCH", pattern: "/api/feedback/:id/status", access: { kind: "admin" } },
+    { method: "GET", pattern: "/api/feedback/:id/replies", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/feedback/:id/replies", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/feedback/:id/attachments/:name",
+      access: { kind: "authenticated" },
+    },
+
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },

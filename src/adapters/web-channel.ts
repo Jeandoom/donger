@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
   type IncomingMessage as HttpRequest,
@@ -23,6 +23,12 @@ import {
 } from "../domain/connector.js";
 import { substituteCredentialRefs } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
+import {
+  type Feedback,
+  type FeedbackReply,
+  isFeedbackCategory,
+  isFeedbackStatus,
+} from "../domain/feedback.js";
 import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
@@ -110,6 +116,7 @@ import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
 import type { InviteStore } from "../ports/invite-store.js";
+import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type { LoopStore } from "../ports/loop-store.js";
@@ -308,6 +315,8 @@ export interface WebChannelDeps {
   usageStore?: UsageStore;
   auditStore?: AuditStore;
   commentStore?: CommentStore;
+  /** 反馈模块存储（缺省=反馈端点 503） */
+  feedbackStore?: FeedbackStore;
   sessionStore?: SessionStore;
   /** CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange） */
   cliToken?: string;
@@ -2720,6 +2729,213 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // ===== 反馈模块（spec 2026-09-20-feedback-module-design；守卫已登记 8 条）=====
+
+    // POST /api/feedback —— 创建反馈；userId 强制取当前登录者（防代他人提交）
+    if (url === "/api/feedback" && req.method === "POST") {
+      if (!this.deps.feedbackStore) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "反馈服务未启用" }));
+        return;
+      }
+      const uid = this.requireRequestUser(req);
+      // R4 防刷量：每用户每小时 10 条
+      if (!this.rateLimiter.hit(RateLimitKeys.feedback(uid), 60 * 60_000, 10)) {
+        res.writeHead(429);
+        res.end(JSON.stringify({ error: "提交过于频繁，请稍后再试" }));
+        return;
+      }
+      const body = JSON.parse(await this.readBody(req)) as {
+        category?: unknown;
+        content?: unknown;
+        images?: unknown;
+        key?: unknown;
+      };
+      const content = typeof body.content === "string" ? body.content.trim() : "";
+      if (!content || content.length > 2000) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "content 必填且不超过 2000 字" }));
+        return;
+      }
+      const category =
+        body.category === undefined || body.category === null || body.category === ""
+          ? "other"
+          : body.category;
+      if (!isFeedbackCategory(category)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "category 无效" }));
+        return;
+      }
+      const images = this.sanitizeFeedbackImages(body.images);
+      if (images === undefined) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "images 无效（须为文件名数组，≤3 项）" }));
+        return;
+      }
+      const now = new Date().toISOString();
+      const feedback: Feedback = {
+        id: crypto.randomUUID(),
+        userId: uid,
+        category,
+        content,
+        images,
+        status: "open",
+        createdAt: now,
+        updatedAt: now,
+      };
+      await this.deps.feedbackStore.create(feedback);
+      // 上传草稿目录收编为正式附件目录（无图时目录不存在，静默跳过）
+      this.adoptFeedbackAttachments(typeof body.key === "string" ? body.key : "", feedback.id);
+      res.writeHead(201);
+      res.end(JSON.stringify(feedback));
+      return;
+    }
+
+    // GET /api/feedback —— admin 全量 / member 仅本人；DTO 附提交人姓名（admin 列表展示用）
+    if ((url === "/api/feedback" || url.startsWith("/api/feedback?")) && req.method === "GET") {
+      const viewer = this.currentViewer(req);
+      const items =
+        viewer.role === "admin"
+          ? ((await this.deps.feedbackStore?.listAll()) ?? [])
+          : ((await this.deps.feedbackStore?.listByUser(viewer.id)) ?? []);
+      const nameCache = new Map<string, string>();
+      const itemsWithUser = await Promise.all(
+        items.map(async (fb) => {
+          let userName = nameCache.get(fb.userId);
+          if (userName === undefined) {
+            userName = (await this.deps.userStore?.get(fb.userId))?.name ?? fb.userId;
+            nameCache.set(fb.userId, userName);
+          }
+          return { ...fb, userName };
+        }),
+      );
+      res.writeHead(200);
+      res.end(JSON.stringify({ items: itemsWithUser }));
+      return;
+    }
+
+    // POST /api/feedback/attachments —— 反馈截图上传（落 ?key= 草稿目录，创建反馈时收编）
+    if (url.startsWith("/api/feedback/attachments") && req.method === "POST") {
+      await this.handleFeedbackUpload(req, res);
+      return;
+    }
+
+    // GET /api/feedback/:id —— 详情；owner ∥ admin，否则 404 掩护存在性
+    const feedbackDetailMatch = url.match(/^\/api\/feedback\/([\w-]+)$/);
+    if (feedbackDetailMatch && req.method === "GET") {
+      const fb = await this.requireVisibleFeedback(req, feedbackDetailMatch[1] ?? "");
+      if (!fb) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+      res.writeHead(200);
+      res.end(JSON.stringify(fb));
+      return;
+    }
+
+    // PATCH /api/feedback/:id/status —— 状态流转（守卫已收口 admin，handler 不再重复判角色）
+    const feedbackStatusMatch = url.match(/^\/api\/feedback\/([\w-]+)\/status$/);
+    if (feedbackStatusMatch && req.method === "PATCH") {
+      const store = this.deps.feedbackStore;
+      if (!store) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "反馈服务未启用" }));
+        return;
+      }
+      const id = feedbackStatusMatch[1] ?? "";
+      if (!(await store.get(id))) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+      const body = JSON.parse(await this.readBody(req)) as { status?: unknown };
+      if (!isFeedbackStatus(body.status)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "status 无效" }));
+        return;
+      }
+      await store.updateStatus(id, body.status);
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // GET/POST /api/feedback/:id/replies —— 回复时间线（admin=官方回复 / 属主=补充说明）
+    const feedbackRepliesMatch = url.match(/^\/api\/feedback\/([\w-]+)\/replies$/);
+    if (feedbackRepliesMatch) {
+      const id = feedbackRepliesMatch[1] ?? "";
+      if (req.method === "GET") {
+        const fb = await this.requireVisibleFeedback(req, id);
+        if (!fb) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "not found" }));
+          return;
+        }
+        const replies = (await this.deps.feedbackStore?.listReplies(id)) ?? [];
+        res.writeHead(200);
+        res.end(JSON.stringify({ replies }));
+        return;
+      }
+      if (req.method === "POST") {
+        const store = this.deps.feedbackStore;
+        if (!store) {
+          res.writeHead(503);
+          res.end(JSON.stringify({ error: "反馈服务未启用" }));
+          return;
+        }
+        const fb = await this.requireVisibleFeedback(req, id);
+        if (!fb) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "not found" }));
+          return;
+        }
+        const viewer = this.currentViewer(req);
+        const body = JSON.parse(await this.readBody(req)) as { content?: unknown };
+        const content = typeof body.content === "string" ? body.content.trim() : "";
+        if (!content || content.length > 2000) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "content 必填且不超过 2000 字" }));
+          return;
+        }
+        const reply: FeedbackReply = {
+          id: crypto.randomUUID(),
+          feedbackId: id,
+          userId: viewer.id,
+          // 服务端按 viewer.role 落库，不信任客户端入参
+          authorRole: viewer.role === "admin" ? "admin" : "user",
+          content,
+          createdAt: new Date().toISOString(),
+        };
+        await store.addReply(reply);
+        res.writeHead(201);
+        res.end(JSON.stringify(reply));
+        return;
+      }
+    }
+
+    // GET /api/feedback/:id/attachments/:name —— 图片回读（img 标签 ?token= 鉴权；
+    // owner ∥ admin；文件名上传时已 ASCII 安全化）。name 段收窄 [\w.-]：? 不在集合内，
+    // 查询串由 (?:\?.*)? 兜住，不会污染捕获组
+    const feedbackFileMatch = url.match(
+      /^\/api\/feedback\/([\w-]+)\/attachments\/([\w.-]+)(?:\?.*)?$/,
+    );
+    if (feedbackFileMatch && req.method === "GET") {
+      const fb = await this.requireVisibleFeedback(req, feedbackFileMatch[1] ?? "");
+      const absPath = fb
+        ? this.resolveFeedbackAttachment(fb.id, feedbackFileMatch[2] ?? "")
+        : undefined;
+      if (!absPath || !existsSync(absPath)) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      const ext = absPath.split(".").pop()?.toLowerCase() ?? "";
+      res.writeHead(200, { "Content-Type": mimeForExt(ext) });
+      res.end(readFileSync(absPath));
+      return;
+    }
+
     // GET /api/usage —— 默认仅本人记录；admin 可显式传 userId 查任意用户
     if ((url === "/api/usage" || url.startsWith("/api/usage?")) && req.method === "GET") {
       const viewer = this.currentViewer(req);
@@ -4066,6 +4282,156 @@ export class WebChannel implements Channel {
       return resolve(user.homeDir, "sessions", conversationId, "workspace", "attachments");
     }
     return resolve(this.workspaceDir, "sessions", conversationId);
+  }
+
+  // ===== 反馈模块 helpers（spec 2026-09-20-feedback-module-design §3.1/§4）=====
+
+  /** 反馈详情/回复/附件共用的可见性判定：owner ∥ admin，否则 undefined（调用方 404 掩护存在性） */
+  private async requireVisibleFeedback(
+    req: HttpRequest,
+    id: string,
+  ): Promise<Feedback | undefined> {
+    const fb = await this.deps.feedbackStore?.get(id);
+    if (!fb) return undefined;
+    const viewer = this.currentViewer(req);
+    if (viewer.role !== "admin" && fb.userId !== viewer.id) return undefined;
+    return fb;
+  }
+
+  /** <workspaceDir>/feedback/<id>/ —— 反馈附件独立目录，不复用会话附件链路 */
+  private feedbackAttachmentDir(id: string): string {
+    return resolve(this.workspaceDir, "feedback", id);
+  }
+
+  /**
+   * 附件回读路径：文件名须为上传端点落盘的安全名（ASCII 安全字符），
+   * 再做 resolve containment 双保险，防异形名拼接逃逸目录。
+   */
+  private resolveFeedbackAttachment(feedbackId: string, name: string): string | undefined {
+    if (!/^[\w.-]+$/.test(name) || name.includes("..")) return undefined;
+    const dir = this.feedbackAttachmentDir(feedbackId);
+    const abs = resolve(dir, name);
+    return abs === dir || abs.startsWith(dir + sep) ? abs : undefined;
+  }
+
+  /** 创建反馈时把上传草稿目录（?key=）更名为正式附件目录；无草稿/键非法时静默跳过 */
+  private adoptFeedbackAttachments(draftKey: string, feedbackId: string): void {
+    if (!draftKey || draftKey === feedbackId || !/^[\w-]{8,}$/.test(draftKey)) return;
+    const draftDir = this.feedbackAttachmentDir(draftKey);
+    if (!existsSync(draftDir)) return;
+    try {
+      renameSync(draftDir, this.feedbackAttachmentDir(feedbackId));
+    } catch {
+      // 更名失败不阻断创建：图片回读将 404，文本反馈仍完整
+    }
+  }
+
+  /** 校验创建请求携带的 images：文件名数组 ≤3 项、安全字符；非法返回 undefined */
+  private sanitizeFeedbackImages(raw: unknown): string[] | undefined {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw) || raw.length > 3) return undefined;
+    const out: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== "string" || !/^[\w.-]+$/.test(item) || item.includes("..")) {
+        return undefined;
+      }
+      out.push(item);
+    }
+    return out;
+  }
+
+  /**
+   * POST /api/feedback/attachments?key=<draftKey> —— 反馈截图上传。
+   * 单文件 ≤2MB、扩展名+MIME 双白名单；落盘名 ASCII 安全化（守卫段校验/路径穿越双约束）。
+   * 文件先落草稿目录 feedback/<key>/，POST /api/feedback 时整体更名为 feedback/<id>/。
+   */
+  private async handleFeedbackUpload(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const key = url.searchParams.get("key") ?? "";
+    if (!/^[\w-]{8,}$/.test(key)) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "缺少或非法 key 参数" }));
+      return;
+    }
+    const contentType = req.headers["content-type"] ?? "";
+    if (!contentType.startsWith("multipart/form-data")) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "请求格式错误" }));
+      return;
+    }
+    const dir = this.feedbackAttachmentDir(key);
+    return new Promise<void>((resolve) => {
+      let fileSaved = false;
+
+      const bb = Busboy({
+        headers: req.headers as Record<string, string>,
+        limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+      });
+
+      bb.on(
+        "file",
+        (
+          _fieldname: string,
+          file: NodeJS.ReadableStream,
+          info: { filename: string; encoding: string; mimeType: string },
+        ) => {
+          const { mimeType } = info;
+          const ext = basename(info.filename).split(".").pop()?.toLowerCase() ?? "";
+          const isImage =
+            mimeType?.startsWith("image/") && ["jpg", "jpeg", "png", "gif", "webp"].includes(ext);
+          if (!isImage) {
+            file.resume();
+            fileSaved = true;
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: "仅支持图片（jpg/jpeg/png/gif/webp）" }));
+            resolve();
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          let truncated = false;
+          file.on("data", (chunk: Buffer) => chunks.push(chunk));
+          file.on("limit", () => {
+            truncated = true;
+          });
+          file.on("end", () => {
+            if (fileSaved) return;
+            fileSaved = true;
+            if (truncated) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: "文件大小超过 2MB 限制" }));
+              resolve();
+              return;
+            }
+            // 时间戳+短随机保唯一；扩展名取白名单值，主体不保留用户原名
+            const saveName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+            try {
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(join(dir, saveName), Buffer.concat(chunks));
+            } catch {
+              res.writeHead(500);
+              res.end(JSON.stringify({ error: "文件保存失败" }));
+              resolve();
+              return;
+            }
+            res.writeHead(200);
+            res.end(JSON.stringify({ name: saveName }));
+            resolve();
+          });
+        },
+      );
+
+      bb.on("error", () => {
+        if (!fileSaved) {
+          fileSaved = true;
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "上传解析失败" }));
+          resolve();
+        }
+      });
+
+      req.pipe(bb);
+    });
   }
 
   private extractQuery(url: string, key: string): string | undefined {

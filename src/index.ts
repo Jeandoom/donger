@@ -21,6 +21,7 @@ import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
+import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
@@ -101,6 +102,8 @@ async function main(): Promise<void> {
   auditStore.migrate();
   const commentStore = new SqliteCommentStore(db);
   commentStore.migrate();
+  const feedbackStore = new SqliteFeedbackStore(db);
+  feedbackStore.migrate();
   const messageStore = new SqliteMessageStore(db);
   messageStore.migrate();
   const transcriptStore = new SqliteTranscriptStore(db);
@@ -264,6 +267,7 @@ async function main(): Promise<void> {
     usageStore,
     auditStore,
     commentStore,
+    feedbackStore,
     sessionStore,
     cliToken: cfg.cliToken || undefined,
     dingtalkConfig: cfg.dingtalk
