@@ -320,6 +320,8 @@ export interface AssistantThreadProps {
   placeholder: string;
   /** 当前会话绑定的智能体 id（引用候选按该 agent 装配集过滤；空 = 闲聊会话，仅附件入口） */
   agentId?: string;
+  /** 当前会话 id（% 会话候选服务端排除自身；不传则候选可能含当前会话） */
+  conversationId?: string;
   /** 选中引用候选后回调（发送时对账后随消息上送） */
   onMentionInserted: (mention: Mention) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
@@ -334,6 +336,7 @@ export function AssistantThread(props: AssistantThreadProps) {
   const { candidates, loading, error, refresh } = useMentionCandidatesState(
     hasAgent,
     props.agentId,
+    props.conversationId,
   );
   const aui = useAui();
   const inputWrapRef = useRef<HTMLDivElement | null>(null);

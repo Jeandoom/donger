@@ -8,6 +8,7 @@ import { FormField, FormSection } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { Switch } from "../../components/ui/switch";
+import { type AgentConversationScopeDTO, fetchAgents } from "../../lib/agents";
 import { fetchCredentialTemplates, fetchMyCredentials } from "../../lib/skills";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm } from "./model";
@@ -73,6 +74,11 @@ export function ResourcesSection({
               .filter((c): c is string => Boolean(c)),
           ),
         ]}
+      />
+
+      <ConversationScopePicker
+        value={form.conversationScope ?? { enabled: false, agentIds: [] }}
+        onChange={(conversationScope) => patch({ conversationScope })}
       />
 
       <FormField
@@ -494,6 +500,152 @@ function CredentialPicker({
           })}
         </div>
       )}
+    </FormField>
+  );
+}
+
+/** 输入的窗口数字归一：空串=不限（undefined），非法/越界收敛到 1-99 */
+function toScopeInt(raw: string): number | undefined {
+  if (raw === "") return undefined;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  return Math.min(n, 99);
+}
+
+/**
+ * 会话资源范围（% 会话引用）：启用开关（默认关）+ 智能体多选（空=仅本智能体）+ 时间窗口。
+ * 关闭时配置项置灰但仍展示，暗示开启后可配。
+ */
+function ConversationScopePicker({
+  value,
+  onChange,
+}: {
+  value: AgentConversationScopeDTO;
+  onChange: (scope: AgentConversationScopeDTO) => void;
+}) {
+  const [options, setOptions] = useState<Array<{ id: string; name: string; mine: boolean }>>([]);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 仅用于手动重试时触发重新加载
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await fetchAgents();
+        if (cancelled) return;
+        setLoadError(false);
+        setOptions(list.map((a) => ({ id: a.id, name: a.name, mine: a._mine })));
+      } catch {
+        if (!cancelled) setLoadError(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadTick]);
+
+  const toggleAgent = (id: string) => {
+    const next = value.agentIds.includes(id)
+      ? value.agentIds.filter((a) => a !== id)
+      : [...value.agentIds, id];
+    onChange({ ...value, agentIds: next });
+  };
+
+  return (
+    <FormField
+      label="会话"
+      hint="开启后可在对话中用 % 引用历史会话内容；引用范围与「全部会话」都受以下配置限制"
+    >
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center gap-2.5 rounded-[10px] border border-border bg-card px-3 py-2">
+          <Switch
+            checked={value.enabled}
+            onCheckedChange={(v) => onChange({ ...value, enabled: v })}
+          />
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[13px] font-semibold">启用会话引用</span>
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              默认关闭；开启后对话输入框可用 % 引用历史会话
+            </span>
+          </div>
+        </div>
+
+        <div
+          className={cn(
+            "flex flex-col gap-2.5",
+            !value.enabled && "pointer-events-none opacity-50",
+          )}
+          aria-disabled={!value.enabled}
+        >
+          <div className="flex flex-col gap-2">
+            <span className="text-xs text-muted-foreground">
+              智能体范围（不勾选 = 仅引用绑定本智能体的会话）
+            </span>
+            {loadError ? (
+              <button
+                type="button"
+                className="w-fit rounded-lg border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive-soft"
+                onClick={() => setReloadTick((t) => t + 1)}
+              >
+                智能体列表加载失败，点击重试
+              </button>
+            ) : options.length === 0 ? (
+              <p className="text-xs text-muted-foreground">暂无可选智能体</p>
+            ) : (
+              <div className="flex max-h-44 flex-col gap-1.5 overflow-y-auto rounded-[10px] border border-border bg-card p-2">
+                {options.map((o) => {
+                  const checked = value.agentIds.includes(o.id);
+                  return (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => toggleAgent(o.id)}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] outline-none",
+                        checked ? "bg-primary-soft/40" : "hover:bg-muted",
+                      )}
+                    >
+                      <Checkbox checked={checked} onChange={() => toggleAgent(o.id)} />
+                      <span className="min-w-0 flex-1 truncate">{o.name}</span>
+                      <Badge tone={o.mine ? "neutral" : "success"}>
+                        {o.mine ? "我的" : "共享"}
+                      </Badge>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">最近天数（1-99，留空不限）</span>
+              <Input
+                type="number"
+                min={1}
+                max={99}
+                aria-label="引用会话的最近天数"
+                placeholder="如 7"
+                value={value.days ?? ""}
+                onChange={(e) => onChange({ ...value, days: toScopeInt(e.target.value) })}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">最近条数（1-99，留空默认 10）</span>
+              <Input
+                type="number"
+                min={1}
+                max={99}
+                aria-label="引用会话的最近条数"
+                placeholder="如 20"
+                value={value.limit ?? ""}
+                onChange={(e) => onChange({ ...value, limit: toScopeInt(e.target.value) })}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
     </FormField>
   );
 }

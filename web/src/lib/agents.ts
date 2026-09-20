@@ -32,6 +32,17 @@ export interface AgentExtensionDirectoryDTO {
   access: "readOnly" | "readWrite";
 }
 
+/** 会话资源范围（% 会话引用）：enabled 关闭时候选为空（与后端 AgentConversationScopeSchema 同构） */
+export interface AgentConversationScopeDTO {
+  enabled: boolean;
+  /** 有权查看的智能体 id 多选；空数组 = 仅本智能体 */
+  agentIds: string[];
+  /** 最近 N 天（1-99）；缺省不限天 */
+  days?: number;
+  /** 最近 N 条（1-99）；缺省 10 */
+  limit?: number;
+}
+
 export interface AgentDTO {
   id: string;
   ownerId: string;
@@ -52,6 +63,8 @@ export interface AgentDTO {
   scenario?: "code-dev" | "kb-qa" | "research" | "ops";
   /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具） */
   gitAllowShellGit?: boolean;
+  /** 会话资源范围（% 会话引用；缺省 = 功能未开启） */
+  conversationScope?: AgentConversationScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */
   defaultPermissionMode?: "ask_before_change" | "full_access";
   /** presetId=agent 默认 LLM 预设；modelRefs=可选模型范围（空/缺省=不限） */

@@ -19,6 +19,7 @@ export const emptyAgent: AgentEditorForm = {
   gitAllowShellGit: false,
   defaultPermissionMode: "ask_before_change",
   llm: {},
+  conversationScope: { enabled: false, agentIds: [] },
 };
 
 /** 分区定义（锚点导航 + scrollspy 共用；integration 仅编辑态挂载） */

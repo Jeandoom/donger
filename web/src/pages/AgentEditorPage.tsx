@@ -109,6 +109,7 @@ export function AgentEditorPage() {
             gitAllowShellGit: a.gitAllowShellGit ?? false,
             defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
             llm: a.llm,
+            conversationScope: a.conversationScope ?? { enabled: false, agentIds: [] },
           };
           setForm(loaded);
           setBaseline(JSON.stringify(loaded));

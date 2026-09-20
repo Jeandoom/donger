@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   appendMentions,
+  CONVERSATION_MENTION_ALL_ID,
+  CONVERSATION_TOTAL_BUDGET,
+  conversationMarkerLabel,
   MentionInputSchema,
   type ResolvedMention,
 } from "../../src/domain/mentions.js";
@@ -45,5 +48,63 @@ describe("appendMentions", () => {
   it("不内联文件内容（只注路径）", () => {
     const out = appendMentions("q", [{ kind: "file", label: "a.md", path: "/x/a.md" }]);
     expect(out).not.toContain("# a.md 的内容");
+  });
+
+  it("会话引用注入 wrapUntrusted 内容（% 标记 + 定界块）", () => {
+    const mentions: ResolvedMention[] = [
+      {
+        kind: "conversation",
+        label: "部署排障",
+        conversationId: "c1",
+        content: '<untrusted source="conversation:c1 部署排障">\n【用户】服务挂了\n</untrusted>',
+      },
+    ];
+    const out = appendMentions("继续排查", mentions);
+    expect(out).toContain("%部署排障");
+    expect(out).toContain("【用户】服务挂了");
+    expect(out).toContain("仅供参照");
+  });
+
+  it("会话引用超出总预算时截停并尾注", () => {
+    const big = "x".repeat(CONVERSATION_TOTAL_BUDGET + 1);
+    const mentions: ResolvedMention[] = [
+      { kind: "conversation", label: "a", conversationId: "c1", content: big },
+      { kind: "conversation", label: "b", conversationId: "c2", content: "小内容" },
+    ];
+    const out = appendMentions("q", mentions);
+    expect(out).toContain("小内容");
+    expect(out).toContain("1 个引用会话因超出上下文总量上限未注入");
+  });
+
+  it("恰好等于预算的内容可完整注入（边界）", () => {
+    const exact = "z".repeat(CONVERSATION_TOTAL_BUDGET);
+    const out = appendMentions("q", [
+      { kind: "conversation", label: "a", conversationId: "c1", content: exact },
+    ]);
+    expect(out).toContain(exact);
+    expect(out).not.toContain("未注入");
+  });
+});
+
+describe("conversationMarkerLabel", () => {
+  it("去空白与非法字符并截 24 字", () => {
+    expect(conversationMarkerLabel("部署 排障：v1.0 上线！", "2026-09-20T10:00:00Z")).toBe(
+      "部署排障v10上线",
+    );
+    const long = "长".repeat(30);
+    expect(conversationMarkerLabel(long, "2026-09-20T10:00:00Z")).toHaveLength(24);
+  });
+
+  it("全非法字符时回退为日期锚点", () => {
+    expect(conversationMarkerLabel("!!!", "2026-09-20T10:00:00Z")).toBe("会话2026-09-20");
+  });
+
+  it("全部会话哨兵 id 可被 MentionInputSchema 接受", () => {
+    const parsed = MentionInputSchema.parse({
+      kind: "conversation",
+      id: CONVERSATION_MENTION_ALL_ID,
+      label: "全部会话",
+    });
+    expect(parsed.id).toBe("__all__");
   });
 });

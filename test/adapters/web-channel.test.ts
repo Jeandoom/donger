@@ -962,7 +962,9 @@ describe("WebChannel 会话附件与 runtime 目录统一", () => {
     // 附件读取已要求属主 token（规格 M4）：url 原样无 token → 401；带 token → 200
     const denied = await fetch(`http://127.0.0.1:${port}${file.url}`);
     expect(denied.status).toBe(401);
-    const preview = await fetch(`http://127.0.0.1:${port}${file.url}${file.url.includes("?") ? "&" : "?"}token=${token}`);
+    const preview = await fetch(
+      `http://127.0.0.1:${port}${file.url}${file.url.includes("?") ? "&" : "?"}token=${token}`,
+    );
     expect(preview.status).toBe(200);
     expect(await preview.text()).toBe("# runtime");
   });
@@ -1142,6 +1144,7 @@ async function startWebWithAgents(
   agentShareStore: SqliteAgentShareStore;
   skillPackStore: SqliteSkillPackStore;
   convStore: SqliteConversationStore;
+  userStore: SqliteUserStore;
 }> {
   const tmp = mkdtempSync(join(tmpdir(), "web-agent-"));
   const db = new Database(join(tmp, "t.db"));
@@ -1179,7 +1182,16 @@ async function startWebWithAgents(
   await web.ready();
   const port = web.boundPort;
   if (!port) throw new Error("server not listening");
-  return { port, token, userId: user.id, agentStore, agentShareStore, skillPackStore, convStore };
+  return {
+    port,
+    token,
+    userId: user.id,
+    agentStore,
+    agentShareStore,
+    skillPackStore,
+    convStore,
+    userStore,
+  };
 }
 
 describe("WebChannel /api/agents", () => {
@@ -2205,5 +2217,74 @@ describe("WebChannel 审批门不设超时", () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     expect(settled).toBe(false);
+  });
+});
+
+describe("WebChannel mention-candidates 会话引用候选", () => {
+  async function setup() {
+    const h = await startWebWithAgents();
+    const agent = await h.agentStore.create({
+      ownerId: h.userId,
+      name: "CA",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      gitRepositories: [],
+      extensionDirectories: [],
+      gitAllowShellGit: false,
+      defaultPermissionMode: "ask_before_change",
+      llm: {},
+    });
+    return { ...h, agent };
+  }
+
+  const get = (port: number, token: string, agentId: string, conversationId?: string) =>
+    fetch(
+      `http://127.0.0.1:${port}/api/agents/${agentId}/mention-candidates${conversationId ? `?conversationId=${conversationId}` : ""}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+
+  it("开关未开启（缺省）：conversationRefEnabled=false 且会话候选恒空", async () => {
+    const { port, token, agent, convStore, userId } = await setup();
+    await convStore.createWithAgent(userId, "web", "旧会话", agent.id);
+    const r = await get(port, token, agent.id);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      conversationRefEnabled: boolean;
+      conversations: unknown[];
+    };
+    expect(body.conversationRefEnabled).toBe(false);
+    expect(body.conversations).toEqual([]);
+  });
+
+  it("开启后返回本人按时间降序的会话候选，排除当前会话", async () => {
+    const { port, token, agent, convStore, userId, agentStore } = await setup();
+    await agentStore.update(agent.id, {
+      ...agent,
+      conversationScope: { enabled: true, agentIds: [], limit: 10 },
+    });
+    await convStore.createWithAgent(userId, "web", "绑定 agent 的会话", agent.id);
+    const cur = await convStore.createWithAgent(userId, "web", "当前会话", agent.id);
+    const r = await get(port, token, agent.id, cur.id);
+    const body = (await r.json()) as {
+      conversationRefEnabled: boolean;
+      conversations: Array<{ title: string }>;
+    };
+    expect(body.conversationRefEnabled).toBe(true);
+    expect(body.conversations.map((c) => c.title)).toEqual(["绑定 agent 的会话"]);
+  });
+
+  it("他人的会话即使绑定范围内智能体也不出现（IDOR）", async () => {
+    const { port, token, agent, convStore, userStore, userId, agentStore } = await setup();
+    await agentStore.update(agent.id, {
+      ...agent,
+      conversationScope: { enabled: true, agentIds: [] },
+    });
+    const other = await userStore.getOrCreateByIdentity("internal", "other", "other");
+    await convStore.createWithAgent(userId, "web", "我的会话", agent.id);
+    await convStore.createWithAgent(other.id, "web", "别人的会话", agent.id);
+    const r = await get(port, token, agent.id);
+    const body = (await r.json()) as { conversations: Array<{ title: string }> };
+    expect(body.conversations.map((c) => c.title)).toEqual(["我的会话"]);
   });
 });

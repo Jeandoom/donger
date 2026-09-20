@@ -5,7 +5,7 @@ import {
   unstable_useMentionAdapter,
   useAuiState,
 } from "@assistant-ui/react";
-import { AtSign, type LucideIcon, Paperclip, Plug, Plus, Slash } from "lucide-react";
+import { AtSign, History, type LucideIcon, Paperclip, Plug, Plus, Slash } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
 import {
@@ -14,6 +14,9 @@ import {
   type MentionCandidates,
 } from "../../lib/mentionCandidates";
 import {
+  CONVERSATION_ALL_LABEL,
+  CONVERSATION_MENTION_ALL_ID,
+  conversationMarkerLabel,
   fileMarkerLabel,
   type Mention,
   type MentionKind,
@@ -67,7 +70,11 @@ export function MentionBackdrop(props: {
 }
 
 /** 候选数据：挂载/agent 变更时拉取；+ 菜单打开时可手动 refresh（文件会随任务执行变化） */
-export function useMentionCandidatesState(enabled: boolean, agentId?: string) {
+export function useMentionCandidatesState(
+  enabled: boolean,
+  agentId?: string,
+  currentConversationId?: string,
+) {
   const [candidates, setCandidates] = useState<MentionCandidates>(EMPTY_MENTION_CANDIDATES);
   const [loading, setLoading] = useState(false);
   // 加载失败必须显式暴露——静默吞成空列表会把接口故障伪装成「无候选」（2026-09-17 生产事故教训）
@@ -79,7 +86,7 @@ export function useMentionCandidatesState(enabled: boolean, agentId?: string) {
       return;
     }
     setLoading(true);
-    fetchMentionCandidates(agentId)
+    fetchMentionCandidates(agentId, currentConversationId)
       .then((c) => {
         setCandidates(c);
         setError(null);
@@ -89,7 +96,7 @@ export function useMentionCandidatesState(enabled: boolean, agentId?: string) {
         setError(e instanceof Error ? e.message : "候选加载失败");
       })
       .finally(() => setLoading(false));
-  }, [enabled, agentId]);
+  }, [enabled, agentId, currentConversationId]);
   useEffect(() => {
     refresh();
   }, [refresh]);
@@ -194,6 +201,13 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps) {
                 label="引用连接器"
                 hint="该智能体挂载的连接器"
                 onClick={() => closeAndInsert("$")}
+              />
+              <PlusMenuItem
+                icon={History}
+                trigger="%"
+                label="引用历史会话"
+                hint="该智能体开启的历史会话记录"
+                onClick={() => closeAndInsert("%")}
               />
             </>
           ) : null}
@@ -307,6 +321,31 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
     onInserted: (item) =>
       props.onMentionInserted({ kind: "connector", id: item.id, label: item.label }),
   });
+  const conversationAdapter = unstable_useMentionAdapter({
+    items: useMemo(() => {
+      const all: Unstable_TriggerItem = {
+        id: CONVERSATION_MENTION_ALL_ID,
+        type: "conversation",
+        label: CONVERSATION_ALL_LABEL,
+        description: "按智能体会话配置，引用全部符合条件的会话",
+      };
+      const list = props.candidates.conversations.map(
+        (c): Unstable_TriggerItem => ({
+          id: c.id,
+          type: "conversation",
+          // 插入的标记文本与展示 label 同源（去空白消毒）；标题另在描述行展示原文
+          label: conversationMarkerLabel(c.title, c.updatedAt),
+          description: `${c.title} · ${c.updatedAt.slice(0, 10)}`,
+        }),
+      );
+      return [all, ...list];
+    }, [props.candidates.conversations]),
+    formatter: markerFormatter("%"),
+    onInserted: (item) => {
+      props.onMentionInserted({ kind: "conversation", id: item.id, label: item.label });
+      syncCaretAfterInsert();
+    },
+  });
   return (
     <>
       <MentionTrigger
@@ -338,6 +377,20 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
         error={props.error}
         emptyText="该智能体暂无可用连接器"
         rowLabel="连接器"
+      />
+      <MentionTrigger
+        char="%"
+        kind="conversation"
+        adapter={conversationAdapter.adapter}
+        directive={conversationAdapter.directive}
+        isLoading={props.loading}
+        error={props.error}
+        emptyText={
+          props.candidates.conversationRefEnabled
+            ? "暂无可引用的历史会话"
+            : "会话引用功能未开启，请在智能体编辑页的资源分区开启"
+        }
+        rowLabel="历史会话"
       />
     </>
   );

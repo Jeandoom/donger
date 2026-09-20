@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Conversation } from "./conversation.js";
 import { AgentExtensionDirectoriesSchema } from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
 import { isModelRef } from "./model-ref.js";
@@ -32,6 +33,72 @@ export const AgentLLMSchema = z.object({
 });
 export type AgentLLM = z.infer<typeof AgentLLMSchema>;
 
+/** 会话资源范围（% 会话引用）：enabled 关闭时候选为空、resolve 一律丢弃 */
+export const AgentConversationScopeSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** 有权查看的智能体 id 多选；空数组 = 仅本智能体 */
+  agentIds: z.array(z.string()).default([]),
+  /** 最近 N 天（1-99）；缺省不限天 */
+  days: z.number().int().min(1).max(99).optional(),
+  /** 最近 N 条（1-99）；缺省 10 */
+  limit: z.number().int().min(1).max(99).optional(),
+});
+export type AgentConversationScope = z.infer<typeof AgentConversationScopeSchema>;
+
+/** effectiveConversationScope 的展开结果（days 缺省 = 不限天） */
+export interface EffectiveConversationScope {
+  agentIds: string[];
+  days?: number;
+  limit: number;
+}
+
+/**
+ * 会话引用过滤口径（候选下发/单条校验/全部展开三处共用，杜绝口径漂移）。
+ * agent 未配置或 enabled=false 时返回 undefined（功能未开启）。
+ */
+export function effectiveConversationScope(
+  agent: Pick<Agent, "conversationScope"> | undefined,
+  currentAgentId: string,
+): EffectiveConversationScope | undefined {
+  const scope = agent?.conversationScope;
+  if (!scope?.enabled) return undefined;
+  return {
+    agentIds: scope.agentIds.length > 0 ? scope.agentIds : [currentAgentId],
+    ...(scope.days !== undefined ? { days: scope.days } : {}),
+    limit: scope.limit ?? 10,
+  };
+}
+
+/**
+ * 按会话范围过滤：属主（跨用户铁律——共享智能体的使用者也只可能引用到自己的会话）
+ * + 绑定智能体在范围内 + 时间窗口，updatedAt 降序取前 limit 条。
+ * excludeConversationId 排除当前会话自身（内容已在上下文中，重复注入无意义）。
+ */
+export function filterConversationsByScope(
+  conversations: readonly Conversation[],
+  scope: EffectiveConversationScope,
+  viewerId: string,
+  now = new Date(),
+  excludeConversationId?: string,
+): Conversation[] {
+  const cutoff =
+    scope.days !== undefined
+      ? new Date(now.getTime() - scope.days * 86_400_000).toISOString()
+      : undefined;
+  const inScope = new Set(scope.agentIds);
+  return conversations
+    .filter(
+      (c) =>
+        c.userId === viewerId &&
+        c.agentId.length > 0 &&
+        inScope.has(c.agentId) &&
+        (cutoff === undefined || c.updatedAt >= cutoff) &&
+        c.id !== excludeConversationId,
+    )
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+    .slice(0, scope.limit);
+}
+
 export const AgentSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
@@ -58,6 +125,8 @@ export const AgentSchema = z.object({
   /** 会话权限模式默认值：绑定该 agent 的会话未手动覆盖时生效（缺省=变更前问询） */
   defaultPermissionMode: AgentPermissionModeSchema.default("ask_before_change"),
   llm: AgentLLMSchema,
+  /** 会话资源范围（% 会话引用的候选与「全部会话」展开都受此过滤；缺省 = 功能未开启） */
+  conversationScope: AgentConversationScopeSchema.optional(),
   /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */
   version: z.number().int().positive().default(1),
   createdAt: z.string(),

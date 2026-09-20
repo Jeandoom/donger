@@ -14,7 +14,13 @@ import { ZodError } from "zod";
 import type { LlmTester } from "../adapters/llm-provider-tester.js";
 import type { LlmPreset } from "../config.js";
 import type { Viewer } from "../domain/access-policy.js";
-import { type Agent, parseAgent, parseAgentInput } from "../domain/agent.js";
+import {
+  type Agent,
+  effectiveConversationScope,
+  filterConversationsByScope,
+  parseAgent,
+  parseAgentInput,
+} from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import {
   type Connector,
@@ -24,12 +30,6 @@ import {
 import { substituteCredentialRefs } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import {
-  type Feedback,
-  type FeedbackReply,
-  isFeedbackCategory,
-  isFeedbackStatus,
-} from "../domain/feedback.js";
-import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
   CredentialValueInputSchema,
@@ -37,6 +37,12 @@ import {
   parseCredentialCode,
   withGitPatKeySpecs,
 } from "../domain/credential.js";
+import {
+  type Feedback,
+  type FeedbackReply,
+  isFeedbackCategory,
+  isFeedbackStatus,
+} from "../domain/feedback.js";
 import { scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import type { AgentGitRepository } from "../domain/git.js";
@@ -56,7 +62,13 @@ import type { LLMConfig } from "../domain/llm-config.js";
 import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
 import { resolveLlmOptions } from "../domain/llm-selection.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
-import { type MentionInput, MentionInputSchema, type ResolvedMention } from "../domain/mentions.js";
+import {
+  CONVERSATION_MENTION_ALL_ID,
+  conversationMarkerLabel,
+  type MentionInput,
+  MentionInputSchema,
+  type ResolvedMention,
+} from "../domain/mentions.js";
 import { isModelRef, parseModelRef } from "../domain/model-ref.js";
 import {
   type AgentPermissionMode,
@@ -114,9 +126,9 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
+import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
 import type { InviteStore } from "../ports/invite-store.js";
-import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type { LoopStore } from "../ports/loop-store.js";
@@ -3019,7 +3031,7 @@ export class WebChannel implements Channel {
         llmOptions,
       });
     }
-    // GET /api/agents/:id/mention-candidates?q= —— 输入框 @/​/$ 引用候选（可用者 = owner/被分享/admin）
+    // GET /api/agents/:id/mention-candidates?q=&conversationId= —— 输入框 @/​/$/% 引用候选（可用者 = owner/被分享/admin）
     const mentionCandidatesPathname = url.split("?")[0] ?? url;
     const mentionCandidatesMatch = mentionCandidatesPathname.match(
       /^\/api\/agents\/([\w-]+)\/mention-candidates$/,
@@ -3034,7 +3046,11 @@ export class WebChannel implements Channel {
       const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
       if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
       const q = this.extractQuery(url, "q") ?? "";
-      return this.json(res, await this.mentionCandidates(me, a, q));
+      const convId = this.extractQuery(url, "conversationId") ?? "";
+      return this.json(
+        res,
+        await this.mentionCandidates(me, a, q, convId.length > 0 ? convId : undefined),
+      );
     }
     // GET /api/agents/:id/versions —— 版本历史（摘要，不含 mcp 密钥字段）
     const agentVersionsMatch = url.match(/^\/api\/agents\/([\w-]+)\/versions$/);
@@ -4485,10 +4501,11 @@ export class WebChannel implements Channel {
   }
 
   /**
-   * 解析消息中的 @/​/$ 引用（发送时执行，不落库）：
+   * 解析消息中的 @/​/$/% 引用（发送时执行，不落库）：
    * - 文件：经 FileBrowser.resolveFilePath 换算为属主/边界/symlink 全校验的绝对路径；
    * - 技能：按该 agent 实际装配集过滤（显式 skills 或用户启用 Pack）；
-   * - 连接器：须在 agent.connectorIds 内且对当前用户可见可用。
+   * - 连接器：须在 agent.connectorIds 内且对当前用户可见可用；
+   * - 会话：属主 + 智能体范围/时间窗口校验后内联 wrapUntrusted 内容（开关未开启一律丢弃）。
    * fail-closed：任何未命中的引用直接丢弃，绝不让未校验路径进 prompt。
    */
   private async resolveMentions(
@@ -4506,6 +4523,7 @@ export class WebChannel implements Channel {
         ? await this.agentStore.get(conversation.agentId)
         : undefined;
     const skillOptions = agent ? await this.effectiveAgentSkillOptions(agent.id, userId ?? "") : [];
+    const seenConversations = new Set<string>();
     for (const m of mentions) {
       if (m.kind === "file") {
         const abs = await this.resolveMentionFile(userId, conversationId, m.id);
@@ -4520,9 +4538,53 @@ export class WebChannel implements Channel {
           (c.shareScope === "global" || c.ownerId === userId) &&
           agent.connectorIds.includes(c.id);
         if (c && visible) resolved.push({ kind: "connector", label: m.label, name: c.name });
+      } else if (m.kind === "conversation" && agent) {
+        const items = await this.resolveConversationMentions(userId, conversationId, agent, m);
+        const fresh = items.filter((it) => !seenConversations.has(it.conversationId));
+        for (const it of fresh) seenConversations.add(it.conversationId);
+        resolved.push(...fresh);
       }
     }
     return resolved;
+  }
+
+  /**
+   * % 会话引用 → 经属主+范围校验的历史会话内容。
+   * 开关未开启（含 agent 不在 store）一律丢弃；单条必须在过滤集合内（与候选/全部展开同一口径）；
+   * 「全部会话」展开为逐会话条目。内容 wrapUntrusted 定界（单会话 20k 截断，总预算在 appendMentions）。
+   */
+  private async resolveConversationMentions(
+    userId: string | undefined,
+    currentConversationId: string,
+    agent: Agent,
+    m: MentionInput,
+  ): Promise<Array<Extract<ResolvedMention, { kind: "conversation" }>>> {
+    if (!userId || !this.deps.conversationStore || !this.messageStore) return [];
+    const scope = effectiveConversationScope(agent, agent.id);
+    if (!scope) return [];
+    const all = await this.deps.conversationStore.listByUser(userId);
+    const matched = filterConversationsByScope(
+      all,
+      scope,
+      userId,
+      new Date(),
+      currentConversationId,
+    ).filter((c) => m.id === CONVERSATION_MENTION_ALL_ID || c.id === m.id);
+    const out: Array<Extract<ResolvedMention, { kind: "conversation" }>> = [];
+    for (const c of matched) {
+      const messages = await this.messageStore.listByConversation(c.id);
+      const text = messages
+        .map((msg) => `${msg.role === "user" ? "【用户】" : "【助手】"}${msg.text}`)
+        .join("\n\n");
+      const { wrapped } = wrapUntrusted(text, `conversation:${c.id} ${c.title}`);
+      out.push({
+        kind: "conversation",
+        label: conversationMarkerLabel(c.title, c.updatedAt),
+        conversationId: c.id,
+        content: wrapped,
+      });
+    }
+    return out;
   }
 
   /** @ 文件引用 → 绝对路径；id 形如 "runtime:<relPath>"（与候选端点下发的 scope 口径一致） */
@@ -4558,15 +4620,19 @@ export class WebChannel implements Channel {
     return all.filter((s) => picked.has(s.id));
   }
 
-  /** GET /api/agents/:id/mention-candidates 的响应体（输入框 @/​/$ 引用候选） */
+  /** GET /api/agents/:id/mention-candidates 的响应体（输入框 @/​/$/% 引用候选） */
   private async mentionCandidates(
     viewerId: string,
     agent: Agent,
     query: string,
+    currentConversationId?: string,
   ): Promise<{
     skills: Array<{ id: string; name: string; description?: string }>;
     connectors: Array<{ id: string; name: string; description?: string }>;
     files: Array<{ scope: "runtime"; path: string; label: string }>;
+    /** 会话引用是否已在该智能体上开启（关闭=conversations 恒空，前端提示功能未开启） */
+    conversationRefEnabled: boolean;
+    conversations: Array<{ id: string; title: string; updatedAt: string }>;
   }> {
     const skills = await this.effectiveAgentSkillOptions(agent.id, viewerId);
     const connectors = this.deps.connectorStore
@@ -4598,10 +4664,27 @@ export class WebChannel implements Channel {
         }
       }
     }
+    // 会话候选：开关未开启时恒空（不做查询）；开启后按范围过滤并排除当前会话自身
+    const scope = effectiveConversationScope(agent, agent.id);
+    let conversations: Array<{ id: string; title: string; updatedAt: string }> = [];
+    if (scope && this.deps.conversationStore) {
+      const all = await this.deps.conversationStore.listByUser(viewerId);
+      conversations = filterConversationsByScope(
+        all,
+        scope,
+        viewerId,
+        new Date(),
+        currentConversationId,
+      )
+        .slice(0, 50)
+        .map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt }));
+    }
     return {
       skills: skills.slice(0, 50),
       connectors: visible.map((c) => ({ id: c.id, name: c.name, description: c.description })),
       files,
+      conversationRefEnabled: scope !== undefined,
+      conversations,
     };
   }
 
@@ -4644,6 +4727,7 @@ export class WebChannel implements Channel {
       defaultPermissionMode: a.defaultPermissionMode,
       version: a.version,
       llm: a.llm,
+      conversationScope: a.conversationScope,
     };
   }
 

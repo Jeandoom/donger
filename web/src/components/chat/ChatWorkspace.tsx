@@ -250,6 +250,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
                   ? activeConversation.agentId
                   : undefined
               }
+              conversationId={activeConversation?.id}
               onMentionInserted={collectMention}
               aboveComposer={props.aboveComposer}
               composerLeading={

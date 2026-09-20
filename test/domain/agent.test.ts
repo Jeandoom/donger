@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  type Agent,
   AgentSchema,
   appendDefaultSkill,
+  effectiveConversationScope,
+  filterConversationsByScope,
   normalizeAgentCredentialRefs,
   parseAgent,
 } from "../../src/domain/agent.js";
+import type { Conversation } from "../../src/domain/conversation.js";
 
 const valid = {
   id: "a1",
@@ -82,5 +86,138 @@ describe("场景与凭证归一化", () => {
   it("无 credentialCode 时原样返回（引用相等）", () => {
     const agent = parseAgent({ ...valid, credentials: ["sls-ak"] });
     expect(normalizeAgentCredentialRefs(agent)).toBe(agent);
+  });
+});
+
+describe("conversationScope 会话资源范围", () => {
+  it("缺省字段 = 功能未开启，存量数据零迁移", () => {
+    const a = parseAgent(valid);
+    expect(a.conversationScope).toBeUndefined();
+    expect(effectiveConversationScope(a, a.id)).toBeUndefined();
+  });
+
+  it("enabled=false 或缺省时 effectiveConversationScope 返回 undefined", () => {
+    const a = parseAgent({ ...valid, conversationScope: { enabled: false, agentIds: ["x"] } });
+    expect(effectiveConversationScope(a, a.id)).toBeUndefined();
+  });
+
+  it("开启后空 agentIds 默认仅本智能体，limit 缺省 10", () => {
+    const a = parseAgent({ ...valid, conversationScope: { enabled: true, agentIds: [] } });
+    const scope = effectiveConversationScope(a, "a1");
+    expect(scope).toEqual({ agentIds: ["a1"], limit: 10 });
+  });
+
+  it("开启后沿用配置的 agentIds/days/limit", () => {
+    const a = parseAgent({
+      ...valid,
+      conversationScope: { enabled: true, agentIds: ["a2", "a3"], days: 7, limit: 30 },
+    });
+    expect(effectiveConversationScope(a, "a1")).toEqual({
+      agentIds: ["a2", "a3"],
+      days: 7,
+      limit: 30,
+    });
+  });
+
+  it("days/limit 超界（>99）保存即拒绝", () => {
+    expect(() =>
+      AgentSchema.parse({
+        ...valid,
+        conversationScope: { enabled: true, agentIds: [], days: 100 },
+      }),
+    ).toThrow();
+    expect(() =>
+      AgentSchema.parse({ ...valid, conversationScope: { enabled: true, agentIds: [], limit: 0 } }),
+    ).toThrow();
+  });
+});
+
+describe("filterConversationsByScope", () => {
+  const now = new Date("2026-09-20T12:00:00Z");
+  const day = (n: number) => new Date(now.getTime() - n * 86_400_000).toISOString();
+  const scopeOf = (agent: Agent) => effectiveConversationScope(agent, agent.id) ?? undefined;
+
+  const makeConv = (over: Partial<Conversation>): Conversation => ({
+    id: "c1",
+    userId: "u1",
+    sdkSessionId: "",
+    title: "会话",
+    channelId: "web",
+    agentId: "a1",
+    createdAt: day(1),
+    updatedAt: day(1),
+    archived: false,
+    ...over,
+  });
+
+  const agent = parseAgent({
+    ...valid,
+    conversationScope: { enabled: true, agentIds: ["a1", "a2"], days: 7, limit: 3 },
+  });
+
+  it("按属主过滤：他人的会话一律不可见（跨用户铁律）", () => {
+    const scope = scopeOf(agent);
+    expect(scope).toBeDefined();
+    if (!scope) return;
+    const out = filterConversationsByScope(
+      [makeConv({ userId: "other", id: "c1" })],
+      scope,
+      "u1",
+      now,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("按智能体范围过滤：绑定范围外智能体（含闲聊防御 agentId 空）不入集", () => {
+    const scope = scopeOf(agent);
+    expect(scope).toBeDefined();
+    if (!scope) return;
+    const out = filterConversationsByScope(
+      [
+        makeConv({ id: "c-in", agentId: "a2" }),
+        makeConv({ id: "c-out", agentId: "a9" }),
+        makeConv({ id: "c-chat", agentId: "" }),
+      ],
+      scope,
+      "u1",
+      now,
+    );
+    expect(out.map((c) => c.id)).toEqual(["c-in"]);
+  });
+
+  it("按时间窗口过滤：超 days 的会话不入集", () => {
+    const scope = scopeOf(agent);
+    expect(scope).toBeDefined();
+    if (!scope) return;
+    const out = filterConversationsByScope(
+      [
+        makeConv({ id: "c-fresh", updatedAt: day(1) }),
+        makeConv({ id: "c-stale", updatedAt: day(8) }),
+      ],
+      scope,
+      "u1",
+      now,
+    );
+    expect(out.map((c) => c.id)).toEqual(["c-fresh"]);
+  });
+
+  it("updatedAt 降序 + limit 截断 + 排除当前会话", () => {
+    const scope = scopeOf(agent);
+    expect(scope).toBeDefined();
+    if (!scope) return;
+    const out = filterConversationsByScope(
+      [
+        makeConv({ id: "cur", updatedAt: day(0) }),
+        makeConv({ id: "c1", updatedAt: day(1) }),
+        makeConv({ id: "c2", updatedAt: day(2) }),
+        makeConv({ id: "c3", updatedAt: day(3) }),
+        makeConv({ id: "c4", updatedAt: day(4) }),
+      ],
+      scope,
+      "u1",
+      now,
+      "cur",
+    );
+    expect(out.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
   });
 });
