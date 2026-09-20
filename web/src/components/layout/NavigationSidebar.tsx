@@ -1,8 +1,5 @@
-import type { LucideIcon } from "lucide-react";
 import {
   Bot,
-  ChevronDown,
-  ChevronRight,
   LogOut,
   MessageSquare,
   PanelLeftClose,
@@ -10,34 +7,33 @@ import {
   Plug,
   Repeat,
   ScrollText,
-  Settings,
   Sparkles,
+  UserRound,
   Workflow,
   Zap,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { apiFetch, apiFetchRetry, clearToken, getToken } from "../../lib/auth";
 import { cn } from "../../lib/utils";
+import { CredentialIcon } from "../icons/CredentialIcon";
+import { InviteIcon } from "../icons/InviteIcon";
+import { ModelIcon } from "../icons/ModelIcon";
+import { ConfirmDialog } from "../ui/confirm-dialog";
+
+/** 导航图标：lucide 或 Penpot 素材组件，统一 size/className 契约 */
+type NavIcon = (props: { size?: number; className?: string }) => ReactNode;
 
 interface LeafItem {
   to: string;
   label: string;
-  /** 顶层导航项必填；父项子菜单里的子项不展示图标 */
-  icon?: LucideIcon;
+  icon: NavIcon;
   end?: boolean;
 }
-interface ParentItem {
-  key: "settings" | "observation";
-  label: string;
-  icon: LucideIcon;
-  /** 命中即视为该父项激活（用于自动展开） */
-  match: string[];
-  children: LeafItem[];
-}
-type NavEntry = LeafItem | ParentItem;
 
-const entries: NavEntry[] = [
+// 主导航（模块）
+const mainEntries: LeafItem[] = [
   { to: "/", label: "对话", icon: MessageSquare, end: true },
   // 智能体会话已并入对话模块（/），智能体入口收敛为管理页叶节点
   { to: "/agents", label: "智能体", icon: Bot },
@@ -46,33 +42,16 @@ const entries: NavEntry[] = [
   { to: "/loops", label: "LOOPs", icon: Repeat },
   { to: "/skills", label: "技能", icon: Sparkles },
   { to: "/connectors", label: "连接器", icon: Plug },
-  {
-    key: "observation",
-    label: "审计",
-    icon: ScrollText,
-    match: ["/audit"],
-    children: [
-      { to: "/audit/history", label: "历史会话" },
-      { to: "/audit/llm", label: "LLM 观测" },
-    ],
-  },
-  {
-    key: "settings",
-    label: "设置",
-    icon: Settings,
-    match: ["/settings"],
-    children: [
-      { to: "/settings/profile", label: "个人" },
-      { to: "/settings/models", label: "模型" },
-      { to: "/settings/credentials", label: "凭证" },
-      { to: "/settings/invites", label: "邀请" },
-    ],
-  },
+  // 审计单页：会话栏内置「只看LLM」开关切换历史会话/LLM 观测两种详情形态
+  { to: "/audit", label: "审计", icon: ScrollText },
 ];
 
-function isParent(e: NavEntry): e is ParentItem {
-  return (e as ParentItem).children !== undefined;
-}
+// 原设置子模块一级化，沉底展示（个人并入底部用户栏，不再占导航位）
+const bottomEntries: LeafItem[] = [
+  { to: "/models", label: "模型", icon: ModelIcon },
+  { to: "/credentials", label: "凭证", icon: CredentialIcon },
+  { to: "/invites", label: "邀请", icon: InviteIcon },
+];
 
 interface UserInfo {
   id: string;
@@ -116,9 +95,9 @@ export function NavigationSidebar({
   collapsible?: boolean;
 }) {
   const navigate = useNavigate();
-  const location = useLocation();
   const [user, setUser] = useState<UserInfo | null>(null);
   const [userError, setUserError] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     if (!collapsible) return false;
     try {
@@ -127,39 +106,6 @@ export function NavigationSidebar({
       return false;
     }
   });
-  const [openParents, setOpenParents] = useState<Record<ParentItem["key"], boolean>>(() => {
-    try {
-      return {
-        settings: localStorage.getItem("donger_nav_settings_open") === "1",
-        observation: localStorage.getItem("donger_nav_observation_open") === "1",
-      };
-    } catch {
-      return { settings: false, observation: false };
-    }
-  });
-
-  // 命中智能体子树自动展开
-  useEffect(() => {
-    const active = entries.find(
-      (entry): entry is ParentItem =>
-        isParent(entry) && entry.match.some((match) => location.pathname.startsWith(match)),
-    );
-    if (active) {
-      setOpenParents((current) => ({ ...current, [active.key]: true }));
-    }
-  }, [location.pathname]);
-
-  const toggleParent = (key: ParentItem["key"]) => {
-    setOpenParents((current) => {
-      const next = !current[key];
-      try {
-        localStorage.setItem(`donger_nav_${key}_open`, next ? "1" : "0");
-      } catch {
-        // 忽略
-      }
-      return { ...current, [key]: next };
-    });
-  };
 
   const toggleCollapsed = () => {
     setCollapsed((current) => {
@@ -213,13 +159,38 @@ export function NavigationSidebar({
     <button
       type="button"
       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground transition-colors hover:text-white"
-      onClick={handleLogout}
+      onClick={() => setLogoutConfirmOpen(true)}
       title="退出登录"
       aria-label="退出登录"
     >
       <LogOut size={iconSize} />
     </button>
   );
+
+  const renderLeaf = (e: LeafItem, collapsedMode: boolean) => {
+    const Icon = e.icon;
+    if (collapsedMode) {
+      return (
+        <NavLink
+          key={e.to}
+          to={e.to}
+          end={e.end}
+          onClick={onNavigate}
+          aria-label={e.label}
+          className={iconLinkClass}
+        >
+          <Icon size={18} className="shrink-0" />
+          <span className={tipClass}>{e.label}</span>
+        </NavLink>
+      );
+    }
+    return (
+      <NavLink key={e.to} to={e.to} end={e.end} onClick={onNavigate} className={linkClass}>
+        <Icon size={18} className="shrink-0" />
+        <span className="truncate">{e.label}</span>
+      </NavLink>
+    );
+  };
 
   return (
     <nav
@@ -262,102 +233,27 @@ export function NavigationSidebar({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-        {entries.map((e) => {
-          if (!isParent(e)) {
-            const Icon = e.icon;
-            if (!Icon) return null;
-            return collapsed ? (
-              <NavLink
-                key={e.to}
-                to={e.to}
-                end={e.end}
-                onClick={onNavigate}
-                aria-label={e.label}
-                className={iconLinkClass}
-              >
-                <Icon size={18} className="shrink-0" />
-                <span className={tipClass}>{e.label}</span>
-              </NavLink>
-            ) : (
-              <NavLink key={e.to} to={e.to} end={e.end} onClick={onNavigate} className={linkClass}>
-                <Icon size={18} className="shrink-0" />
-                <span className="truncate">{e.label}</span>
-              </NavLink>
-            );
-          }
-          return (
-            <div
-              key={e.key}
-              className={cn(collapsed ? "mt-3" : "mt-3 first:mt-0", "group relative")}
-            >
-              {collapsed ? (
-                <>
-                  <button
-                    type="button"
-                    aria-label={e.label}
-                    className="relative flex h-9 w-full items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-hover hover:text-white"
-                  >
-                    <e.icon size={18} className="shrink-0" />
-                    <ChevronRight size={9} className="absolute right-1.5 bottom-1 text-slate-500" />
-                  </button>
-                  <div className={flyoutClass}>
-                    <div className="w-44 rounded-xl border border-border bg-card py-1.5 shadow-lg">
-                      <div className="px-3 pb-1 pt-0.5 text-[11px] font-semibold text-muted-foreground">
-                        {e.label}
-                      </div>
-                      {e.children.map((c) => (
-                        <NavLink
-                          key={c.to}
-                          to={c.to}
-                          onClick={onNavigate}
-                          className={({ isActive }) =>
-                            cn(
-                              "flex items-center rounded-md px-3 py-2 text-[13px] text-foreground transition-colors hover:bg-muted",
-                              isActive && "bg-primary-soft font-semibold text-primary",
-                            )
-                          }
-                        >
-                          {c.label}
-                        </NavLink>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => toggleParent(e.key)}
-                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] text-sidebar-foreground transition-colors hover:bg-sidebar-hover hover:text-white"
-                  >
-                    <e.icon size={18} className="shrink-0" />
-                    <span>{e.label}</span>
-                    {openParents[e.key] ? (
-                      <ChevronDown size={14} className="ml-auto opacity-60" />
-                    ) : (
-                      <ChevronRight size={14} className="ml-auto opacity-60" />
-                    )}
-                  </button>
-                  {openParents[e.key] && (
-                    <div className="ml-2 border-l border-white/10 pl-1.5">
-                      {e.children.map((c) => (
-                        <NavLink key={c.to} to={c.to} onClick={onNavigate} className={linkClass}>
-                          {c.label}
-                        </NavLink>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          );
-        })}
+        {mainEntries.map((e) => renderLeaf(e, collapsed))}
+      </div>
+
+      {/* 原设置子模块：一级化后沉底 */}
+      <div className="mt-2 shrink-0 border-t border-white/10 pt-2">
+        <div className="flex flex-col gap-0.5">
+          {bottomEntries.map((e) => renderLeaf(e, collapsed))}
+        </div>
       </div>
 
       {user ? (
         collapsed ? (
           <div className="group relative mt-3 flex justify-center">
-            {avatar(26)}
+            <button
+              type="button"
+              onClick={() => navigate("/profile")}
+              title="个人设置"
+              aria-label="个人设置"
+            >
+              {avatar(26)}
+            </button>
             <div className={cn(flyoutClass, "top-auto bottom-0")}>
               <div className="w-44 rounded-xl border border-border bg-card p-2 shadow-lg">
                 <div className="flex items-center gap-2 px-1 pb-1.5">
@@ -366,9 +262,21 @@ export function NavigationSidebar({
                     {user.name}
                   </span>
                 </div>
+                <NavLink
+                  to="/profile"
+                  className={({ isActive }) =>
+                    cn(
+                      "flex w-full items-center gap-2 rounded-md px-1.5 py-2 text-[13px] text-foreground transition-colors hover:bg-muted",
+                      isActive && "bg-primary-soft font-semibold text-primary",
+                    )
+                  }
+                >
+                  <UserRound size={14} />
+                  个人设置
+                </NavLink>
                 <button
                   type="button"
-                  onClick={handleLogout}
+                  onClick={() => setLogoutConfirmOpen(true)}
                   className="flex w-full items-center gap-2 rounded-md px-1.5 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive-soft"
                 >
                   <LogOut size={14} />
@@ -379,12 +287,18 @@ export function NavigationSidebar({
           </div>
         ) : (
           <div className="mt-3 flex items-center justify-between rounded-lg bg-sidebar-hover px-2.5 py-2">
-            <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => navigate("/profile")}
+              className="flex min-w-0 items-center gap-2.5 rounded-md text-left"
+              title="个人设置"
+              aria-label="个人设置"
+            >
               {avatar(26)}
               <span className="max-w-[110px] truncate text-xs font-medium text-white">
                 {user.name}
               </span>
-            </div>
+            </button>
             {logoutButton(14)}
           </div>
         )
@@ -415,6 +329,19 @@ export function NavigationSidebar({
       ) : (
         <div className="px-2.5 py-2 text-xs text-sidebar-foreground">未登录</div>
       )}
+
+      <ConfirmDialog
+        open={logoutConfirmOpen}
+        title="退出登录"
+        description="退出后将返回登录页，确定要退出当前账号吗？"
+        confirmText="退出"
+        destructive
+        onConfirm={() => {
+          setLogoutConfirmOpen(false);
+          void handleLogout();
+        }}
+        onCancel={() => setLogoutConfirmOpen(false)}
+      />
     </nav>
   );
 }

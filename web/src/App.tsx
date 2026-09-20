@@ -9,7 +9,6 @@ import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
 import { CredentialsPage } from "./pages/credentials/CredentialsPage";
 import { InvitesPage } from "./pages/InvitesPage";
-import { LlmSessionsPage } from "./pages/LlmSessionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { LoopDetailPage } from "./pages/LoopDetailPage";
@@ -58,15 +57,20 @@ export function App() {
             <Route path="/loops/:id" element={<LoopDetailPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
-            <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
-            <Route path="/settings/profile" element={<UserProfilePage />} />
-            <Route path="/settings/invites" element={<InvitesPage />} />
-            <Route path="/settings/models" element={<ModelsPage />} />
-            <Route path="/settings/credentials" element={<CredentialsPage />} />
-            <Route path="/credentials" element={<Navigate to="/settings/credentials" replace />} />
-            <Route path="/audit" element={<Navigate to="/audit/history" replace />} />
-            <Route path="/audit/history" element={<AuditPage />} />
-            <Route path="/audit/llm" element={<LlmSessionsPage />} />
+            {/* 原设置子模块一级化（/profile /models /credentials /invites）；旧 /settings/* 深链重定向 */}
+            <Route path="/profile" element={<UserProfilePage />} />
+            <Route path="/models" element={<ModelsPage />} />
+            <Route path="/credentials" element={<CredentialsPage />} />
+            <Route path="/invites" element={<InvitesPage />} />
+            <Route path="/settings" element={<Navigate to="/profile" replace />} />
+            <Route path="/settings/profile" element={<Navigate to="/profile" replace />} />
+            <Route path="/settings/models" element={<Navigate to="/models" replace />} />
+            <Route path="/settings/credentials" element={<Navigate to="/credentials" replace />} />
+            <Route path="/settings/invites" element={<Navigate to="/invites" replace />} />
+            {/* 审计单页：?mode=llm 切 LLM 观测；旧子页路径重定向保深链 */}
+            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/audit/history" element={<Navigate to="/audit" replace />} />
+            <Route path="/audit/llm" element={<Navigate to="/audit?mode=llm" replace />} />
             {/* 未匹配路由兜底：避免渲染空白页 */}
             <Route path="*" element={<NotFoundPage />} />
           </Route>
