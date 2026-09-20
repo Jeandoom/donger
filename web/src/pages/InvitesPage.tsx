@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button";
 import { PageHeader } from "../components/ui/page-header";
-import { apiFetch, fetchMe } from "../lib/auth";
+import { apiFetch } from "../lib/auth";
 
 interface Invite {
   id: string;
@@ -64,17 +64,15 @@ export function InvitesPage() {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  // 管理员专属：邮箱注册的验证链接转交数据源（方案 B：管理员线下转发给注册用户）
+  // 管理员专属：邮箱注册的验证链接转交数据源。直接以 admin 接口可用性为准——
+  // fetchMe 有模块级缓存（未登录期的 null 会残留到登录后），用它判 admin 会漏渲染
   useEffect(() => {
-    void fetchMe().then((me) => {
-      if (me?.role !== "admin") return;
-      void apiFetch("/api/admin/email-verifications")
-        .then(async (r) =>
-          r.ok ? ((await r.json()) as { verifications: EmailVerification[] }) : null,
-        )
-        .then((data) => setVerifications(data?.verifications ?? []))
-        .catch(() => setVerifications([]));
-    });
+    void apiFetch("/api/admin/email-verifications")
+      .then(async (r) =>
+        r.ok ? ((await r.json()) as { verifications: EmailVerification[] }) : null,
+      )
+      .then((data) => setVerifications(data?.verifications ?? null))
+      .catch(() => setVerifications(null));
   }, []);
 
   const create = () => {
