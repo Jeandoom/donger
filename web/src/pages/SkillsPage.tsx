@@ -1,4 +1,4 @@
-import { Sparkles } from "lucide-react";
+import { GitBranch, RefreshCw, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
@@ -9,14 +9,20 @@ import { PageHeader } from "../components/ui/page-header";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
   credentialStatus,
+  fetchMyCredentials,
   fetchPacks,
+  fetchSkillRepo,
   installPack,
   installUpload,
   type SkillPackDTO,
+  type SkillRepoConfigDTO,
+  saveSkillRepo,
   setPackEnabled,
   setSkillEnabled,
+  syncSkillRepo,
   uninstallPack,
   updatePack,
+  verifySkillRepo,
 } from "../lib/skills";
 import { cn } from "../lib/utils";
 
@@ -24,12 +30,18 @@ export function SkillsPage() {
   const navigate = useNavigate();
   const [packs, setPacks] = useState<SkillPackDTO[]>([]);
   const [installOpen, setInstallOpen] = useState(false);
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [repo, setRepo] = useState<SkillRepoConfigDTO | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncTip, setSyncTip] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      setPacks(await fetchPacks());
+      const [packList, repoCfg] = await Promise.all([fetchPacks(), fetchSkillRepo()]);
+      setPacks(packList);
+      setRepo(repoCfg);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -52,6 +64,20 @@ export function SkillsPage() {
     }
   };
 
+  const runSync = async () => {
+    setSyncing(true);
+    setSyncTip(null);
+    try {
+      const r = await syncSkillRepo();
+      setSyncTip(r.message);
+      await reload();
+    } catch (e) {
+      setSyncTip((e as Error).message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="mx-auto h-full max-w-5xl overflow-y-auto p-7">
       <PageHeader
@@ -67,10 +93,45 @@ export function SkillsPage() {
               <Sparkles aria-hidden="true" size={14} className="inline" />
               AI 生成
             </Button>
+            <Button variant="secondary" onClick={() => setRepoOpen(true)}>
+              <GitBranch aria-hidden="true" size={14} className="inline" />
+              Git 仓库
+            </Button>
             <Button onClick={() => setInstallOpen(true)}>+ 安装技能包</Button>
           </>
         }
       />
+      {repo && (
+        <Card className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
+          <GitBranch aria-hidden="true" size={14} className="text-muted-foreground" />
+          <span className="font-mono text-xs">{repo.repoUrl}</span>
+          {repo.lastSyncStatus === "ok" && <Badge tone="success">同步正常</Badge>}
+          {repo.lastSyncStatus === "failed" && <Badge tone="warning">同步失败</Badge>}
+          {repo.lastSyncStatus === "skipped" && <Badge>同步停用</Badge>}
+          {!repo.lastSyncStatus && <Badge>待首次同步</Badge>}
+          {repo.lastSyncAt && (
+            <span className="text-xs text-muted-foreground">
+              最近同步 {new Date(repo.lastSyncAt).toLocaleString()}
+            </span>
+          )}
+          <span className="flex-1" />
+          <Button variant="secondary" onClick={runSync} disabled={syncing}>
+            <RefreshCw aria-hidden="true" size={14} className={cn(syncing && "animate-spin")} />
+            {syncing ? "同步中…" : "立即同步"}
+          </Button>
+        </Card>
+      )}
+      {(repo?.lastSyncError || syncTip) && (
+        <div
+          className={cn(
+            "mb-3 rounded-lg px-3 py-2 text-sm",
+            (repo?.lastSyncStatus === "failed" || syncTip?.startsWith("推送失败")) &&
+              "bg-destructive-soft text-destructive",
+          )}
+        >
+          {syncTip ?? repo?.lastSyncError}
+        </div>
+      )}
       {error && (
         <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
           {error}
@@ -104,6 +165,204 @@ export function SkillsPage() {
           }}
         />
       )}
+      {repoOpen && (
+        <SkillRepoDialog
+          repo={repo}
+          onClose={() => setRepoOpen(false)}
+          onSaved={async () => {
+            setRepoOpen(false);
+            await reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 无凭证内嵌的 HTTPS 地址（与后端 UserSkillRepoInputSchema 同规的浅校验） */
+const isCleanHttpsUrl = (v: string) => /^https:\/\/[^\s@]+$/.test(v.trim());
+
+function SkillRepoDialog({
+  repo,
+  onClose,
+  onSaved,
+}: {
+  repo: SkillRepoConfigDTO | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [repoUrl, setRepoUrl] = useState(repo?.repoUrl ?? "");
+  const [branch, setBranch] = useState(repo?.branch ?? "main");
+  const [credentialCode, setCredentialCode] = useState(repo?.credentialCode ?? "");
+  const [credentials, setCredentials] = useState<
+    Array<{ code: string; name: string; filledKeys: string[] }>
+  >([]);
+  const [credLoadError, setCredLoadError] = useState(false);
+  const [probeTip, setProbeTip] = useState<string | null>(null);
+  const [probeError, setProbeError] = useState(false);
+  const [confirmUnbind, setConfirmUnbind] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const all = await fetchMyCredentials();
+        setCredentials(
+          all
+            .filter((c) => c.kind === "git")
+            .map((c) => ({ code: c.code, name: c.name, filledKeys: c.filledKeys })),
+        );
+      } catch {
+        setCredLoadError(true);
+      }
+    })();
+  }, []);
+
+  const selected = credentials.find((c) => c.code === credentialCode);
+  const canSubmit = isCleanHttpsUrl(repoUrl) && credentialCode !== "";
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-[560px] rounded-xl border border-border bg-card p-5 shadow-xl">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-semibold">技能 Git 仓库</h2>
+          <button type="button" onClick={onClose} className="text-muted-foreground">
+            ✕
+          </button>
+        </div>
+        <p className="mb-3 text-xs leading-5 text-muted-foreground">
+          绑定后，你自建与 AI
+          生成的技能（含启停、卸载等管理操作）会自动同步到该仓库，以提交历史留痕。
+          请确保该仓库可写且仅你自己可见敏感技能内容。
+        </p>
+        <div className="space-y-2">
+          <input
+            className="w-full rounded-md border border-border px-3 py-2 text-sm"
+            placeholder="https://gitee.com/user/my-skills.git（HTTPS，不含凭证）"
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <input
+              className="w-40 rounded-md border border-border px-3 py-2 text-sm"
+              placeholder="分支（默认 main）"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+            />
+            <select
+              className="flex-1 rounded-md border border-border bg-card px-3 py-2 text-sm"
+              value={credentialCode}
+              onChange={(e) => setCredentialCode(e.target.value)}
+            >
+              <option value="">选择 git PAT 凭证…</option>
+              {credentials.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                  {c.filledKeys.includes("access_token") ? "" : "（未填令牌）"}
+                </option>
+              ))}
+            </select>
+          </div>
+          {credLoadError && (
+            <div className="text-xs text-warning">
+              凭证列表加载失败，请刷新重试或前往「我的凭证」。
+            </div>
+          )}
+          {credentialCode && selected && !selected.filledKeys.includes("access_token") && (
+            <div className="text-xs text-warning">
+              该凭证尚未填写 access_token，请先到「我的凭证」补全后再测试/同步。
+            </div>
+          )}
+        </div>
+        {probeTip && (
+          <div className={cn("mt-2 text-sm", probeError ? "text-destructive" : "text-success")}>
+            {probeTip}
+          </div>
+        )}
+        {error && <div className="mt-2 text-sm text-destructive">{error}</div>}
+        <div className="mt-4 flex items-center gap-2">
+          {repo && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:text-destructive"
+              disabled={busy}
+              onClick={() => setConfirmUnbind(true)}
+            >
+              解绑仓库
+            </button>
+          )}
+          <span className="flex-1" />
+          <button
+            type="button"
+            className="rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={onClose}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+            disabled={busy || !canSubmit}
+            onClick={() =>
+              run(async () => {
+                const r = await verifySkillRepo({
+                  repoUrl: repoUrl.trim(),
+                  credentialCode,
+                });
+                setProbeTip(r.message);
+                setProbeError(!r.ok);
+              })
+            }
+          >
+            测试连接
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            disabled={busy || !canSubmit}
+            onClick={() =>
+              run(async () => {
+                await saveSkillRepo({
+                  repoUrl: repoUrl.trim(),
+                  credentialCode,
+                  branch: branch.trim() || "main",
+                });
+                onSaved();
+              })
+            }
+          >
+            {busy ? "保存中…" : "保存"}
+          </button>
+        </div>
+        <ConfirmDialog
+          open={confirmUnbind}
+          title="解绑技能仓库？"
+          description="本地技能不受影响，仅停止自动同步；仓库中已同步的历史提交会保留。"
+          confirmText="解绑"
+          destructive
+          onConfirm={() =>
+            run(async () => {
+              await saveSkillRepo({ repoUrl: "", credentialCode: "" });
+              setConfirmUnbind(false);
+              onSaved();
+            })
+          }
+          onCancel={() => setConfirmUnbind(false)}
+        />
+      </div>
     </div>
   );
 }

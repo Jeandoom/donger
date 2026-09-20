@@ -86,6 +86,8 @@ export interface OrchestratorDeps {
   skillPackStore?: SkillPackStore;
   /** 连接器注册表（技能工坊 list_connectors 用；未装配时该工具提示不可用） */
   connectorStore?: ConnectorStore;
+  /** 用户技能仓库同步（write_skill/update_skill 落盘后镜像）；缺省=不同步 */
+  skillRepoSync?: { onChanged(userId: string): void };
   /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库，agent 不可推送） */
   selfImproveGitRepository?: AgentGitRepository;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
@@ -441,6 +443,7 @@ export class Orchestrator {
           packStore: this.deps.skillPackStore,
           credentialSets: this.deps.credentialSets,
           connectorStore: this.deps.connectorStore,
+          skillRepoSync: this.deps.skillRepoSync,
           conversationStore: this.deps.conversationStore,
           conversationId: p.conversation.id,
           onBuilderFinish: () => this.builderFinished.add(p.conversation.id),

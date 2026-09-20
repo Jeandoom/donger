@@ -13,6 +13,7 @@ import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
+import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
@@ -31,6 +32,7 @@ import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
 import { SqliteTriggerStore } from "./adapters/sqlite-trigger-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
+import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
@@ -195,6 +197,7 @@ async function main(): Promise<void> {
       installer: skillInstaller,
       skillPackStore,
       connectorStore,
+      skillRepoSync,
       selfImproveGitRepository,
       agentChain: cfg.agentChain,
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
@@ -208,6 +211,16 @@ async function main(): Promise<void> {
   llmProviderStore.migrate();
   const skillInstaller = new LocalSkillInstaller({
     packStore: skillPackStore,
+    getHomeDir: (uid) => join(usersDir, uid),
+  });
+
+  // 用户技能仓库（自建技能 git 镜像同步）：配置存储 + 同步服务（WebChannel 与 Orchestrator 共享）
+  const userSkillRepoStore = new SqliteUserSkillRepoStore(db);
+  userSkillRepoStore.migrate();
+  const skillRepoSync = new SkillRepoSyncService({
+    repoStore: userSkillRepoStore,
+    packStore: skillPackStore,
+    credentialSets,
     getHomeDir: (uid) => join(usersDir, uid),
   });
 
@@ -276,6 +289,8 @@ async function main(): Promise<void> {
     fileBrowser,
     skillPackStore,
     installer: skillInstaller,
+    userSkillRepoStore,
+    skillRepoSync,
     credentialSets,
     connectorStore,
     llmProviderStore,
