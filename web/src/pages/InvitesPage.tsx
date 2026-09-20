@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button";
 import { PageHeader } from "../components/ui/page-header";
-import { apiFetch } from "../lib/auth";
+import { apiFetch, fetchMe } from "../lib/auth";
 
 interface Invite {
   id: string;
@@ -11,6 +11,15 @@ interface Invite {
   maxUses: number;
   usedCount: number;
   disabled: boolean;
+}
+
+interface EmailVerification {
+  userId: string;
+  email: string;
+  verified: boolean;
+  expiresAt: string | null;
+  expired: boolean;
+  verifyPath: string | null;
 }
 
 function inviteStatus(invite: Invite, now: number): { label: string; cls: string } {
@@ -33,6 +42,8 @@ export function InvitesPage() {
   const [expiresInDays, setExpiresInDays] = useState(7);
   const [maxUses, setMaxUses] = useState(1);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedVerifyId, setCopiedVerifyId] = useState<string | null>(null);
+  const [verifications, setVerifications] = useState<EmailVerification[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(() => {
@@ -52,6 +63,19 @@ export function InvitesPage() {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  // 管理员专属：邮箱注册的验证链接转交数据源（方案 B：管理员线下转发给注册用户）
+  useEffect(() => {
+    void fetchMe().then((me) => {
+      if (me?.role !== "admin") return;
+      void apiFetch("/api/admin/email-verifications")
+        .then(async (r) =>
+          r.ok ? ((await r.json()) as { verifications: EmailVerification[] }) : null,
+        )
+        .then((data) => setVerifications(data?.verifications ?? []))
+        .catch(() => setVerifications([]));
+    });
+  }, []);
 
   const create = () => {
     setBusy(true);
@@ -95,6 +119,17 @@ export function InvitesPage() {
       .then(() => {
         setCopiedId(invite.id);
         window.setTimeout(() => setCopiedId(null), 1500);
+      })
+      .catch(() => undefined);
+  };
+
+  const copyVerificationLink = (v: EmailVerification) => {
+    if (!v.verifyPath) return;
+    void navigator.clipboard
+      ?.writeText(`${window.location.origin}${v.verifyPath}`)
+      .then(() => {
+        setCopiedVerifyId(v.userId);
+        window.setTimeout(() => setCopiedVerifyId(null), 1500);
       })
       .catch(() => undefined);
   };
@@ -182,6 +217,51 @@ export function InvitesPage() {
           </div>
         )}
       </section>
+
+      {verifications ? (
+        <section className="space-y-3 rounded-lg border bg-background p-5">
+          <h2 className="font-medium">邮箱验证</h2>
+          <p className="text-xs text-muted-foreground">
+            邮箱注册账号需凭验证链接完成验证；把链接发给对应用户，对方打开即完成验证并自动登录
+          </p>
+          {verifications.length === 0 ? (
+            <p className="text-sm text-muted-foreground">暂无邮箱验证记录</p>
+          ) : (
+            <div className="space-y-2">
+              {verifications.map((v) => {
+                const status = v.verified
+                  ? { label: "已验证", cls: "text-success" }
+                  : v.expired
+                    ? { label: "已过期", cls: "text-muted-foreground" }
+                    : { label: "待验证", cls: "text-amber-600" };
+                return (
+                  <div
+                    key={v.userId}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm">{v.email}</div>
+                      {v.expiresAt ? (
+                        <div className="text-xs text-muted-foreground">
+                          验证有效期至 {new Date(v.expiresAt).toLocaleString()}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className={`text-xs font-medium ${status.cls}`}>{status.label}</span>
+                      {status.label === "待验证" && v.verifyPath ? (
+                        <Button variant="outline" size="sm" onClick={() => copyVerificationLink(v)}>
+                          {copiedVerifyId === v.userId ? "已复制" : "复制验证链接"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }
