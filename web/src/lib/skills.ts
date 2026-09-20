@@ -221,6 +221,71 @@ export async function updatePack(id: string): Promise<void> {
   });
 }
 
+// ---- 用户技能仓库（自建技能 git 镜像同步）----
+
+export interface SkillRepoConfigDTO {
+  repoUrl: string;
+  credentialCode: string;
+  branch: string;
+  enabled: boolean;
+  lastSyncAt?: string;
+  lastSyncStatus?: "ok" | "failed" | "skipped";
+  lastSyncError?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SkillRepoProbeResult {
+  ok: boolean;
+  message: string;
+}
+
+export async function fetchSkillRepo(): Promise<SkillRepoConfigDTO | null> {
+  const res = await apiFetchRetry("/api/skills/repo");
+  if (!res.ok) throw new Error(`load skill repo ${res.status}`);
+  const data = (await res.json()) as { repo: SkillRepoConfigDTO | null };
+  return data.repo;
+}
+
+/** 保存配置；repoUrl 传空串 = 解绑 */
+export async function saveSkillRepo(input: {
+  repoUrl: string;
+  credentialCode: string;
+  branch?: string;
+}): Promise<SkillRepoConfigDTO | null> {
+  const res = await apiFetch("/api/skills/repo", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `save skill repo ${res.status}`);
+  const data = (await res.json()) as { repo: SkillRepoConfigDTO | null };
+  return data.repo;
+}
+
+export async function verifySkillRepo(input?: {
+  repoUrl: string;
+  credentialCode: string;
+}): Promise<SkillRepoProbeResult> {
+  const res = await apiFetch("/api/skills/repo/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input ?? {}),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `verify skill repo ${res.status}`);
+  return (await res.json()) as SkillRepoProbeResult;
+}
+
+export async function syncSkillRepo(): Promise<SkillRepoProbeResult> {
+  const res = await apiFetch("/api/skills/repo/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `sync skill repo ${res.status}`);
+  return (await res.json()) as SkillRepoProbeResult;
+}
+
 async function safeErr(res: Response): Promise<string | undefined> {
   try {
     const j = (await res.json()) as { error?: string };

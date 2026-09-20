@@ -170,6 +170,15 @@ import {
   handleUpdate,
   type SkillApiDeps,
 } from "./skill-api.js";
+import {
+  handleGetSkillRepo,
+  handlePutSkillRepo,
+  handleSyncSkillRepo,
+  handleVerifySkillRepo,
+  type SkillRepoApiDeps,
+} from "./skill-repo-api.js";
+import type { SkillRepoSyncService } from "./skill-repo-sync.js";
+import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import { buildWebRouteGuardSpecs } from "./web-route-guards.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -335,6 +344,9 @@ export interface WebChannelDeps {
   fileBrowser?: FileBrowser;
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
+  /** 用户技能仓库配置存储 + 同步服务（缺省=技能仓库端点 404） */
+  userSkillRepoStore?: UserSkillRepoStore;
+  skillRepoSync?: SkillRepoSyncService;
   credentialSets?: CredentialSetStore;
   /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
   connectorStore?: ConnectorStore;
@@ -3888,6 +3900,32 @@ export class WebChannel implements Channel {
       res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(r.json));
     };
+    // ---- 用户技能仓库（配置/测试连接/手动同步；不依赖 credentialSets 装配）----
+    if (basePath === "/api/skills/repo" || basePath.startsWith("/api/skills/repo/")) {
+      const repoDeps = this.skillRepoDeps();
+      if (!repoDeps) {
+        send({ status: 404, json: { error: "技能仓库同步未装配" } });
+        return true;
+      }
+      if (basePath === "/api/skills/repo" && req.method === "GET") {
+        send(await handleGetSkillRepo(uid, {}, repoDeps));
+        return true;
+      }
+      if (basePath === "/api/skills/repo" && req.method === "PUT") {
+        send(await handlePutSkillRepo(uid, JSON.parse(await this.readBody(req)), repoDeps));
+        return true;
+      }
+      if (basePath === "/api/skills/repo/verify" && req.method === "POST") {
+        send(await handleVerifySkillRepo(uid, JSON.parse(await this.readBody(req)), repoDeps));
+        return true;
+      }
+      if (basePath === "/api/skills/repo/sync" && req.method === "POST") {
+        send(await handleSyncSkillRepo(uid, {}, repoDeps));
+        return true;
+      }
+      send({ status: 404, json: { error: "路由不存在" } });
+      return true;
+    }
     // ---- 凭证模板（全局结构）+ 用户凭证值（本人隔离；值永不回显）----
     const csets = this.deps.credentialSets;
     if (!csets) return false;
@@ -4056,7 +4094,14 @@ export class WebChannel implements Channel {
   private skillDeps(): SkillApiDeps | null {
     const { skillPackStore, installer } = this.deps;
     if (!skillPackStore || !installer) return null;
-    return { packStore: skillPackStore, installer };
+    return { packStore: skillPackStore, installer, skillRepoSync: this.deps.skillRepoSync };
+  }
+
+  /** 组装技能仓库 API 依赖；缺省返回 null（路由回 404）。 */
+  private skillRepoDeps(): SkillRepoApiDeps | null {
+    const { userSkillRepoStore, skillRepoSync, credentialSets } = this.deps;
+    if (!userSkillRepoStore || !skillRepoSync) return null;
+    return { repoStore: userSkillRepoStore, sync: skillRepoSync, credentialSets };
   }
 
   /** GET /api/files/tree?scope=user|runtime|extension[&conversationId=] */

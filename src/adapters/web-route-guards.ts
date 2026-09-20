@@ -367,5 +367,11 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/skills/packs/disable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/enable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/disable", access: { kind: "authenticated" } },
+
+    // 用户技能仓库（自建技能 git 镜像；handler 内按 viewer 解析）
+    { method: "GET", pattern: "/api/skills/repo", access: { kind: "authenticated" } },
+    { method: "PUT", pattern: "/api/skills/repo", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/skills/repo/verify", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/skills/repo/sync", access: { kind: "authenticated" } },
   ];
 }

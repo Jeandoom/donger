@@ -5,6 +5,8 @@ import type { SkillPackStore } from "../ports/skill-pack-store.js";
 export interface SkillApiDeps {
   packStore: SkillPackStore;
   installer: SkillInstaller;
+  /** 用户技能仓库同步（自建 pack 变更后镜像到用户 git 仓库）；缺省=不同步 */
+  skillRepoSync?: { onChanged(userId: string): void };
 }
 
 export interface ApiResult {
@@ -53,6 +55,7 @@ export async function handleInstall(
       pack = await d.installer.installFromGit(userId, src as unknown as InstallGitReq);
     } else if (src.kind === "paste") {
       pack = await d.installer.installFromPaste(userId, src as unknown as InstallPasteReq);
+      d.skillRepoSync?.onChanged(userId);
     } else {
       return { status: 400, json: { error: `不支持的来源: ${src.kind}` } };
     }
@@ -70,6 +73,7 @@ export async function handleInstallUpload(
   if (!body.content) return { status: 400, json: { error: "缺少文件内容" } };
   try {
     const pack = await d.installer.installFromUpload(userId, body);
+    d.skillRepoSync?.onChanged(userId);
     return { status: 200, json: { pack: await packView(d, userId, pack) } };
   } catch (e) {
     return { status: 400, json: { error: (e as Error).message } };
@@ -95,6 +99,7 @@ export async function handleSetPackEnabled(
   d: SkillApiDeps,
 ): Promise<ApiResult> {
   await d.packStore.setPackEnabled(userId, body.id, body.enabled);
+  d.skillRepoSync?.onChanged(userId);
   return { status: 200, json: { ok: true } };
 }
 
@@ -104,6 +109,7 @@ export async function handleSetSkillEnabled(
   d: SkillApiDeps,
 ): Promise<ApiResult> {
   await d.packStore.setSkillEnabled(userId, body.id, body.enabled);
+  d.skillRepoSync?.onChanged(userId);
   return { status: 200, json: { ok: true } };
 }
 
@@ -114,6 +120,7 @@ export async function handleUninstall(
 ): Promise<ApiResult> {
   try {
     await d.installer.uninstall(userId, body.id);
+    d.skillRepoSync?.onChanged(userId);
     return { status: 200, json: { ok: true } };
   } catch (e) {
     return { status: 400, json: { error: (e as Error).message } };

@@ -37,6 +37,8 @@ export interface PlatformToolsDeps {
   /** finish_builder 用：会话上下文缺省时该工具不可用 */
   conversationStore?: ConversationStore;
   conversationId?: string;
+  /** 用户技能仓库同步（write_skill/update_skill 落盘后镜像到用户 git 仓库）；缺省=不同步 */
+  skillRepoSync?: { onChanged(userId: string): void };
   /** finish_builder 成功解绑后回调（orchestrator 借此安排原任务自动重派） */
   onBuilderFinish?: () => void;
 }
@@ -259,6 +261,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           name: a.name,
           description: a.description,
         });
+        deps.skillRepoSync?.onChanged(deps.user.id);
         return ok(`已写入技能（pack slug=${pack.slug}）`);
       },
     },
@@ -293,6 +296,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
             a.name,
             a.content,
           );
+          deps.skillRepoSync?.onChanged(deps.user.id);
           return ok(`已更新技能 ${a.name}（pack slug=${updated.slug}）`);
         } catch (e) {
           return fail((e as Error).message);
