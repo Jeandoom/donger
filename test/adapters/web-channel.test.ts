@@ -1579,12 +1579,15 @@ describe("WebChannel /api/agents 分享", () => {
     });
     const accJson = (await acc.json()) as { conversation: { id: string; agentId: string } };
     expect(accJson.conversation.agentId).toBe(a.id);
+    // 分享收紧：详情/版本历史属配置面，被分享者 403（对话走 /conversation 不受影响）
     const detail = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    const detailJson = (await detail.json()) as { editable?: boolean; skills?: unknown };
-    expect(detailJson.editable).toBe(false);
-    expect(detailJson.skills).toBeUndefined();
+    expect(detail.status).toBe(403);
+    const versions = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/versions`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(versions.status).toBe(403);
     // 授权记录在 visitor 名下（隔离：grant 绑定 visitor userId）
     expect(await agentShareStore.isGranted(a.id, userId)).toBe(true);
 
@@ -1604,6 +1607,125 @@ describe("WebChannel /api/agents 分享", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(blocked.status).toBe(403);
+  });
+
+  it("duplicate：被分享者可复制，凭证类不随复制且 warnings 提示；他人无同名沿用原名", async () => {
+    const { port, token, userId, agentShareStore, agentStore, userStore } =
+      await startWebWithAgents();
+    const owner = await userStore.getOrCreateByIdentity("internal", "dup-owner", "属主甲");
+    const a = await agentStore.create({
+      ownerId: owner.id,
+      name: "ai-audit",
+      systemPrompt: "sp",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [{ name: "m1", type: "stdio", command: "x", env: { TOKEN: "secret" } }],
+      credentials: ["github_pat"],
+      connectorIds: ["c1"],
+      conversationScope: { enabled: true, agentIds: [owner.id], limit: 5 },
+      gitRepositories: [
+        {
+          id: "r1",
+          name: "r",
+          provider: "github",
+          url: "https://github.com/o/r.git",
+          required: true,
+          shallow: true,
+          syncMode: "fastForward",
+          credentialCode: "git_pat",
+        },
+      ],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(a.id);
+    await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const dup = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(dup.status).toBe(200);
+    const json = (await dup.json()) as {
+      id: string;
+      ownerId: string;
+      name: string;
+      mcpServers: Array<{ env?: unknown; headers?: unknown }>;
+      credentials: string[];
+      connectorIds: string[];
+      gitRepositories: Array<{ credentialCode?: string }>;
+      conversationScope?: { agentIds: string[] };
+      warnings: string[];
+    };
+    // 他人无同名 → 沿用原名；副本落 visitor 名下
+    expect(json.name).toBe("ai-audit");
+    expect(json.ownerId).toBe(userId);
+    // 凭证类一律不随复制（拍板：只复制非凭证配置）
+    expect(json.mcpServers[0]?.env).toBeUndefined();
+    expect(json.mcpServers[0]?.headers).toBeUndefined();
+    expect(json.credentials).toEqual([]);
+    expect(json.connectorIds).toEqual([]);
+    expect(json.gitRepositories[0]?.credentialCode).toBeUndefined();
+    // 会话范围引用原主智能体，复制他人时清空
+    expect(json.conversationScope?.agentIds).toEqual([]);
+    expect(json.warnings.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("duplicate：无关用户 403；命名——自己加-副本、二次撞名加序号、他人同名加分享人名", async () => {
+    const { port, token, userId, agentStore, agentShareStore, userStore } =
+      await startWebWithAgents();
+    const owner = await userStore.getOrCreateByIdentity("internal", "dup-owner2", "属主乙");
+    // visitor 自己的智能体：复制 → -副本；再复制撞名 → -副本-2
+    const mine = await agentStore.create({
+      ownerId: userId,
+      name: "tool",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const d1 = await fetch(`http://127.0.0.1:${port}/api/agents/${mine.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(d1.status).toBe(200);
+    expect(((await d1.json()) as { name: string }).name).toBe("tool-副本");
+    const d2 = await fetch(`http://127.0.0.1:${port}/api/agents/${mine.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(((await d2.json()) as { name: string }).name).toBe("tool-副本-2");
+
+    // 他人智能体：visitor 已有同名 → 原名-分享人名
+    const others = await agentStore.create({
+      ownerId: owner.id,
+      name: "tool",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+    });
+    const share = await agentShareStore.enableShare(others.id);
+    await fetch(`http://127.0.0.1:${port}/api/agents/${others.id}/accept-share`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ token: share.token }),
+    });
+    const d3 = await fetch(`http://127.0.0.1:${port}/api/agents/${others.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(((await d3.json()) as { name: string }).name).toBe("tool-属主乙");
+
+    // 分享关闭后 isGranted=false → 复制 403（canUseAgent 不再放行）
+    await agentShareStore.disableShare(others.id);
+    const d4 = await fetch(`http://127.0.0.1:${port}/api/agents/${others.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(d4.status).toBe(403);
   });
 });
 

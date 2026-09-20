@@ -158,6 +158,13 @@ export async function deleteAgent(id: string): Promise<void> {
   throw new Error(await readErrorMessage(r, `delete ${r.status}`));
 }
 
+/** 复制智能体（自有∪被分享均可）：只复制非凭证配置，warnings 提示需自行补充的项 */
+export async function duplicateAgent(id: string): Promise<AgentSaveResult> {
+  const r = await apiFetch(`/api/agents/${id}/duplicate`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r, `duplicate ${r.status}`));
+  return (await r.json()) as AgentSaveResult;
+}
+
 export async function getOrCreateAgentConversation(agentId: string): Promise<{ id: string }> {
   const r = await apiFetch(`/api/agents/${agentId}/conversation`);
   if (!r.ok) throw new Error(`conv ${r.status}`);

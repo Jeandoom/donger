@@ -188,3 +188,24 @@ export function normalizeAgentCredentialRefs(agent: Agent): Agent {
   if (codes.size === agent.credentials.length) return agent;
   return { ...agent, credentials: [...codes] };
 }
+
+/**
+ * 复制智能体的新名称（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §3.3）：
+ * 自己的 → 原名-副本；他人的 → 副本将落自分主名下，原名已被自己占用时改用 原名-分享人名，
+ * 否则沿用原名；仍撞名时追加序号 -2、-3 …（名称无唯一约束，序号只为人眼可分辨）。
+ */
+export function resolveDuplicateName(
+  originName: string,
+  isMine: boolean,
+  sourceOwnerName: string,
+  existingNames: ReadonlySet<string>,
+): string {
+  let base: string;
+  if (isMine) base = `${originName}-副本`;
+  else if (existingNames.has(originName)) base = `${originName}-${sourceOwnerName}`;
+  else return originName;
+  if (!existingNames.has(base)) return base;
+  let n = 2;
+  while (existingNames.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+}

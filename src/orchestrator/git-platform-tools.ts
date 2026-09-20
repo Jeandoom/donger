@@ -38,6 +38,11 @@ export interface GitPlatformToolsDeps {
   user: User;
   agent: Agent;
   credentialSets?: CredentialSetStore;
+  /**
+   * 凭证解析身份（凭证桥现取 credentialFor 用）：共享智能体=分享者（属主）id，
+   * 缺省回落 user.id。specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §2.5。
+   */
+  credentialUserId?: string;
   /** 会话仓库工作区根（<runtimeDir>/repos）；CLI 工具通道（git-workspace-tools）依赖 */
   reposRoot?: string;
   /** git 子进程执行器（CLI 工具通道）；缺省 util/git-process.runGit，测试可注入 */
@@ -62,13 +67,16 @@ export function resolveRepoTarget(agent: Agent, repoName: string): RepoTarget | 
   return { repo, host: parsed.host, projectPath: parsed.repositoryPath };
 }
 
-/** 凭证桥现取：credentialCode → 当前用户 PAT（不落 prompt/审计/env）；username 缺省按平台 */
+/** 凭证桥现取：credentialCode → 凭证解析身份（共享智能体=分享者）的 PAT（不落 prompt/审计/env）；username 缺省按平台 */
 export async function credentialFor(
   deps: GitPlatformToolsDeps,
   repo: AgentGitRepository,
 ): Promise<{ username: string; accessToken: string } | undefined> {
   if (!repo.credentialCode || !deps.credentialSets) return undefined;
-  const [filled] = await deps.credentialSets.getFilledValues(deps.user.id, [repo.credentialCode]);
+  const [filled] = await deps.credentialSets.getFilledValues(
+    deps.credentialUserId ?? deps.user.id,
+    [repo.credentialCode],
+  );
   const pat = gitPatFromValues(filled?.values);
   if (!pat) return undefined;
   return {

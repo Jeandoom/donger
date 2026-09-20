@@ -7,6 +7,7 @@ import {
   filterConversationsByScope,
   normalizeAgentCredentialRefs,
   parseAgent,
+  resolveDuplicateName,
 } from "../../src/domain/agent.js";
 import type { Conversation } from "../../src/domain/conversation.js";
 
@@ -219,5 +220,27 @@ describe("filterConversationsByScope", () => {
       "cur",
     );
     expect(out.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+  });
+});
+
+describe("resolveDuplicateName（复制命名规则 §3.3）", () => {
+  it("自己的智能体：无条件加 -副本 后缀", () => {
+    expect(resolveDuplicateName("ai-audit", true, "任何人", new Set())).toBe("ai-audit-副本");
+  });
+
+  it("他人的智能体：无同名沿用原名；同名加分享人名", () => {
+    expect(resolveDuplicateName("ai-audit", false, "用户1", new Set())).toBe("ai-audit");
+    expect(resolveDuplicateName("ai-audit", false, "用户1", new Set(["ai-audit"]))).toBe(
+      "ai-audit-用户1",
+    );
+  });
+
+  it("二次撞名：追加序号 -2、-3", () => {
+    expect(resolveDuplicateName("tool", true, "x", new Set(["tool", "tool-副本"]))).toBe(
+      "tool-副本-2",
+    );
+    expect(resolveDuplicateName("tool", false, "用户1", new Set(["tool", "tool-用户1"]))).toBe(
+      "tool-用户1-2",
+    );
   });
 });

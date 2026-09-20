@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
   type AgentMeta,
   createAgent,
+  duplicateAgent,
   fetchAgent,
   fetchAgentMeta,
   updateAgent,
@@ -33,6 +34,7 @@ export function AgentEditorPage() {
   const { id } = useParams();
   const isNew = !id || id === "new";
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [meta, setMeta] = useState<AgentMeta>({
     skills: [],
@@ -44,7 +46,11 @@ export function AgentEditorPage() {
   const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const [warnings, setWarnings] = useState<string[]>();
+  // 复制/保存产生的装备告警：路由 state（列表页复制跳入）或本页 save 设置
+  const [warnings, setWarnings] = useState<string[] | undefined>(
+    (location.state as { warnings?: string[] } | null)?.warnings,
+  );
+  const [duplicating, setDuplicating] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
   const [activeSection, setActiveSection] = useState<string>(AGENT_EDITOR_SECTIONS[0].id);
   const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
@@ -196,6 +202,21 @@ export function AgentEditorPage() {
     }
   }
 
+  // 复制当前智能体：成功后跳副本详情页（warnings 经路由 state 展示）
+  const handleDuplicate = async (): Promise<void> => {
+    if (!id || isNew) return;
+    setDuplicating(true);
+    setError(undefined);
+    try {
+      const saved = await duplicateAgent(id);
+      navigate(`/agents/${saved.id}`, { state: { warnings: saved.warnings } });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
   if (readOnly && !isNew && id) {
     return (
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -261,6 +282,16 @@ export function AgentEditorPage() {
           >
             对话
           </Link>
+        ) : null}
+        {!isNew && id ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void handleDuplicate()}
+            disabled={duplicating}
+          >
+            {duplicating ? "复制中…" : "复制"}
+          </Button>
         ) : null}
         <Button variant="secondary" size="sm" onClick={() => navigate("/agents")}>
           取消

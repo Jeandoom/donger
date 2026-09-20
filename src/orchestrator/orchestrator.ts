@@ -310,12 +310,15 @@ export class Orchestrator {
     const sharedAgentSkillOwner =
       agent.ownerId !== user.id ? await this.deps.userStore.get(agent.ownerId) : undefined;
     if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
-      const gitAccess = await this.deps.gitAccessGate.check(user, agent);
+      // 共享智能体的仓库凭证随分享者解析（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §2.5）
+      const gitAccess = await this.deps.gitAccessGate.check(sharedAgentSkillOwner ?? user, agent);
       if (!gitAccess.ready) {
         return {
           agent,
           sharedAgentSkillOwner,
-          gitBlocked: "请先完成智能体所需 Git 仓库授权后再对话。",
+          gitBlocked: sharedAgentSkillOwner
+            ? "分享者尚未完成该智能体所需 Git 仓库授权，请联系分享者配置后再对话。"
+            : "请先完成智能体所需 Git 仓库授权后再对话。",
         };
       }
       return { agent, sharedAgentSkillOwner, gitMaterializeItems: gitAccess.materializeItems };
@@ -401,13 +404,14 @@ export class Orchestrator {
         };
       }
       // agent 绑定了 git 仓库时注入 git 工具（donger-git）：CLI 工作区工具（reposRoot=
-      // 会话 repos 目录，与后台物化共享）+ 平台 API 工具；凭证按访问者现取
+      // 会话 repos 目录，与后台物化共享）+ 平台 API 工具；共享智能体凭证桥按分享者现取（§2.5）
       if (p.agent && p.agent.gitRepositories.length > 0) {
         base = {
           ...base,
           gitPlatformTools: createGitPlatformToolsServer({
             user: p.user,
             agent: p.agent,
+            credentialUserId: p.sharedAgentSkillOwner?.id,
             credentialSets: this.deps.credentialSets,
             reposRoot: join(context.runtimeDir, "repos"),
           }),
@@ -1234,13 +1238,16 @@ export class Orchestrator {
         }
       }
 
-      // 凭证缺失预检：agent 勾选 + 连接器 headers 引用，当前用户未配置 → 三选问询
-      // （继续执行/暂停/重试）。code 按执行者用户空间解析：owner 勾选只声明需求，访问者用自己的同名凭证。
+      // 凭证缺失预检：agent 勾选 + 连接器 headers 引用。共享智能体按分享者（属主）
+      // 用户空间解析（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §2.5）；
+      // 自有智能体按当前用户解析，未配置 → 三选问询（继续执行/暂停/重试）。
+      const credentialOwnerId = sharedAgentSkillOwner?.id ?? user.id;
       const connectorCodes = agent?.connectorIds?.length
-        ? await this.deps.runtimeMgr.connectorCredentialCodes(user.id, agent.connectorIds)
+        ? await this.deps.runtimeMgr.connectorCredentialCodes(credentialOwnerId, agent.connectorIds)
         : [];
       const credentialCodes = [...new Set([...(agent?.credentials ?? []), ...connectorCodes])];
-      if (credentialCodes.length > 0) {
+      // 共享场景跳过三选问询：被分享者无法替属主补配凭证，缺失由 prepare 的 _MISSING 兜底
+      if (credentialCodes.length > 0 && !sharedAgentSkillOwner) {
         const currentTask: Task = task;
         const proceed = await promptMissingCredentials({
           task: currentTask,

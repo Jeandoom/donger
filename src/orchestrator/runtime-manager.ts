@@ -110,8 +110,9 @@ export class RuntimeManager {
       skillsByPack.set(p.id, await this.deps.skillPackStore.listSkills(user.id, p.id));
     }
     const resolved = resolveActiveSkills(packs, skillsByPack, (p) => this.resolvePackPath(user, p));
-    // agent 勾选凭证：按当前用户解析（共享 agent 时即访问者自己的值）；未配置的由
-    // Orchestrator 预检问询，此处注入 <CODE>_MISSING=1 兜底，agent 可自检。
+    // agent 勾选凭证：共享智能体按属主（分享者）用户空间解析——被分享者直接使用分享者的
+    // 凭证配置（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §2.5）；
+    // 缺失的注入 <CODE>_MISSING=1 兜底，agent 可自检。
     // git 类凭证（kind="git"）不注入 env——token 仅经凭证桥在 donger-git 工具/仓库
     // 物化内现取，防止 agent 从环境拿到 token 绕过工具直连平台（防线 1）。
     let credentialsEnv: Record<string, string> = {};
@@ -121,7 +122,10 @@ export class RuntimeManager {
         picked.map((code) => this.deps.credentialSets.getTemplate(code)),
       );
       const injectable = picked.filter((_, i) => templates[i]?.kind !== "git");
-      const filled = await this.deps.credentialSets.getFilledValues(user.id, injectable);
+      const filled = await this.deps.credentialSets.getFilledValues(
+        opts.sharedAgentSkillOwner?.id ?? user.id,
+        injectable,
+      );
       credentialsEnv = resolveInjectionEnv(
         filled.map((f) => ({ code: f.code, values: f.values })),
         injectable,
@@ -181,9 +185,13 @@ export class RuntimeManager {
       if (a.skills.length > 0) skills = a.skills;
       allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
       mcpServers = a.mcpServers;
-      // 连接器注入：勾选的 HTTP MCP 按访问者解析后并入（重名连接器优先，防工具命名空间幻觉）
+      // 连接器注入：共享智能体按属主解析（可见性+headers 凭证随分享者，§2.5）；
+      // 重名连接器优先，防工具命名空间幻觉
       if ((a.connectorIds?.length ?? 0) > 0 && this.deps.connectorStore) {
-        const connectors = await this.resolveAgentConnectors(a.connectorIds ?? [], user.id);
+        const connectors = await this.resolveAgentConnectors(
+          a.connectorIds ?? [],
+          opts.sharedAgentSkillOwner?.id ?? user.id,
+        );
         mcpServers = mergeConnectorMcpServers(mcpServers, connectors.servers);
       }
       // shell git 守卫（防线 2）：全域缺省禁用，仅 agent 显式开启才放行

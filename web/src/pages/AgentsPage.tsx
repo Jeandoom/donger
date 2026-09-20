@@ -7,13 +7,16 @@ import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
-import { type AgentListDTO, deleteAgent, fetchAgents, scenarioLabel } from "../lib/agents";
-import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
-  BUILTIN_AGENT_ENTRIES,
-  BUILTIN_SELF_IMPROVER_AGENT_ID,
-} from "../lib/builtinAgents";
+  type AgentListDTO,
+  deleteAgent,
+  duplicateAgent,
+  fetchAgents,
+  scenarioLabel,
+} from "../lib/agents";
+import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { fetchMe } from "../lib/auth";
+import { BUILTIN_AGENT_ENTRIES, BUILTIN_SELF_IMPROVER_AGENT_ID } from "../lib/builtinAgents";
 
 export function AgentsPage() {
   const navigate = useNavigate();
@@ -25,6 +28,7 @@ export function AgentsPage() {
   const [pendingDelete, setPendingDelete] = useState<AgentListDTO | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([fetchAgents(), fetchMe()])
@@ -59,6 +63,19 @@ export function AgentsPage() {
   );
   const mine = agents.filter((a) => a._mine && match(a));
   const shared = agents.filter((a) => !a._mine && match(a));
+
+  // 复制（自有∪被分享均可）：成功后跳副本详情页，warnings 经路由 state 传给编辑页警示区
+  const handleDuplicate = async (a: AgentListDTO): Promise<void> => {
+    setDuplicatingId(a.id);
+    try {
+      const saved = await duplicateAgent(a.id);
+      navigate(`/agents/${saved.id}`, { state: { warnings: saved.warnings } });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
 
   return (
     <div className="mx-auto flex max-w-5xl flex-1 flex-col gap-5 overflow-y-auto p-7">
@@ -98,12 +115,18 @@ export function AgentsPage() {
       <Section
         title="我创建的"
         items={mine}
+        openHref={(a) => `/agents/${a.id}`}
+        onDuplicate={(a) => void handleDuplicate(a)}
+        duplicatingId={duplicatingId}
         onDelete={(a) => setPendingDelete(a)}
         empty={kw ? "没有匹配的智能体" : "还没有智能体，点击右上角新建"}
       />
       <Section
         title="分享给我的"
         items={shared}
+        openHref={(a) => `/?agent=${a.id}`}
+        onDuplicate={(a) => void handleDuplicate(a)}
+        duplicatingId={duplicatingId}
         empty={kw ? "没有匹配的智能体" : "暂无他人分享的智能体；通过分享链接授权后会出现在这里"}
       />
 
@@ -132,6 +155,9 @@ function Section({
   empty,
   builtin = false,
   onChat,
+  openHref,
+  onDuplicate,
+  duplicatingId,
 }: {
   title: string;
   items: AgentListDTO[];
@@ -141,6 +167,10 @@ function Section({
   builtin?: boolean;
   /** builtin 卡的「对话」回调（跳转 /?agent=<id> 深链） */
   onChat?: (a: AgentListDTO) => void;
+  /** 卡片点击去向：我创建的进详情页；分享给我的直达对话（分享收紧：被分享者不可看详情） */
+  openHref?: (a: AgentListDTO) => string;
+  onDuplicate?: (a: AgentListDTO) => void;
+  duplicatingId?: string | null;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -163,11 +193,7 @@ function Section({
                   {a.description ?? "—"}
                 </p>
                 <div className="mt-auto flex items-center justify-end">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => onChat?.(a)}
-                  >
+                  <Button variant="secondary" size="sm" onClick={() => onChat?.(a)}>
                     对话
                   </Button>
                 </div>
@@ -175,7 +201,10 @@ function Section({
             ) : (
               <Card key={a.id} className="flex flex-col gap-2.5 p-4">
                 <div className="flex items-start justify-between gap-2">
-                  <Link to={`/agents/${a.id}`} className="flex min-w-0 items-center gap-2">
+                  <Link
+                    to={openHref ? openHref(a) : `/agents/${a.id}`}
+                    className="flex min-w-0 items-center gap-2"
+                  >
                     <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft text-xs font-bold text-primary">
                       {a.name.charAt(0).toUpperCase()}
                     </span>
@@ -186,7 +215,7 @@ function Section({
                   {a.scenario ? <Badge tone="success">{a.scenario}</Badge> : <Badge>通用</Badge>}
                 </div>
                 <Link
-                  to={`/agents/${a.id}`}
+                  to={openHref ? openHref(a) : `/agents/${a.id}`}
                   className="line-clamp-2 min-h-8 text-xs text-muted-foreground hover:bg-muted/60"
                 >
                   {a.description ?? "—"}
@@ -199,6 +228,17 @@ function Section({
                         对话
                       </Button>
                     </Link>
+                    {onDuplicate ? (
+                      <button
+                        type="button"
+                        onClick={() => onDuplicate(a)}
+                        disabled={duplicatingId === a.id}
+                        title="复制智能体（凭证需自行补充）"
+                        className="rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        {duplicatingId === a.id ? "复制中…" : "复制"}
+                      </button>
+                    ) : null}
                     {onDelete ? (
                       <button
                         type="button"
@@ -221,4 +261,3 @@ function Section({
     </div>
   );
 }
-

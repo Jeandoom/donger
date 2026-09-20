@@ -20,6 +20,7 @@ import {
   filterConversationsByScope,
   parseAgent,
   parseAgentInput,
+  resolveDuplicateName,
 } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
 import {
@@ -3061,8 +3062,8 @@ export class WebChannel implements Channel {
       if (!a) return this.json(res, { error: "not found" }, 404);
       const meUser = await this.deps.userStore?.get(me);
       const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
-      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
-      if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      // 分享收紧：版本历史属于配置面，被分享者不可见（仅自有/admin）
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
       return this.json(res, { versions: (await this.agentStore?.listVersions(id)) ?? [] });
     }
     // POST /api/agents/:id/versions/:version/rollback —— 回滚（生成新版本，不改写历史）
@@ -3097,8 +3098,8 @@ export class WebChannel implements Channel {
       if (!a) return this.json(res, { error: "not found" }, 404);
       const meUser = await this.deps.userStore?.get(me);
       const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
-      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(id, me) : false;
-      if (!canUseAgent(a, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      // 分享收紧：详情/编辑属于配置面，被分享者 403（对话链路走 /conversation 与 mention-candidates，不走此处）
+      if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
       if (req.method === "GET") {
         const editable = canManageAgent(a, actor);
         return this.json(res, { ...this.agentToDTO(a, editable), editable });
@@ -3223,6 +3224,50 @@ export class WebChannel implements Channel {
       if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
       await this.agentShareStore?.removeGrant(sid, grantUserId);
       return this.json(res, { ok: true });
+    }
+    // POST /api/agents/:id/duplicate —— 复制智能体（自有∪被分享∪admin 均可）：
+    // 只复制非凭证配置，凭证类一律不随复制，由复制者自行补充（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §3.4）
+    const duplicateMatch = url.match(/^\/api\/agents\/([\w-]+)\/duplicate$/);
+    if (duplicateMatch && req.method === "POST") {
+      const sid = duplicateMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const src = await this.agentStore?.get(sid);
+      if (!src) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(sid, me) : false;
+      if (!canUseAgent(src, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      // admin 复制他人也按「他人」命名：以 ownerId 判定而非 canManageAgent
+      const isMine = src.ownerId === me;
+      const ownerUser = isMine ? undefined : await this.deps.userStore?.get(src.ownerId);
+      const existingNames = new Set(
+        ((await this.agentStore?.listByOwner(me)) ?? []).map((a) => a.name),
+      );
+      const warnings: string[] = [];
+      if (src.mcpServers.some((m) => m.env || m.headers)) {
+        warnings.push("MCP 凭证未随复制，请自行补充");
+      }
+      if (src.gitRepositories.some((r) => r.credentialCode)) {
+        warnings.push("Git 仓库凭证未随复制，请重新选择凭证");
+      }
+      if (src.connectorIds.length > 0) warnings.push("连接器未随复制，请重新勾选");
+      if (src.credentials.length > 0) warnings.push("凭证勾选未随复制，请自行补充");
+      const duplicated = await this.agentStore?.create({
+        ...src,
+        ownerId: me,
+        name: resolveDuplicateName(src.name, isMine, ownerUser?.name ?? "分享者", existingNames),
+        mcpServers: src.mcpServers.map(({ env: _env, headers: _headers, ...rest }) => rest),
+        credentials: [],
+        connectorIds: [],
+        gitRepositories: src.gitRepositories.map(({ credentialCode: _cc, ...rest }) => rest),
+        // 会话范围引用原主的其他智能体，复制者无权访问，清空（自有副本的引用依然有效，保留）
+        conversationScope:
+          src.conversationScope && !isMine
+            ? { ...src.conversationScope, agentIds: [] }
+            : src.conversationScope,
+      });
+      if (!duplicated) return this.json(res, { error: "agent store unavailable" }, 500);
+      return this.json(res, { ...this.agentToDTO(duplicated, true), warnings });
     }
     // 智能体回调链接管理（鉴权 + canManageAgent；完整 URL 仅 POST 生成时返回一次）
     const cbAdminMatch = url.match(/^\/api\/agents\/([\w-]+)\/callback$/);
