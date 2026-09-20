@@ -74,6 +74,37 @@ export function mergeCredentialRows(
 
 const todoRank = (r: CredentialRow) => (r.missingKeys.length > 0 ? 0 : 1);
 
+/** 两区视图：我的凭证（含 orphan 残留）与可用模板（仅有全局模板、本人未填写） */
+export interface CredentialSections {
+  mine: CredentialRow[];
+  templates: CredentialRow[];
+}
+
+/** 按所有权拆分列表：templateOnly 归可用模板区，其余（含 orphan）归我的凭证区 */
+export function splitCredentialSections(rows: CredentialRow[]): CredentialSections {
+  return {
+    mine: rows.filter((r) => !r.templateOnly),
+    templates: rows.filter((r) => r.templateOnly),
+  };
+}
+
+const MINUTE = 60_000;
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+
+/** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / N 周前，更早回退日期 */
+export function formatRelativeTime(iso: string, now = new Date()): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "";
+  const diff = now.getTime() - t;
+  if (diff < MINUTE) return "刚刚";
+  if (diff < HOUR) return `${Math.floor(diff / MINUTE)} 分钟前`;
+  if (diff < DAY) return `${Math.floor(diff / HOUR)} 小时前`;
+  if (diff < 7 * DAY) return `${Math.floor(diff / DAY)} 天前`;
+  if (diff < 30 * DAY) return `${Math.floor(diff / (7 * DAY))} 周前`;
+  return iso.slice(0, 10);
+}
+
 export type CredentialFilter = "all" | "todo" | "ready";
 
 /** 前端过滤：状态分段 + 关键词（code/名称/说明，大小写不敏感） */

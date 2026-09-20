@@ -1,4 +1,14 @@
-import { Check, KeyRound, Pencil, Plus, Search } from "lucide-react";
+import {
+  Check,
+  GitBranch,
+  KeyRound,
+  LayoutTemplate,
+  Pencil,
+  Plus,
+  Search,
+  Settings2,
+  Trash2,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../../components/ui/badge";
@@ -6,23 +16,28 @@ import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
 import { Input } from "../../components/ui/input";
+import { Menu, type MenuEntry } from "../../components/ui/menu";
 import { PageHeader } from "../../components/ui/page-header";
 import { Segmented } from "../../components/ui/segmented";
 import { getUserId } from "../../lib/auth";
 import {
   type CredentialTemplateDTO,
   type CredentialValueViewDTO,
+  deleteCredentialTemplate,
   deleteCredentialValue,
   fetchCredentialTemplates,
   fetchMyCredentials,
   renameCredentialValue,
 } from "../../lib/skills";
+import { cn } from "../../lib/utils";
 import { FillValuesDialog } from "./FillValuesDialog";
 import {
   type CredentialFilter,
   type CredentialRow,
   filterCredentialRows,
+  formatRelativeTime,
   mergeCredentialRows,
+  splitCredentialSections,
 } from "./model";
 import { TemplateFormDialog } from "./TemplateFormDialog";
 
@@ -41,6 +56,9 @@ export function CredentialsPage() {
   const [pendingValueDelete, setPendingValueDelete] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [pendingTemplateDelete, setPendingTemplateDelete] = useState<string | null>(null);
+  const [tplDeleteBusy, setTplDeleteBusy] = useState(false);
+  const [tplDeleteError, setTplDeleteError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -75,8 +93,9 @@ export function CredentialsPage() {
   }, [flash]);
 
   const rows = useMemo(() => mergeCredentialRows(mine, templates), [mine, templates]);
+  const sections = useMemo(() => splitCredentialSections(rows), [rows]);
 
-  // 深链 /settings/credentials?fill=<code>：打开对应凭证的填写弹窗（聊天缺失卡跳转入口）
+  // 深链 /credentials?fill=<code>：打开对应凭证的填写弹窗（聊天缺失卡跳转入口）
   const fillParam = searchParams.get("fill");
   useEffect(() => {
     if (!fillParam || loading) return;
@@ -84,8 +103,16 @@ export function CredentialsPage() {
     setSearchParams({}, { replace: true });
   }, [fillParam, loading, rows, setSearchParams]);
 
-  const filtered = useMemo(() => filterCredentialRows(rows, filter, query), [rows, filter, query]);
-  const todoCount = rows.filter((r) => r.missingKeys.length > 0).length;
+  // 分段计数只统计「我的凭证」；待补全时可用模板区恒显（它天然是待办），已配置时隐藏
+  const todoCount = sections.mine.filter((r) => r.missingKeys.length > 0).length;
+  const filteredMine = useMemo(
+    () => filterCredentialRows(sections.mine, filter, query),
+    [sections.mine, filter, query],
+  );
+  const filteredTemplates = useMemo(
+    () => (filter === "ready" ? [] : filterCredentialRows(sections.templates, "all", query)),
+    [sections.templates, filter, query],
+  );
   const fillRow = rows.find((r) => r.code === fillCode) ?? null;
 
   const showFlash = (msg: string) => setFlash(msg);
@@ -94,7 +121,7 @@ export function CredentialsPage() {
     <div className="mx-auto h-full max-w-5xl overflow-y-auto p-7">
       <PageHeader
         title="凭证"
-        description="个人凭证，值加密存储、永不再显示；共享智能体执行时使用的是你自己的同名凭证。"
+        description="值加密存储、永不再显示；共享智能体执行时使用你自己配置的凭证。"
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus size={15} aria-hidden="true" className="mr-1" />
@@ -143,38 +170,77 @@ export function CredentialsPage() {
               value={filter}
               onChange={setFilter}
               options={[
-                { value: "all", label: `全部 ${rows.length}` },
+                { value: "all", label: `全部 ${sections.mine.length}` },
                 { value: "todo", label: `待补全 ${todoCount}` },
-                { value: "ready", label: `已配置 ${rows.length - todoCount}` },
+                { value: "ready", label: `已配置 ${sections.mine.length - todoCount}` },
               ]}
             />
           </div>
 
-          <div className="mt-3 flex flex-col gap-2.5">
-            {filtered.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">无匹配凭证。</p>
-            ) : (
-              filtered.map((row) => (
-                <CredentialRowCard
-                  key={row.code}
-                  row={row}
-                  canEditTemplate={row.createdBy === myId}
-                  onFill={() => setFillCode(row.code)}
-                  onEditTemplate={() =>
-                    setEditTemplate(templates.find((t) => t.code === row.code) ?? null)
-                  }
-                  onDeleteValue={() => {
-                    setDeleteError(null);
-                    setPendingValueDelete(row.code);
-                  }}
-                  onRenamed={() => void reload()}
-                />
-              ))
-            )}
+          <div className="mt-5 flex flex-col gap-6">
+            <section className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-2">
+                <h2 className="text-[13px] font-semibold">我的凭证</h2>
+                <Badge>{sections.mine.length}</Badge>
+                <span className="text-xs text-muted-foreground">
+                  值只属于你自己，共享智能体运行时注入
+                </span>
+              </div>
+              {filteredMine.length === 0 ? (
+                sections.mine.length === 0 && sections.templates.length > 0 ? (
+                  <p className="rounded-xl border border-dashed border-border px-4 py-5 text-center text-sm text-muted-foreground">
+                    还没有属于你的凭证——从下方可用模板开始，填写后即成为你的凭证。
+                  </p>
+                ) : (
+                  <p className="py-4 text-center text-sm text-muted-foreground">无匹配凭证。</p>
+                )
+              ) : (
+                filteredMine.map((row) => (
+                  <CredentialRowCard
+                    key={row.code}
+                    row={row}
+                    canEditTemplate={row.createdBy === myId}
+                    onFill={() => setFillCode(row.code)}
+                    onEditTemplate={() =>
+                      setEditTemplate(templates.find((t) => t.code === row.code) ?? null)
+                    }
+                    onDeleteValue={() => {
+                      setDeleteError(null);
+                      setPendingValueDelete(row.code);
+                    }}
+                    onRenamed={() => void reload()}
+                  />
+                ))
+              )}
+            </section>
+
+            {filteredTemplates.length > 0 ? (
+              <section className="flex flex-col gap-2.5">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-[13px] font-semibold">可用模板</h2>
+                  <Badge>{filteredTemplates.length}</Badge>
+                  <span className="text-xs text-muted-foreground">
+                    平台共享的凭证结构，填写后即成为你的凭证
+                  </span>
+                </div>
+                {filteredTemplates.map((row) => (
+                  <TemplateRowCard
+                    key={row.code}
+                    row={row}
+                    canEditTemplate={row.createdBy === myId}
+                    onFill={() => setFillCode(row.code)}
+                    onEditTemplate={() =>
+                      setEditTemplate(templates.find((t) => t.code === row.code) ?? null)
+                    }
+                    onDeleteTemplate={() => {
+                      setTplDeleteError(null);
+                      setPendingTemplateDelete(row.code);
+                    }}
+                  />
+                ))}
+              </section>
+            ) : null}
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            待补全的凭证排在最前。全局模板由全体成员共享，仅创建人可修改结构；值只属于你自己。
-          </p>
         </>
       ) : (
         <Card className="mt-8 flex flex-col items-center gap-3 p-10">
@@ -264,11 +330,39 @@ export function CredentialsPage() {
           setDeleteError(null);
         }}
       />
+
+      <ConfirmDialog
+        open={pendingTemplateDelete !== null}
+        title={`删除模板 ${pendingTemplateDelete ?? ""}？`}
+        description="将删除模板结构本身；已被用户凭证引用时会被拒绝，引用它的智能体将不再注入该凭证。"
+        confirmText="删除"
+        destructive
+        busy={tplDeleteBusy}
+        error={tplDeleteError}
+        onConfirm={async () => {
+          if (!pendingTemplateDelete) return;
+          setTplDeleteBusy(true);
+          try {
+            await deleteCredentialTemplate(pendingTemplateDelete);
+            setPendingTemplateDelete(null);
+            showFlash("模板已删除");
+            await reload();
+          } catch (e) {
+            setTplDeleteError(e instanceof Error ? e.message : String(e));
+          } finally {
+            setTplDeleteBusy(false);
+          }
+        }}
+        onCancel={() => {
+          setPendingTemplateDelete(null);
+          setTplDeleteError(null);
+        }}
+      />
     </div>
   );
 }
 
-/** 列表行卡片：状态点 + 名称/键芯片 + 行内动作（填写/重命名/编辑模板/删除） */
+/** 我的凭证行卡：图标锚点 + 标题/元信息两行 + 动作收敛（填写 + ⋯ 菜单） */
 function CredentialRowCard(props: {
   row: CredentialRow;
   canEditTemplate: boolean;
@@ -283,13 +377,8 @@ function CredentialRowCard(props: {
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
 
-  const state = row.orphan
-    ? "error"
-    : row.missingKeys.length === 0
-      ? "ready"
-      : row.templateOnly
-        ? "none"
-        : "partial";
+  const partial = !row.orphan && row.missingKeys.length > 0;
+  const RowIcon = row.kind === "git" ? GitBranch : KeyRound;
 
   const saveRename = async () => {
     const name = renameText.trim();
@@ -310,22 +399,42 @@ function CredentialRowCard(props: {
     }
   };
 
+  const entries: MenuEntry[] = [
+    {
+      kind: "item",
+      label: "重命名",
+      icon: <Pencil size={13} aria-hidden="true" />,
+      onSelect: () => {
+        setRenameText(row.alias ?? row.name);
+        setRenameError(null);
+        setRenaming(true);
+      },
+    },
+  ];
+  if (props.canEditTemplate) {
+    entries.push({
+      kind: "item",
+      label: "编辑模板",
+      icon: <Settings2 size={13} aria-hidden="true" />,
+      onSelect: props.onEditTemplate,
+    });
+  }
+  entries.push({ kind: "separator" });
+  entries.push({
+    kind: "item",
+    label: "删除我的值",
+    icon: <Trash2 size={13} aria-hidden="true" />,
+    danger: true,
+    onSelect: props.onDeleteValue,
+  });
+
   return (
-    <Card className="flex items-start gap-3 p-4">
-      <span
-        aria-hidden="true"
-        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
-          state === "ready"
-            ? "bg-success"
-            : state === "partial"
-              ? "bg-warning"
-              : state === "error"
-                ? "bg-destructive"
-                : "bg-muted-foreground/40"
-        }`}
-      />
-      <div className="min-w-0 flex-1">
-        {renaming ? (
+    <Card className="flex items-center gap-3 px-3.5 py-3">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-muted">
+        <RowIcon size={18} aria-hidden="true" className="text-slate-600" />
+      </span>
+      {renaming ? (
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <Input
               autoFocus
@@ -357,87 +466,131 @@ function CredentialRowCard(props: {
               </span>
             ) : null}
           </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-sm font-medium">{row.name}</span>
-            <span className="font-mono text-xs text-muted-foreground">{row.code}</span>
-            {row.alias ? <Badge tone="neutral">别名</Badge> : null}
-            {row.kind === "git" ? <Badge tone="info">git · 不注入 env</Badge> : null}
-            {row.orphan ? <Badge tone="danger">模板已删除</Badge> : null}
-            {row.templateOnly ? <Badge tone="warning">未配置</Badge> : null}
-            <button
-              type="button"
-              aria-label={`重命名 ${row.code}`}
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                setRenameText(row.alias ?? row.name);
-                setRenameError(null);
-                setRenaming(true);
-              }}
-            >
-              <Pencil size={13} aria-hidden="true" />
-            </button>
-          </div>
-        )}
-        {row.description ? (
-          <p className="mt-1 truncate text-xs text-muted-foreground">{row.description}</p>
-        ) : null}
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {row.keySpecs.map((spec) => {
-            const filled = row.filledKeys.includes(spec.key);
-            return (
-              <span
-                key={spec.key}
-                title={spec.label}
-                className={`flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[11px] ${
-                  filled ? "bg-success-soft text-success" : "bg-warning-soft text-amber-700"
-                }`}
-              >
-                {filled ? <Check size={10} aria-hidden="true" /> : null}
-                {spec.key}
-              </span>
-            );
-          })}
-          {row.orphan ? (
-            <span className="text-[11px] text-muted-foreground">
-              已填 {row.filledKeys.length} 个键（结构未知）
-            </span>
-          ) : null}
-          {row.missingKeys.length > 0 ? (
-            <span className="text-[11px] font-medium text-amber-700">
-              缺 {row.missingKeys.length} 键
-            </span>
-          ) : null}
-          {row.repoUrl ? (
-            <span className="max-w-full truncate font-mono text-[11px] text-muted-foreground">
-              {row.repoUrl}
-            </span>
-          ) : null}
         </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button variant="ghost" size="sm" onClick={props.onFill}>
-          {row.templateOnly ? "去填写" : "填写"}
+      ) : (
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium">{row.name}</span>
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.code}</span>
+            {row.kind === "git" ? <Badge tone="info">git · 专用</Badge> : null}
+            {row.orphan ? (
+              <Badge tone="danger">模板已删除</Badge>
+            ) : partial ? (
+              <Badge tone="warning">缺 {row.missingKeys.length} 键</Badge>
+            ) : (
+              <Badge tone="success">就绪</Badge>
+            )}
+          </div>
+          <div className="mt-1 flex min-w-0 items-center gap-2">
+            {row.orphan ? (
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                已填 {row.filledKeys.length} 个键（结构未知）
+              </span>
+            ) : (
+              <>
+                <span className="flex shrink-0 items-center gap-[3px]" aria-hidden="true">
+                  {row.keySpecs.map((spec) => (
+                    <span
+                      key={spec.key}
+                      title={spec.label || spec.key}
+                      className={cn(
+                        "h-[9px] w-[9px] rounded-[2.5px]",
+                        row.filledKeys.includes(spec.key) ? "bg-success" : "bg-warning",
+                      )}
+                    />
+                  ))}
+                </span>
+                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                  {row.filledKeys.length}/{row.keySpecs.length} 键
+                </span>
+              </>
+            )}
+            {row.description ? (
+              <span className="truncate text-xs text-muted-foreground" title={row.description}>
+                {row.description}
+              </span>
+            ) : null}
+            {row.repoUrl ? (
+              <span
+                className="truncate font-mono text-[11px] text-muted-foreground"
+                title={row.repoUrl}
+              >
+                {row.repoUrl}
+              </span>
+            ) : null}
+            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+              {formatRelativeTime(row.updatedAt)}
+            </span>
+          </div>
+        </div>
+      )}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button
+          variant={partial ? "ghost" : "outline"}
+          size="sm"
+          onClick={props.onFill}
+          title={partial ? `缺 ${row.missingKeys.length} 个键，点击补全` : "填写 / 查看键位"}
+        >
+          {partial ? "补全" : "填写"}
         </Button>
-        {props.canEditTemplate ? (
-          <button
-            type="button"
-            className="rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-            onClick={props.onEditTemplate}
-          >
-            编辑模板
-          </button>
-        ) : null}
-        {!row.templateOnly ? (
-          <button
-            type="button"
-            className="rounded px-2 py-1 text-xs text-muted-foreground hover:text-destructive"
-            onClick={props.onDeleteValue}
-          >
-            删除我的值
-          </button>
-        ) : null}
+        <Menu label={`更多操作：${row.code}`} entries={entries} />
       </div>
     </Card>
+  );
+}
+
+/** 可用模板行：虚线弱化卡，单行摘要 + 去填写 CTA；创建人可经 ⋯ 编辑/删除模板 */
+function TemplateRowCard(props: {
+  row: CredentialRow;
+  canEditTemplate: boolean;
+  onFill: () => void;
+  onEditTemplate: () => void;
+  onDeleteTemplate: () => void;
+}) {
+  const { row } = props;
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-white/60 px-3.5 py-2.5">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted">
+        <LayoutTemplate size={15} aria-hidden="true" className="text-slate-600" />
+      </span>
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate text-[13px] font-semibold">{row.name}</span>
+        <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.code}</span>
+        <span className="shrink-0 text-[11px] text-muted-foreground">
+          {row.keySpecs.length} 个键
+        </span>
+        {row.description ? (
+          <span className="truncate text-xs text-muted-foreground" title={row.description}>
+            {row.description}
+          </span>
+        ) : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button variant="ghost" size="sm" onClick={props.onFill}>
+          去填写
+        </Button>
+        {props.canEditTemplate ? (
+          <Menu
+            label={`模板操作：${row.code}`}
+            entries={[
+              {
+                kind: "item",
+                label: "编辑模板",
+                icon: <Settings2 size={13} aria-hidden="true" />,
+                onSelect: props.onEditTemplate,
+              },
+              { kind: "separator" },
+              {
+                kind: "item",
+                label: "删除模板",
+                icon: <Trash2 size={13} aria-hidden="true" />,
+                danger: true,
+                onSelect: props.onDeleteTemplate,
+              },
+            ]}
+          />
+        ) : null}
+      </div>
+    </div>
   );
 }
