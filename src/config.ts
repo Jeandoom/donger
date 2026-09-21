@@ -35,31 +35,33 @@ const EnvSchema = z.object({
   ADMIN_EXTERNAL_IDS: z.string().optional().default(""),
   // 已废弃：保留以向后兼容，值会被合并进 ADMIN_EXTERNAL_IDS。
   ADMIN_STAFF_IDS: z.string().optional(),
+  // ==== 三方授权 env（钉钉/GitHub/邮箱/代理）====
+  // spec 2026-09-21-auth-module-design：以下字段仅作为首启一次性自动迁移的输入
+  // （迁移进 module_configs 表后运行时一律只读 DB，改 env 不再生效）；下个大版本可删除。
   DINGTALK_APP_KEY: z.string().optional(),
   DINGTALK_APP_SECRET: z.string().optional(),
   DINGTALK_ROBOT_CODE: z.string().optional(),
   DINGTALK_CARD_TEMPLATE_ID: z.string().optional(),
   // 钉钉扫码登录回调地址（完整 URL，须与钉钉开放平台注册的重定向 URI 一致；
-  // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导）
+  // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导）【仅迁移输入】
   DINGTALK_LOGIN_REDIRECT_URI: z.string().optional().default(""),
-  // GitHub OAuth 登录（两值均非空才启用；OAuth App: https://github.com/settings/developers）
+  // GitHub OAuth 登录（两值均非空才启用；OAuth App: https://github.com/settings/developers）【仅迁移输入】
   GITHUB_CLIENT_ID: z.string().optional().default(""),
   GITHUB_CLIENT_SECRET: z.string().optional().default(""),
-  // GitHub 登录回调地址（完整 URL，须与 OAuth App 注册的 Authorization callback URL 一致；
-  // 空=按 PUBLIC_BASE_URL → HOST:PORT 推导。dev 与生产域名不同时需分别建 OAuth App 并在此覆盖）
+  // GitHub 登录回调地址（完整 URL 覆盖；空=按 PUBLIC_BASE_URL 推导）【仅迁移输入】
   GITHUB_LOGIN_REDIRECT_URI: z.string().optional().default(""),
-  // GitHub 请求代理（如 http://127.0.0.1:7897；大陆网络直连 github.com 间歇超时时配置。
-  // 空=直连。仅作用于 GitHub OAuth 请求，代理失败自动回退直连）
+  // GitHub 请求代理（如 http://127.0.0.1:7897；仅作用于 GitHub OAuth 请求）【仅迁移输入，运行时走代理模块】
   GITHUB_OAUTH_PROXY: z.string().optional().default(""),
-  // 邮箱注册域名白名单（逗号分隔，如 example.com,.corp.cn 支持子域通配）。
-  // 空=关闭无邀请的自助注册（只能凭邀请链接注册，防 robot 漏配敞口）
+  // 邮箱注册域名白名单（逗号分隔；空=关闭无邀请的自助注册）【仅迁移输入，运行时走授权模块】
   EMAIL_SIGNUP_ALLOWED_DOMAINS: z.string().optional().default(""),
-  // 邮箱登录开关（登录页是否展示邮箱表单；邮箱为内置能力默认开启，
-  // 仅钉钉/GitHub 登录的部署可设 false 隐藏。登录页可用方式= GET /api/auth/methods）
+  // 邮箱登录开关【仅迁移输入，运行时走授权模块】
   EMAIL_LOGIN_ENABLED: z
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  // 零配置引导加固（可选）：配置后首个管理员初始化（POST /api/setup/admin）须携带此 token；
+  // 未配置=第一人即可初始化。首启会打印提示
+  SETUP_TOKEN: z.string().optional().default(""),
   // 仅在确有反向代理/网关时开启：取 X-Forwarded-For 首段作为限流 IP。
   // false（默认）= 直连形态，取 socket.remoteAddress（防伪造头绕过限流）
   TRUST_PROXY: z.coerce.boolean().optional().default(false),
@@ -143,7 +145,9 @@ export interface AppConfig {
   builtinSkillsDir: string;
   /** 管理员外部 ID 列表（ADMIN_EXTERNAL_IDS，逗号分隔；兼容 ADMIN_STAFF_IDS） */
   adminExternalIds: Set<string>;
+  /** 钉钉配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全；迁移输入——运行时读 module_configs） */
   dingtalk?: DingTalkConfig;
+  /** GitHub OAuth 配置（迁移输入——运行时读 module_configs） */
   githubOAuth?: GithubOAuthConfig;
   /** JWT 签名密钥（空字符串表示未配置，由 index.ts 处理） */
   jwtSecret: string;
@@ -166,10 +170,12 @@ export interface AppConfig {
   githubLoginRedirectUri: string;
   /** GitHub 请求代理 URL（空=直连） */
   githubProxyUrl: string;
-  /** 邮箱注册域名白名单（规范化为小写集合；空=关闭无邀请自助注册） */
+  /** 邮箱注册域名白名单（规范化为小写集合；空=关闭无邀请自助注册；迁移输入，运行时读 DB） */
   emailSignupAllowedDomains: Set<string>;
-  /** 邮箱登录开关（EMAIL_LOGIN_ENABLED，默认 true；false=登录页不展示邮箱表单） */
+  /** 邮箱登录开关（迁移输入，运行时读 DB） */
   emailLoginEnabled: boolean;
+  /** 零配置引导加固 token（可选；配置后 setup 须携带） */
+  setupToken: string;
   /** 限流取 IP 是否信任 X-Forwarded-For（仅反代部署开启） */
   trustProxy: boolean;
   gitCloneTimeoutMs: number;
@@ -228,6 +234,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
         .filter(Boolean),
     ),
     emailLoginEnabled: e.EMAIL_LOGIN_ENABLED,
+    setupToken: e.SETUP_TOKEN.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,

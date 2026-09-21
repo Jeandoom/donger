@@ -9,6 +9,7 @@ import { SqliteInviteStore } from "../../src/adapters/sqlite-invite-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import { INVITE_MONTHLY_QUOTA, monthStartIso } from "../../src/domain/invite.js";
+import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
 /**
  * 邮箱验证状态机 + 邀请月度配额契约测试（设计规格 §6，裁决①②⑤）。
@@ -39,7 +40,7 @@ async function startChannel(domains: string[] = ["example.com"]): Promise<number
     sessionStore,
     userStore,
     inviteStore,
-    emailSignupAllowedDomains: new Set(domains),
+    moduleConfigStore: createTestModuleConfigStore(db, { signupAllowedDomains: domains }),
   });
   web.onMessage(() => {});
   await web.ready();

@@ -1,8 +1,10 @@
 import {
   Bot,
+  KeyRound,
   LogOut,
   Megaphone,
   MessageSquare,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
@@ -53,6 +55,12 @@ const bottomEntries: LeafItem[] = [
   { to: "/credentials", label: "凭证", icon: CredentialIcon },
   { to: "/invites", label: "邀请", icon: InviteIcon },
   { to: "/feedback", label: "反馈", icon: Megaphone },
+];
+
+// 管理员专属沉底项：授权（三方登录配置 Web 化）/ 代理（出站请求代理）
+const adminBottomEntries: LeafItem[] = [
+  { to: "/authorization", label: "授权", icon: KeyRound },
+  { to: "/proxy", label: "代理", icon: Network },
 ];
 
 interface UserInfo {
@@ -238,10 +246,13 @@ export function NavigationSidebar({
         {mainEntries.map((e) => renderLeaf(e, collapsed))}
       </div>
 
-      {/* 原设置子模块：一级化后沉底 */}
+      {/* 原设置子模块：一级化后沉底；授权/代理仅管理员可见 */}
       <div className="mt-2 shrink-0 border-t border-white/10 pt-2">
         <div className="flex flex-col gap-0.5">
           {bottomEntries.map((e) => renderLeaf(e, collapsed))}
+          {user?.role === "admin"
+            ? adminBottomEntries.map((e) => renderLeaf(e, collapsed))
+            : null}
         </div>
       </div>
 

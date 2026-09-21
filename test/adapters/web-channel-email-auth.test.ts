@@ -8,6 +8,7 @@ import { SqliteInviteStore } from "../../src/adapters/sqlite-invite-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import { buildInvite } from "../../src/domain/invite.js";
+import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 import { hashPassword } from "../../src/util/password.js";
 
 /**
@@ -48,7 +49,9 @@ async function startChannel(opts: StartOpts = {}): Promise<number> {
     sessionStore,
     userStore,
     inviteStore,
-    emailSignupAllowedDomains: domains,
+    moduleConfigStore: createTestModuleConfigStore(db, {
+      signupAllowedDomains: [...domains],
+    }),
   });
   web.onMessage(() => {});
   await web.ready();

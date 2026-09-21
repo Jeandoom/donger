@@ -51,13 +51,20 @@ export function LoginPage() {
     if (getToken()) navigate(next, { replace: true });
   }, [navigate, next]);
 
-  // 登录方式动态探测：按 .env 实际配置渲染（钉钉/GitHub App、邮箱开关）；探测失败回退邮箱保底
+  // 登录方式动态探测：按授权模块实际配置渲染（钉钉/GitHub App、邮箱开关）；探测失败回退邮箱保底。
+  // setupRequired=true（零配置引导期）强制进入初始化页
   useEffect(() => {
     fetch("/api/auth/methods")
       .then((r) => (r.ok ? r.json() : null))
-      .then((data: { methods?: unknown } | null) => setMethods(parseLoginMethods(data?.methods)))
+      .then((data: { methods?: unknown; setupRequired?: boolean } | null) => {
+        if (data?.setupRequired) {
+          navigate("/setup", { replace: true });
+          return;
+        }
+        setMethods(parseLoginMethods(data?.methods));
+      })
       .catch(() => setMethods(parseLoginMethods(null)));
-  }, []);
+  }, [navigate]);
 
   // 已启用方式预取授权 URL（未配置/失败 → 置 null 隐藏按钮）
   useEffect(() => {
@@ -240,7 +247,7 @@ export function LoginPage() {
 
               {methods.length === 0 ? (
                 <p className="rounded-lg bg-muted p-3 text-center text-[13px] text-muted-foreground">
-                  未启用任何登录方式：请在服务端 .env 配置钉钉/GitHub 应用或开启邮箱登录后重启
+                  未启用任何登录方式：请联系管理员在「授权」模块配置钉钉/GitHub 应用或开启邮箱登录
                 </p>
               ) : null}
             </>

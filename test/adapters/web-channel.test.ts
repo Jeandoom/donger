@@ -21,6 +21,7 @@ import type { AgentPermissionMode } from "../../src/domain/permission-mode.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
 import type { GitAccessGate } from "../../src/orchestrator/git-access-gate.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
+import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
 function makeWebRoot(): string {
   return mkdtempSync(join(tmpdir(), "webroot-"));
@@ -148,13 +149,19 @@ async function startQrChannel(
   dingtalkLoginRedirectUri?: string,
 ): Promise<number> {
   const tmp = mkdtempSync(join(tmpdir(), "web-qr-"));
+  const db = new Database(":memory:");
+  const moduleConfigStore = createTestModuleConfigStore(db);
+  moduleConfigStore.putDingTalk({
+    appKey: "ding-app",
+    appSecret: "secret",
+    ...(dingtalkLoginRedirectUri ? { redirectUriOverride: dingtalkLoginRedirectUri } : {}),
+  });
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
     workspaceDir: tmp,
-    dingtalkConfig: { appKey: "ding-app", appSecret: "secret" },
+    moduleConfigStore,
     publicBaseUrl,
-    dingtalkLoginRedirectUri,
   });
   web.onMessage(() => {});
   await web.ready();

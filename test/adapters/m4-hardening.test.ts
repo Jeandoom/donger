@@ -9,6 +9,7 @@ import { SqliteInviteStore } from "../../src/adapters/sqlite-invite-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
+import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
 /**
  * M4 收尾契约：一次性登录 code、hooks path 随机化、uploads 鉴权。
@@ -44,7 +45,9 @@ async function startChannel(): Promise<number> {
     conversationStore: convs,
     inviteStore,
     triggerStore: triggers,
-    emailSignupAllowedDomains: new Set(["example.com"]),
+    moduleConfigStore: createTestModuleConfigStore(db, {
+      signupAllowedDomains: ["example.com"],
+    }),
   });
   web.onMessage(() => {});
   await web.ready();

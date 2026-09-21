@@ -75,6 +75,10 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/auth/dingtalk/callback", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/github/url", access: { kind: "public" } },
     { method: "GET", pattern: "/api/auth/github/callback", access: { kind: "public" } },
+    // 零配置引导（spec 2026-09-21-auth-module-design §3.4）：状态查询公开，
+    // 创建端点 public 但带状态门+可选 SETUP_TOKEN+限流，完成初始化后恒 409
+    { method: "GET", pattern: "/api/setup/status", access: { kind: "public" } },
+    { method: "POST", pattern: "/api/setup/admin", access: { kind: "public" } },
     { method: "GET", pattern: "/api/agents/by-share/:token", access: { kind: "public" } },
     // 回调链接自带 token 凭证，handler 内校验
     { method: "GET", pattern: "/api/callbacks/:token", access: { kind: "public" } },
@@ -207,6 +211,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },
+    // 授权/代理模块配置（spec 2026-09-21-auth-module-design §3.3/§3.6）
+    { method: "GET", pattern: "/api/admin/auth-configs", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/auth-configs/dingtalk", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/auth-configs/github", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/auth-configs/email", access: { kind: "admin" } },
+    { method: "GET", pattern: "/api/admin/proxy", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/proxy", access: { kind: "admin" } },
     // 审计面：member 可看本人会话的审计——列表由 handler 按 role 分流
     // （admin 全量 / member 走 store 层 L2 visible 过滤）；详情按会话属主判定，admin 直通。
     { method: "GET", pattern: "/api/audit/conversations", access: { kind: "authenticated" } },

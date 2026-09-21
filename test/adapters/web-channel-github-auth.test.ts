@@ -7,6 +7,7 @@ import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import type { GithubUserInfo } from "../../src/util/github-oauth-api.js";
+import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
 /** 一次性 code 换 JWT（规格 M4：回调 302 改带 code） */
 async function exchangeToken(port: number, location: string): Promise<string> {
@@ -20,7 +21,6 @@ async function exchangeToken(port: number, location: string): Promise<string> {
   if (!body.token) throw new Error(`exchange failed: ${res.status}`);
   return body.token;
 }
-
 
 /**
  * GitHub OAuth 登录/绑定契约测试。
@@ -64,7 +64,7 @@ function stubGithubHttp(user: GithubUserInfo = GH_USER): void {
 }
 
 async function startChannel(
-  opts: Partial<{ githubConfig: { clientId: string; clientSecret: string } }> = {},
+  opts: Partial<{ github: { clientId: string; clientSecret: string } }> = {},
 ): Promise<number> {
   db = new Database(":memory:");
   const sessionStore = new JwtSessionStore(db, "test-secret");
@@ -74,13 +74,15 @@ async function startChannel(
     usersDir,
   });
   userStore.migrate();
+  const store = createTestModuleConfigStore(db);
+  if (opts.github) store.putGithub(opts.github);
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
     workspaceDir: tmpDir,
     sessionStore,
     userStore,
-    ...opts,
+    moduleConfigStore: store,
   });
   web.onMessage(() => {});
   await web.ready();
@@ -111,7 +113,7 @@ describe("GET /api/auth/github/url", () => {
 
   it("已配置 → 返回 authorize URL（含 client_id/redirect_uri/scope/state）", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     const res = await realFetch(`http://127.0.0.1:${port}/api/auth/github/url`);
     expect(res.ok).toBe(true);
@@ -130,7 +132,7 @@ describe("GET /api/auth/github/url", () => {
 describe("GET /api/auth/github/callback（登录流程）", () => {
   it("state 无效 → 400（GitHub 侧强校验）", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     const res = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=forged`,
@@ -140,7 +142,7 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
 
   it("state 过期 → 400", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     // 先取合法 state，再手动将其置为过期：通过第二个通道无法注入，故直接用伪造 state 断言 400 后，
     // 走一遍完整流程拿 state，再用“二次消费”（state 已删除）断言过期路径同样 400。
@@ -163,7 +165,7 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
 
   it("完整登录 → 302 /login/success?token=…，账号按 (github, id) 创建", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     const urlRes = await realFetch(`http://127.0.0.1:${port}/api/auth/github/url`);
     const { url } = (await urlRes.json()) as { url: string };
@@ -235,7 +237,7 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
 
   it("未登录发起绑定 → 401", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     const res = await realFetch(`http://127.0.0.1:${port}/api/auth/github/bind`);
     expect(res.status).toBe(401);
@@ -243,7 +245,7 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
 
   it("已登录 → 返回绑定授权 URL；回调后 identity 挂到当前用户", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     const { token, userId } = await loginOnce(port);
     // 换一个 GitHub 用户用于绑定
@@ -280,7 +282,7 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
 
   it("GitHub 账号已绑定其他用户 → 302 /login?error=", async () => {
     const port = await startChannel({
-      githubConfig: { clientId: "cid", clientSecret: "secret" },
+      github: { clientId: "cid", clientSecret: "secret" },
     });
     // 用户 A 通过登录持有 github/583231；再构造另一用户 B 发起对同一 GitHub 身份的绑定 → 冲突
     await loginOnce(port);

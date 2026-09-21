@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
+import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
 // 钉钉 API 外呼 mock：state 强校验应在触达钉钉前拒绝（规格 M4）
 vi.mock("../../src/util/dingtalk-api.js", () => ({
@@ -32,13 +33,15 @@ beforeEach(async () => {
   const userStore = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
   userStore.migrate();
   userStore.migrateCredentials();
+  const moduleConfigStore = createTestModuleConfigStore(db);
+  moduleConfigStore.putDingTalk({ appKey: "ak", appSecret: "sk" });
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
     workspaceDir: tmpDir,
     sessionStore,
     userStore,
-    dingtalkConfig: { appKey: "ak", appSecret: "sk" },
+    moduleConfigStore,
   });
   web.onMessage(() => {});
   await web.ready();

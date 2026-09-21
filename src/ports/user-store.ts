@@ -57,6 +57,19 @@ export interface UserStore {
       token: string | null;
     }>
   >;
+
+  // ---- 零配置引导（spec 2026-09-21-auth-module-design §3.4） ----
+  /** 是否存在 admin 用户（setup 状态判定的第一条件） */
+  hasAnyAdmin(): Promise<boolean>;
+  /**
+   * 原子创建首个 admin（setup 通道）：事务内校验「无 admin 且无 setup_completed 标记」，
+   * 创建 email 身份用户（role=admin、邮箱直接置已验证）并写 setup_completed 标记。
+   * 已完成初始化时返回 "exists"，不产生任何变更。
+   */
+  createBootstrapAdmin(input: {
+    email: string;
+    passwordHash: string;
+  }): Promise<"created" | "exists">;
 }
 
 /** 邮箱验证状态（verified=1 后 token/expiresAt 清空） */

@@ -64,6 +64,10 @@ export class SqliteUserStore implements UserStore {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_user_identities_userId ON user_identities(userId)",
     );
+    // setup 引导标记所在表（index.ts 的 jwt_secret 亦复用；此处兜底保证单测裸库可用）
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    );
   }
 
   /**
@@ -292,6 +296,58 @@ export class SqliteUserStore implements UserStore {
       data: string;
     }[];
     return rows.map((r) => JSON.parse(r.data) as User);
+  }
+
+  // ---- 零配置引导（spec 2026-09-21-auth-module-design §3.4） ----
+
+  async hasAnyAdmin(): Promise<boolean> {
+    const row = this.db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get();
+    return !!row;
+  }
+
+  async createBootstrapAdmin(input: {
+    email: string;
+    passwordHash: string;
+  }): Promise<"created" | "exists"> {
+    const tx = this.db.transaction((): "created" | "exists" => {
+      const adminRow = this.db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get();
+      if (adminRow) return "exists";
+      const flag = this.db
+        .prepare("SELECT value FROM app_config WHERE key = 'setup_completed'")
+        .get();
+      if (flag) return "exists";
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const user: User = {
+        id,
+        name: input.email.split("@")[0] ?? input.email,
+        role: "admin",
+        homeDir: join(this.opts.usersDir, id),
+        createdAt: now,
+        updatedAt: now,
+      };
+      initUserWorkspace(user.homeDir);
+      this.db
+        .prepare("INSERT INTO users (id, data, role, updatedAt) VALUES (?, ?, ?, ?)")
+        .run(user.id, JSON.stringify(user), user.role, now);
+      this.db
+        .prepare(
+          "INSERT INTO user_identities (id, userId, provider, externalId, name, createdAt) VALUES (?, ?, 'email', ?, ?, ?)",
+        )
+        .run(`${Date.now()}-bootstrap`, user.id, input.email, user.name, now);
+      this.db
+        .prepare(
+          "INSERT INTO user_email_credentials (userId, passwordHash, updatedAt, verified) VALUES (?, ?, ?, 1)",
+        )
+        .run(user.id, input.passwordHash, now);
+      this.db
+        .prepare(
+          "INSERT INTO app_config (key, value) VALUES ('setup_completed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .run(now);
+      return "created";
+    });
+    return tx();
   }
 
   // ---- 新增方法 ----

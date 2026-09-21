@@ -72,6 +72,13 @@ import {
 } from "../domain/mentions.js";
 import { isModelRef, parseModelRef } from "../domain/model-ref.js";
 import {
+  type DingTalkModuleConfig,
+  dingTalkLoginReady,
+  dingTalkRobotReady,
+  type GithubModuleConfig,
+  parseSignupDomains,
+} from "../domain/module-config.js";
+import {
   type AgentPermissionMode,
   AgentPermissionModeSchema,
   resolvePermissionMode,
@@ -134,6 +141,7 @@ import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
+import type { ModuleConfigStore } from "../ports/module-config-store.js";
 import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
@@ -141,6 +149,7 @@ import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
+import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import {
@@ -179,7 +188,6 @@ import {
   type SkillRepoApiDeps,
 } from "./skill-repo-api.js";
 import type { SkillRepoSyncService } from "./skill-repo-sync.js";
-import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import { buildWebRouteGuardSpecs } from "./web-route-guards.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -380,24 +388,22 @@ export interface WebChannelDeps {
   /** 会话权限模式切换回调（PATCH 即时通知 orchestrator 内存 registry）；缺省=仅落库，下轮生效 */
   onPermissionModeChange?: (conversationId: string, mode: AgentPermissionMode) => void;
   publicBaseUrl?: string;
-  /** 钉钉扫码登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
-  dingtalkLoginRedirectUri?: string;
-  /** GitHub 登录回调地址（完整 URL 覆盖；空=按 publicBaseUrl → host:port 推导） */
-  githubLoginRedirectUri?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
   llmDebugRunner?: LlmDebugRunner;
-  dingtalkConfig?: { appKey: string; appSecret: string };
-  /** GitHub OAuth 登录（缺省=GitHub 登录/绑定端点不可用） */
-  githubConfig?: { clientId: string; clientSecret: string };
-  /** GitHub 请求代理 URL（如 http://127.0.0.1:7897；空=直连） */
-  githubProxyUrl?: string;
+  /** 模块化配置存储（授权/代理模块，spec 2026-09-21-auth-module-design）；缺省=三方登录端点不可用 */
+  moduleConfigStore?: ModuleConfigStore;
+  /**
+   * 钉钉机器人消息通道运行时控制器：授权页「应用」即生效（重建/停用通道，无需重启）。
+   * 由 index.ts 实现（需持有 skillPackStore 等以成对创建 channel+orchestrator）；缺省=仅登录配置生效。
+   */
+  dingtalkChannelController?: {
+    apply(cfg: { appKey: string; appSecret: string; robotCode: string } | undefined): void;
+  };
+  /** SETUP_TOKEN 可选加固：配置后 setup 初始化管理员须携带该 token（首启打印到服务日志） */
+  setupToken?: string;
   /** 邀请注册链接存储（缺省=邮箱注册/邀请端点不可用） */
   inviteStore?: InviteStore;
-  /** 邮箱注册域名白名单（小写集合；空=关闭无邀请自助注册） */
-  emailSignupAllowedDomains?: Set<string>;
-  /** 邮箱登录开关（默认 true；false=登录页不展示邮箱表单，见 GET /api/auth/methods） */
-  emailLoginEnabled?: boolean;
   /** 限流实现（缺省内存滑动窗口；单实例够用） */
   rateLimiter?: RateLimiter;
   /** 仅反代部署开启：限流取 X-Forwarded-For 首段而非 socket.remoteAddress */
@@ -440,8 +446,6 @@ export class WebChannel implements Channel {
   private readonly agentCallbackStore?: AgentCallbackStore;
   private readonly connectorStore?: ConnectorStore;
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
-  private readonly dingtalkConfig?: { appKey: string; appSecret: string };
-  private readonly githubConfig?: { clientId: string; clientSecret: string };
   private readonly inviteStore?: InviteStore;
   private readonly oauthStateMap = new Map<string, number>();
   /** 限流（注册/登录 IP、登录失败锁定、llm-debug 配额）；缺省内存实现 */
@@ -464,8 +468,6 @@ export class WebChannel implements Channel {
     this.agentCallbackStore = deps.agentCallbackStore;
     this.connectorStore = deps.connectorStore;
     this.agentMeta = deps.agentMeta;
-    this.dingtalkConfig = deps.dingtalkConfig;
-    this.githubConfig = deps.githubConfig;
     this.inviteStore = deps.inviteStore;
     this.rateLimiter = deps.rateLimiter ?? new MemoryRateLimiter();
     this.routeGuard = new ApiRouteGuard(
@@ -475,7 +477,6 @@ export class WebChannel implements Channel {
         userStore: deps.userStore,
       }),
     );
-    configureGithubProxy(deps.githubProxyUrl);
   }
 
   /**
@@ -506,6 +507,32 @@ export class WebChannel implements Channel {
         role: "user",
       }
     );
+  }
+
+  // === 模块化配置（授权/代理模块）生效读取：每请求直读 module_configs，保存即生效 ===
+
+  private effectiveDingTalkLogin(): DingTalkModuleConfig | undefined {
+    const cfg = this.deps.moduleConfigStore?.getDingTalk();
+    return dingTalkLoginReady(cfg) ? cfg : undefined;
+  }
+
+  private effectiveGithub(): GithubModuleConfig | undefined {
+    return this.deps.moduleConfigStore?.getGithub();
+  }
+
+  private effectiveEmail(): { signupAllowedDomains: Set<string>; loginEnabled: boolean } {
+    const cfg = this.deps.moduleConfigStore?.getEmail();
+    return {
+      signupAllowedDomains: new Set(cfg?.signupAllowedDomains ?? []),
+      loginEnabled: cfg?.loginEnabled !== false,
+    };
+  }
+
+  /** setup 状态判定：无 admin 用户且未写 setup_completed 标记（spec §3.4；零 .env 引导入口） */
+  private async isSetupRequired(): Promise<boolean> {
+    if (!this.deps.userStore || !this.deps.moduleConfigStore) return false;
+    if (await this.deps.userStore.hasAnyAdmin()) return false;
+    return !this.deps.moduleConfigStore.getFlag("setup_completed");
   }
 
   /** 限流取 IP：TRUST_PROXY（反代部署）取 X-Forwarded-For 首段，否则 socket 直连地址 */
@@ -1598,14 +1625,66 @@ export class WebChannel implements Channel {
 
     // === Auth 路由 ===
 
-    // GET /api/auth/methods —— 登录方式动态探测：按 .env 实际配置返回可用方式，
+    // GET /api/setup/status —— 零配置引导状态（public；spec §3.4）
+    if (url.split("?")[0] === "/api/setup/status" && req.method === "GET") {
+      return this.json(res, { setupRequired: await this.isSetupRequired() });
+    }
+
+    // POST /api/setup/admin —— 初始化管理员（public+状态门+可选 SETUP_TOKEN；spec §3.4）
+    if (url.split("?")[0] === "/api/setup/admin" && req.method === "POST") {
+      if (!this.deps.userStore || !this.deps.moduleConfigStore || !this.sessionStore) {
+        return this.json(res, { error: "服务未启用" }, 503);
+      }
+      const ip = req.socket.remoteAddress ?? "unknown";
+      if (!this.checkSignupRateLimit(ip)) {
+        return this.json(res, { error: "尝试过于频繁，请稍后再试" }, 429);
+      }
+      let body: { email?: unknown; password?: unknown; setupToken?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      // SETUP_TOKEN 可选加固（拍板①）：配置后首启初始化须携带 token（部署者持服务器访问权即持 token）
+      if (this.deps.setupToken) {
+        const provided = Buffer.from(typeof body.setupToken === "string" ? body.setupToken : "");
+        const expected = Buffer.from(this.deps.setupToken);
+        const ok = provided.length === expected.length && timingSafeEqual(provided, expected);
+        if (!ok) return this.json(res, { error: "初始化 token 无效" }, 403);
+      }
+      if (!(await this.isSetupRequired())) {
+        return this.json(res, { error: "系统已完成初始化，请直接登录" }, 409);
+      }
+      const email = normalizeEmail(typeof body.email === "string" ? body.email : "");
+      const password = typeof body.password === "string" ? body.password : "";
+      if (!isValidEmail(email)) return this.json(res, { error: "邮箱格式无效" }, 400);
+      const pwdErr = passwordPolicyError(password);
+      if (pwdErr) return this.json(res, { error: pwdErr }, 400);
+      const result = await this.deps.userStore.createBootstrapAdmin({
+        email,
+        passwordHash: hashPassword(password),
+      });
+      if (result === "exists") {
+        return this.json(res, { error: "系统已完成初始化，请直接登录" }, 409);
+      }
+      const user = await this.deps.userStore.findByIdentity("email", email);
+      if (!user) return this.json(res, { error: "初始化异常，请重试" }, 500);
+      const { token } = await this.sessionStore.create(user.id);
+      console.log(
+        `[setup] 首个管理员已创建（${email}）；建议先到「授权」模块完成钉钉/GitHub 登录配置`,
+      );
+      return this.json(res, { token, user });
+    }
+
+    // GET /api/auth/methods —— 登录方式动态探测：按授权模块配置返回可用方式，
     // 顺序即展示优先级（邮箱 > 钉钉 > GitHub）；登录页据此渲染，未配置的方式不展示
     if (url === "/api/auth/methods" && req.method === "GET") {
       const methods: string[] = [];
-      if (this.deps.emailLoginEnabled !== false) methods.push("email");
-      if (this.dingtalkConfig) methods.push("dingtalk");
-      if (this.githubConfig) methods.push("github");
-      this.json(res, { methods });
+      if (this.effectiveEmail().loginEnabled) methods.push("email");
+      if (this.effectiveDingTalkLogin()) methods.push("dingtalk");
+      if (this.effectiveGithub()) methods.push("github");
+      const setupRequired = await this.isSetupRequired();
+      this.json(res, { methods, setupRequired });
       return;
     }
 
@@ -1655,7 +1734,8 @@ export class WebChannel implements Channel {
 
     // GET /api/auth/qrcode-url
     if (url === "/api/auth/qrcode-url" && req.method === "GET") {
-      if (!this.dingtalkConfig) {
+      const dtCfg = this.effectiveDingTalkLogin();
+      if (!dtCfg) {
         res.writeHead(503);
         res.end(JSON.stringify({ error: "钉钉登录未配置" }));
         return;
@@ -1666,9 +1746,8 @@ export class WebChannel implements Channel {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
       }
       const redirectUri =
-        this.deps.dingtalkLoginRedirectUri?.trim() ||
-        `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
-      const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(this.dingtalkConfig.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
+        dtCfg.redirectUriOverride?.trim() || `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
+      const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(dtCfg.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
       res.writeHead(200);
       res.end(JSON.stringify({ url: qrUrl }));
       return;
@@ -1695,7 +1774,8 @@ export class WebChannel implements Channel {
         return;
       }
 
-      if (!this.dingtalkConfig || !this.deps.userStore || !this.sessionStore) {
+      const dtCfg = this.effectiveDingTalkLogin();
+      if (!dtCfg || !this.deps.userStore || !this.sessionStore) {
         res.writeHead(503);
         res.end(JSON.stringify({ error: "认证服务未就绪" }));
         return;
@@ -1703,11 +1783,7 @@ export class WebChannel implements Channel {
 
       try {
         const { getUserAccessToken, getUserInfoByOAuth } = await import("../util/dingtalk-api.js");
-        const tokenResult = await getUserAccessToken(
-          this.dingtalkConfig.appKey,
-          this.dingtalkConfig.appSecret,
-          code,
-        );
+        const tokenResult = await getUserAccessToken(dtCfg.appKey, dtCfg.appSecret, code);
         const userInfo = await getUserInfoByOAuth(tokenResult.accessToken);
         // 统一身份模型：直接按 identity 查找/创建并绑定，不再走合并流程。
         const user = await this.deps.userStore.getOrCreateByIdentity(
@@ -1732,7 +1808,8 @@ export class WebChannel implements Channel {
 
     // GET /api/auth/github/url —— 生成 GitHub 授权跳转 URL（登录用）
     if (url === "/api/auth/github/url" && req.method === "GET") {
-      if (!this.githubConfig) {
+      const ghCfg = this.effectiveGithub();
+      if (!ghCfg) {
         res.writeHead(503);
         res.end(JSON.stringify({ error: "GitHub 登录未配置" }));
         return;
@@ -1740,13 +1817,20 @@ export class WebChannel implements Channel {
       const state = `${Date.now()}-${Math.random()}`;
       this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000);
       this.pruneOauthStates();
-      this.json(res, { url: this.buildGithubAuthorizeUrl(state) });
+      this.json(res, {
+        url: buildGithubAuthorizeUrl({
+          clientId: ghCfg.clientId,
+          redirectUri: this.githubRedirectUri(ghCfg),
+          state,
+        }),
+      });
       return;
     }
 
     // GET /api/auth/github/bind —— 已登录用户发起 GitHub 身份绑定（经统一鉴权段取 userId）
     if (url === "/api/auth/github/bind" && req.method === "GET") {
-      if (!this.githubConfig) {
+      const ghCfg = this.effectiveGithub();
+      if (!ghCfg) {
         res.writeHead(503);
         res.end(JSON.stringify({ error: "GitHub 登录未配置" }));
         return;
@@ -1755,7 +1839,13 @@ export class WebChannel implements Channel {
       const state = `${Date.now()}-${Math.random()}`;
       this.githubBindStateMap.set(state, { userId, exp: Date.now() + 5 * 60 * 1000 });
       this.pruneOauthStates();
-      this.json(res, { url: this.buildGithubAuthorizeUrl(state) });
+      this.json(res, {
+        url: buildGithubAuthorizeUrl({
+          clientId: ghCfg.clientId,
+          redirectUri: this.githubRedirectUri(ghCfg),
+          state,
+        }),
+      });
       return;
     }
 
@@ -1768,7 +1858,8 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "缺少 code/state 参数" }));
         return;
       }
-      if (!this.githubConfig || !this.deps.userStore || !this.sessionStore) {
+      const ghCfg = this.effectiveGithub();
+      if (!ghCfg || !this.deps.userStore || !this.sessionStore) {
         res.writeHead(503);
         res.end(JSON.stringify({ error: "认证服务未就绪" }));
         return;
@@ -1779,7 +1870,7 @@ export class WebChannel implements Channel {
         if (bind) {
           this.githubBindStateMap.delete(state);
           if (Date.now() > bind.exp) throw new Error("绑定会话已过期，请重新发起绑定");
-          const info = await this.fetchGithubUser(code);
+          const info = await this.fetchGithubUser(ghCfg, code);
           const owner = await this.deps.userStore.findByIdentity("github", info.id);
           if (owner && owner.id !== bind.userId) {
             throw new Error("该 GitHub 账号已绑定其他用户");
@@ -1810,7 +1901,7 @@ export class WebChannel implements Channel {
           res.end(JSON.stringify({ error: "state 校验失败，请重新发起登录" }));
           return;
         }
-        const info = await this.fetchGithubUser(code);
+        const info = await this.fetchGithubUser(ghCfg, code);
         const user = await this.deps.userStore.getOrCreateByIdentity(
           "github",
           info.id,
@@ -1859,7 +1950,7 @@ export class WebChannel implements Channel {
       if (inviteToken) {
         const reason = invite ? inviteBlockReason(invite, new Date()) : "邀请链接无效";
         if (reason) return this.json(res, { error: reason }, 403);
-      } else if (!isEmailDomainAllowed(email, this.deps.emailSignupAllowedDomains ?? new Set())) {
+      } else if (!isEmailDomainAllowed(email, this.effectiveEmail().signupAllowedDomains)) {
         return this.json(res, { error: "该邮箱域名不在允许注册范围，请使用邀请链接注册" }, 403);
       }
 
@@ -1983,6 +2074,178 @@ export class WebChannel implements Channel {
         verifyPath: !r.verified && r.token ? `/api/auth/verify?token=${r.token}` : null,
       }));
       return this.json(res, { verifications });
+    }
+
+    // === 授权/代理模块配置（admin；spec 2026-09-21-auth-module-design §3.3/§3.6） ===
+    // 语义：PUT 合并保存（秘密留空=保留旧值，掩码不回显）+「应用」即生效（登录每请求读库；
+    // 钉钉机器人通道经 controller 运行时换血；代理经 configureGithubProxy 幂等重配）。
+
+    // GET /api/admin/auth-configs —— 三模块配置视图（秘密只回 appSecretSet，不回明文）
+    if (url.split("?")[0] === "/api/admin/auth-configs" && req.method === "GET") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      const store = this.deps.moduleConfigStore;
+      const dt = store.getDingTalk();
+      const gh = store.getGithub();
+      const email = store.getEmail();
+      const rawDt = store.rawModule("dingtalk");
+      const rawGh = store.rawModule("github");
+      const dtCallback = dt
+        ? dt.redirectUriOverride?.trim() || `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`
+        : `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
+      const ghCallback = gh
+        ? this.githubRedirectUri(gh)
+        : `${this.oauthBaseUrl()}/api/auth/github/callback`;
+      return this.json(res, {
+        dingtalk: dt
+          ? {
+              appKey: dt.appKey,
+              appSecretSet: true,
+              robotCode: dt.robotCode ?? "",
+              cardTemplateId: dt.cardTemplateId ?? "",
+              callbackUrl: dtCallback,
+            }
+          : {
+              appKey: "",
+              appSecretSet: !!rawDt?.appSecret,
+              robotCode: "",
+              cardTemplateId: "",
+              callbackUrl: dtCallback,
+            },
+        github: gh
+          ? { clientId: gh.clientId, clientSecretSet: true, callbackUrl: ghCallback }
+          : { clientId: "", clientSecretSet: !!rawGh?.clientSecret, callbackUrl: ghCallback },
+        email: {
+          signupAllowedDomains: email?.signupAllowedDomains ?? [],
+          loginEnabled: email?.loginEnabled !== false,
+        },
+      });
+    }
+
+    // PUT /api/admin/auth-configs/dingtalk —— 保存+机器人通道运行时生效；清空保存=停用
+    if (url.split("?")[0] === "/api/admin/auth-configs/dingtalk" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: {
+        appKey?: unknown;
+        appSecret?: unknown;
+        robotCode?: unknown;
+        cardTemplateId?: unknown;
+      };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const store = this.deps.moduleConfigStore;
+      const prev = store.getDingTalk();
+      const appKey = typeof body.appKey === "string" ? body.appKey.trim() : "";
+      // 秘密留空=保留旧值（掩码合并语义，同凭证页）
+      const appSecret =
+        typeof body.appSecret === "string" && body.appSecret
+          ? body.appSecret
+          : (prev?.appSecret ?? "");
+      if (!appKey) {
+        if (prev) {
+          // AppKey 留空=停用：删配置并停掉机器人通道
+          store.deleteModule("dingtalk");
+          this.deps.dingtalkChannelController?.apply(undefined);
+          return this.json(res, { ok: true, robotChannelActive: false });
+        }
+        return this.json(res, { error: "请填写 AppKey 与 AppSecret" }, 400);
+      }
+      if (!appSecret) return this.json(res, { error: "请填写 AppSecret" }, 400);
+      const robotCode = typeof body.robotCode === "string" ? body.robotCode.trim() : "";
+      const cardTemplateId =
+        typeof body.cardTemplateId === "string" ? body.cardTemplateId.trim() : "";
+      store.putDingTalk({
+        appKey,
+        appSecret,
+        ...(robotCode ? { robotCode } : {}),
+        ...(cardTemplateId ? { cardTemplateId } : {}),
+      });
+      // 「应用」即生效：机器人通道运行时换血（登录能力本就每请求读库）
+      const saved = store.getDingTalk();
+      this.deps.dingtalkChannelController?.apply(
+        saved && dingTalkRobotReady(saved)
+          ? { appKey: saved.appKey, appSecret: saved.appSecret, robotCode: saved.robotCode ?? "" }
+          : undefined,
+      );
+      return this.json(res, { ok: true, robotChannelActive: dingTalkRobotReady(saved) });
+    }
+
+    // PUT /api/admin/auth-configs/github
+    if (url.split("?")[0] === "/api/admin/auth-configs/github" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { clientId?: unknown; clientSecret?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const store = this.deps.moduleConfigStore;
+      const prev = store.getGithub();
+      const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
+      const clientSecret =
+        typeof body.clientSecret === "string" && body.clientSecret
+          ? body.clientSecret
+          : (prev?.clientSecret ?? "");
+      if (!clientId) {
+        if (prev) {
+          // Client ID 留空=停用 GitHub 登录/绑定
+          store.deleteModule("github");
+          return this.json(res, { ok: true });
+        }
+        return this.json(res, { error: "请填写 Client ID 与 Client Secret" }, 400);
+      }
+      if (!clientSecret) return this.json(res, { error: "请填写 Client Secret" }, 400);
+      store.putGithub({ clientId, clientSecret });
+      return this.json(res, { ok: true });
+    }
+
+    // PUT /api/admin/auth-configs/email —— 域名白名单 + 登录开关
+    if (url.split("?")[0] === "/api/admin/auth-configs/email" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { signupAllowedDomains?: unknown; loginEnabled?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const rawDomains = body.signupAllowedDomains;
+      // 前端 textarea 原文（字符串）或数组均可，parseSignupDomains 统一解析
+      if (typeof rawDomains !== "string" && !Array.isArray(rawDomains)) {
+        return this.json(res, { error: "signupAllowedDomains 须为字符串或字符串数组" }, 400);
+      }
+      this.deps.moduleConfigStore.putEmail({
+        signupAllowedDomains: parseSignupDomains(rawDomains),
+        loginEnabled: body.loginEnabled !== false,
+      });
+      return this.json(res, { ok: true });
+    }
+
+    // GET /api/admin/proxy —— 代理模块视图
+    if (url.split("?")[0] === "/api/admin/proxy" && req.method === "GET") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      const proxy = this.deps.moduleConfigStore.getProxy();
+      return this.json(res, { githubOauthProxyUrl: proxy?.githubOauthProxyUrl ?? "" });
+    }
+
+    // PUT /api/admin/proxy —— 保存+configureGithubProxy 即时生效（新请求即走新代理）
+    if (url.split("?")[0] === "/api/admin/proxy" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { githubOauthProxyUrl?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const proxyUrl =
+        typeof body.githubOauthProxyUrl === "string" ? body.githubOauthProxyUrl.trim() : "";
+      if (proxyUrl && !/^https?:\/\//.test(proxyUrl)) {
+        return this.json(res, { error: "代理地址须为 http(s):// 形式" }, 400);
+      }
+      this.deps.moduleConfigStore.putProxy(proxyUrl ? { githubOauthProxyUrl: proxyUrl } : {});
+      configureGithubProxy(proxyUrl || undefined);
+      return this.json(res, { ok: true });
     }
 
     // GET /api/invites —— 当前用户的邀请列表
@@ -4886,30 +5149,18 @@ export class WebChannel implements Channel {
     return `${this.deps.https ? "https" : "http"}://${host}:${port}`;
   }
 
-  /** GitHub 登录/绑定共用的回调地址（显式覆盖优先于推导） */
-  private githubRedirectUri(): string {
-    return (
-      this.deps.githubLoginRedirectUri?.trim() || `${this.oauthBaseUrl()}/api/auth/github/callback`
-    );
-  }
-
-  private buildGithubAuthorizeUrl(state: string): string {
-    if (!this.githubConfig) throw new Error("GitHub 登录未配置");
-    return buildGithubAuthorizeUrl({
-      clientId: this.githubConfig.clientId,
-      redirectUri: this.githubRedirectUri(),
-      state,
-    });
+  /** GitHub 登录/绑定共用的回调地址（模块配置覆盖优先于推导） */
+  private githubRedirectUri(cfg: GithubModuleConfig): string {
+    return cfg.redirectUriOverride?.trim() || `${this.oauthBaseUrl()}/api/auth/github/callback`;
   }
 
   /** 授权码 → access_token → 用户信息 */
-  private async fetchGithubUser(code: string): Promise<GithubUserInfo> {
-    if (!this.githubConfig) throw new Error("GitHub 登录未配置");
+  private async fetchGithubUser(cfg: GithubModuleConfig, code: string): Promise<GithubUserInfo> {
     const accessToken = await getGithubAccessToken(
-      this.githubConfig.clientId,
-      this.githubConfig.clientSecret,
+      cfg.clientId,
+      cfg.clientSecret,
       code,
-      this.githubRedirectUri(),
+      this.githubRedirectUri(cfg),
     );
     return getGithubUser(accessToken);
   }

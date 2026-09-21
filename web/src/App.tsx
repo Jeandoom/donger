@@ -5,6 +5,7 @@ import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AuditPage } from "./pages/AuditPage";
+import { AuthorizationPage } from "./pages/AuthorizationPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
 import { CredentialsPage } from "./pages/credentials/CredentialsPage";
@@ -15,7 +16,9 @@ import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { LoopDetailPage } from "./pages/LoopDetailPage";
 import { LoopsPage } from "./pages/LoopsPage";
 import { ModelsPage } from "./pages/ModelsPage";
+import { ProxyPage } from "./pages/ProxyPage";
 import { RegisterPage } from "./pages/RegisterPage";
+import { SetupPage } from "./pages/SetupPage";
 import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { TriggerEditorPage } from "./pages/TriggerEditorPage";
@@ -34,6 +37,8 @@ export function App() {
         <Route path="/login/success" element={<LoginSuccessPage />} />
         {/* 邮箱注册（免认证；持邀请链接不受域名白名单限制） */}
         <Route path="/register" element={<RegisterPage />} />
+        {/* 零配置引导：初始化管理员（免认证；setupRequired=false 时自动回登录页） */}
+        <Route path="/setup" element={<SetupPage />} />
         {/* 分享落地页（公开；登录后自动授权进入） */}
         <Route path="/share/:token" element={<ShareLandingPage />} />
         {/* 合并流程已废弃：旧链接重定向到登录页 */}
@@ -63,6 +68,9 @@ export function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/credentials" element={<CredentialsPage />} />
             <Route path="/invites" element={<InvitesPage />} />
+            {/* 授权/代理模块（admin 专属；接口侧由守卫 fail-closed 兜底） */}
+            <Route path="/authorization" element={<AuthorizationPage />} />
+            <Route path="/proxy" element={<ProxyPage />} />
             <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/settings" element={<Navigate to="/profile" replace />} />
             <Route path="/settings/profile" element={<Navigate to="/profile" replace />} />

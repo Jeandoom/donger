@@ -16,7 +16,7 @@ const TIMEOUT_MS = 10_000;
 // "invalid onRequestStart method"），代理路径必须用 undici 自带的 fetch。
 let proxyDispatcher: ProxyAgent | undefined;
 
-/** 配置 GitHub 请求代理（幂等；仅启动时调用一次）。空串/未传=清空走直连。 */
+/** 配置 GitHub 请求代理（幂等 setter，运行时可重调——代理模块 PUT 即时生效）。空串/未传=清空走直连。 */
 export function configureGithubProxy(proxyUrl?: string): void {
   const trimmed = proxyUrl?.trim();
   proxyDispatcher = trimmed ? new ProxyAgent(trimmed) : undefined;

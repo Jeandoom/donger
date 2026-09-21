@@ -27,6 +27,7 @@ import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
+import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
@@ -38,6 +39,7 @@ import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
+import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
@@ -50,6 +52,7 @@ import { SchedulerService } from "./orchestrator/scheduler.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
+import { configureGithubProxy } from "./util/github-oauth-api.js";
 import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
@@ -147,6 +150,59 @@ async function main(): Promise<void> {
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
   const sessionStore = new JwtSessionStore(db, jwtSecret, cfg.jwtTtlDays * 24 * 60 * 60 * 1000);
   sessionStore.migrate();
+
+  // 授权/代理模块配置存储（spec 2026-09-21-auth-module-design）：三方配置单一真源=module_configs
+  const moduleConfigStore = new SqliteModuleConfigStore(
+    db,
+    loadOrGenerateAppSecret(db, "module_config_secret_key"),
+  );
+  moduleConfigStore.migrate();
+  // 首启一次性迁移：.env 三方配置 → DB（幂等；迁移后运行时只读 DB，.env 三方段不再被读取）
+  const envSnapshot: EnvAuthSnapshot = {};
+  const migrating: string[] = [];
+  if (cfg.dingtalk) {
+    envSnapshot.dingtalk = {
+      appKey: cfg.dingtalk.appKey,
+      appSecret: cfg.dingtalk.appSecret,
+      robotCode: cfg.dingtalk.robotCode,
+      ...(cfg.dingtalk.cardTemplateId ? { cardTemplateId: cfg.dingtalk.cardTemplateId } : {}),
+      ...(cfg.dingtalkLoginRedirectUri.trim()
+        ? { redirectUriOverride: cfg.dingtalkLoginRedirectUri.trim() }
+        : {}),
+    };
+    migrating.push("dingtalk");
+  }
+  if (cfg.githubOAuth) {
+    envSnapshot.github = {
+      clientId: cfg.githubOAuth.clientId,
+      clientSecret: cfg.githubOAuth.clientSecret,
+      ...(cfg.githubLoginRedirectUri.trim()
+        ? { redirectUriOverride: cfg.githubLoginRedirectUri.trim() }
+        : {}),
+    };
+    migrating.push("github");
+  }
+  if (cfg.emailSignupAllowedDomains.size > 0 || !cfg.emailLoginEnabled) {
+    envSnapshot.email = {
+      signupAllowedDomains: [...cfg.emailSignupAllowedDomains],
+      loginEnabled: cfg.emailLoginEnabled,
+    };
+    migrating.push("email");
+  }
+  if (cfg.githubProxyUrl.trim()) {
+    envSnapshot.proxy = { githubOauthProxyUrl: cfg.githubProxyUrl.trim() };
+    migrating.push("proxy");
+  }
+  const firstBootMigration = !moduleConfigStore.getFlag("auth_env_migrated");
+  moduleConfigStore.migrateFromEnv(envSnapshot);
+  if (firstBootMigration) {
+    log.info(
+      { migrated: migrating.join(",") || "无" },
+      "三方授权 env→DB 一次性迁移完成（此后运行时只读 DB）",
+    );
+  }
+  // GitHub OAuth 代理启动配置改读 DB（运行时重配见 PUT /api/admin/proxy）
+  configureGithubProxy(moduleConfigStore.getProxy()?.githubOauthProxyUrl);
 
   function createOrch(
     channel: Channel,
@@ -268,6 +324,44 @@ async function main(): Promise<void> {
     extensionDirectoryResolver,
   });
 
+  // 渠道 → orchestrator 登记表（web 常驻；dingtalk 经 applyDingTalkChannel 运行时装配）
+  const orchestrators = new Map<string, Orchestrator>();
+
+  // 钉钉机器人消息通道运行时控制器（授权页「应用」即生效，无需重启；spec §3.5）：
+  // 配置齐全→重建通道并转移 recipients；清空/不完整→停用；配置未变→no-op
+  let dtChannel: DingTalkChannel | undefined;
+  let dtApplied: { appKey: string; appSecret: string; robotCode: string } | undefined;
+  const applyDingTalkChannel = (
+    robotCfg: { appKey: string; appSecret: string; robotCode: string } | undefined,
+  ): void => {
+    if (
+      robotCfg &&
+      dtChannel &&
+      dtApplied &&
+      dtApplied.appKey === robotCfg.appKey &&
+      dtApplied.appSecret === robotCfg.appSecret &&
+      dtApplied.robotCode === robotCfg.robotCode
+    ) {
+      return;
+    }
+    const old = dtChannel;
+    const next = robotCfg ? new DingTalkChannel(robotCfg) : undefined;
+    if (next) {
+      const orch = createOrch(next, skillPackStore, credentialSets, skillInstaller);
+      // recipients 移交：换通道后旧会话回信不因记忆表丢失而 NO_RECIPIENT
+      if (old) for (const [k, v] of old.recipients) next.recipients.set(k, v);
+      next.onMessage((m) => void orch.handleMessage(m));
+      orchestrators.set("dingtalk", orch);
+      log.info({ channel: "dingtalk" }, "机器人通道已应用");
+    } else if (old) {
+      orchestrators.delete("dingtalk");
+      log.info({ channel: "dingtalk" }, "机器人通道已停用");
+    }
+    old?.stop();
+    dtChannel = next;
+    dtApplied = robotCfg;
+  };
+
   const webChannelDeps: import("./adapters/web-channel.js").WebChannelDeps = {
     port: cfg.port,
     host: cfg.host,
@@ -283,9 +377,9 @@ async function main(): Promise<void> {
     feedbackStore,
     sessionStore,
     cliToken: cfg.cliToken || undefined,
-    dingtalkConfig: cfg.dingtalk
-      ? { appKey: cfg.dingtalk.appKey, appSecret: cfg.dingtalk.appSecret }
-      : undefined,
+    moduleConfigStore,
+    dingtalkChannelController: { apply: applyDingTalkChannel },
+    setupToken: cfg.setupToken || undefined,
     fileBrowser,
     skillPackStore,
     installer: skillInstaller,
@@ -302,13 +396,7 @@ async function main(): Promise<void> {
     gitAccessGate,
     selfImproveGitRepository: selfImproveGitRepository,
     publicBaseUrl: cfg.publicBaseUrl,
-    dingtalkLoginRedirectUri: cfg.dingtalkLoginRedirectUri,
-    githubLoginRedirectUri: cfg.githubLoginRedirectUri,
-    githubConfig: cfg.githubOAuth,
-    githubProxyUrl: cfg.githubProxyUrl,
     inviteStore,
-    emailSignupAllowedDomains: cfg.emailSignupAllowedDomains,
-    emailLoginEnabled: cfg.emailLoginEnabled,
     trustProxy: cfg.trustProxy,
     triggerStore,
     workflowStore,
@@ -324,7 +412,7 @@ async function main(): Promise<void> {
   const webOrch = createOrch(webChannel, skillPackStore, credentialSets, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
-  const orchestrators = new Map<string, Orchestrator>([["web", webOrch]]);
+  orchestrators.set("web", webOrch);
 
   // 工作流运行时：loopRunner / scheduler / hookRegistry（依赖 webOrch，构造后回填 webChannel.deps）
   const loopRunner = new LoopRunner({
@@ -389,13 +477,15 @@ async function main(): Promise<void> {
     `\n🌐 Web 客户端监听 ${cfg.host}:${cfg.port}（本机访问 ${webProtocol}://localhost:${cfg.port}）\n`,
   );
 
-  // 钉钉 Channel（有配置才启动）
-  if (cfg.dingtalk) {
-    const dtChannel = new DingTalkChannel(cfg.dingtalk);
-    const dtOrch = createOrch(dtChannel, skillPackStore, credentialSets, skillInstaller);
-    dtChannel.onMessage((m) => void dtOrch.handleMessage(m));
-    orchestrators.set("dingtalk", dtOrch);
-    log.info({ channel: "dingtalk" }, "就绪");
+  // 钉钉 Channel 启动装配（此后授权页「应用」经 applyDingTalkChannel 运行时换血；
+  // 配置来源=module_configs，首启迁移已保证 env 有值则 DB 有值）
+  {
+    const dt = moduleConfigStore.getDingTalk();
+    applyDingTalkChannel(
+      dt && dingTalkRobotReady(dt)
+        ? { appKey: dt.appKey, appSecret: dt.appSecret, robotCode: dt.robotCode ?? "" }
+        : undefined,
+    );
   }
 
   // 启动清扫：遗留 running/awaiting_approval 任务无续跑依据，统一标失败并补提示
