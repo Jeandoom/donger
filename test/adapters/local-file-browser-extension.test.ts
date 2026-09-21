@@ -19,7 +19,6 @@ describe("LocalFileBrowser extension scope", () => {
   it("owner 可浏览扩展目录，共享访问者被拒绝", async () => {
     const root = mkdtempSync(join(tmpdir(), "file-extension-"));
     roots.push(root);
-    const extension = join(root, "external-docs");
     const db = new Database(":memory:");
     const userStore = new SqliteUserStore(db, {
       adminExternalIds: new Set(),
@@ -32,6 +31,8 @@ describe("LocalFileBrowser extension scope", () => {
     agentStore.migrate();
     const owner = await userStore.getOrCreateByIdentity("internal", "owner", "Owner");
     const visitor = await userStore.getOrCreateByIdentity("internal", "visitor", "Visitor");
+    // 扩展目录已改版为相对路径：锚定属主工作区根（owner.homeDir）
+    const extension = join(owner.homeDir, "external-docs");
     mkdirSync(extension, { recursive: true });
     writeFileSync(join(extension, "README.md"), "docs");
     const agent = await agentStore.create({
@@ -41,7 +42,9 @@ describe("LocalFileBrowser extension scope", () => {
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
       llm: {},
-      extensionDirectories: [{ id: "docs", name: "文档", path: extension, access: "readOnly" }],
+      extensionDirectories: [
+        { id: "docs", name: "文档", path: "external-docs", access: "readOnly" },
+      ],
     });
     const ownerConversation = await conversationStore.createWithAgent(
       owner.id,

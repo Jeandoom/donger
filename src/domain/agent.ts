@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { Conversation } from "./conversation.js";
-import { AgentExtensionDirectoriesSchema } from "./extension-directory.js";
+import {
+  AgentExtensionDirectoriesInputSchema,
+  AgentExtensionDirectoriesSchema,
+} from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
 import { isModelRef } from "./model-ref.js";
 import { AgentPermissionModeSchema } from "./permission-mode.js";
@@ -162,7 +165,9 @@ export type AgentInput = Omit<
   connectorIds?: string[];
   version?: number;
 };
-export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true });
+export const AgentInputSchema = AgentSchema.omit({ id: true, createdAt: true, updatedAt: true })
+  // 写入口换严格形态：扩展目录仅相对路径（存储/读取保持容忍，见 extension-directory.ts）
+  .extend({ extensionDirectories: AgentExtensionDirectoriesInputSchema });
 
 export function parseAgent(raw: unknown): Agent {
   return AgentSchema.parse(raw);

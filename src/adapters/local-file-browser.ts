@@ -139,8 +139,11 @@ export class LocalFileBrowser implements FileBrowser {
       if (!this.deps.extensionDirectoryResolver) {
         throw new ForbiddenError("FORBIDDEN", "扩展目录解析器未装配");
       }
+      const user = await this.deps.userStore.get(userId);
+      if (!user) throw new ForbiddenError("FORBIDDEN", "用户不存在");
       const resolution = await this.deps.extensionDirectoryResolver.resolve(
         agent.extensionDirectories,
+        resolve(user.homeDir),
       );
       return {
         roots: resolution.available.map((item) => item.path),

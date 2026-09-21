@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { LlmPreset } from "../config.js";
 import type { Agent, McpServerConfig } from "../domain/agent.js";
@@ -232,6 +232,7 @@ export class RuntimeManager {
       if (opts.agent.ownerId === user.id) {
         const resolution = await this.deps.extensionDirectoryResolver.resolve(
           opts.agent.extensionDirectories,
+          resolve(user.homeDir),
         );
         additionalDirectories = resolution.available.map((item) => item.path);
         allowedWriteRoots = resolution.available

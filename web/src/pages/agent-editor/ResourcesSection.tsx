@@ -120,7 +120,7 @@ export function ResourcesSection({
 
       <FormField
         label={`扩展工作目录（${form.extensionDirectories.length} 个）`}
-        hint="仅在智能体创建者自己的会话中生效；共享用户不会获得宿主目录权限"
+        hint="相对路径（相对你的工作区根目录，如 knowledge_base/docs），不允许绝对路径或 .. 上跳；仅在智能体创建者自己的会话中生效，共享用户不会获得目录权限"
       >
         <div className="flex flex-col gap-2">
           {form.extensionDirectories.map((dir) => (
@@ -137,7 +137,7 @@ export function ResourcesSection({
               <Input
                 mono
                 className="flex-1"
-                placeholder="宿主机绝对目录"
+                placeholder="相对你的工作区根目录，如 knowledge_base/docs"
                 value={dir.path}
                 onChange={(e) => patchDir(dir.id, { path: e.target.value })}
               />

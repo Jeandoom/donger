@@ -2417,3 +2417,105 @@ describe("WebChannel mention-candidates 会话引用候选", () => {
     expect(body.conversations.map((c) => c.title)).toEqual(["我的会话"]);
   });
 });
+
+describe("WebChannel /api/agents 扩展目录相对路径校验", () => {
+  const post = (port: number, token: string, extensionDirectories: unknown) =>
+    fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "A",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        extensionDirectories,
+        llm: {},
+      }),
+    });
+
+  it.each([
+    ["POSIX 绝对", "/etc/data"],
+    ["盘符", "D:\\code\\donger"],
+    [".. 上跳", "docs/../secret"],
+  ])("POST %s → 400", async (_label, path) => {
+    const { port, token } = await startWebWithAgents();
+    const r = await post(port, token, [{ id: "d1", name: "docs", path, access: "readWrite" }]);
+    expect(r.status).toBe(400);
+  });
+
+  it("POST 相对路径 → 201 且反斜杠归一为 /", async () => {
+    const { port, token } = await startWebWithAgents();
+    const r = await post(port, token, [
+      { id: "d1", name: "docs", path: "knowledge_base\\docs", access: "readOnly" },
+    ]);
+    expect(r.status).toBe(201);
+    const body = (await r.json()) as {
+      extensionDirectories: Array<{ path: string }>;
+    };
+    expect(body.extensionDirectories[0]?.path).toBe("knowledge_base/docs");
+  });
+
+  it("PATCH 绝对路径 → 400；PATCH 相对路径 → 200；存量绝对行 GET 不受影响", async () => {
+    const { port, token, agentStore, userId } = await startWebWithAgents();
+    // 直入 store 的存量行（含绝对路径条目）：读容忍
+    const legacy = await agentStore.create({
+      ownerId: userId,
+      name: "legacy",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+      extensionDirectories: [{ id: "d1", name: "旧目录", path: "D:\\legacy", access: "readWrite" }],
+    });
+    const getRes = await fetch(`http://127.0.0.1:${port}/api/agents/${legacy.id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(getRes.status).toBe(200);
+
+    const patch = (extensionDirectories: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/agents/${legacy.id}`, {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ extensionDirectories }),
+      });
+    expect(
+      (await patch([{ id: "d1", name: "旧目录", path: "D:\\legacy", access: "readWrite" }])).status,
+    ).toBe(400);
+    const okRes = await patch([
+      { id: "d1", name: "旧目录", path: "knowledge_base/docs", access: "readWrite" },
+    ]);
+    expect(okRes.status).toBe(200);
+  });
+
+  it("duplicate 剥离存量绝对路径条目并给出 warning", async () => {
+    const { port, token, agentStore, userStore, userId, agentShareStore } =
+      await startWebWithAgents();
+    const other = await userStore.getOrCreateByIdentity("internal", "other", "other");
+    const src = await agentStore.create({
+      ownerId: other.id,
+      name: "shared",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      llm: {},
+      extensionDirectories: [
+        { id: "d1", name: "相对", path: "knowledge_base/docs", access: "readWrite" },
+        { id: "d2", name: "绝对", path: "D:\\legacy", access: "readWrite" },
+      ],
+    });
+    // 被分享者复制：先建分享授权
+    await agentShareStore.enableShare(src.id);
+    await agentShareStore.addGrant(src.id, userId);
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${src.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      extensionDirectories: Array<{ path: string }>;
+      warnings: string[];
+    };
+    expect(body.extensionDirectories.map((d) => d.path)).toEqual(["knowledge_base/docs"]);
+    expect(body.warnings.some((w) => w.includes("绝对路径"))).toBe(true);
+  });
+});

@@ -53,7 +53,9 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
     if (!liveEnabled()) return;
     backend = await startLiveBackend("kb");
 
-    // 既有知识库 agent：kb-keeper（挂只读 A 股知识库目录，真实 KB 文件）
+    // 既有知识库 agent：kb-keeper（挂只读 A 股知识库目录，真实 KB 文件）。
+    // 扩展目录已改版为相对路径：知识库落属主工作区内（锚点 = user.homeDir）
+    const kbRoot = join(backend.userHome, "kb");
     const _keeper = await backend.agentStore.create({
       ownerId: backend.user.id,
       name: "kb-keeper",
@@ -67,15 +69,15 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
         {
           id: "kb-a-share",
           name: "A股知识库",
-          path: join(backend.kbDir, "a-share"),
+          path: "kb/a-share",
           access: "readOnly",
         },
       ],
       llm: {},
     });
-    mkdirSync(join(backend.kbDir, "a-share"), { recursive: true });
-    writeFileSync(join(backend.kbDir, "a-share", "价格与交易规则.md"), KB_RULES, "utf8");
-    writeFileSync(join(backend.kbDir, "a-share", "交易行为分析口径.md"), KB_BEHAVIOUR, "utf8");
+    mkdirSync(join(kbRoot, "a-share"), { recursive: true });
+    writeFileSync(join(kbRoot, "a-share", "价格与交易规则.md"), KB_RULES, "utf8");
+    writeFileSync(join(kbRoot, "a-share", "交易行为分析口径.md"), KB_BEHAVIOUR, "utf8");
 
     const boot = createApi(backend.baseUrl, "");
     jwt = (await boot.exchange(CLI_TOKEN)).token;

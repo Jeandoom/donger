@@ -744,7 +744,42 @@ describe("RuntimeManager agent 分支", () => {
 
   it("owner 的扩展目录进入 SDK additionalDirectories 和写入根", async () => {
     const conv = baseConv({ agentId: "a1" });
-    const extension = mkdtempSync(join(tmpdir(), "runtime-extension-"));
+    const home = join(ws, "users", "u1");
+    // 扩展目录已改版为相对路径：锚定属主工作区根，先落一个真实子目录
+    mkdirSync(join(home, "ext-code"), { recursive: true });
+    const extension = join(home, "ext-code");
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      extensionDirectoryResolver: new LocalExtensionDirectoryResolver(),
+      ...emptySkillDeps(),
+    });
+    const { runOptions } = await m.prepare(baseUser(home), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: false,
+        extensionDirectories: [{ id: "d1", name: "代码", path: "ext-code", access: "readWrite" }],
+        llm: {},
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    expect(runOptions.additionalDirectories).toEqual([extension]);
+    expect(runOptions.allowedWriteRoots).toEqual([extension]);
+    expect(runOptions.systemPromptAppend).toContain("扩展工作目录");
+  });
+
+  it("存量绝对路径扩展目录降级 unavailable，不注入 additionalDirectories", async () => {
+    const conv = baseConv({ agentId: "a1" });
     const m = new RuntimeManager({
       transcriptStore: fakeTranscriptStore(() => null),
       conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
@@ -763,15 +798,17 @@ describe("RuntimeManager agent 分支", () => {
         credentials: [],
         gitRepositories: [],
         gitAllowShellGit: false,
-        extensionDirectories: [{ id: "d1", name: "代码", path: extension, access: "readWrite" }],
+        extensionDirectories: [
+          { id: "d1", name: "旧目录", path: "D:\\legacy\\dir", access: "readWrite" },
+        ],
         llm: {},
         version: 1,
         createdAt: "",
         updatedAt: "",
       },
     });
-    expect(runOptions.additionalDirectories).toEqual([extension]);
-    expect(runOptions.allowedWriteRoots).toEqual([extension]);
-    expect(runOptions.systemPromptAppend).toContain("扩展工作目录");
+    expect(runOptions.additionalDirectories).toEqual([]);
+    expect(runOptions.allowedWriteRoots).toEqual([]);
+    expect(runOptions.systemPromptAppend).toContain("不可用");
   });
 });

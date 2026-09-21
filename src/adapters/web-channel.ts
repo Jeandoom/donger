@@ -39,6 +39,10 @@ import {
   withGitPatKeySpecs,
 } from "../domain/credential.js";
 import {
+  AgentExtensionDirectoriesInputSchema,
+  isRelativeExtensionPath,
+} from "../domain/extension-directory.js";
+import {
   type Feedback,
   type FeedbackReply,
   isFeedbackCategory,
@@ -3382,6 +3386,10 @@ export class WebChannel implements Channel {
       if (req.method === "PATCH") {
         if (!canManageAgent(a, actor)) return this.json(res, { error: "forbidden" }, 403);
         const patch = JSON.parse(await this.readBody(req)) as Partial<Agent>;
+        // 扩展目录写严格预检：仅相对路径（merged 走容忍 parseAgent，存量脏行不阻断无关字段编辑）
+        if (patch.extensionDirectories !== undefined) {
+          AgentExtensionDirectoriesInputSchema.parse(patch.extensionDirectories);
+        }
         const merged = { ...a, ...this.mergeMaskedMcp(a, patch) };
         // 合并结果必须过 AgentSchema（ZodError → 400）：PATCH 是唯一不走 parseAgentInput 的写入口，
         // 不校验会让非法数据（如空仓库名）落库，毒化读路径使整个 agent 列表 500
@@ -3527,6 +3535,11 @@ export class WebChannel implements Channel {
       }
       if (src.connectorIds.length > 0) warnings.push("连接器未随复制，请重新勾选");
       if (src.credentials.length > 0) warnings.push("凭证勾选未随复制，请自行补充");
+      // 扩展目录已改版为相对路径（相对复制者自己的工作区根解析）；存量绝对路径条目不随复制
+      const relativeDirs = src.extensionDirectories.filter((d) => isRelativeExtensionPath(d.path));
+      if (relativeDirs.length < src.extensionDirectories.length) {
+        warnings.push("扩展目录中的绝对路径条目未随复制，请在副本中改写为相对路径");
+      }
       const duplicated = await this.agentStore?.create({
         ...src,
         ownerId: me,
@@ -3535,6 +3548,7 @@ export class WebChannel implements Channel {
         credentials: [],
         connectorIds: [],
         gitRepositories: src.gitRepositories.map(({ credentialCode: _cc, ...rest }) => rest),
+        extensionDirectories: relativeDirs,
         // 会话范围引用原主的其他智能体，复制者无权访问，清空（自有副本的引用依然有效，保留）
         conversationScope:
           src.conversationScope && !isMine
