@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentGitRepositoriesSchema,
   AgentGitRepositorySchema,
+  defaultUsernameForHost,
   gitRepositoryFingerprint,
   inferGitProvider,
   isBlockedHost,
@@ -28,6 +29,16 @@ describe("Agent Git repository", () => {
     ["https://jihulab.com/acme/repo.git", "jihulab"],
   ] as const)("从 %s 推断平台", (url, provider) => {
     expect(inferGitProvider(url)).toBe(provider);
+  });
+
+  it.each([
+    ["https://github.com/acme/r", "x-access-token"],
+    ["https://gitee.com/acme/r", "x-token"],
+    ["https://jihulab.com/acme/r", "oauth2"],
+    ["https://gitlab.example.com/acme/r", "oauth2"],
+    ["not a url", "oauth2"],
+  ] as const)("%s 的默认认证用户名 → %s", (url, username) => {
+    expect(defaultUsernameForHost(url)).toBe(username);
   });
 
   it("生成不含凭证和 .git 后缀的仓库指纹", () => {

@@ -481,12 +481,34 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
   const [gitUrl, setGitUrl] = useState("");
   const [gitSubPath, setGitSubPath] = useState("");
   const [gitSlug, setGitSlug] = useState("");
+  const [credentialCode, setCredentialCode] = useState("");
+  const [credentials, setCredentials] = useState<
+    Array<{ code: string; name: string; filledKeys: string[] }>
+  >([]);
+  const [credLoadError, setCredLoadError] = useState(false);
   const [pasteContent, setPasteContent] = useState("");
   const [pasteSlug, setPasteSlug] = useState("");
   const [fileName, setFileName] = useState("");
   const [fileContent, setFileContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const all = await fetchMyCredentials();
+        setCredentials(
+          all
+            .filter((c) => c.kind === "git")
+            .map((c) => ({ code: c.code, name: c.name, filledKeys: c.filledKeys })),
+        );
+      } catch {
+        setCredLoadError(true);
+      }
+    })();
+  }, []);
+
+  const selectedCred = credentials.find((c) => c.code === credentialCode);
 
   const submit = async () => {
     setBusy(true);
@@ -499,6 +521,7 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
           url: gitUrl.trim(),
           subPath: gitSubPath.trim() || undefined,
           slug: gitSlug.trim() || undefined,
+          credentialCode: credentialCode || undefined,
         });
       } else if (tab === "upload") {
         if (!fileContent) throw new Error("请选择文件");
@@ -548,7 +571,7 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
             <>
               <input
                 className="w-full rounded-md border border-border px-3 py-2 text-sm"
-                placeholder="https://github.com/user/skills-repo"
+                placeholder="https://github.com/user/skills-repo（支持 GitHub / Gitee / GitLab·极狐）"
                 value={gitUrl}
                 onChange={(e) => setGitUrl(e.target.value)}
               />
@@ -564,6 +587,35 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
                 value={gitSlug}
                 onChange={(e) => setGitSlug(e.target.value)}
               />
+              <select
+                className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm"
+                value={credentialCode}
+                onChange={(e) => setCredentialCode(e.target.value)}
+              >
+                <option value="">不使用凭证（公开仓库匿名拉取）</option>
+                {credentials.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.name}
+                    {c.filledKeys.includes("access_token") ? "" : "（未填令牌）"}
+                  </option>
+                ))}
+              </select>
+              {credLoadError && (
+                <div className="text-xs text-warning">
+                  凭证列表加载失败，请刷新重试或前往「我的凭证」。
+                </div>
+              )}
+              {selectedCred && !selectedCred.filledKeys.includes("access_token") && (
+                <div className="text-xs text-warning">
+                  该凭证尚未填写 access_token，请先到「我的凭证」补全后再安装。
+                </div>
+              )}
+              {!credentialCode && (
+                <div className="text-xs leading-5 text-muted-foreground">
+                  GitLab / Gitee 等私有仓库请先在「我的凭证」建 kind=git 的 PAT
+                  凭证并填好令牌，再在此勾选后安装。
+                </div>
+              )}
             </>
           )}
           {tab === "upload" && (

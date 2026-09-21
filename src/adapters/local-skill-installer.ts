@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { gitPatFromValues } from "../domain/credential.js";
+import { defaultUsernameForHost, normalizeRepositoryIdentity } from "../domain/git.js";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
+import { cleanHttpsRepoUrl } from "../domain/user-skill-repo.js";
 import { parseFrontmatter, scanSkillPack } from "../domain/skill-scan.js";
 import type {
   InstallGitReq,
@@ -9,46 +11,53 @@ import type {
   InstallUploadReq,
   SkillInstaller,
 } from "../ports/skill-installer.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import { SkillInstallError } from "../util/errors.js";
+import { type GitProcessCredential, type GitProcessResult, runGit, sanitizeGitError } from "../util/git-process.js";
 
 const SLUG_RE = /^[a-z0-9-]+$/;
-const GIT_LONG_PATH_CONFIG = "core.longpaths=true";
+const GIT_TIMEOUT_MS = 120_000;
 
 export interface LocalSkillInstallerDeps {
   packStore: SkillPackStore;
   getHomeDir: (userId: string) => string;
+  /** 私有仓库鉴权：凭证集（kind=git 模板 + 用户值）；缺省=不支持凭证拉取 */
+  credentialSets?: CredentialSetStore;
+  /** 测试注入 git 执行器；缺省 runGit（AskPass 凭证注入） */
+  gitRunner?: typeof runGit;
 }
 
 export class LocalSkillInstaller implements SkillInstaller {
   constructor(private readonly deps: LocalSkillInstallerDeps) {}
 
   async installFromGit(userId: string, req: InstallGitReq): Promise<SkillPack> {
-    const slug = await this.deriveSlug(userId, req.slug ?? repoSlugFromUrl(req.url));
+    const url = req.url.trim();
+    validateGitSourceUrl(url);
+    const credential = await this.resolveCredential(
+      userId,
+      req.credentialCode?.trim() || undefined,
+      url,
+    );
+    const slug = await this.deriveSlug(userId, req.slug ?? repoSlugFromUrl(url));
     const dir = this.userPackDir(userId, slug);
     try {
-      // 参数数组直传 git，不经 shell（url/ref 来自外部输入，杜绝注入面）
-      execFileSync(
-        "git",
-        [
-          "-c",
-          GIT_LONG_PATH_CONFIG,
-          "clone",
-          "--depth",
-          "1",
-          ...(req.ref ? ["--branch", req.ref] : []),
-          req.url,
-          dir,
-        ],
-        { stdio: "pipe" },
+      // 参数数组直传 git，不经 shell；token 经临时 AskPass 注入，不进 URL/DB/审计
+      const result = await this.git(
+        ["clone", "--depth", "1", ...(req.ref ? ["--branch", req.ref] : []), url, dir],
+        credential,
       );
+      if (result.code !== 0) {
+        throw new SkillInstallError("GIT_CLONE_FAILED", gitFailureMessage(result, "拉取"));
+      }
       this.ensurePluginManifest(dir, slug);
       const subPath = normalizeSubPath(req.subPath);
       const source: SkillPackSource = {
         kind: "git",
-        url: req.url,
+        url,
         ref: req.ref,
         ...(subPath ? { subPath } : {}),
+        ...(req.credentialCode?.trim() ? { credentialCode: req.credentialCode.trim() } : {}),
       };
       const skillRoot = this.resolveSkillRoot(dir, source);
       return this.persistScanned(userId, slug, dir, source, false, undefined, skillRoot);
@@ -103,11 +112,18 @@ export class LocalSkillInstaller implements SkillInstaller {
       throw new SkillInstallError("NOT_GIT", "仅 git pack 支持更新");
     }
     const dir = this.resolvePackDir(userId, pack);
+    const credential = await this.resolveCredential(
+      userId,
+      pack.source.credentialCode,
+      pack.source.url,
+    );
     try {
-      execFileSync("git", ["-c", GIT_LONG_PATH_CONFIG, "-C", dir, "pull", "--ff-only"], {
-        stdio: "pipe",
-      });
+      const result = await this.git(["-C", dir, "pull", "--ff-only"], credential);
+      if (result.code !== 0) {
+        throw new SkillInstallError("GIT_PULL_FAILED", gitFailureMessage(result, "更新"));
+      }
     } catch (e) {
+      if (e instanceof SkillInstallError) throw e;
       throw new SkillInstallError("GIT_PULL_FAILED", `git pull 失败: ${(e as Error).message}`);
     }
     this.ensurePluginManifest(dir, pack.slug);
@@ -200,6 +216,52 @@ export class LocalSkillInstaller implements SkillInstaller {
   }
 
   // ---- 内部 ----
+
+  private git(args: string[], credential?: GitProcessCredential): Promise<GitProcessResult> {
+    return (this.deps.gitRunner ?? runGit)(args, credential, GIT_TIMEOUT_MS);
+  }
+
+  /**
+   * 凭证解析（安装/更新共用）：code 缺省=匿名；要求 kind=git 模板 + 已填 access_token；
+   * 模板声明 repoUrl 时按一凭一仓校验与安装地址一致。token 经凭证桥现取，永不落库/回显。
+   */
+  private async resolveCredential(
+    userId: string,
+    code: string | undefined,
+    url: string,
+  ): Promise<GitProcessCredential | undefined> {
+    if (!code) return undefined;
+    const csets = this.deps.credentialSets;
+    if (!csets) {
+      throw new SkillInstallError("CREDENTIAL_UNAVAILABLE", "凭证系统未装配，无法按凭证鉴权拉取");
+    }
+    const template = await csets.getTemplate(code);
+    if (!template) {
+      throw new SkillInstallError("CREDENTIAL_NOT_FOUND", `凭证模板不存在: ${code}`);
+    }
+    if (template.kind !== "git") {
+      throw new SkillInstallError("CREDENTIAL_KIND_INVALID", "请勾选 kind=git 的 PAT 凭证");
+    }
+    if (template.repoUrl) {
+      const bound = normalizeRepositoryIdentity(template.repoUrl);
+      const target = normalizeRepositoryIdentity(url);
+      if (bound && target && bound !== target) {
+        throw new SkillInstallError(
+          "CREDENTIAL_REPO_MISMATCH",
+          `凭证 ${code} 绑定的仓库是 ${template.repoUrl}，与安装地址不一致（一凭一仓）`,
+        );
+      }
+    }
+    const [filled] = await csets.getFilledValues(userId, [code]);
+    const pat = gitPatFromValues(filled?.values);
+    if (!pat) {
+      throw new SkillInstallError(
+        "CREDENTIAL_TOKEN_MISSING",
+        `凭证 ${code} 未填写 access_token，请先到「我的凭证」补全后再安装`,
+      );
+    }
+    return { username: pat.user || defaultUsernameForHost(url), accessToken: pat.accessToken };
+  }
 
   private async installSingleDoc(
     userId: string,
@@ -362,6 +424,34 @@ function repoSlugFromUrl(url: string): string {
 function normalizeSubPath(value?: string): string | undefined {
   const normalized = value?.trim().replaceAll("\\", "/").replace(/^\.\//, "");
   return normalized || undefined;
+}
+
+/** git 来源校验：无凭证内嵌的 HTTPS 地址（本地路径保留为离线/测试通道）；杜绝 option 注入与 URL 内嵌 token */
+function validateGitSourceUrl(url: string): void {
+  if (url.startsWith("-")) {
+    throw new SkillInstallError("GIT_URL_INVALID", "git 地址非法");
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(url) || url.startsWith("/") || url.startsWith("\\\\")) {
+    return;
+  }
+  if (!cleanHttpsRepoUrl(url)) {
+    throw new SkillInstallError(
+      "GIT_URL_INVALID",
+      "git 地址须为无凭证内嵌的 HTTPS 地址；私有仓库请通过勾选凭证注入 token",
+    );
+  }
+}
+
+/** git 失败信息归一：超时单独说、鉴权类失败给「勾选凭证」引导，其余脱敏透出 */
+function gitFailureMessage(result: GitProcessResult, action: string): string {
+  if (result.timedOut) return `git ${action}超时（>${GIT_TIMEOUT_MS / 1000}s）`;
+  const detail = sanitizeGitError(result.stderr || result.stdout || "未知错误");
+  if (
+    /authentication|authorization|403|401|could not read username|access denied|权限/i.test(detail)
+  ) {
+    return `git ${action}失败（鉴权未通过）：私有仓库请勾选 git 凭证后重试。${detail}`;
+  }
+  return `git ${action}失败: ${detail}`;
 }
 
 function isInside(child: string, parent: string): boolean {

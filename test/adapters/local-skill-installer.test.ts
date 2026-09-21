@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,8 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LocalSkillInstaller } from "../../src/adapters/local-skill-installer.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
+import type { CredentialSetStore } from "../../src/ports/credential-set-store.js";
+import { type GitProcessCredential, runGit } from "../../src/util/git-process.js";
 
 let db: Database.Database;
 let packStore: SqliteSkillPackStore;
@@ -307,5 +310,160 @@ description: d
     ).rejects.toThrow("不一致");
 
     await expect(packStore.getPack("u2", paste.id)).resolves.toBeUndefined();
+  });
+});
+
+// ---- git 凭证鉴权（GitLab/JihuLab/Gitee 私有仓库安装）----
+
+function commitAll(cwd: string): void {
+  execFileSync("git", ["init", "-q"], { cwd });
+  execFileSync("git", ["-c", "user.email=a@b.c", "-c", "user.name=a", "add", "-A"], { cwd });
+  execFileSync(
+    "git",
+    ["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-qm", "init"],
+    { cwd },
+  );
+}
+
+describe("LocalSkillInstaller git 凭证鉴权", () => {
+  const templates = new Map<string, { kind: "generic" | "git"; repoUrl?: string }>();
+  const values = new Map<string, Record<string, string>>();
+  const gitCalls: Array<{ args: string[]; credential?: GitProcessCredential }> = [];
+  let credInstaller: LocalSkillInstaller;
+
+  function makeCredentialSets(): CredentialSetStore {
+    return {
+      getTemplate: async (code) => {
+        const t = templates.get(code);
+        if (!t) return undefined;
+        return {
+          code,
+          name: code,
+          kind: t.kind,
+          ...(t.repoUrl ? { repoUrl: t.repoUrl } : {}),
+          keySpecs: [],
+          createdBy: "u1",
+          createdAt: "",
+          updatedAt: "",
+        };
+      },
+      getFilledValues: async (uid, codes) =>
+        codes
+          .filter((c) => values.has(c))
+          .map((c) => ({
+            userId: uid,
+            code: c,
+            values: values.get(c) ?? {},
+            createdAt: "",
+            updatedAt: "",
+          })),
+    } as unknown as CredentialSetStore;
+  }
+
+  function makeSrcRepo(): string {
+    const src = mkdtempSync(join(tmpdir(), "git-cred-src-"));
+    gitRoots.push(src);
+    mkdirSync(join(src, "skills", "g"), { recursive: true });
+    writeFileSync(
+      join(src, "skills", "g", "SKILL.md"),
+      '---\nname: g\ndescription: "cred"\n---\n',
+    );
+    commitAll(src);
+    return src;
+  }
+
+  beforeEach(() => {
+    templates.clear();
+    values.clear();
+    gitCalls.length = 0;
+    credInstaller = new LocalSkillInstaller({
+      packStore,
+      getHomeDir: (uid) => join(homeDir, uid),
+      credentialSets: makeCredentialSets(),
+      gitRunner: (args, credential, timeout) => {
+        gitCalls.push({ args, ...(credential ? { credential } : {}) });
+        return runGit(args, credential, timeout);
+      },
+    });
+  });
+
+  it("勾选凭证安装：AskPass 注入 + credentialCode 落 source + 更新复用", { timeout: 15_000 }, async () => {
+    const src = makeSrcRepo();
+    templates.set("gl-pat", { kind: "git" });
+    values.set("gl-pat", { access_token: "tok-123" });
+    const pack = await credInstaller.installFromGit("u1", {
+      url: src,
+      slug: "cred-pack",
+      credentialCode: "gl-pat",
+    });
+    expect(pack.source.credentialCode).toBe("gl-pat");
+    expect(gitCalls[0]?.args[0]).toBe("clone");
+    expect(gitCalls[0]?.credential).toEqual({ username: "oauth2", accessToken: "tok-123" });
+
+    gitCalls.length = 0;
+    await credInstaller.update("u1", pack.id);
+    expect(gitCalls[0]?.args).toContain("pull");
+    expect(gitCalls[0]?.credential).toEqual({ username: "oauth2", accessToken: "tok-123" });
+  });
+
+  it("凭证校验：模板不存在 / kind 非 git / 未填 token / repoUrl 不一致", async () => {
+    const src = makeSrcRepo();
+    templates.set("gen", { kind: "generic" });
+    templates.set("bound", { kind: "git", repoUrl: "https://gitlab.com/other/repo" });
+    templates.set("empty", { kind: "git" });
+    values.set("empty", {});
+    await expect(
+      credInstaller.installFromGit("u1", { url: src, slug: "a", credentialCode: "nope" }),
+    ).rejects.toThrow("凭证模板不存在");
+    await expect(
+      credInstaller.installFromGit("u1", { url: src, slug: "b", credentialCode: "gen" }),
+    ).rejects.toThrow("kind=git");
+    await expect(
+      credInstaller.installFromGit("u1", { url: src, slug: "c", credentialCode: "empty" }),
+    ).rejects.toThrow("access_token");
+    await expect(
+      credInstaller.installFromGit("u1", {
+        url: "https://gitlab.com/other/repo2",
+        slug: "d",
+        credentialCode: "bound",
+      }),
+    ).rejects.toThrow("不一致");
+  });
+
+  it("git 地址校验：URL 内嵌凭证与 option 注入拒绝", async () => {
+    await expect(
+      credInstaller.installFromGit("u1", {
+        url: "https://user:tok@gitlab.com/g/r.git",
+        slug: "x",
+      }),
+    ).rejects.toThrow("HTTPS");
+    await expect(
+      credInstaller.installFromGit("u1", { url: "--upload-pack=evil", slug: "y" }),
+    ).rejects.toThrow("非法");
+  });
+
+  it("鉴权失败：错误信息给勾选凭证引导，安装目录清理", async () => {
+    templates.set("gl-pat", { kind: "git" });
+    values.set("gl-pat", { access_token: "tok-123" });
+    const failing = new LocalSkillInstaller({
+      packStore,
+      getHomeDir: (uid) => join(homeDir, uid),
+      credentialSets: makeCredentialSets(),
+      gitRunner: async () => ({
+        code: 128,
+        stdout: "",
+        stderr: "fatal: Authentication failed for 'https://gitlab.example.com/g/r.git/'",
+        timedOut: false,
+      }),
+    });
+    await expect(
+      failing.installFromGit("u1", {
+        url: "https://gitlab.example.com/g/r",
+        slug: "auth-fail",
+        credentialCode: "gl-pat",
+      }),
+    ).rejects.toThrow(/鉴权未通过[\s\S]*勾选 git 凭证/);
+    expect(existsSync(join(homeDir, "u1", ".skills", "auth-fail"))).toBe(false);
+    await expect(packStore.getPackBySlug("u1", "auth-fail")).resolves.toBeUndefined();
   });
 });

@@ -3,7 +3,14 @@
 // 凭证：旧 pack 声明式单值体系已移除，改由凭证模板 + 用户值 + agent 勾选（domain/credential.ts）。
 
 export type SkillPackSource =
-  | { kind: "git"; url: string; ref?: string; subPath?: string }
+  | {
+      kind: "git";
+      url: string;
+      ref?: string;
+      subPath?: string;
+      /** 私有仓库鉴权凭证（kind=git 模板 code，仅存引用；更新拉取时复用） */
+      credentialCode?: string;
+    }
   | { kind: "upload"; originalFilename: string }
   | { kind: "paste" }
   | { kind: "builtin" };

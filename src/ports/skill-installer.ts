@@ -5,6 +5,8 @@ export interface InstallGitReq {
   ref?: string;
   subPath?: string;
   slug?: string;
+  /** 私有仓库鉴权：引用凭证集中 kind=git 模板的 code；缺省=匿名拉取（公开仓库） */
+  credentialCode?: string;
 }
 export interface InstallUploadReq {
   filename: string;

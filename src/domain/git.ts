@@ -88,6 +88,21 @@ export function inferGitProvider(url: string): GitProvider | undefined {
 }
 
 /**
+ * URL host → 平台默认 HTTP 认证用户名（PAT 认证；与 git-access-gate.defaultGitUsername
+ * 同一映射，供拿不到方言、只有 URL 的链路用：GitLab 系（jihulab/自建）与未知 host 走 oauth2）。
+ */
+export function defaultUsernameForHost(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    if (host === "github.com") return "x-access-token";
+    if (host === "gitee.com") return "x-token";
+  } catch {
+    // 非法 URL 落通用缺省
+  }
+  return "oauth2";
+}
+
+/**
  * clone 参数组装（纯函数，便于单测）。
  * shallow=true 走 blobless partial clone（--filter=blob:none）：完整提交历史 + 全部分支，
  * 仅按需拉取文件内容——修复 depth=1 隐含 single-branch 导致「git branch -r 只见单分支、

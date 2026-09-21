@@ -268,6 +268,7 @@ async function main(): Promise<void> {
   const skillInstaller = new LocalSkillInstaller({
     packStore: skillPackStore,
     getHomeDir: (uid) => join(usersDir, uid),
+    credentialSets,
   });
 
   // 用户技能仓库（自建技能 git 镜像同步）：配置存储 + 同步服务（WebChannel 与 Orchestrator 共享）
