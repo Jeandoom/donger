@@ -914,6 +914,25 @@ describe("WebChannel POST /api/upload", () => {
     expect(existsSync(j.path)).toBe(true);
   });
 
+  it("中文文件名按 UTF-8 保真落盘（不 mojibake）", async () => {
+    const body = new FormData();
+    body.append(
+      "file",
+      new Blob(["PK"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      "季度报表.xlsx",
+    );
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
+      method: "POST",
+      headers: authHeaders,
+      body,
+    });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { path: string; name: string; type: string };
+    expect(j.name).toBe("季度报表.xlsx");
+    expect(j.type).toBe("document");
+    expect(existsSync(j.path)).toBe(true);
+  });
+
   it("可脚本化附件回读降级安全：html 按纯文本、zip 强制 attachment", async () => {
     const htmlBody = new FormData();
     htmlBody.append(

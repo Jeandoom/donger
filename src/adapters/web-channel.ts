@@ -4716,6 +4716,9 @@ export class WebChannel implements Channel {
       const bb = Busboy({
         headers: req.headers as Record<string, string>,
         limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+        // 浏览器/undici 的 FormData 把非 ASCII filename 以裸 UTF-8 写入；
+        // busboy 默认按 latin1 解会产出 mojibake 落盘名（「季度报表.xlsx」→ 乱码）
+        defParamCharset: "utf8",
       });
 
       bb.on(
