@@ -182,7 +182,7 @@ export function CredentialsPage() {
               <div className="flex items-center gap-2">
                 <h2 className="text-[13px] font-semibold">我的凭证</h2>
                 <Badge>{sections.mine.length}</Badge>
-                <span className="text-xs text-muted-foreground">
+                <span className="hidden text-xs text-muted-foreground sm:inline">
                   值只属于你自己，共享智能体运行时注入
                 </span>
               </div>
@@ -219,7 +219,7 @@ export function CredentialsPage() {
                 <div className="flex items-center gap-2">
                   <h2 className="text-[13px] font-semibold">可用模板</h2>
                   <Badge>{filteredTemplates.length}</Badge>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="hidden text-xs text-muted-foreground sm:inline">
                     平台共享的凭证结构，填写后即成为你的凭证
                   </span>
                 </div>
@@ -362,7 +362,7 @@ export function CredentialsPage() {
   );
 }
 
-/** 我的凭证行卡：图标锚点 + 标题/元信息两行 + 动作收敛（填写 + ⋯ 菜单） */
+/** 我的凭证行卡 v4：名称+单一状态徽章 / 元信息行（code·键位·说明）/ 动作收敛；窄屏转两行式 */
 function CredentialRowCard(props: {
   row: CredentialRow;
   canEditTemplate: boolean;
@@ -428,103 +428,106 @@ function CredentialRowCard(props: {
     onSelect: props.onDeleteValue,
   });
 
+  const status = row.orphan ? (
+    <Badge tone="danger" className="shrink-0">
+      模板已删除
+    </Badge>
+  ) : partial ? (
+    <Badge tone="warning" className="shrink-0">
+      缺 {row.missingKeys.length} 键
+    </Badge>
+  ) : (
+    <Badge tone="success" className="shrink-0">
+      就绪
+    </Badge>
+  );
+
   return (
-    <Card className="flex items-center gap-3 px-3.5 py-3">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-muted">
-        <RowIcon size={18} aria-hidden="true" className="text-slate-600" />
-      </span>
-      {renaming ? (
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              autoFocus
-              className="h-8 w-56 text-sm"
-              value={renameText}
-              aria-label={`重命名 ${row.code}`}
-              onChange={(e) => setRenameText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void saveRename();
-                if (e.key === "Escape") setRenaming(false);
-              }}
-            />
-            <Button size="sm" disabled={renameBusy} onClick={() => void saveRename()}>
-              {renameBusy ? "保存中…" : "保存"}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setRenaming(false);
-                setRenameError(null);
-              }}
-            >
-              取消
-            </Button>
-            {renameError ? (
-              <span role="alert" className="text-xs text-destructive">
-                {renameError}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      ) : (
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium">{row.name}</span>
-            <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.code}</span>
-            {row.kind === "git" ? <Badge tone="info">git · 专用</Badge> : null}
-            {row.orphan ? (
-              <Badge tone="danger">模板已删除</Badge>
-            ) : partial ? (
-              <Badge tone="warning">缺 {row.missingKeys.length} 键</Badge>
-            ) : (
-              <Badge tone="success">就绪</Badge>
-            )}
-          </div>
-          <div className="mt-1 flex min-w-0 items-center gap-2">
-            {row.orphan ? (
-              <span className="shrink-0 text-[11px] text-muted-foreground">
-                已填 {row.filledKeys.length} 个键（结构未知）
-              </span>
-            ) : (
-              <>
-                <span className="flex shrink-0 items-center gap-[3px]" aria-hidden="true">
-                  {row.keySpecs.map((spec) => (
-                    <span
-                      key={spec.key}
-                      title={spec.label || spec.key}
-                      className={cn(
-                        "h-[9px] w-[9px] rounded-[2.5px]",
-                        row.filledKeys.includes(spec.key) ? "bg-success" : "bg-warning",
-                      )}
-                    />
-                  ))}
-                </span>
-                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                  {row.filledKeys.length}/{row.keySpecs.length} 键
-                </span>
-              </>
-            )}
-            {row.description ? (
-              <span className="truncate text-xs text-muted-foreground" title={row.description}>
-                {row.description}
-              </span>
-            ) : null}
-            {row.repoUrl ? (
-              <span
-                className="truncate font-mono text-[11px] text-muted-foreground"
-                title={row.repoUrl}
+    <Card className="flex flex-col gap-1.5 px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3">
+      <div className="flex min-w-0 items-center gap-2.5 sm:flex-1">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-muted">
+          <RowIcon size={18} aria-hidden="true" className="text-slate-600" />
+        </span>
+        {renaming ? (
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                autoFocus
+                className="h-8 w-56 text-sm"
+                value={renameText}
+                aria-label={`重命名 ${row.code}`}
+                onChange={(e) => setRenameText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveRename();
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+              />
+              <Button size="sm" disabled={renameBusy} onClick={() => void saveRename()}>
+                {renameBusy ? "保存中…" : "保存"}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setRenaming(false);
+                  setRenameError(null);
+                }}
               >
-                {row.repoUrl}
-              </span>
-            ) : null}
-            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
-              {formatRelativeTime(row.updatedAt)}
-            </span>
+                取消
+              </Button>
+              {renameError ? (
+                <span role="alert" className="text-xs text-destructive">
+                  {renameError}
+                </span>
+              ) : null}
+            </div>
           </div>
-        </div>
-      )}
-      <div className="flex shrink-0 items-center gap-1.5">
+        ) : (
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{row.name}</span>
+              {status}
+            </div>
+            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs">
+              <span className="shrink-0 font-mono text-muted-foreground">{row.code}</span>
+              {!row.orphan ? (
+                <>
+                  <span className="shrink-0 text-muted-foreground/50">·</span>
+                  <span
+                    className={cn(
+                      "shrink-0",
+                      partial ? "font-medium text-amber-700" : "text-muted-foreground",
+                    )}
+                  >
+                    {row.filledKeys.length}/{row.keySpecs.length} 键
+                  </span>
+                </>
+              ) : (
+                <span className="shrink-0 text-muted-foreground">
+                  已填 {row.filledKeys.length} 个键（结构未知）
+                </span>
+              )}
+              {row.description ? (
+                <span className="min-w-0 truncate text-muted-foreground/80" title={row.description}>
+                  {row.description}
+                </span>
+              ) : null}
+              {row.repoUrl ? (
+                <span
+                  className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground/70 sm:inline"
+                  title={row.repoUrl}
+                >
+                  {row.repoUrl}
+                </span>
+              ) : null}
+              <span className="ml-auto hidden shrink-0 pl-2 text-[11px] text-muted-foreground/70 sm:inline">
+                {formatRelativeTime(row.updatedAt)}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-1.5 pl-[46px] sm:pl-0">
         <Button
           variant={partial ? "ghost" : "outline"}
           size="sm"
@@ -539,7 +542,7 @@ function CredentialRowCard(props: {
   );
 }
 
-/** 可用模板行：虚线弱化卡，单行摘要 + 去填写 CTA；创建人可经 ⋯ 编辑/删除模板 */
+/** 可用模板行 v4：虚线弱化卡 + 名称/元信息两行 + 填写 CTA；窄屏同构两行式 */
 function TemplateRowCard(props: {
   row: CredentialRow;
   canEditTemplate: boolean;
@@ -549,25 +552,28 @@ function TemplateRowCard(props: {
 }) {
   const { row } = props;
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-white/60 px-3.5 py-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted">
-        <LayoutTemplate size={15} aria-hidden="true" className="text-slate-600" />
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-[13px] font-semibold">{row.name}</span>
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">{row.code}</span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">
-          {row.keySpecs.length} 个键
+    <div className="flex flex-col gap-1 rounded-xl border border-dashed border-slate-300 bg-white/60 px-3.5 py-2.5 sm:flex-row sm:items-center sm:gap-3">
+      <div className="flex min-w-0 items-center gap-2.5 sm:flex-1">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted">
+          <LayoutTemplate size={15} aria-hidden="true" className="text-slate-600" />
         </span>
-        {row.description ? (
-          <span className="truncate text-xs text-muted-foreground" title={row.description}>
-            {row.description}
-          </span>
-        ) : null}
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-semibold">{row.name}</span>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px]">
+            <span className="shrink-0 font-mono text-muted-foreground">{row.code}</span>
+            <span className="shrink-0 text-muted-foreground/50">·</span>
+            <span className="shrink-0 text-muted-foreground">{row.keySpecs.length} 个键</span>
+            {row.description ? (
+              <span className="min-w-0 truncate text-muted-foreground/70" title={row.description}>
+                {row.description}
+              </span>
+            ) : null}
+          </div>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center justify-end gap-1.5 pl-[38px] sm:pl-0">
         <Button variant="ghost" size="sm" onClick={props.onFill}>
-          去填写
+          填写
         </Button>
         {props.canEditTemplate ? (
           <Menu
