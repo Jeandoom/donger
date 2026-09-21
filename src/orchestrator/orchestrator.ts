@@ -42,6 +42,7 @@ import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
 import { friendlyRunnerError } from "../util/runner-error-message.js";
+import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
@@ -1072,13 +1073,21 @@ export class Orchestrator {
       }
 
       const now = new Date().toISOString();
+      // 附件路径按本轮 cwd 相对化注入（与 runtime-manager 的 runtimeDir 规则一致）；
+      // cwd 此时尚未创建也没关系——仅用于 path.relative 计算
+      const attachmentCwd = runtimeDir(
+        user.homeDir,
+        agent ? "agents" : "sessions",
+        agent ? agent.id : conversation.id,
+        "workspace",
+      );
       task = {
         id: crypto.randomUUID(),
         channelId: msg.channelId,
         threadId: msg.threadId,
         requesterId: msg.requesterId,
         prompt: appendDefaultSkill(
-          appendMentions(appendMessageFiles(msg.text, msg.files), msg.mentions),
+          appendMentions(appendMessageFiles(msg.text, msg.files, attachmentCwd), msg.mentions),
           agent?.defaultSkill,
         ),
         status: "created",

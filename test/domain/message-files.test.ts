@@ -15,4 +15,30 @@ describe("appendMessageFiles", () => {
   it("没有附件时不修改 prompt", () => {
     expect(appendMessageFiles("hi")).toBe("hi");
   });
+
+  it("传入 cwd 时附件路径相对化（避免模型照抄部署目录绝对路径）", () => {
+    const prompt = appendMessageFiles(
+      "分析账单",
+      [
+        {
+          path: "D:\\code\\donger\\.deploy\\donger\\data\\workspace\\users\\u1\\sessions\\c1\\workspace\\attachments\\账单.xlsx",
+          name: "账单.xlsx",
+          type: "document",
+        },
+      ],
+      "D:\\code\\donger\\.deploy\\donger\\data\\workspace\\users\\u1\\sessions\\c1\\workspace",
+    );
+    expect(prompt).toContain("attachments\\\\账单.xlsx");
+    expect(prompt).not.toContain(".deploy");
+    expect(prompt).toContain("路径均相对当前工作目录");
+  });
+
+  it("cwd 提供但路径跨盘/无法相对化时回退绝对路径", () => {
+    const prompt = appendMessageFiles(
+      "看下",
+      [{ path: "E:\\other\\file.csv", name: "file.csv", type: "document" }],
+      "C:\\somewhere\\workspace",
+    );
+    expect(prompt).toContain("E:\\\\other\\\\file.csv");
+  });
 });

@@ -8,10 +8,14 @@ export function createDefaultGates(): GateRouter {
   gates.describe({ id: "deploy", description: "部署/发布/推送操作审批" });
   // release 用负向断言：release-202608-1 这类分支名/版本号是普通参数，不算发布动作
   //（此前误拦只读 git fetch origin release-202608-1，60s 审批超时致任务失败，复盘 P2-9）
+  // deploy/publish/release 同样排除前置 `.`：`.deploy` 是部署目录名（生产工作区路径
+  // 天然含 D:\...\.deploy\...），cd/python 等普通命令照抄附件绝对路径即被误拦、
+  // 审批卡在手机端未处理便无限挂起（2026-09-21 个人财物管家两条会话卡死复盘）。
+  // ./deploy.sh 前置是 / 不受负向断言影响，仍照拦。
   gates.add({
     gateId: "deploy",
     toolName: "Bash",
-    commandPattern: /\b(deploy|publish|git\s+push)\b|\brelease(?![-\w])/i,
+    commandPattern: /(?<!\.)\b(?:deploy|publish)\b|\bgit\s+push\b|(?<!\.)\brelease(?![-\w])/i,
     force: true,
   });
   // AI 生成子模块：平台工具写操作确认（SDK 中工具全名 = mcp__donger-platform__<tool>）
