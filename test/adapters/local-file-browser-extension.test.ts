@@ -41,7 +41,6 @@ describe("LocalFileBrowser extension scope", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
       extensionDirectories: [
         { id: "docs", name: "文档", path: "external-docs", access: "readOnly" },
       ],

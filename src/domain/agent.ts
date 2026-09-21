@@ -5,7 +5,6 @@ import {
   AgentExtensionDirectoriesSchema,
 } from "./extension-directory.js";
 import { AgentGitRepositoriesSchema } from "./git.js";
-import { isModelRef } from "./model-ref.js";
 import { AgentPermissionModeSchema } from "./permission-mode.js";
 import { SCENARIO_KEYS } from "./scenario-preset.js";
 
@@ -25,16 +24,6 @@ export const AgentToolsSchema = z.object({
   whitelist: z.array(z.string()).default([]),
 });
 export type AgentTools = z.infer<typeof AgentToolsSchema>;
-
-export const AgentLLMSchema = z.object({
-  presetId: z.string().optional(),
-  /** 可选模型范围（M2）：ref 形态见 domain/model-ref.ts；空/缺省 = 不限（对话时全量可选） */
-  modelRefs: z
-    .array(z.string().refine(isModelRef, { message: "非法的模型引用格式" }))
-    .max(50)
-    .optional(),
-});
-export type AgentLLM = z.infer<typeof AgentLLMSchema>;
 
 /** 会话资源范围（% 会话引用）：enabled 关闭时候选为空、resolve 一律丢弃 */
 export const AgentConversationScopeSchema = z.object({
@@ -127,7 +116,6 @@ export const AgentSchema = z.object({
   scenario: z.enum(SCENARIO_KEYS).optional(),
   /** 会话权限模式默认值：绑定该 agent 的会话未手动覆盖时生效（缺省=变更前问询） */
   defaultPermissionMode: AgentPermissionModeSchema.default("ask_before_change"),
-  llm: AgentLLMSchema,
   /** 会话资源范围（% 会话引用的候选与「全部会话」展开都受此过滤；缺省 = 功能未开启） */
   conversationScope: AgentConversationScopeSchema.optional(),
   /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */

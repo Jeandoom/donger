@@ -28,7 +28,6 @@ export const BUILTIN_SKILL_FORGE_AGENT: Agent = {
   gitAllowShellGit: false,
   extensionDirectories: [],
   defaultPermissionMode: "ask_before_change",
-  llm: {},
   version: 1,
   createdAt: "",
   updatedAt: "",

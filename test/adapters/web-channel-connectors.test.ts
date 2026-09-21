@@ -261,7 +261,6 @@ describe("WebChannel /api/connectors", () => {
         body: JSON.stringify({
           name: "ag",
           tools: { mode: "all" },
-          llm: {},
           gitRepositories: [],
           extensionDirectories: [],
           connectorIds,

@@ -250,7 +250,6 @@ describe("平台工具", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const deps = baseDeps(store);
     const agents = await findTool(deps, "list_agents").handler({});
@@ -299,7 +298,6 @@ describe("平台工具", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const ok = await findTool(deps, "update_agent").handler({
       agentId: created.id,

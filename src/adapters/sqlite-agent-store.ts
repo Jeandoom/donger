@@ -201,7 +201,6 @@ export class SqliteAgentStore implements AgentStore {
       connectorIds: snap.connectorIds,
       gitRepositories: snap.gitRepositories,
       extensionDirectories: snap.extensionDirectories,
-      llm: snap.llm,
     });
   }
 

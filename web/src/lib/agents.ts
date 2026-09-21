@@ -67,8 +67,6 @@ export interface AgentDTO {
   conversationScope?: AgentConversationScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */
   defaultPermissionMode?: "ask_before_change" | "full_access";
-  /** presetId=agent 默认 LLM 预设；modelRefs=可选模型范围（空/缺省=不限） */
-  llm: { presetId?: string; modelRefs?: string[] };
   createdAt: string;
   updatedAt: string;
 }
@@ -79,12 +77,24 @@ export interface AgentListDTO extends Omit<AgentDTO, "gitRepositories" | "extens
   extensionDirectories?: AgentExtensionDirectoryDTO[];
 }
 
-export interface AgentMeta {
+/** meta/options 的技能分组：仓库/来源 → 技能（编辑器树形勾选用） */
+export interface SkillGroupDTO {
+  /** "builtin" | "pack:<packId>" */
+  key: string;
+  label: string;
+  kind: "system" | "pack";
+  description?: string;
+  /** 人眼可辨的来源：Git 仓库 URL / 本地上传 / 粘贴创建 / 内置 */
+  sourceLabel?: string;
   skills: { id: string; name: string; description?: string }[];
+}
+
+export interface AgentMeta {
+  /** 扁平候选（skillGroups 展开去重，兼容保留） */
+  skills: { id: string; name: string; description?: string }[];
+  skillGroups: SkillGroupDTO[];
   tools: string[];
   llmPresets: { id: string; name: string; model: string; baseUrl: string }[];
-  /** 可选模型范围的全量选项源（system + .env presets + 我的 provider 模型；ref 原样回存） */
-  llmOptions: { ref: string; label: string; group: "system" | "preset" | "provider" }[];
 }
 
 export type AgentInput = Omit<AgentDTO, "id" | "ownerId" | "createdAt" | "updatedAt">;

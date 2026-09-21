@@ -33,9 +33,7 @@ interface SetupResult {
   agentId: string;
 }
 
-async function setup(
-  opts: { agentModelRefs?: (providerId: string) => string[] } = {},
-): Promise<SetupResult> {
+async function setup(): Promise<SetupResult> {
   db = new Database(":memory:");
   const cipher = createSecretCipher("test-seed");
   const tmp = mkdtempSync(join(tmpdir(), "llm-options-"));
@@ -71,7 +69,6 @@ async function setup(
     mcpServers: [],
     gitRepositories: [],
     extensionDirectories: [],
-    llm: opts.agentModelRefs ? { modelRefs: opts.agentModelRefs(provider.id) } : {},
   } as never);
   const conversation = await conversationStore.createWithAgent(
     user.id,
@@ -113,19 +110,14 @@ function authHeaders(token: string): Record<string, string> {
 }
 
 describe("会话 LLM 选择 API（M2）", () => {
-  it("llm-options：agent 未配置范围 → 全量（system+presets+我的配置）", async () => {
+  it("llm-options：恒为全量（system+presets+我的配置），agent 侧范围已退役", async () => {
     const { port, token, conversationId, providerId } = await setup();
     const res = await fetch(
       `http://127.0.0.1:${port}/api/conversations/${conversationId}/llm-options`,
       { headers: authHeaders(token) },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      options: { ref: string }[];
-      restricted: boolean;
-      current: string;
-    };
-    expect(body.restricted).toBe(false);
+    const body = (await res.json()) as { options: { ref: string }[]; current: string };
     expect(body.options.map((o) => o.ref)).toEqual([
       "system",
       "preset:0",
@@ -133,19 +125,6 @@ describe("会话 LLM 选择 API（M2）", () => {
       `provider:${providerId}:glm-4.5`,
     ]);
     expect(body.current).toBe("");
-  });
-
-  it("llm-options：agent 配置范围 → restricted 且过滤降级（他人 provider 引用剔除）", async () => {
-    const { port, token, conversationId, providerId } = await setup({
-      agentModelRefs: (pid) => [`provider:${pid}:glm-4.6`, "provider:not-mine:m"],
-    });
-    const res = await fetch(
-      `http://127.0.0.1:${port}/api/conversations/${conversationId}/llm-options`,
-      { headers: authHeaders(token) },
-    );
-    const body = (await res.json()) as { options: { ref: string }[]; restricted: boolean };
-    expect(body.restricted).toBe(true);
-    expect(body.options.map((o) => o.ref)).toEqual([`provider:${providerId}:glm-4.6`]);
   });
 
   it("POST messages 携带 modelRef → 透传 handler；非法格式 400", async () => {
@@ -172,19 +151,8 @@ describe("会话 LLM 选择 API（M2）", () => {
     expect(bad.status).toBe(400);
   });
 
-  it("DELETE provider 被 agent.modelRefs 引用 → 400；解除引用后可删", async () => {
-    const { port, token, providerId, agentStore, agentId } = await setup({
-      agentModelRefs: (pid) => [`provider:${pid}:glm-4.6`],
-    });
-    const blocked = await fetch(
-      `http://127.0.0.1:${port}/api/settings/llm-providers/${providerId}`,
-      { method: "DELETE", headers: authHeaders(token) },
-    );
-    expect(blocked.status).toBe(400);
-    expect(await blocked.json()).toMatchObject({ error: expect.stringContaining("仍在引用") });
-
-    // 解除引用后删除成功
-    await agentStore.update(agentId, { llm: {} } as never);
+  it("DELETE provider 直接可删（modelRefs 引用守卫已随范围配置退役）", async () => {
+    const { port, token, providerId } = await setup();
     const freed = await fetch(`http://127.0.0.1:${port}/api/settings/llm-providers/${providerId}`, {
       method: "DELETE",
       headers: authHeaders(token),

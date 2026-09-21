@@ -18,7 +18,6 @@ export const emptyAgent: AgentEditorForm = {
   scenario: undefined,
   gitAllowShellGit: false,
   defaultPermissionMode: "ask_before_change",
-  llm: {},
   conversationScope: { enabled: false, agentIds: [] },
 };
 

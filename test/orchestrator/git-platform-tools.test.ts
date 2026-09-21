@@ -38,7 +38,6 @@ function buildAgent(
       },
     ],
     extensionDirectories: [],
-    llm: {},
     version: 1,
     createdAt: "t",
     updatedAt: "t",

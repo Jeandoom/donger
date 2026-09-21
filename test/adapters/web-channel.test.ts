@@ -1010,7 +1010,6 @@ describe("WebChannel Git 对话前置权限门", () => {
           syncMode: "fastForward",
         },
       ],
-      llm: {},
     });
     const conversation = await conversationStore.createWithAgent(user.id, "web", "Git", agent.id);
     const token = (await sessionStore.create(user.id)).token;
@@ -1212,7 +1211,6 @@ describe("WebChannel /api/agents", () => {
         skills: [],
         tools: { mode: "all", whitelist: [] },
         mcpServers: [],
-        llm: {},
       }),
     });
     expect(r.status).toBe(401);
@@ -1228,7 +1226,6 @@ describe("WebChannel /api/agents", () => {
         skills: ["s:1"],
         tools: { mode: "all", whitelist: [] },
         mcpServers: [{ name: "m", type: "http", url: "https://x", env: { K: "TOPSECRET" } }],
-        llm: {},
       }),
     });
     expect(create.status).toBe(201);
@@ -1250,7 +1247,6 @@ describe("WebChannel /api/agents", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
       headers: { authorization: `Bearer ${token}` },
@@ -1268,7 +1264,6 @@ describe("WebChannel /api/agents", () => {
       mcpServers: [],
       scenario: "code-dev",
       gitAllowShellGit: true,
-      llm: {},
     });
     const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
       headers: { authorization: `Bearer ${token}` },
@@ -1293,7 +1288,6 @@ describe("WebChannel /api/agents", () => {
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
       defaultPermissionMode: "full_access",
-      llm: {},
     });
     const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
       headers: { authorization: `Bearer ${token}` },
@@ -1311,7 +1305,6 @@ describe("WebChannel /api/agents", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const patch = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
       method: "PATCH",
@@ -1334,7 +1327,6 @@ describe("WebChannel /api/agents", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const patch = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
       method: "PATCH",
@@ -1415,6 +1407,13 @@ describe("WebChannel /api/agents", () => {
     expect(r.status).toBe(200);
     const body = (await r.json()) as {
       skills: Array<{ id: string; name: string; description?: string }>;
+      skillGroups: Array<{
+        key: string;
+        label: string;
+        kind: string;
+        sourceLabel?: string;
+        skills: Array<{ id: string }>;
+      }>;
     };
     expect(body.skills).toContainEqual({
       id: "enabled-pack:search-orders",
@@ -1423,6 +1422,15 @@ describe("WebChannel /api/agents", () => {
     });
     expect(body.skills.map((skill) => skill.id)).not.toContain("enabled-pack:disabled-skill");
     expect(body.skills.map((skill) => skill.id)).not.toContain("disabled-pack:hidden-skill");
+    // 分组视图：启用的 pack 各成一组（含来源标签），停用 pack 与停用技能不出现
+    const packGroup = body.skillGroups.find((group) => group.key === "pack:pack-enabled");
+    expect(packGroup).toMatchObject({
+      label: "enabled-pack",
+      kind: "pack",
+      sourceLabel: "粘贴创建",
+    });
+    expect(packGroup?.skills.map((skill) => skill.id)).toEqual(["enabled-pack:search-orders"]);
+    expect(body.skillGroups.map((group) => group.key)).not.toContain("pack:pack-disabled");
   });
 
   it("GET /:id/conversation get-or-create（幂等）", async () => {
@@ -1433,7 +1441,6 @@ describe("WebChannel /api/agents", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
       headers: { authorization: `Bearer ${token}` },
@@ -1455,7 +1462,6 @@ describe("WebChannel /api/agents", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/conversation`, {
       headers: { authorization: `Bearer ${token}` },
@@ -1481,7 +1487,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: ["s"],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [{ name: "m", type: "http", url: "https://x", env: { K: "V" } }],
-      llm: {},
     });
     const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/share`, {
       method: "POST",
@@ -1508,7 +1513,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/share`, {
       method: "POST",
@@ -1526,7 +1530,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const share = await agentShareStore.enableShare(a.id);
     const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
@@ -1554,7 +1557,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const share = await agentShareStore.enableShare(a.id);
     await agentShareStore.disableShare(a.id);
@@ -1574,7 +1576,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const share = await agentShareStore.enableShare(a.id);
 
@@ -1642,7 +1643,6 @@ describe("WebChannel /api/agents 分享", () => {
           credentialCode: "git_pat",
         },
       ],
-      llm: {},
     });
     const share = await agentShareStore.enableShare(a.id);
     await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/accept-share`, {
@@ -1691,7 +1691,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const d1 = await fetch(`http://127.0.0.1:${port}/api/agents/${mine.id}/duplicate`, {
       method: "POST",
@@ -1712,7 +1711,6 @@ describe("WebChannel /api/agents 分享", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     const share = await agentShareStore.enableShare(others.id);
     await fetch(`http://127.0.0.1:${port}/api/agents/${others.id}/accept-share`, {
@@ -2143,7 +2141,6 @@ describe("WebChannel agent callback", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
   }
 
@@ -2362,7 +2359,6 @@ describe("WebChannel mention-candidates 会话引用候选", () => {
       extensionDirectories: [],
       gitAllowShellGit: false,
       defaultPermissionMode: "ask_before_change",
-      llm: {},
     });
     return { ...h, agent };
   }
@@ -2429,7 +2425,6 @@ describe("WebChannel /api/agents 扩展目录相对路径校验", () => {
         tools: { mode: "all", whitelist: [] },
         mcpServers: [],
         extensionDirectories,
-        llm: {},
       }),
     });
 
@@ -2464,7 +2459,6 @@ describe("WebChannel /api/agents 扩展目录相对路径校验", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
       extensionDirectories: [{ id: "d1", name: "旧目录", path: "D:\\legacy", access: "readWrite" }],
     });
     const getRes = await fetch(`http://127.0.0.1:${port}/api/agents/${legacy.id}`, {
@@ -2497,7 +2491,6 @@ describe("WebChannel /api/agents 扩展目录相对路径校验", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
       extensionDirectories: [
         { id: "d1", name: "相对", path: "knowledge_base/docs", access: "readWrite" },
         { id: "d2", name: "绝对", path: "D:\\legacy", access: "readWrite" },

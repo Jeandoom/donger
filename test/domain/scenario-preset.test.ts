@@ -20,7 +20,6 @@ function baseAgent(overrides: Partial<Agent> = {}): Agent {
     credentials: [],
     gitRepositories: [],
     extensionDirectories: [],
-    llm: {},
     version: 1,
     createdAt: "t",
     updatedAt: "t",

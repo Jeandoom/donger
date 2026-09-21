@@ -73,7 +73,6 @@ describe("方案一 · 知识库创建/查询/维护（真机 GLM）", () => {
           access: "readOnly",
         },
       ],
-      llm: {},
     });
     mkdirSync(join(kbRoot, "a-share"), { recursive: true });
     writeFileSync(join(kbRoot, "a-share", "价格与交易规则.md"), KB_RULES, "utf8");

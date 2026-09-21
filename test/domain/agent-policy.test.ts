@@ -9,7 +9,6 @@ const agent: Agent = {
   skills: [],
   tools: { mode: "all", whitelist: [] },
   mcpServers: [],
-  llm: {},
   createdAt: "",
   updatedAt: "",
 };

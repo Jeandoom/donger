@@ -190,7 +190,6 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           gitAllowShellGit: a.gitAllowShellGit ?? false,
           mcpServers: a.mcpServers ?? [],
           defaultPermissionMode: "ask_before_change",
-          llm: {},
         });
         const toolsNote =
           agent.tools.mode === "all"

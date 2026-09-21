@@ -206,7 +206,6 @@ describe("RuntimeManager", () => {
       gitRepositories: [],
       gitAllowShellGit: false,
       extensionDirectories: [],
-      llm: {},
       version: 1,
       createdAt: "t",
       updatedAt: "t",
@@ -248,7 +247,6 @@ describe("RuntimeManager", () => {
       gitRepositories: [],
       gitAllowShellGit: false,
       extensionDirectories: [],
-      llm: {},
       version: 1,
       createdAt: "t",
       updatedAt: "t",
@@ -404,7 +402,7 @@ describe("RuntimeManager agent 分支", () => {
     });
   });
 
-  it("M2：显式 modelRef（provider）优先于 agent presetId 与基底，且回写 lastModelRef", async () => {
+  it("M2：显式 modelRef（provider）优先于基底，且回写 lastModelRef", async () => {
     const conv = baseConv({ agentId: "a1" });
     const convStore = fakeConvStore([conv]);
     const provider = {
@@ -444,9 +442,7 @@ describe("RuntimeManager agent 分支", () => {
     const m = new RuntimeManager({
       transcriptStore: fakeTranscriptStore(() => null),
       conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws, {
-        agentLlmPresets: [{ id: "p1", name: "GLM", model: "glm-4.6", baseUrl: "https://a" }],
-      }),
+      config: baseConfig(ws),
       ...emptySkillDeps(),
       llmProviderStore,
     });
@@ -457,7 +453,6 @@ describe("RuntimeManager agent 分支", () => {
       skills: [],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: { presetId: "p1" },
       createdAt: "",
       updatedAt: "",
     };
@@ -515,79 +510,13 @@ describe("RuntimeManager agent 分支", () => {
     expect(runOptions.llm.model).toBe(baseConfig(ws).llm.model);
   });
 
-  it("M2：agent 配置范围时显式越界 modelRef 抛错", async () => {
+  it("传 agent 时 skills/systemPrompt/allowedTools/mcpServers 覆盖", async () => {
     const conv = baseConv({ agentId: "a1" });
     const convStore = fakeConvStore([conv]);
-    const provider = {
-      id: "prov-1",
-      userId: "u1",
-      name: "我的智谱",
-      platform: "zhipu-cn",
-      baseUrl: "https://open.bigmodel.cn/api/anthropic",
-      key: "prov-key",
-      models: ["glm-4.6", "glm-4.5"],
-      sdkType: "anthropic" as const,
-      isDefault: false,
-      createdAt: "",
-      updatedAt: "",
-    };
-    const llmProviderStore = {
-      migrate() {},
-      async list() {
-        return [];
-      },
-      async getWithKey(_userId: string, id: string) {
-        return id === provider.id ? provider : undefined;
-      },
-      async findDefaultWithKey() {
-        return undefined;
-      },
-      async create() {
-        throw new Error("unused");
-      },
-      async update() {
-        return undefined;
-      },
-      async remove() {
-        return false;
-      },
-    };
     const m = new RuntimeManager({
       transcriptStore: fakeTranscriptStore(() => null),
       conversationStore: convStore as unknown as ConversationStore,
       config: baseConfig(ws),
-      ...emptySkillDeps(),
-      llmProviderStore,
-    });
-    const agent = {
-      id: "a1",
-      ownerId: "u1",
-      name: "A",
-      skills: [],
-      tools: { mode: "all", whitelist: [] },
-      mcpServers: [],
-      // 范围只有 glm-4.6
-      llm: { modelRefs: ["provider:prov-1:glm-4.6"] },
-      createdAt: "",
-      updatedAt: "",
-    };
-    await expect(
-      m.prepare(baseUser(join(ws, "users", "u1")), conv, {
-        agent: agent as never,
-        modelRef: "provider:prov-1:glm-4.5",
-      }),
-    ).rejects.toThrow(/不在该智能体配置的可用范围内/);
-  });
-
-  it("传 agent 时 skills/systemPrompt/llm/allowedTools/mcpServers 覆盖", async () => {
-    const conv = baseConv({ agentId: "a1" });
-    const convStore = fakeConvStore([conv]);
-    const m = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(() => null),
-      conversationStore: convStore as unknown as ConversationStore,
-      config: baseConfig(ws, {
-        agentLlmPresets: [{ id: "p1", name: "GLM", model: "glm-4.6", baseUrl: "https://a" }],
-      }),
       ...emptySkillDeps(),
     });
     const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
@@ -599,14 +528,11 @@ describe("RuntimeManager agent 分支", () => {
         skills: ["s:1"],
         tools: { mode: "whitelist", whitelist: ["Bash"] },
         mcpServers: [{ name: "m", type: "http", url: "https://x" }],
-        llm: { presetId: "p1" },
         createdAt: "",
         updatedAt: "",
       },
     });
     expect(runOptions.skills).toEqual(["s:1"]);
-    expect(runOptions.llm.model).toBe("glm-4.6");
-    expect(runOptions.llm.baseUrl).toBe("https://a");
     expect(runOptions.allowedTools).toEqual(["Bash"]);
     expect(runOptions.mcpServers?.[0]?.name).toBe("m");
     expect(runOptions.systemPromptAppend).toContain("EXTRA");
@@ -627,7 +553,6 @@ describe("RuntimeManager agent 分支", () => {
       skills: [],
       tools: { mode: "all" as const, whitelist: [] },
       mcpServers: [],
-      llm: {},
       createdAt: "",
       updatedAt: "",
     };
@@ -702,7 +627,6 @@ describe("RuntimeManager agent 分支", () => {
         skills: ["owner-pack:query"],
         tools: { mode: "all", whitelist: [] },
         mcpServers: [],
-        llm: {},
         createdAt: "",
         updatedAt: "",
       },
@@ -733,7 +657,6 @@ describe("RuntimeManager agent 分支", () => {
         skills: [],
         tools: { mode: "all", whitelist: [] },
         mcpServers: [],
-        llm: {},
         createdAt: "",
         updatedAt: "",
       },
@@ -767,7 +690,6 @@ describe("RuntimeManager agent 分支", () => {
         gitRepositories: [],
         gitAllowShellGit: false,
         extensionDirectories: [{ id: "d1", name: "代码", path: "ext-code", access: "readWrite" }],
-        llm: {},
         version: 1,
         createdAt: "",
         updatedAt: "",
@@ -801,7 +723,6 @@ describe("RuntimeManager agent 分支", () => {
         extensionDirectories: [
           { id: "d1", name: "旧目录", path: "D:\\legacy\\dir", access: "readWrite" },
         ],
-        llm: {},
         version: 1,
         createdAt: "",
         updatedAt: "",

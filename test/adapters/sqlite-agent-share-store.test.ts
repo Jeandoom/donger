@@ -24,7 +24,6 @@ const input = {
   skills: [],
   tools: { mode: "all" as const, whitelist: [] },
   mcpServers: [],
-  llm: {},
 };
 
 describe("SqliteAgentShareStore", () => {

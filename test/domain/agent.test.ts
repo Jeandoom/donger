@@ -23,7 +23,6 @@ const valid = {
     { name: "fs", type: "http" as const, url: "https://x/mcp", headers: { k: "v" } },
     { name: "sh", type: "stdio" as const, command: "npx", args: ["s"], env: { T: "1" } },
   ],
-  llm: { presetId: "0" },
   createdAt: "t",
   updatedAt: "t",
 };

@@ -38,9 +38,9 @@ export function AgentEditorPage() {
 
   const [meta, setMeta] = useState<AgentMeta>({
     skills: [],
+    skillGroups: [],
     tools: [],
     llmPresets: [],
-    llmOptions: [],
   });
   const [form, setForm] = useState<AgentEditorForm>(emptyAgent);
   const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
@@ -114,7 +114,6 @@ export function AgentEditorPage() {
             scenario: a.scenario,
             gitAllowShellGit: a.gitAllowShellGit ?? false,
             defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
-            llm: a.llm,
             conversationScope: a.conversationScope ?? { enabled: false, agentIds: [] },
           };
           setForm(loaded);

@@ -122,7 +122,6 @@ async function startBackend(): Promise<Backend> {
     skills: ["demo-execute"],
     tools: { mode: "all", whitelist: [] },
     mcpServers: [],
-    llm: {},
   });
 
   const installer: SkillInstaller = {

@@ -76,7 +76,6 @@ const mkAgent = (over: Partial<Agent> = {}): Agent => ({
   gitRepositories: [],
   gitAllowShellGit: false,
   extensionDirectories: [],
-  llm: {},
   version: 1,
   createdAt: "t",
   updatedAt: "t",

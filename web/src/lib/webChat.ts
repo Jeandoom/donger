@@ -23,11 +23,7 @@ export function useWebChat() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const persistDraftRef = useRef<Promise<string | null> | null>(null);
   // 会话可选模型（M2 对话选模型）：随会话切换加载；modelRef 为空 = 不指定（走服务端 fallback）
-  const [llmOptions, setLlmOptions] = useState<LlmOptionsDTO>({
-    options: [],
-    restricted: false,
-    current: "",
-  });
+  const [llmOptions, setLlmOptions] = useState<LlmOptionsDTO>({ options: [], current: "" });
   const [modelRef, setModelRef] = useState("");
 
   // 从 JWT 中解析 userId
@@ -291,7 +287,7 @@ export function useWebChat() {
       const token = getToken();
       const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       // 重置模型选择（新会话的选项异步加载后回填）
-      setLlmOptions({ options: [], restricted: false, current: "" });
+      setLlmOptions({ options: [], current: "" });
       setModelRef("");
       Promise.all([
         fetch(`/api/conversations/${conversationId}/messages`, {
@@ -329,9 +325,9 @@ export function useWebChat() {
           .then((response) =>
             response.ok
               ? (response.json() as Promise<LlmOptionsDTO>)
-              : { options: [], restricted: false, current: "" },
+              : { options: [], current: "" },
           )
-          .catch(() => ({ options: [], restricted: false, current: "" })),
+          .catch(() => ({ options: [], current: "" })),
       ])
         .then(([messages, { events }, { question }, llmOpts]) => {
           if (messagesRequestRef.current === controller) {

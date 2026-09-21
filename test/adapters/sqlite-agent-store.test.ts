@@ -25,7 +25,6 @@ const input = {
   skills: ["s:1"],
   tools: { mode: "whitelist" as const, whitelist: ["Bash"] },
   mcpServers: [{ name: "m", type: "http" as const, url: "https://x", headers: { SECRET: "top" } }],
-  llm: { presetId: "0" },
 };
 
 describe("SqliteAgentStore", () => {
@@ -39,6 +38,24 @@ describe("SqliteAgentStore", () => {
     const row = db.prepare("SELECT data FROM agents WHERE id = ?").get(a.id) as { data: string };
     expect(row.data).not.toContain("top");
     expect(row.data).toContain("v1:");
+  });
+
+  it("存量行带已退役 llm 键：读容忍剥离，update 后自然清除", async () => {
+    const store = new SqliteAgentStore(db, cipher);
+    store.migrate();
+    const a = await store.create(input);
+    // 模拟旧版本写入的行（含 llm 键）
+    const row = db.prepare("SELECT data FROM agents WHERE id = ?").get(a.id) as { data: string };
+    const legacy = JSON.parse(row.data) as Record<string, unknown>;
+    legacy.llm = { presetId: "0", modelRefs: ["system"] };
+    db.prepare("UPDATE agents SET data = ? WHERE id = ?").run(JSON.stringify(legacy), a.id);
+    const got = await store.get(a.id);
+    expect(got).toBeDefined();
+    expect("llm" in (got as object)).toBe(false);
+    // 下一次 update 持久化后 llm 键从存储中消失
+    await store.update(a.id, { name: "A2" });
+    const after = db.prepare("SELECT data FROM agents WHERE id = ?").get(a.id) as { data: string };
+    expect(JSON.parse(after.data)).not.toHaveProperty("llm");
   });
 
   it("listByOwner 只返回该 owner", async () => {

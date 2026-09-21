@@ -42,7 +42,6 @@ export const AGENT_BUILDER_AGENT: Agent = {
   gitAllowShellGit: false,
   extensionDirectories: [],
   defaultPermissionMode: "ask_before_change",
-  llm: {},
   version: 1,
   createdAt: "",
   updatedAt: "",

@@ -1,4 +1,4 @@
-import { Check } from "lucide-react";
+import { Check, Minus } from "lucide-react";
 import type { InputHTMLAttributes, ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
@@ -6,21 +6,33 @@ export interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement
   label?: ReactNode;
   /** label 排布：右侧（默认）或下方（卡片式大点击区） */
   labelBelow?: boolean;
+  /** 半选态（部分勾选）：显示短横线，仅影响外观，checked 语义不变 */
+  indeterminate?: boolean;
 }
 
 /** 样式化复选框：原生 input（可访问性/表单语义）+ 自定义外观 */
-export function Checkbox({ label, labelBelow, className, id, ...props }: CheckboxProps) {
+export function Checkbox({
+  label,
+  labelBelow,
+  className,
+  id,
+  indeterminate,
+  ...props
+}: CheckboxProps) {
   const box = (
     <span
       className={cn(
         "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
-        props.checked || props.defaultChecked
+        props.checked || props.defaultChecked || indeterminate
           ? "border-primary bg-primary text-primary-foreground"
           : "border-input bg-card",
         props.disabled && "opacity-50",
       )}
     >
       {props.checked || props.defaultChecked ? <Check size={12} strokeWidth={3} /> : null}
+      {!(props.checked || props.defaultChecked) && indeterminate ? (
+        <Minus size={12} strokeWidth={3} />
+      ) : null}
     </span>
   );
   if (label == null) {

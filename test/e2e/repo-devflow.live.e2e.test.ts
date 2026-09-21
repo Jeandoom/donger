@@ -182,7 +182,6 @@ describe("方案二 · 代码仓库开发/测试/部署/bugfix（真机 GLM）",
       skills: ["indicator-dev-design", "indicator-dev-execute", "indicator-dev-accept"],
       tools: { mode: "all", whitelist: [] },
       mcpServers: [],
-      llm: {},
     });
     _quantDevId = dev.id;
 

@@ -9,8 +9,6 @@ export interface LlmOptionDTO {
 
 export interface LlmOptionsDTO {
   options: LlmOptionDTO[];
-  /** true=智能体配置了模型范围 */
-  restricted: boolean;
   /** 会话上次选择的 modelRef（空=未选过） */
   current: string;
 }

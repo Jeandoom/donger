@@ -48,7 +48,6 @@ export function buildSelfImproverAgent(repository?: AgentGitRepository): Agent {
     gitAllowShellGit: false,
     extensionDirectories: [],
     defaultPermissionMode: "ask_before_change",
-    llm: {},
     version: 1,
     createdAt: "",
     updatedAt: "",

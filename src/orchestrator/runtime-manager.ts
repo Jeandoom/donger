@@ -11,7 +11,6 @@ import {
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import { isRefAllowed } from "../domain/llm-selection.js";
 import { parseModelRef } from "../domain/model-ref.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
@@ -41,7 +40,7 @@ export interface RuntimeManagerConfig {
   llm: LLMConfig;
   /** 默认 systemPromptAppend */
   defaultSystemPromptAppend: string;
-  /** Agent 可选 LLM 预置列表（agent.llm.presetId 引用） */
+  /** .env 预设列表（对话 modelRef=preset:<id> 的解析源） */
   agentLlmPresets: LlmPreset[];
   /** 会话空闲滚动阈值（小时；undefined/0=关闭）：闲置超限的会话重开新 SDK 会话 */
   sessionIdleRollHours?: number;
@@ -132,11 +131,12 @@ export class RuntimeManager {
       ).env;
     }
 
-    // agent 分支：显式 agent 可覆盖 skills/llm/工具/mcp/系统提示；否则用 Pack 派生默认
+    // agent 分支：显式 agent 可覆盖 skills/工具/mcp/系统提示；否则用 Pack 派生默认
     let skills = resolved.whitelist;
-    // —— LLM 解析（M2，优先级从高到低；specs/2026-09-18-llm-multi-provider-design.md §8）——
+    // —— LLM 解析（优先级从高到低；specs/2026-09-18-llm-multi-provider-design.md §8）——
     // ① 消息显式 modelRef ② conversation.lastModelRef（上次选择，兼作无选择 UI 渠道 fallback）
-    // ③ agent llm.presetId（.env 预设，覆盖 model/baseUrl）④ 用户默认 provider ⑤ 全局 .env
+    // ③ 用户默认 provider ④ 全局 .env
+    // （agent 侧 presetId/modelRefs 配置已退役，specs/2026-09-21-agent-config-llm-removal-skills-tree-design.md）
     const defaultProvider = await this.deps.llmProviderStore?.findDefaultWithKey(user.id);
     const baseLlm: LLMConfig = defaultProvider
       ? {
@@ -146,20 +146,11 @@ export class RuntimeManager {
         }
       : this.deps.config.llm;
     let llm: LLMConfig = baseLlm;
-    if (opts.agent?.llm.presetId) {
-      const preset = this.deps.config.agentLlmPresets.find(
-        (p) => p.id === opts.agent?.llm.presetId,
-      );
-      if (preset) llm = { ...llm, model: preset.model, baseUrl: preset.baseUrl };
-    }
-    // 用户选择（显式优先，上次选择兜底）：显式无效/越界即报错（用户可感知），历史失效静默降级
+    // 用户选择（显式优先，上次选择兜底）：显式无效即报错（用户可感知），历史失效静默降级
     const selectedRef = opts.modelRef ?? conversation.lastModelRef;
     if (selectedRef) {
       const resolvedLlm = await this.resolveModelRef(selectedRef, user, baseLlm);
       if (resolvedLlm) {
-        if (opts.modelRef && !isRefAllowed(opts.agent, opts.modelRef)) {
-          throw new Error("所选模型不在该智能体配置的可用范围内");
-        }
         llm = resolvedLlm;
       } else if (opts.modelRef) {
         throw new Error(`所选模型不可用（配置可能已删除或不在你的模型配置中）：${opts.modelRef}`);
