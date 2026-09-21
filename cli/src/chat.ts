@@ -64,7 +64,50 @@ const asArr = (v: unknown): Record<string, unknown>[] =>
   Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
 const s = (v: unknown): string => (typeof v === "string" ? v : "");
 
-const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "md"]);
+// 任意类型附件放开后：此集合仅用于「空格路径 + 提问」的切分启发式，未列入的类型
+// 仍可上传（无扩展名校验），只是带空格路径时建议用引号包路径
+const ATTACH_EXTS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "md",
+  "txt",
+  "log",
+  "csv",
+  "tsv",
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "zip",
+  "gz",
+  "tar",
+  "7z",
+  "rar",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "html",
+  "sql",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "py",
+  "java",
+  "go",
+  "rs",
+  "c",
+  "cpp",
+  "sh",
+  "ps1",
+]);
 
 /** 内置智能体上下文标记（builtin-assist / agent-builder，id 即后端常量） */
 const BUILTIN_ASSIST_ID = "builtin-assist";
@@ -768,8 +811,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       emit(
         pc.dim(
           pendingFiles.length > 0
-            ? `已附加 ${pendingFiles.length} 个：${pendingFiles.map((f) => f.name).join("、")}\n用法 /file <本地路径>（图片/md，≤2MB，最多 5 个）\n`
-            : "用法 /file <本地路径>（图片/md，≤2MB，最多 5 个，随下一条消息发送）\n",
+            ? `已附加 ${pendingFiles.length} 个：${pendingFiles.map((f) => f.name).join("、")}\n用法 /file <本地路径>（任意类型，≤20MB，最多 5 个）\n`
+            : "用法 /file <本地路径>（任意类型，≤20MB，最多 5 个，随下一条消息发送）\n",
         ),
       );
       continue;

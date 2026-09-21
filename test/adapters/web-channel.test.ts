@@ -760,10 +760,13 @@ describe("WebChannel POST /api/upload", () => {
   let convId: string;
   let receivedFiles: Array<{ path: string; name: string; type: string }> | undefined;
   let uploadDb: Database.Database;
+  let sessionStore: JwtSessionStore;
+  let authHeaders: Record<string, string>;
 
   beforeEach(async () => {
     webTmp = mkdtempSync(join(tmpdir(), "web-upload-"));
-    // 会话路由（messages/cancel）走 owner 守卫：本地免认证模式 viewer id 固定为 "local"
+    // 会话属主固定为本地免认证 viewer id "local"；挂 sessionStore 后统一鉴权层生效，
+    // 本 describe 所有请求都带属主 token（/uploads/ 回读本就强制，规格 M4）
     uploadDb = new Database(":memory:");
     const { SqliteConversationStore } = await import(
       "../../src/adapters/sqlite-conversation-store.js"
@@ -771,7 +774,16 @@ describe("WebChannel POST /api/upload", () => {
     const convStore = new SqliteConversationStore(uploadDb);
     convStore.migrate();
     convId = (await convStore.create("local", "web", "upload-test")).id;
-    web = new WebChannel({ port: 0, workspaceDir: webTmp, conversationStore: convStore });
+    sessionStore = new JwtSessionStore(uploadDb, "test-secret");
+    sessionStore.migrate();
+    const token = (await sessionStore.create("local")).token;
+    authHeaders = { authorization: `Bearer ${token}` };
+    web = new WebChannel({
+      port: 0,
+      workspaceDir: webTmp,
+      conversationStore: convStore,
+      sessionStore,
+    });
     web.onMessage((message) => {
       receivedFiles = message.files;
     });
@@ -793,6 +805,7 @@ describe("WebChannel POST /api/upload", () => {
     body.append("file", blob, "test.png");
     const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
+      headers: authHeaders,
       body,
     });
     expect(res.status).toBe(200);
@@ -808,6 +821,7 @@ describe("WebChannel POST /api/upload", () => {
     body.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
     const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
+      headers: authHeaders,
       body,
     });
     expect(res.status).toBe(200);
@@ -821,6 +835,7 @@ describe("WebChannel POST /api/upload", () => {
     upload.append("file", new Blob(["# Hello"], { type: "text/markdown" }), "readme.md");
     const uploadRes = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
+      headers: authHeaders,
       body: upload,
     });
     const file = (await uploadRes.json()) as {
@@ -830,7 +845,7 @@ describe("WebChannel POST /api/upload", () => {
     };
     const sendRes = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/messages`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ text: "总结附件", files: [file] }),
     });
 
@@ -846,22 +861,106 @@ describe("WebChannel POST /api/upload", () => {
     });
     const response = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/cancel`, {
       method: "POST",
+      headers: authHeaders,
     });
 
     expect(response.status).toBe(200);
     expect(canceledId).toBe(convId);
   });
 
-  it("不支持的类型返回 400", async () => {
+  it("上传任意类型文件成功（document）", async () => {
     const body = new FormData();
     body.append("file", new Blob(["<xml/>"], { type: "text/xml" }), "test.xml");
     const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
+      headers: authHeaders,
+      body,
+    });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { path: string; name: string; type: string };
+    expect(j.name).toBe("test.xml");
+    expect(j.type).toBe("document");
+  });
+
+  it("超过大小上限返回 400", async () => {
+    const body = new FormData();
+    body.append(
+      "file",
+      new Blob([Buffer.alloc(20 * 1024 * 1024 + 1)], { type: "application/octet-stream" }),
+      "big.bin",
+    );
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
+      method: "POST",
+      headers: authHeaders,
       body,
     });
     expect(res.status).toBe(400);
     const j = (await res.json()) as { error: string };
-    expect(j.error).toContain("不支持的文件类型");
+    expect(j.error).toContain("20MB");
+  });
+
+  it("文件名含非法字符时消毒落盘", async () => {
+    const body = new FormData();
+    body.append("file", new Blob(["hi"], { type: "text/plain" }), "re:o?port<v2>.txt");
+    const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
+      method: "POST",
+      headers: authHeaders,
+      body,
+    });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { path: string; name: string; type: string };
+    expect(j.name).toBe("re_o_port_v2_.txt");
+    // Windows 非法名会直接写失败，消毒后必须真实落盘
+    expect(existsSync(j.path)).toBe(true);
+  });
+
+  it("可脚本化附件回读降级安全：html 按纯文本、zip 强制 attachment", async () => {
+    const htmlBody = new FormData();
+    htmlBody.append(
+      "file",
+      new Blob(["<script>alert(1)</script>"], { type: "text/html" }),
+      "x.html",
+    );
+    const htmlUpload = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
+      method: "POST",
+      headers: authHeaders,
+      body: htmlBody,
+    });
+    const htmlFile = (await htmlUpload.json()) as { url: string };
+    const htmlRes = await fetch(`http://127.0.0.1:${port}${htmlFile.url}`, {
+      headers: authHeaders,
+    });
+    expect(htmlRes.status).toBe(200);
+    // html 按 text/plain 内联 + nosniff：浏览器按纯文本渲染，脚本不执行
+    expect(htmlRes.headers.get("content-type")).toContain("text/plain");
+    expect(htmlRes.headers.get("x-content-type-options")).toBe("nosniff");
+
+    const zipBody = new FormData();
+    zipBody.append("file", new Blob(["PK"], { type: "application/zip" }), "y.zip");
+    const zipUpload = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
+      method: "POST",
+      headers: authHeaders,
+      body: zipBody,
+    });
+    const zipFile = (await zipUpload.json()) as { url: string };
+    const zipRes = await fetch(`http://127.0.0.1:${port}${zipFile.url}`, {
+      headers: authHeaders,
+    });
+    expect(zipRes.status).toBe(200);
+    expect(zipRes.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(zipRes.headers.get("content-disposition")).toContain("attachment");
+
+    const mdBody = new FormData();
+    mdBody.append("file", new Blob(["# hi"], { type: "text/markdown" }), "y.md");
+    const mdUpload = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
+      method: "POST",
+      headers: authHeaders,
+      body: mdBody,
+    });
+    const mdFile = (await mdUpload.json()) as { url: string };
+    const mdRes = await fetch(`http://127.0.0.1:${port}${mdFile.url}`, { headers: authHeaders });
+    expect(mdRes.status).toBe(200);
+    expect(mdRes.headers.get("content-disposition")).toContain("inline");
   });
 
   it("无 threadId 返回 400", async () => {
@@ -869,6 +968,7 @@ describe("WebChannel POST /api/upload", () => {
     body.append("file", new Blob(["fake"], { type: "image/png" }), "test.png");
     const res = await fetch(`http://127.0.0.1:${port}/api/upload`, {
       method: "POST",
+      headers: authHeaders,
       body,
     });
     expect(res.status).toBe(400);
@@ -877,7 +977,7 @@ describe("WebChannel POST /api/upload", () => {
   it("非 multipart 返回 400", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);

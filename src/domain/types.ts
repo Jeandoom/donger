@@ -154,7 +154,8 @@ export interface AuditEvent {
 export const MessageFileSchema = z.object({
   path: z.string(),
   name: z.string(),
-  type: z.enum(["image", "markdown"]),
+  /** image/markdown 前端内联渲染提示；document=任意其余类型（下载链接） */
+  type: z.enum(["image", "markdown", "document"]),
 });
 export type MessageFile = z.infer<typeof MessageFileSchema>;
 

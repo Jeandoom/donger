@@ -40,7 +40,7 @@ export interface DongerApi {
   listConversations(userId: string): Promise<ConversationSummary[]>;
   history(conversationId: string): Promise<MessageItem[]>;
   sendMessage(conversationId: string, text: string, files?: AttachmentFile[]): Promise<void>;
-  /** 上传附件（图片/md，≤2MB），返回 {path,name,type} 供 sendMessage 携带 */
+  /** 上传附件（任意类型，≤20MB），返回 {path,name,type} 供 sendMessage 携带 */
   upload(conversationId: string, filePath: string): Promise<AttachmentFile>;
   cancel(conversationId: string): Promise<void>;
   /** 触发 task-optimize：返回 assist 优化会话 id（提案经审批卡确认落盘） */
@@ -54,7 +54,7 @@ export interface DongerApi {
 export interface AttachmentFile {
   path: string;
   name: string;
-  type: "image" | "markdown";
+  type: "image" | "markdown" | "document";
 }
 
 const IMAGE_MIME: Record<string, string> = {
@@ -64,7 +64,7 @@ const IMAGE_MIME: Record<string, string> = {
   gif: "image/gif",
   webp: "image/webp",
 };
-const UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 
 export function createApi(baseUrl: string, token: string): DongerApi {
   async function request<T>(
@@ -136,13 +136,8 @@ export function createApi(baseUrl: string, token: string): DongerApi {
     upload: async (conversationId, filePath) => {
       const name = basename(filePath);
       const ext = name.split(".").pop()?.toLowerCase() ?? "";
-      const type = ext in IMAGE_MIME ? "image" : ext === "md" ? "markdown" : null;
-      if (!type)
-        throw new ApiError(
-          "client",
-          0,
-          `仅支持图片(.jpg/.png/.gif/.webp)与 Markdown(.md)，但"${name}"的扩展名是"${ext}"`,
-        );
+      // 任意类型均接受；type 仅作渲染提示（image/markdown 内联，document 下载链接）
+      const type = ext in IMAGE_MIME ? "image" : ext === "md" ? "markdown" : "document";
       let buf: Buffer;
       try {
         buf = readFileSync(filePath);
@@ -150,12 +145,16 @@ export function createApi(baseUrl: string, token: string): DongerApi {
         throw new ApiError("client", 0, `无法读取文件：${filePath}（不存在或不可访问）`);
       }
       if (buf.length > UPLOAD_MAX_BYTES) {
-        throw new ApiError("client", 0, `文件超过 2MB 上限（${Math.round(buf.length / 1024)}KB）`);
+        throw new ApiError("client", 0, `文件超过 20MB 上限（${Math.round(buf.length / 1024)}KB）`);
       }
       const fd = new FormData();
       // 后端按 mimeType 判定图片类型，Blob 必须带 type（md 仅看扩展名，也一并补上）
       const mime =
-        type === "image" ? (IMAGE_MIME[ext] ?? "application/octet-stream") : "text/markdown";
+        type === "image"
+          ? (IMAGE_MIME[ext] ?? "application/octet-stream")
+          : type === "markdown"
+            ? "text/markdown"
+            : "application/octet-stream";
       fd.append("file", new Blob([new Uint8Array(buf)], { type: mime }), name);
       let res: Response;
       try {

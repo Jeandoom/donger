@@ -22,9 +22,16 @@ describe("parseFileArgs", () => {
   });
 
   it("非附件扩展名的首 token 不切分", () => {
-    expect(parseFileArgs("D:\\a.b\\x.txt 看看")).toEqual({
-      path: "D:\\a.b\\x.txt 看看",
+    expect(parseFileArgs("D:\\a.b\\x.zzz 看看")).toEqual({
+      path: "D:\\a.b\\x.zzz 看看",
       question: "",
+    });
+  });
+
+  it("任意类型放开：常见文档扩展名的首 token 也切分", () => {
+    expect(parseFileArgs("D:\\报表2026.xlsx 总结一下")).toEqual({
+      path: "D:\\报表2026.xlsx",
+      question: "总结一下",
     });
   });
 

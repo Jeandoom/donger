@@ -77,7 +77,7 @@ export interface ChatMessage {
   files?: Array<{
     path: string;
     name: string;
-    type: "image" | "markdown";
+    type: "image" | "markdown" | "document";
   }>;
   /** 回合聚合消息（role=bot）：正文/思考/工具按时间线分片；缺省=旧式纯文本消息 */
   kind?: "turn";
