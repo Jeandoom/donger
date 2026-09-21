@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
 import { Switch } from "../components/ui/switch";
+import { fetchSystemEvents, type SystemEvent } from "../lib/adminUsers";
 import { fetchAgentMeta } from "../lib/agents";
 import {
   type AuditConversationListItem,
@@ -16,7 +18,17 @@ import {
   formatDurationMs,
   formatTokens,
 } from "../lib/audit";
+import { fetchMe } from "../lib/auth";
 import { cn } from "../lib/utils";
+
+/** 系统事件类型 → 展示标签（新事件类型在此登记） */
+const SYSTEM_EVENT_LABEL: Record<string, string> = {
+  user_role_change: "角色变更",
+};
+
+function systemEventLabel(type: string): string {
+  return SYSTEM_EVENT_LABEL[type] ?? "系统";
+}
 
 /**
  * 审计模块唯一页面：会话栏共用，「只看LLM」开关切换右侧详情形态——
@@ -31,6 +43,29 @@ export function AuditPage() {
   const [list, setList] = useState<AuditConversationListItem[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AuditDetail | null>(null);
+
+  // 会话栏折叠 + 系统事件栏（admin 专属，spec 2026-09-21-user-management-design 决策③）
+  const [convCollapsed, setConvCollapsed] = useState(false);
+  const [me, setMe] = useState<{ id: string; role: string } | null>(null);
+  const [events, setEvents] = useState<SystemEvent[]>([]);
+  const [eventsError, setEventsError] = useState("");
+  const isAdmin = me?.role === "admin";
+
+  const loadEvents = useCallback(() => {
+    setEventsError("");
+    fetchSystemEvents()
+      .then(setEvents)
+      .catch((reason: unknown) =>
+        setEventsError(reason instanceof Error ? reason.message : String(reason)),
+      );
+  }, []);
+
+  useEffect(() => {
+    void fetchMe().then((user) => {
+      setMe(user ? { id: user.id, role: user.role } : null);
+      if (user?.role === "admin") loadEvents();
+    });
+  }, [loadEvents]);
 
   // LLM 观测的调试重放（仅 LLM 模式使用）
   const [presets, setPresets] = useState<Array<{ id: string; name: string; model: string }>>([]);
@@ -106,47 +141,108 @@ export function AuditPage() {
         }
       />
       <div className="flex min-h-0 flex-1 gap-4 overflow-hidden px-7 pb-7 pt-5">
-        {/* 左：会话列表（两种模式共用） */}
-        <Card className="flex w-80 shrink-0 flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-            <span className="text-xs font-semibold text-muted-foreground">
-              会话（{list.length}）
-            </span>
-            <label
-              htmlFor="audit-llm-switch"
-              className="flex items-center gap-1.5 text-xs text-muted-foreground"
-            >
-              只看LLM
-              <Switch id="audit-llm-switch" checked={llmMode} onCheckedChange={setLlmMode} />
-            </label>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            {list.map((c) => (
+        {/* 左：会话列表（可折叠）+ 系统事件栏（admin 专属） */}
+        <div className="flex w-80 shrink-0 flex-col gap-4">
+          <Card
+            className={cn("flex min-h-0 flex-col overflow-hidden", convCollapsed && "shrink-0")}
+          >
+            <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
               <button
-                key={c.conversationId}
                 type="button"
-                onClick={() => setSelected(c.conversationId)}
-                className={cn(
-                  "mb-0.5 block w-full rounded-lg px-3 py-2 text-left",
-                  selected === c.conversationId ? "bg-primary-soft" : "hover:bg-muted",
-                )}
+                onClick={() => setConvCollapsed((v) => !v)}
+                aria-expanded={!convCollapsed}
+                className="flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
               >
-                <div
-                  className={cn(
-                    "truncate text-[13px] font-medium",
-                    selected === c.conversationId && "text-primary",
-                  )}
-                >
-                  {c.title || "(无标题)"}
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  {c.turnCount} prompts · {formatTokens(c.totalTokens)} tok ·{" "}
-                  {formatDurationMs(c.totalDurationMs)}
-                </div>
+                {convCollapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+                会话（{list.length}）
               </button>
-            ))}
-          </div>
-        </Card>
+              <label
+                htmlFor="audit-llm-switch"
+                className="flex items-center gap-1.5 text-xs text-muted-foreground"
+              >
+                只看LLM
+                <Switch id="audit-llm-switch" checked={llmMode} onCheckedChange={setLlmMode} />
+              </label>
+            </div>
+            {!convCollapsed && (
+              <div className="flex-1 overflow-y-auto p-2">
+                {list.map((c) => (
+                  <button
+                    key={c.conversationId}
+                    type="button"
+                    onClick={() => setSelected(c.conversationId)}
+                    className={cn(
+                      "mb-0.5 block w-full rounded-lg px-3 py-2 text-left",
+                      selected === c.conversationId ? "bg-primary-soft" : "hover:bg-muted",
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        "truncate text-[13px] font-medium",
+                        selected === c.conversationId && "text-primary",
+                      )}
+                    >
+                      {c.title || "(无标题)"}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {c.turnCount} prompts · {formatTokens(c.totalTokens)} tok ·{" "}
+                      {formatDurationMs(c.totalDurationMs)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* 系统事件（admin；角色变更等系统级重要事件，与左侧会话审计是两个口径） */}
+          {isAdmin && (
+            <Card
+              className={cn(
+                "flex flex-col overflow-hidden",
+                convCollapsed ? "min-h-0 flex-1" : "h-60 shrink-0",
+              )}
+            >
+              <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+                <span className="text-xs font-semibold text-muted-foreground">
+                  事件（{events.length}）
+                </span>
+                <button
+                  type="button"
+                  onClick={loadEvents}
+                  className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  刷新
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2">
+                {eventsError ? (
+                  <p className="px-2 py-1 text-xs text-destructive">{eventsError}</p>
+                ) : events.length === 0 ? (
+                  <p className="px-2 py-1 text-xs text-muted-foreground">暂无系统事件</p>
+                ) : (
+                  events.map((ev) => (
+                    <div key={ev.id} className="mb-0.5 rounded-lg px-3 py-2 hover:bg-muted">
+                      <div className="flex items-center gap-1.5">
+                        <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                          {systemEventLabel(ev.type)}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {formatDateTime(ev.createdAt)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 break-words text-[12px] leading-5">{ev.detail}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+          )}
+        </div>
 
         {/* 右：详情（形态随开关切换；已选会话保持不变） */}
         <div className="min-w-0 flex-1 space-y-4 overflow-y-auto">

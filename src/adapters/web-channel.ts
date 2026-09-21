@@ -150,6 +150,7 @@ import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
+import type { SystemEventStore } from "../ports/system-event-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
@@ -344,6 +345,8 @@ export interface WebChannelDeps {
   workspaceDir: string;
   taskStore?: TaskStore;
   userStore?: UserStore;
+  /** 系统事件存储（审计页「事件」栏数据源；缺省=事件端点返回空列表） */
+  systemEventStore?: SystemEventStore;
   conversationStore?: ConversationStore;
   messageStore?: MessageStore;
   usageStore?: UsageStore;
@@ -511,6 +514,31 @@ export class WebChannel implements Channel {
         role: "user",
       }
     );
+  }
+
+  /**
+   * 用户管理 DTO（spec 2026-09-21-user-management-design §2.1）：
+   * 收敛信息面——不回 homeDir，identities 只留展示字段（externalId 为邮箱/平台 id，非机密）。
+   */
+  private async adminUserDto(id: string) {
+    const store = this.deps.userStore;
+    const user = store ? await store.get(id) : undefined;
+    if (!user) return null;
+    const identities = store ? await store.getIdentities(id) : [];
+    return {
+      id: user.id,
+      name: user.name,
+      role: user.role,
+      avatar: user.avatar,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      identities: identities.map((i) => ({
+        provider: i.provider,
+        externalId: i.externalId,
+        name: i.name,
+        avatar: i.avatar,
+      })),
+    };
   }
 
   // === 模块化配置（授权/代理模块）生效读取：每请求直读 module_configs，保存即生效 ===
@@ -2250,6 +2278,81 @@ export class WebChannel implements Channel {
       this.deps.moduleConfigStore.putProxy(proxyUrl ? { githubOauthProxyUrl: proxyUrl } : {});
       configureGithubProxy(proxyUrl || undefined);
       return this.json(res, { ok: true });
+    }
+
+    // === 用户管理（admin；spec 2026-09-21-user-management-design §2.1） ===
+
+    // GET /api/admin/users —— 全量用户 DTO 列表（不回 homeDir；附登录方式绑定）
+    if (url.split("?")[0] === "/api/admin/users" && req.method === "GET") {
+      if (!this.deps.userStore) return this.json(res, { error: "服务未启用" }, 503);
+      const users = await this.deps.userStore.list();
+      const rows = await Promise.all(users.map(async (u) => this.adminUserDto(u.id)));
+      return this.json(res, rows);
+    }
+
+    // PATCH /api/admin/users/:id/role —— 授予/取消管理员（写路径唯一入口）
+    // 防锁死三守卫：禁自改 → 白名单保护 → 禁降最后一位 admin（P0：admin 清零会重开 setup 引导）
+    const userRoleMatch = url.match(/^\/api\/admin\/users\/([\w.-]+)\/role(?:\?.*)?$/);
+    if (userRoleMatch && req.method === "PATCH") {
+      const store = this.deps.userStore;
+      if (!store) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { role?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const role = body.role;
+      if (role !== "admin" && role !== "user") {
+        return this.json(res, { error: "role 须为 admin 或 user" }, 400);
+      }
+      const targetId = userRoleMatch[1] ?? "";
+      const viewer = this.currentViewer(req);
+      if (targetId === viewer.id) {
+        return this.json(res, { error: "不能变更自己的角色" }, 409);
+      }
+      const target = await store.get(targetId);
+      if (!target) return this.json(res, { error: "user not found" }, 404);
+      if (target.role !== role) {
+        if (role === "user") {
+          // 白名单保护：ADMIN_EXTERNAL_IDS 授予的 admin 不可页面取消（防语义漂移+数据面保险）
+          const identities = await store.getIdentities(targetId);
+          for (const ident of identities) {
+            if (await store.isAdminByExternalId(ident.provider, ident.externalId)) {
+              return this.json(
+                res,
+                {
+                  error:
+                    "该用户由 ADMIN_EXTERNAL_IDS 白名单授予管理员，无法在页面取消；如需取消请先从服务端配置移除对应条目",
+                },
+                409,
+              );
+            }
+          }
+          if (!(await store.hasAnyAdminExcluding(targetId))) {
+            return this.json(res, { error: "至少保留一位管理员" }, 409);
+          }
+        }
+        const prevRole = target.role;
+        await store.updateRole(targetId, role);
+        // 系统事件留痕（审计页「事件」栏；决策③）
+        const actor = await store.get(viewer.id);
+        await this.deps.systemEventStore?.record({
+          type: "user_role_change",
+          actorId: viewer.id,
+          actorName: actor?.name ?? viewer.id,
+          targetUserId: targetId,
+          targetUserName: target.name,
+          detail: `${actor?.name ?? viewer.id} 将 ${target.name} 的角色从 ${prevRole} 变更为 ${role}`,
+        });
+      }
+      return this.json(res, { user: await this.adminUserDto(targetId) });
+    }
+
+    // GET /api/admin/system-events —— 系统重要事件（审计页「事件」栏；admin 专属）
+    if (url.split("?")[0] === "/api/admin/system-events" && req.method === "GET") {
+      const events = (await this.deps.systemEventStore?.list(200)) ?? [];
+      return this.json(res, { events });
     }
 
     // GET /api/invites —— 当前用户的邀请列表

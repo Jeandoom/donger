@@ -62,6 +62,11 @@ export interface UserStore {
   /** 是否存在 admin 用户（setup 状态判定的第一条件） */
   hasAnyAdmin(): Promise<boolean>;
   /**
+   * 除指定用户外是否还存在其他 admin（用户管理降级守卫用：
+   * 「取消最后一位管理员」的事务内前置检查，spec 2026-09-21-user-management-design §2.1）。
+   */
+  hasAnyAdminExcluding(id: string): Promise<boolean>;
+  /**
    * 原子创建首个 admin（setup 通道）：事务内校验「无 admin 且无 setup_completed 标记」，
    * 创建 email 身份用户（role=admin、邮箱直接置已验证）并写 setup_completed 标记。
    * 已完成初始化时返回 "exists"，不产生任何变更。

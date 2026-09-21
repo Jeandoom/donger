@@ -211,6 +211,10 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },
+    // 用户管理（spec 2026-09-21-user-management-design §2.2）：列表 DTO + 角色变更 + 系统事件
+    { method: "GET", pattern: "/api/admin/users", access: { kind: "admin" } },
+    { method: "PATCH", pattern: "/api/admin/users/:id/role", access: { kind: "admin" } },
+    { method: "GET", pattern: "/api/admin/system-events", access: { kind: "admin" } },
     // 授权/代理模块配置（spec 2026-09-21-auth-module-design §3.3/§3.6）
     { method: "GET", pattern: "/api/admin/auth-configs", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/dingtalk", access: { kind: "admin" } },

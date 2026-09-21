@@ -305,6 +305,13 @@ export class SqliteUserStore implements UserStore {
     return !!row;
   }
 
+  async hasAnyAdminExcluding(id: string): Promise<boolean> {
+    const row = this.db
+      .prepare("SELECT 1 FROM users WHERE role = 'admin' AND id != ? LIMIT 1")
+      .get(id);
+    return !!row;
+  }
+
   async createBootstrapAdmin(input: {
     email: string;
     passwordHash: string;

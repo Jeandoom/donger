@@ -39,6 +39,20 @@ describe("SqliteUserStore", () => {
     expect((await s.get(u.id))?.role).toBe("admin");
   });
 
+  it("hasAnyAdminExcluding：排除指定用户后判定剩余 admin", async () => {
+    const s = newStore();
+    const a = await s.getOrCreateByIdentity("dingtalk", "a", "甲");
+    const b = await s.getOrCreateByIdentity("dingtalk", "b", "乙");
+    await s.updateRole(a.id, "admin");
+    await s.updateRole(b.id, "admin");
+    expect(await s.hasAnyAdminExcluding(a.id)).toBe(true); // 还有 b
+    await s.updateRole(b.id, "user");
+    expect(await s.hasAnyAdminExcluding(a.id)).toBe(false); // 只剩 a 自己
+    expect(await s.hasAnyAdminExcluding(b.id)).toBe(true); // a 仍是 admin
+    await s.updateRole(a.id, "user");
+    expect(await s.hasAnyAdminExcluding(b.id)).toBe(false); // 全员 user
+  });
+
   it("list", async () => {
     const s = newStore();
     await s.getOrCreateByIdentity("dingtalk", "a", "甲");

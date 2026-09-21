@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
-import { apiFetch } from "../lib/auth";
+import { type AdminUser, fetchAdminUsers, updateUserRole } from "../lib/adminUsers";
+import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
 
 /**
  * 授权模块（admin，spec 2026-09-21-auth-module-design §3.3）：
@@ -32,6 +34,184 @@ interface EmailVerification {
 
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary";
+
+const PROVIDER_LABEL: Record<string, string> = {
+  email: "邮箱",
+  dingtalk: "钉钉",
+  github: "GitHub",
+};
+
+/** 用户管理区块（admin，spec 2026-09-21-user-management-design §2.4）：
+ *  全量用户 + 管理员授予/取消。自己不可变更自己；白名单用户/最后一位 admin 由后端 409 兜底提示。 */
+function UserManagementSection() {
+  const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [filter, setFilter] = useState("");
+  const [me, setMe] = useState<CurrentUser | null>(null);
+  const [confirm, setConfirm] = useState<{ user: AdminUser; toRole: "admin" | "user" } | null>(
+    null,
+  );
+  const [confirmError, setConfirmError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    setLoadError("");
+    fetchAdminUsers()
+      .then(setUsers)
+      .catch((reason: unknown) =>
+        setLoadError(reason instanceof Error ? reason.message : String(reason)),
+      );
+  }, []);
+
+  useEffect(() => {
+    load();
+    void fetchMe().then(setMe);
+  }, [load]);
+
+  if (users === null && !loadError) return null; // admin 接口不可用（非 admin）时整块不渲染
+
+  const adminCount = users?.filter((u) => u.role === "admin").length ?? 0;
+  const keyword = filter.trim().toLowerCase();
+  const filtered =
+    users?.filter(
+      (u) =>
+        !keyword ||
+        u.name.toLowerCase().includes(keyword) ||
+        u.identities.some((i) => i.externalId.toLowerCase().includes(keyword)),
+    ) ?? [];
+
+  const doChange = () => {
+    if (!confirm) return;
+    setBusy(true);
+    setConfirmError("");
+    updateUserRole(confirm.user.id, confirm.toRole)
+      .then((updated) => {
+        setUsers((prev) => prev?.map((u) => (u.id === updated.id ? updated : u)) ?? prev);
+        setConfirm(null);
+      })
+      .catch((reason: unknown) =>
+        setConfirmError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="space-y-3 rounded-lg border bg-background p-5">
+      <h2 className="font-medium">用户管理</h2>
+      <p className="text-xs text-muted-foreground">
+        全部注册用户与管理员授予/取消。变更下一个请求即生效；不能变更自己的角色，系统至少保留一位管理员
+      </p>
+      {loadError ? (
+        <div className="flex items-center justify-between gap-2 rounded bg-destructive-soft p-2.5 text-sm text-destructive">
+          <span>{loadError}</span>
+          <Button variant="outline" size="sm" onClick={load}>
+            重试
+          </Button>
+        </div>
+      ) : (
+        <>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="按名称或邮箱过滤"
+            className={inputClass}
+          />
+          <div className="space-y-2">
+            {filtered.map((u) => {
+              const isSelf = me?.id === u.id;
+              const isLastAdmin = u.role === "admin" && adminCount <= 1;
+              const toRole = u.role === "admin" ? "user" : "admin";
+              const disabled = isSelf || isLastAdmin;
+              const hint = isSelf
+                ? "不能变更自己的角色"
+                : isLastAdmin
+                  ? "至少保留一位管理员"
+                  : undefined;
+              return (
+                <div
+                  key={u.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">{u.name}</span>
+                      {u.role === "admin" ? (
+                        <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                          管理员
+                        </span>
+                      ) : null}
+                      {isSelf ? (
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          我
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap gap-1">
+                      {u.identities.map((i) => (
+                        <span
+                          key={`${i.provider}:${i.externalId}`}
+                          className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                        >
+                          {PROVIDER_LABEL[i.provider] ?? i.provider}
+                          {i.provider === "email" ? "： " : "： "}
+                          <span className="font-mono">{i.externalId}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span
+                      className="text-[10px] text-muted-foreground"
+                      title={new Date(u.createdAt).toLocaleString()}
+                    >
+                      {new Date(u.createdAt).toLocaleDateString()}
+                    </span>
+                    <span title={hint}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={disabled}
+                        onClick={() => {
+                          setConfirmError("");
+                          setConfirm({ user: u, toRole });
+                        }}
+                      >
+                        {toRole === "admin" ? "设为管理员" : "取消管理员"}
+                      </Button>
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+            {filtered.length === 0 ? (
+              <p className="text-sm text-muted-foreground">无匹配用户</p>
+            ) : null}
+          </div>
+        </>
+      )}
+      <ConfirmDialog
+        open={!!confirm}
+        title={confirm?.toRole === "admin" ? "设为管理员" : "取消管理员"}
+        description={
+          confirm
+            ? confirm.toRole === "admin"
+              ? `确定将「${confirm.user.name}」设为管理员？对方将立即获得全部管理权限。`
+              : `确定取消「${confirm.user.name}」的管理员权限？下一个请求起即生效。`
+            : ""
+        }
+        destructive={confirm?.toRole === "user"}
+        busy={busy}
+        error={confirmError}
+        onConfirm={doChange}
+        onCancel={() => {
+          setConfirm(null);
+          setConfirmError("");
+        }}
+      />
+    </section>
+  );
+}
 
 function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -194,7 +374,7 @@ export function AuthorizationPage() {
     <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
       <PageHeader
         title="授权"
-        description="钉钉 / GitHub / 邮箱注册的授权配置。修改后点击「应用」立即生效，无需重启服务"
+        description="钉钉 / GitHub / 邮箱注册的授权配置与用户管理。修改后点击「应用」立即生效，无需重启服务"
       />
       {loadError ? (
         <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{loadError}</div>
@@ -397,6 +577,9 @@ export function AuthorizationPage() {
           )}
         </section>
       ) : null}
+
+      {/* 用户管理（admin；spec 2026-09-21-user-management-design §2.4） */}
+      <UserManagementSection />
     </div>
   );
 }

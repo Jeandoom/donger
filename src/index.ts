@@ -23,6 +23,7 @@ import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
+import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
@@ -53,6 +54,7 @@ import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
 import { configureGithubProxy } from "./util/github-oauth-api.js";
+import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
@@ -105,6 +107,8 @@ async function main(): Promise<void> {
   usageStore.migrate();
   const auditStore = new SqliteAuditStore(db);
   auditStore.migrate();
+  const systemEventStore = new SqliteSystemEventStore(db);
+  systemEventStore.migrate();
   const commentStore = new SqliteCommentStore(db);
   commentStore.migrate();
   const feedbackStore = new SqliteFeedbackStore(db);
@@ -203,6 +207,11 @@ async function main(): Promise<void> {
   }
   // GitHub OAuth 代理启动配置改读 DB（运行时重配见 PUT /api/admin/proxy）
   configureGithubProxy(moduleConfigStore.getProxy()?.githubOauthProxyUrl);
+  // setup_completed 补写（spec 2026-09-21-user-management-design §2.3）：存量 admin 库
+  // 封死「admin 清零重开 setup 引导被公开抢占」的数据面路径（幂等）
+  if (await backfillSetupCompletedFlag(userStore, moduleConfigStore)) {
+    log.info("setup_completed 标记已补写（存量 admin 库，防 setup 引导重开）");
+  }
 
   function createOrch(
     channel: Channel,
@@ -370,6 +379,7 @@ async function main(): Promise<void> {
     workspaceDir: cfg.workspaceDir,
     taskStore: store,
     userStore,
+    systemEventStore,
     conversationStore,
     messageStore,
     usageStore,
