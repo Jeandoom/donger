@@ -145,6 +145,7 @@ import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type { LoopStore } from "../ports/loop-store.js";
 import type { MessageStore } from "../ports/message-store.js";
+import type { SkillPackSource } from "../domain/skill-pack.js";
 import type { ModuleConfigStore } from "../ports/module-config-store.js";
 import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
 import type { SessionStore } from "../ports/session-store.js";
@@ -355,6 +356,31 @@ function sanitizeUploadName(raw: string): string {
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) name = `_${stem}${ext}`;
   if (name.length > 120) name = `${name.slice(0, 120 - ext.length)}${ext}`;
   return name || "file";
+}
+
+/** meta/options 的技能分组（specs/2026-09-21-agent-config-llm-removal-skills-tree-design.md §4.1） */
+export interface AgentSkillGroup {
+  /** "builtin" | "pack:<packId>" */
+  key: string;
+  label: string;
+  kind: "system" | "pack";
+  description?: string;
+  /** 人眼可辨的来源：Git 仓库 URL / 本地上传 / 粘贴创建 / 内置 */
+  sourceLabel?: string;
+  skills: Array<{ id: string; name: string; description?: string }>;
+}
+
+function skillPackSourceLabel(source: SkillPackSource): string {
+  switch (source.kind) {
+    case "git":
+      return source.ref ? `Git 仓库（${source.url} @ ${source.ref}）` : `Git 仓库（${source.url}）`;
+    case "upload":
+      return "本地上传";
+    case "paste":
+      return "粘贴创建";
+    case "builtin":
+      return "内置";
+  }
 }
 
 export interface WebChannelDeps {
@@ -2565,24 +2591,12 @@ export class WebChannel implements Channel {
       return this.json(res, updated);
     }
 
-    // DELETE /api/settings/llm-providers/:id（被 agent.modelRefs 引用时拒绝，fail-closed）
+    // DELETE /api/settings/llm-providers/:id
     if (llmProviderIdMatch && req.method === "DELETE") {
       const userId = this.requireRequestUser(req);
       const store = this.deps.llmProviderStore;
       if (!store) return this.json(res, { error: "模型配置服务未启用" }, 503);
       const id = llmProviderIdMatch[1] ?? "";
-      const prefix = `provider:${id}:`;
-      const referencing =
-        (await this.deps.agentStore?.listByOwner(userId))?.find((a) =>
-          (a.llm.modelRefs ?? []).some((ref) => ref.startsWith(prefix)),
-        ) ?? undefined;
-      if (referencing) {
-        return this.json(
-          res,
-          { error: `智能体「${referencing.name}」仍在引用该配置，请先移除其模型范围引用` },
-          400,
-        );
-      }
       const removed = await store.remove(userId, id);
       if (!removed) return this.json(res, { error: "配置不存在" }, 404);
       return this.json(res, { ok: true });
@@ -2608,8 +2622,8 @@ export class WebChannel implements Channel {
       return this.json(res, result);
     }
 
-    // GET /api/conversations/:id/llm-options —— 对话底栏可选模型集
-    // （agent 配置范围优先且过滤访问者不可用项=共享降级；未配置/全失效=系统默认+presets+我的配置全量）
+    // GET /api/conversations/:id/llm-options —— 对话底栏可选模型集（恒为全量：
+    // 系统默认 + presets + 访问者自己的 provider 配置；agent 侧模型范围已退役）
     const llmOptionsMatch = llmProviderPath.match(/^\/api\/conversations\/([\w-]+)\/llm-options$/);
     if (llmOptionsMatch && req.method === "GET") {
       const userId = this.requireRequestUser(req);
@@ -2618,19 +2632,14 @@ export class WebChannel implements Channel {
         llmOptionsMatch[1] ?? "",
       );
       if (!conversation) return this.json(res, { error: "会话不存在或不属于当前用户" }, 404);
-      const agent = conversation.agentId
-        ? await this.deps.agentStore?.get(conversation.agentId)
-        : undefined;
       const providers = (await this.deps.llmProviderStore?.list(userId)) ?? [];
-      const { options, restricted } = resolveLlmOptions({
-        agent,
+      const options = resolveLlmOptions({
         providers,
         presets: this.agentMeta?.presets ?? [],
         systemDefaultModel: this.deps.llm?.model ?? "",
       });
       return this.json(res, {
         options,
-        restricted,
         current: conversation.lastModelRef ?? "",
       });
     }
@@ -3431,19 +3440,21 @@ export class WebChannel implements Channel {
     }
     if (url === "/api/agents/meta/options" && req.method === "GET") {
       const userId = this.requireUserId(req);
-      // 模型范围多选的全量选项源（system + .env presets + 当前用户 provider 模型；ref 前端原样回存）
-      const providers = (await this.deps.llmProviderStore?.list(userId)) ?? [];
-      const { options: llmOptions } = resolveLlmOptions({
-        agent: null,
-        providers,
-        presets: this.agentMeta?.presets ?? [],
-        systemDefaultModel: this.deps.llm?.model ?? "",
-      });
+      const skillGroups = await this.discoverAgentSkillGroups(userId);
+      const seen = new Set<string>();
       return this.json(res, {
-        skills: await this.discoverAgentSkills(userId),
+        // 扁平候选保留一个版本期（分组视图的展开去重，内置组在前）
+        skills: skillGroups
+          .flatMap((group) => group.skills)
+          .filter((option) => {
+            if (seen.has(option.id)) return false;
+            seen.add(option.id);
+            return true;
+          }),
+        skillGroups,
         tools: BUILTIN_TOOLS,
+        // 审计页调试重放选模型在用（AuditPage）；agent 编辑器已不消费
         llmPresets: this.agentMeta?.presets ?? [],
-        llmOptions,
       });
     }
     // GET /api/agents/:id/mention-candidates?q=&conversationId= —— 输入框 @/​/$/% 引用候选（可用者 = owner/被分享/admin）
@@ -4960,27 +4971,50 @@ export class WebChannel implements Channel {
     return uid;
   }
 
+  /**
+   * 技能候选的分组视图：系统内置一组，每个启用的技能包一组（组内仅启用技能）。
+   * 空组不返回；镜像同步仓库与手工安装的 pack 同等入列。
+   */
+  private async discoverAgentSkillGroups(userId: string): Promise<AgentSkillGroup[]> {
+    const groups: AgentSkillGroup[] = [];
+    const builtin = discoverSkills(this.agentMeta?.skillPaths ?? []);
+    if (builtin.length > 0) {
+      groups.push({ key: "builtin", label: "系统内置", kind: "system", skills: builtin });
+    }
+    if (this.deps.skillPackStore) {
+      const packs = (await this.deps.skillPackStore.listPacks(userId)).filter((p) => p.enabled);
+      packs.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      for (const pack of packs) {
+        const skills = (await this.deps.skillPackStore.listSkills(userId, pack.id))
+          .filter((s) => s.enabled)
+          .map((s) => ({ id: `${pack.name}:${s.name}`, name: s.name, description: s.description }));
+        if (skills.length === 0) continue;
+        groups.push({
+          key: `pack:${pack.id}`,
+          label: pack.name,
+          kind: "pack",
+          description: pack.description,
+          sourceLabel: skillPackSourceLabel(pack.source),
+          skills,
+        });
+      }
+    }
+    return groups;
+  }
+
+  /** 扁平候选（groups 展开去重，内置组在前）；mention 过滤等按 id 数组消费的场景仍走这条 */
   private async discoverAgentSkills(
     userId: string,
   ): Promise<Array<{ id: string; name: string; description?: string }>> {
-    const skills = discoverSkills(this.agentMeta?.skillPaths ?? []);
-    const enabledSkills = this.deps.skillPackStore
-      ? await this.deps.skillPackStore.listEnabledSkillsWithPack(userId)
-      : [];
-    const options = [
-      ...skills,
-      ...enabledSkills.map(({ skill, pack }) => ({
-        id: `${pack.name}:${skill.name}`,
-        name: skill.name,
-        description: skill.description,
-      })),
-    ];
+    const groups = await this.discoverAgentSkillGroups(userId);
     const seen = new Set<string>();
-    return options.filter((option) => {
-      if (seen.has(option.id)) return false;
-      seen.add(option.id);
-      return true;
-    });
+    return groups
+      .flatMap((group) => group.skills)
+      .filter((option) => {
+        if (seen.has(option.id)) return false;
+        seen.add(option.id);
+        return true;
+      });
   }
 
   /**
@@ -5209,7 +5243,6 @@ export class WebChannel implements Channel {
       gitAllowShellGit: a.gitAllowShellGit,
       defaultPermissionMode: a.defaultPermissionMode,
       version: a.version,
-      llm: a.llm,
       conversationScope: a.conversationScope,
     };
   }
