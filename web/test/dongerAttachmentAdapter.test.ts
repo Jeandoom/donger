@@ -7,12 +7,24 @@ describe("DongerAttachmentAdapter", () => {
     vi.unstubAllGlobals();
   });
 
-  it("rejects files larger than 2 MB", async () => {
+  it("rejects files larger than 20 MB", async () => {
     const adapter = new DongerAttachmentAdapter();
-    const file = new File([new Uint8Array(2 * 1024 * 1024 + 1)], "large.png", {
+    const file = new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.png", {
       type: "image/png",
     });
-    await expect(adapter.add({ file })).rejects.toThrow("文件大小超过 2MB 限制");
+    await expect(adapter.add({ file })).rejects.toThrow("文件大小超过 20MB 限制");
+  });
+
+  it("accepts arbitrary file types as document", async () => {
+    const adapter = new DongerAttachmentAdapter();
+    const xlsx = await adapter.add({
+      file: new File(["binary"], "报表.xlsx", { type: "application/vnd.ms-excel" }),
+    });
+    expect(xlsx.type).toBe("document");
+    const zip = await adapter.add({
+      file: new File(["zip"], "pack.zip", { type: "application/zip" }),
+    });
+    expect(zip.type).toBe("document");
   });
 
   it("uploads and returns donger file metadata", async () => {

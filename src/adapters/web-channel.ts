@@ -335,6 +335,28 @@ function clipStr(value: string | undefined, max: number): string | undefined {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
+/** 附件上传上限：类型放开为任意文件后，仍需内存缓冲兜底（Busboy limits + data 累计双闸） */
+const MAX_ATTACHMENT_MB = 20;
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
+
+/** 上传文件名消毒：剥目录分量后清 Windows 非法字符/保留设备名/首尾点空，超长时保留扩展名截断 */
+function sanitizeUploadName(raw: string): string {
+  // 控制字符（<0x20）逐字替换，避免在正则里写控制字符字面量
+  const noCtrl = Array.from(basename(raw))
+    .map((ch) => (ch.charCodeAt(0) < 32 ? "_" : ch))
+    .join("");
+  let name = noCtrl
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .replace(/^[\s.]+/, "")
+    .replace(/[\s.]+$/, "");
+  const dot = name.lastIndexOf(".");
+  const stem = dot <= 0 ? name : name.slice(0, dot);
+  const ext = dot <= 0 ? "" : name.slice(dot);
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) name = `_${stem}${ext}`;
+  if (name.length > 120) name = `${name.slice(0, 120 - ext.length)}${ext}`;
+  return name || "file";
+}
+
 export interface WebChannelDeps {
   port: number;
   /** 监听地址（默认 0.0.0.0=全网卡；设 127.0.0.1 仅本机） */
@@ -1054,7 +1076,17 @@ export class WebChannel implements Channel {
             : "";
       if (existsSync(absPath)) {
         const ext = absPath.split(".").pop()?.toLowerCase() ?? "";
-        res.writeHead(200, { "Content-Type": mimeForExt(ext) });
+        const mime = mimeForExt(ext);
+        // 类型放开为任意文件后回读收口：位图与纯文本内联预览，其余（svg/html/pdf 等）
+        // 一律 attachment 下载 + nosniff，杜绝上传文件在同源页面里执行脚本
+        const inline = ext !== "svg" && (mime.startsWith("image/") || mime.startsWith("text/"));
+        const savedName = basename(absPath);
+        const asciiName = savedName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+        res.writeHead(200, {
+          "Content-Type": mime,
+          "X-Content-Type-Options": "nosniff",
+          "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(savedName)}`,
+        });
         res.end(readFileSync(absPath));
         return;
       }
@@ -2873,7 +2905,7 @@ export class WebChannel implements Channel {
         files: JSON.parse(m.files) as Array<{
           path: string;
           name: string;
-          type: "image" | "markdown";
+          type: "image" | "markdown" | "document";
         }>,
       }));
       res.writeHead(200);
@@ -4661,10 +4693,18 @@ export class WebChannel implements Channel {
 
     return new Promise<void>((resolve) => {
       let fileSaved = false;
+      // 任意响应路径只允许写一次：data 超限 / busboy limit / end 可能先后到达
+      const respondJson = (status: number, payload: unknown) => {
+        if (fileSaved || res.headersSent) return;
+        fileSaved = true;
+        res.writeHead(status);
+        res.end(JSON.stringify(payload));
+        resolve();
+      };
 
       const bb = Busboy({
         headers: req.headers as Record<string, string>,
-        limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+        limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
       });
 
       bb.on(
@@ -4674,36 +4714,22 @@ export class WebChannel implements Channel {
           file: NodeJS.ReadableStream,
           info: { filename: string; encoding: string; mimeType: string },
         ) => {
-          const filename = basename(info.filename);
-          const { mimeType } = info;
+          // 任意类型均接受（image/markdown 仅作前端渲染提示）；文件名经消毒落盘
+          const filename = sanitizeUploadName(info.filename);
           const ext = filename.split(".").pop()?.toLowerCase();
           const isImage =
-            mimeType?.startsWith("image/") &&
+            info.mimeType?.startsWith("image/") &&
             ["jpg", "jpeg", "png", "gif", "webp"].includes(ext ?? "");
-          const isMarkdown = ext === "md" || mimeType === "text/markdown";
-
-          if (!isImage && !isMarkdown) {
-            file.resume();
-            res.writeHead(400);
-            res.end(
-              JSON.stringify({
-                error: "不支持的文件类型，仅支持图片(.jpg/.png/.gif/.webp)和Markdown(.md)",
-              }),
-            );
-            resolve();
-            return;
-          }
+          const type = isImage ? "image" : ext === "md" ? "markdown" : "document";
 
           const chunks: Buffer[] = [];
           let totalSize = 0;
 
           file.on("data", (chunk: Buffer) => {
             totalSize += chunk.length;
-            if (totalSize > 2 * 1024 * 1024) {
+            if (totalSize > MAX_ATTACHMENT_BYTES) {
               file.resume();
-              res.writeHead(400);
-              res.end(JSON.stringify({ error: "文件大小超过 2MB 限制" }));
-              resolve();
+              respondJson(400, { error: `文件大小超过 ${MAX_ATTACHMENT_MB}MB 限制` });
               return;
             }
             chunks.push(chunk);
@@ -4711,14 +4737,11 @@ export class WebChannel implements Channel {
 
           file.on("limit", () => {
             file.resume();
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: "文件大小超过 2MB 限制" }));
-            resolve();
+            respondJson(400, { error: `文件大小超过 ${MAX_ATTACHMENT_MB}MB 限制` });
           });
 
           file.on("end", () => {
             if (fileSaved) return;
-            fileSaved = true;
 
             const ts = Date.now();
             const saveName = `${ts}-${filename}`;
@@ -4726,28 +4749,18 @@ export class WebChannel implements Channel {
             const absPath = join(sessionDir, saveName);
             writeFileSync(absPath, Buffer.concat(chunks));
 
-            const type = isImage ? "image" : "markdown";
-
-            res.writeHead(200);
-            res.end(
-              JSON.stringify({
-                path: absPath,
-                name: filename,
-                type,
-                url: `/uploads/${threadId}/${saveName}`,
-              }),
-            );
-            resolve();
+            respondJson(200, {
+              path: absPath,
+              name: filename,
+              type,
+              url: `/uploads/${threadId}/${saveName}`,
+            });
           });
         },
       );
 
       bb.on("error", () => {
-        if (!fileSaved) {
-          res.writeHead(500);
-          res.end(JSON.stringify({ error: "文件保存失败" }));
-        }
-        resolve();
+        respondJson(500, { error: "文件保存失败" });
       });
 
       req.pipe(bb);

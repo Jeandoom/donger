@@ -19,7 +19,7 @@ function isFileInfo(value: unknown): value is FileInfo {
   return (
     typeof value.path === "string" &&
     typeof value.name === "string" &&
-    (value.type === "image" || value.type === "markdown")
+    (value.type === "image" || value.type === "markdown" || value.type === "document")
   );
 }
 

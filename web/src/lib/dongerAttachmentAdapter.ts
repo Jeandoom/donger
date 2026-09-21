@@ -7,23 +7,19 @@ import type {
 import { apiFetch } from "./auth";
 import type { FileInfo } from "./chatReducer";
 
-const MAX_FILE_SIZE = 2 * 1024 * 1024;
-const ACCEPT = "image/jpeg,image/png,image/gif,image/webp,.md,text/markdown";
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
 
+/** type 仅作渲染提示：image/markdown 内联，document（任意其余类型）渲染为下载链接 */
 function fileType(file: File): FileInfo["type"] {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "md" || file.type === "text/markdown") return "markdown";
-  if (
-    file.type.startsWith("image/") &&
-    ["jpg", "jpeg", "png", "gif", "webp"].includes(extension ?? "")
-  ) {
-    return "image";
-  }
-  throw new Error("仅支持图片(.jpg/.png/.gif/.webp)和Markdown(.md)");
+  if (file.type.startsWith("image/") && IMAGE_EXTS.has(extension ?? "")) return "image";
+  return "document";
 }
 
 export class DongerAttachmentAdapter implements AttachmentAdapter {
-  readonly accept = ACCEPT;
+  readonly accept = "*/*";
 
   constructor(
     private readonly threadId?: string,
@@ -31,8 +27,8 @@ export class DongerAttachmentAdapter implements AttachmentAdapter {
   ) {}
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    if (file.size > MAX_FILE_SIZE) throw new Error("文件大小超过 20MB 限制");
     const type = fileType(file);
-    if (file.size > MAX_FILE_SIZE) throw new Error("文件大小超过 2MB 限制");
     return {
       id: `${file.name}-${file.lastModified}`,
       type: type === "image" ? "image" : "document",

@@ -13,7 +13,7 @@ import { finalizeTurnParts } from "./turnAssembly";
 export type FileInfo = {
   path: string;
   name: string;
-  type: "image" | "markdown";
+  type: "image" | "markdown" | "document";
 };
 
 export type ChatAction =
