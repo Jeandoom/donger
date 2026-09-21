@@ -174,7 +174,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps) {
               <Paperclip aria-hidden="true" size={15} className="shrink-0 text-muted-foreground" />
               <span className="shrink-0">添加附件</span>
               <span className="ml-auto truncate pl-2 text-[11px] text-muted-foreground">
-                {attachmentFull ? `最多 ${MAX_MESSAGE_ATTACHMENTS} 个` : "图片 / Markdown"}
+                {attachmentFull ? `最多 ${MAX_MESSAGE_ATTACHMENTS} 个` : "任意文件 ≤20MB"}
               </span>
             </button>
           </ComposerPrimitive.AddAttachment>

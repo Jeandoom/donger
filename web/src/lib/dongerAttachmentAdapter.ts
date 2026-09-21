@@ -19,15 +19,22 @@ function fileType(file: File): FileInfo["type"] {
 }
 
 export class DongerAttachmentAdapter implements AttachmentAdapter {
-  readonly accept = "*/*";
+  /** "*"：库据此不给 file input 设 accept 属性——移动端选择器不收窄，任意类型可选 */
+  readonly accept = "*";
 
   constructor(
     private readonly threadId?: string,
     private readonly ensureThreadId?: () => Promise<string | null>,
+    /** 库的 addAttachment 是 fire-and-forget，add/send 抛错会被吞成「没反应」；错误须经此回调显性化 */
+    private readonly onError?: (message: string) => void,
   ) {}
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
-    if (file.size > MAX_FILE_SIZE) throw new Error("文件大小超过 20MB 限制");
+    if (file.size > MAX_FILE_SIZE) {
+      const message = "文件大小超过 20MB 限制";
+      this.onError?.(message);
+      throw new Error(message);
+    }
     const type = fileType(file);
     return {
       id: `${file.name}-${file.lastModified}`,
@@ -56,7 +63,9 @@ export class DongerAttachmentAdapter implements AttachmentAdapter {
       } catch {
         // 非 JSON 错误响应保留 HTTP 状态码
       }
-      throw new Error(`上传失败：${detail}`);
+      const message = `上传失败：${detail}`;
+      this.onError?.(message);
+      throw new Error(message);
     }
     const result = (await response.json()) as FileInfo & { url: string };
     const file: FileInfo = { path: result.path, name: result.name, type: result.type };

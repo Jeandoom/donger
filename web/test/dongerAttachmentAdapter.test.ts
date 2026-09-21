@@ -8,11 +8,34 @@ describe("DongerAttachmentAdapter", () => {
   });
 
   it("rejects files larger than 20 MB", async () => {
-    const adapter = new DongerAttachmentAdapter();
+    const onError = vi.fn();
+    const adapter = new DongerAttachmentAdapter("conversation-1", undefined, onError);
     const file = new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.png", {
       type: "image/png",
     });
     await expect(adapter.add({ file })).rejects.toThrow("文件大小超过 20MB 限制");
+    // 库对 add 抛错是 fire-and-forget，错误必须经 onError 显性化
+    expect(onError).toHaveBeenCalledWith("文件大小超过 20MB 限制");
+  });
+
+  it("reports send failures via onError", async () => {
+    const onError = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "文件目录不可写" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    const adapter = new DongerAttachmentAdapter("conversation-1", undefined, onError);
+    const pending = await adapter.add({
+      file: new File(["image"], "a.png", { type: "image/png" }),
+    });
+
+    await expect(adapter.send(pending)).rejects.toThrow("上传失败：文件目录不可写");
+    expect(onError).toHaveBeenCalledWith("上传失败：文件目录不可写");
   });
 
   it("accepts arbitrary file types as document", async () => {

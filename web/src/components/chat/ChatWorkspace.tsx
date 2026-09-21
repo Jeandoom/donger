@@ -62,6 +62,13 @@ export interface ChatWorkspaceProps {
 export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  // 附件 add/send 失败在 assistant-ui 里是静默吞掉的（fire-and-forget），经 adapter onError 上抛到这里显性化
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!attachmentError) return;
+    const timer = setTimeout(() => setAttachmentError(null), 6000);
+    return () => clearTimeout(timer);
+  }, [attachmentError]);
   const activeConversation = props.conversations.find((c) => c.id === props.activeConversationId);
   const effectiveMode: AgentPermissionMode =
     activeConversation?.effectivePermissionMode ??
@@ -72,6 +79,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       new DongerAttachmentAdapter(
         props.activeConversationId ?? undefined,
         props.onEnsureConversation,
+        (message) => setAttachmentError(message),
       ),
     [props.activeConversationId, props.onEnsureConversation],
   );
@@ -252,7 +260,27 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               }
               conversationId={activeConversation?.id}
               onMentionInserted={collectMention}
-              aboveComposer={props.aboveComposer}
+              aboveComposer={
+                <>
+                  {props.aboveComposer}
+                  {attachmentError ? (
+                    <div
+                      role="alert"
+                      className="mb-2 flex items-center justify-between rounded-xl border border-destructive/30 bg-destructive-soft px-3 py-2 text-sm text-destructive"
+                    >
+                      <span className="min-w-0 break-all">{attachmentError}</span>
+                      <button
+                        type="button"
+                        aria-label="关闭提示"
+                        onClick={() => setAttachmentError(null)}
+                        className="ml-2 shrink-0 text-xs underline"
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              }
               composerLeading={
                 permissionModePicker || modelPicker ? (
                   <div className="flex shrink-0 items-center gap-1.5">
