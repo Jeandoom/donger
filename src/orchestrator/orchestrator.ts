@@ -10,6 +10,7 @@ import type { AgentGitRepository } from "../domain/git.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
 import { canManageKb, canReadKb } from "../domain/kb-policy.js";
+import type { LLMConfig } from "../domain/llm-config.js";
 import { appendMentions } from "../domain/mentions.js";
 import { appendMessageFiles } from "../domain/message-files.js";
 import {
@@ -62,6 +63,7 @@ import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
 import { createKbToolsServer, type KbMount } from "./kb-tools.js";
+import { enqueueAutoLearn } from "./kb-auto-learn.js";
 import { BUILTIN_KB_ASSISTANT_AGENT, BUILTIN_KB_ASSISTANT_ID } from "./kb-assistant-agent.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
@@ -94,6 +96,8 @@ export interface OrchestratorDeps {
   kbRevisionStore?: KbRevisionStore;
   /** 知识库文件根（<workspaceDir>/kb）；缺省=不可挂载库 */
   workspaceDir?: string;
+  /** 全局 LLM 配置（自动学习等内部 LLM 调用）；缺省=自动学习不可用 */
+  llm?: LLMConfig;
   gitAccessGate?: GitAccessGate;
   /** AI 生成子模块：技能安装器（assist 会话写技能用） */
   installer?: SkillInstaller;
@@ -838,7 +842,80 @@ export class Orchestrator {
 
     const resultText =
       last?.type === "result" ? (last.result ?? last.error ?? "(无结果)") : "(无结果)";
+    // 自动学习（spec §10.3，M4）：kbAutoLearn 开启且绑库时异步沉淀，不阻塞响应、失败静默落审计
+    this.maybeEnqueueAutoLearn(p, resultText, ok);
     return { aborted: false, ok, error, resultText };
+  }
+
+  /** 自动学习入队（条件过滤 + 异步；任何失败仅落 audit_events 静默） */
+  private maybeEnqueueAutoLearn(
+    p: {
+      task: Task;
+      user: User;
+      conversation: Conversation;
+      agent?: Agent;
+    },
+    resultText: string,
+    ok: boolean,
+  ): void {
+    try {
+      const libs = this.deps.kbLibraryStore;
+      const revisions = this.deps.kbRevisionStore;
+      const workspaceDir = this.deps.workspaceDir;
+      const llm = this.deps.llm;
+      if (!libs || !revisions || !workspaceDir || !llm) return;
+      if (!ok || resultText.length === 0 || resultText === "(无结果)") return;
+      if (p.agent?.kbAutoLearn !== true) return;
+      const kbIds = p.agent.knowledgeBaseIds ?? [];
+      if (kbIds.length === 0) return;
+      // 候选库=调用者可管理的绑定库（异步取，避免阻塞返回）
+      void (async () => {
+        try {
+          const actor = { id: p.user.id, role: p.user.role };
+          const candidates: KbLibrary[] = [];
+          for (const kbId of kbIds) {
+            const lib = await libs.get(kbId);
+            if (lib && canManageKb(lib, actor)) candidates.push(lib);
+          }
+          enqueueAutoLearn(
+            {
+              user: p.user,
+              conversation: p.conversation,
+              taskId: p.task.id,
+              candidateKbs: candidates,
+              workspaceDir,
+              llm,
+              revisionStore: revisions,
+            },
+            `${p.task.prompt}\n\n---\n\n${resultText}`,
+          );
+        } catch (e) {
+          await this.recordAutoLearnError(p, e);
+        }
+      })();
+    } catch (e) {
+      void this.recordAutoLearnError(p, e);
+    }
+  }
+
+  /** 学习链路失败落审计（seq=-1 执行外事件；静默不打扰用户） */
+  private async recordAutoLearnError(
+    p: { task: Task; user: User; conversation: Conversation },
+    e: unknown,
+  ): Promise<void> {
+    try {
+      await this.deps.auditStore.record({
+        conversationId: p.conversation.id,
+        taskId: p.task.id,
+        userId: p.user.id,
+        seq: -1,
+        type: "kb_auto_learn_error",
+        text: `知识库自动学习失败：${(e as Error).message}`,
+        recordedAt: new Date().toISOString(),
+      });
+    } catch {
+      // 审计失败不再传播
+    }
   }
 
   /** abort 收尾：任务落 canceled 并通知前端（单轮与阶段循环复用）。 */

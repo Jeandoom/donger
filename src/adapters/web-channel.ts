@@ -4080,6 +4080,33 @@ export class WebChannel implements Channel {
       }
     }
 
+    // GET /api/audit/kb-revisions —— 审计页「知识库」栏：admin 全量 / member 本人相关库（可管理∪被授予）
+    if (kbPath === "/api/audit/kb-revisions" && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const viewer = this.currentViewer(req);
+      const limit = Number(this.extractQuery(url, "limit") ?? "100");
+      const offset = Number(this.extractQuery(url, "offset") ?? "0");
+      const lim = Number.isFinite(limit) ? limit : 100;
+      const off = Number.isFinite(offset) ? offset : 0;
+      let revisions;
+      if (viewer.role === "admin") {
+        revisions = await kb.revisions.listAll({ limit: lim, offset: off });
+      } else {
+        const mine = await kb.libraries.listByOwner(viewer.id);
+        const shared = await kb.libraries.listSharedWith(viewer.id);
+        revisions = await kb.revisions.listByKbIds(
+          [...mine, ...shared].map((l) => l.id),
+          lim,
+          off,
+        );
+      }
+      const all = await kb.libraries.listAll();
+      const kbNames: Record<string, string> = {};
+      for (const l of all) kbNames[l.id] = l.name;
+      return this.json(res, { revisions, kbNames });
+    }
+
     // 智能体回调链接管理（鉴权 + canManageAgent；完整 URL 仅 POST 生成时返回一次）
     const cbAdminMatch = url.match(/^\/api\/agents\/([\w-]+)\/callback$/);
     if (cbAdminMatch) {

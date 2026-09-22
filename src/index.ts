@@ -295,6 +295,7 @@ async function main(): Promise<void> {
       kbShareStore,
       kbRevisionStore,
       workspaceDir: cfg.workspaceDir,
+      llm: cfg.llm,
       gitAccessGate,
       installer: skillInstaller,
       skillPackStore,

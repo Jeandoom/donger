@@ -130,7 +130,9 @@ export interface AuditEvent {
     /** 执行前准备失败（仓库物化/平台工具装配等；text=失败原因。复盘 P2-12：此前零审计痕迹） */
     | "prepare_error"
     /** 会话权限模式切换（text=人读描述；toolInput=JSON {from,to}） */
-    | "permission_mode_change";
+    | "permission_mode_change"
+    /** 知识库自动学习失败（seq=-1 执行外事件；text=失败原因，静默不扰用户） */
+    | "kb_auto_learn_error";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;

@@ -14,9 +14,11 @@ import {
   debugLlmInput,
   fetchAuditConversations,
   fetchAuditDetail,
+  fetchKbAuditRevisions,
   formatDateTime,
   formatDurationMs,
   formatTokens,
+  type KbRevisionAuditDTO,
 } from "../lib/audit";
 import { fetchMe } from "../lib/auth";
 import { cn } from "../lib/utils";
@@ -51,6 +53,23 @@ export function AuditPage() {
   const [eventsError, setEventsError] = useState("");
   const isAdmin = me?.role === "admin";
 
+  // 知识库修订（spec §10.4）：member=本人相关库 / admin 全量；点开单条看 diff 详情
+  const [kbRevisions, setKbRevisions] = useState<KbRevisionAuditDTO[]>([]);
+  const [kbNames, setKbNames] = useState<Record<string, string>>({});
+  const [kbError, setKbError] = useState("");
+
+  const loadKbRevisions = useCallback(() => {
+    setKbError("");
+    fetchKbAuditRevisions()
+      .then((r) => {
+        setKbRevisions(r.revisions);
+        setKbNames(r.kbNames);
+      })
+      .catch((reason: unknown) =>
+        setKbError(reason instanceof Error ? reason.message : String(reason)),
+      );
+  }, []);
+
   const loadEvents = useCallback(() => {
     setEventsError("");
     fetchSystemEvents()
@@ -65,7 +84,8 @@ export function AuditPage() {
       setMe(user ? { id: user.id, role: user.role } : null);
       if (user?.role === "admin") loadEvents();
     });
-  }, [loadEvents]);
+    loadKbRevisions();
+  }, [loadEvents, loadKbRevisions]);
 
   // LLM 观测的调试重放（仅 LLM 模式使用）
   const [presets, setPresets] = useState<Array<{ id: string; name: string; model: string }>>([]);
@@ -242,6 +262,65 @@ export function AuditPage() {
               </div>
             </Card>
           )}
+
+          {/* 知识库修订（spec §10.4）：member=本人相关库 / admin 全量；展开看变更 diff */}
+          <Card className="h-72 shrink-0 flex-col overflow-hidden">
+            <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+              <span className="text-xs font-semibold text-muted-foreground">
+                知识库（{kbRevisions.length}）
+              </span>
+              <button
+                type="button"
+                onClick={loadKbRevisions}
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                <RefreshCw className="h-3 w-3" />
+                刷新
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2">
+              {kbError ? (
+                <p className="px-2 py-1 text-xs text-destructive">{kbError}</p>
+              ) : kbRevisions.length === 0 ? (
+                <p className="px-2 py-1 text-xs text-muted-foreground">暂无知识库变更</p>
+              ) : (
+                kbRevisions.map((rev) => (
+                  <details key={rev.id} className="mb-0.5 rounded-lg px-3 py-2 hover:bg-muted">
+                    <summary className="cursor-pointer list-none">
+                      <div className="flex items-center gap-1.5">
+                        <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                          {KB_ACTION_LABEL[rev.action] ?? rev.action}
+                        </span>
+                        <span className="min-w-0 truncate text-[12px] font-medium">
+                          {kbNames[rev.kbId] ?? "已删除库"}
+                          {rev.path ? ` · ${rev.path}` : ""}
+                        </span>
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                          {formatDateTime(rev.createdAt)}
+                        </span>
+                      </div>
+                      {rev.summary ? (
+                        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                          {rev.summary}
+                        </div>
+                      ) : null}
+                    </summary>
+                    <div className="mt-1 space-y-1">
+                      <div className="text-[11px] text-muted-foreground">
+                        变更方式：{KB_ACTOR_LABEL[rev.actorKind] ?? rev.actorKind}
+                        {rev.conversationId ? ` · 来源会话 ${rev.conversationId.slice(0, 8)}` : ""}
+                      </div>
+                      {rev.diffText ? (
+                        <pre className="overflow-x-auto rounded bg-muted p-2 text-[11px] leading-4">
+                          {rev.diffText}
+                        </pre>
+                      ) : null}
+                    </div>
+                  </details>
+                ))
+              )}
+            </div>
+          </Card>
         </div>
 
         {/* 右：详情（形态随开关切换；已选会话保持不变） */}
@@ -506,3 +585,21 @@ function EventRow({
   }
   return null;
 }
+
+/** 知识库修订标签（spec §10.4） */
+const KB_ACTION_LABEL: Record<string, string> = {
+  create: "新建",
+  update: "更新",
+  delete: "删除",
+  config: "配置",
+  import: "导入",
+  "library-deleted": "删库",
+};
+const KB_ACTOR_LABEL: Record<string, string> = {
+  manual: "页面",
+  chat: "对话",
+  "auto-learn": "自动学习",
+  memory: "记忆",
+  import: "迁移",
+  system: "系统",
+};

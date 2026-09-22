@@ -111,3 +111,32 @@ export function formatDateTime(iso: string | undefined): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
+
+// ---------------------------------------------------------------------------
+// 知识库修订审计（spec 2026-09-22-knowledge-base-design §10.4）
+// ---------------------------------------------------------------------------
+
+export interface KbRevisionAuditDTO {
+  id: string;
+  kbId: string;
+  path: string;
+  action: "create" | "update" | "delete" | "config" | "import" | "library-deleted";
+  actorUserId: string;
+  actorKind: "manual" | "chat" | "auto-learn" | "memory" | "import" | "system";
+  conversationId?: string;
+  summary: string;
+  diffText?: string;
+  createdAt: string;
+}
+
+export interface KbAuditResponse {
+  revisions: KbRevisionAuditDTO[];
+  /** kbId → 库名；已删除库不在映射中（前端显示「已删除库」） */
+  kbNames: Record<string, string>;
+}
+
+export async function fetchKbAuditRevisions(): Promise<KbAuditResponse> {
+  const r = await apiFetch("/api/audit/kb-revisions");
+  if (!r.ok) throw new Error(`kb-revisions ${r.status}`);
+  return (await r.json()) as KbAuditResponse;
+}

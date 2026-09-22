@@ -354,7 +354,7 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
         .prepare(
           `UPDATE kb_revisions SET diffText = NULL, summary = ''
            WHERE kbId = ? AND path = ? AND id NOT IN (
-             SELECT id FROM kb_revisions WHERE kbId = ? AND path = ? ORDER BY createdAt DESC, id DESC LIMIT ?
+             SELECT id FROM kb_revisions WHERE kbId = ? AND path = ? ORDER BY createdAt DESC, rowid DESC LIMIT ?
            )`,
         )
         .run(rev.kbId, rev.path, rev.kbId, rev.path, REVISION_DIFF_KEEP);
@@ -371,17 +371,29 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
     if (opts?.path !== undefined) {
       const rows = this.db
         .prepare(
-          "SELECT * FROM kb_revisions WHERE kbId = ? AND path = ? ORDER BY createdAt DESC, id DESC LIMIT ? OFFSET ?",
+          "SELECT * FROM kb_revisions WHERE kbId = ? AND path = ? ORDER BY createdAt DESC, rowid DESC LIMIT ? OFFSET ?",
         )
         .all(kbId, opts.path, limit, offset) as Record<string, unknown>[];
       return rows.map(rowToRevision);
     }
     const rows = this.db
       .prepare(
-        "SELECT * FROM kb_revisions WHERE kbId = ? ORDER BY createdAt DESC, id DESC LIMIT ? OFFSET ?",
+        "SELECT * FROM kb_revisions WHERE kbId = ? ORDER BY createdAt DESC, rowid DESC LIMIT ? OFFSET ?",
       )
       .all(kbId, limit, offset) as Record<string, unknown>[];
     return rows.map(rowToRevision);
+  }
+
+  async listByKbIds(kbIds: readonly string[], limit: number, offset: number): Promise<KbRevision[]> {
+    if (kbIds.length === 0) return [];
+    const capped = Math.min(limit, 500);
+    // 库数量小（个人 1 + 自建 + 被授予），逐库取后内存归一排序（SQLite 变参 IN 的 bind 复杂度不值当）
+    const all: KbRevision[] = [];
+    for (const kbId of kbIds) {
+      all.push(...(await this.listByKb(kbId, { limit: capped + offset })));
+    }
+    all.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    return all.slice(offset, offset + capped);
   }
 
   async listAll(query: KbRevisionListQuery): Promise<KbRevision[]> {
@@ -389,7 +401,7 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
     const offset = query.offset;
     if (query.kbId !== undefined) return this.listByKb(query.kbId, { limit, offset });
     const rows = this.db
-      .prepare("SELECT * FROM kb_revisions ORDER BY createdAt DESC, id DESC LIMIT ? OFFSET ?")
+      .prepare("SELECT * FROM kb_revisions ORDER BY createdAt DESC, rowid DESC LIMIT ? OFFSET ?")
       .all(limit, offset) as Record<string, unknown>[];
     return rows.map(rowToRevision);
   }

@@ -225,6 +225,8 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // 审计面：member 可看本人会话的审计——列表由 handler 按 role 分流
     // （admin 全量 / member 走 store 层 L2 visible 过滤）；详情按会话属主判定，admin 直通。
     { method: "GET", pattern: "/api/audit/conversations", access: { kind: "authenticated" } },
+    // 知识库修订审计（spec §10.4）：admin 全量 / member 本人相关库（handler 按 role 分流）
+    { method: "GET", pattern: "/api/audit/kb-revisions", access: { kind: "authenticated" } },
     {
       method: "GET",
       pattern: "/api/audit/conversations/:id",
