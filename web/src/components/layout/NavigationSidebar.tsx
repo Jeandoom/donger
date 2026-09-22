@@ -22,6 +22,7 @@ import { apiFetch, apiFetchRetry, clearToken, getToken } from "../../lib/auth";
 import { cn } from "../../lib/utils";
 import { CredentialIcon } from "../icons/CredentialIcon";
 import { InviteIcon } from "../icons/InviteIcon";
+import { KbIcon } from "../icons/KbIcon";
 import { ModelIcon } from "../icons/ModelIcon";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 
@@ -40,6 +41,7 @@ const mainEntries: LeafItem[] = [
   { to: "/", label: "对话", icon: MessageSquare, end: true },
   // 智能体会话已并入对话模块（/），智能体入口收敛为管理页叶节点
   { to: "/agents", label: "智能体", icon: Bot },
+  { to: "/kb", label: "知识库", icon: KbIcon },
   { to: "/workflows", label: "工作流", icon: Workflow },
   { to: "/triggers", label: "触发器", icon: Zap },
   { to: "/loops", label: "LOOPs", icon: Repeat },

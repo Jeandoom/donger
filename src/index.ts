@@ -25,6 +25,11 @@ import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
 import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
+import {
+  SqliteKbLibraryStore,
+  SqliteKbRevisionStore,
+  SqliteKbShareStore,
+} from "./adapters/sqlite-kb-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
@@ -56,6 +61,7 @@ import { warnIfWebDistStale } from "./util/build-fingerprint.js";
 import { configureGithubProxy } from "./util/github-oauth-api.js";
 import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { createLogger } from "./util/logger.js";
+import { migrateKnowledgeBases } from "./util/kb-migrate.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
@@ -143,6 +149,33 @@ async function main(): Promise<void> {
   // 连接器注册表（HTTP MCP）：与 agent 密钥共用同一加密器
   const connectorStore = new SqliteConnectorStore(db, secretCipher);
   connectorStore.migrate();
+
+  // 知识库三表（spec 2026-09-22-knowledge-base-design）+ 存量统一迁移（个人库 ensure/旧目录退役，幂等）
+  const kbLibraryStore = new SqliteKbLibraryStore(db);
+  kbLibraryStore.migrate();
+  const kbShareStore = new SqliteKbShareStore(db);
+  kbShareStore.migrate();
+  const kbRevisionStore = new SqliteKbRevisionStore(db);
+  kbRevisionStore.migrate();
+  const kbMigrate = await migrateKnowledgeBases({
+    libraryStore: kbLibraryStore,
+    workspaceDir: cfg.workspaceDir,
+    usersDir,
+    log,
+  });
+  if (kbMigrate.ensuredPersonal > 0 || kbMigrate.mergedLegacy > 0) {
+    log.info(
+      {
+        ensuredPersonal: kbMigrate.ensuredPersonal,
+        mergedLegacy: kbMigrate.mergedLegacy,
+        renameFailed: kbMigrate.renameFailed,
+      },
+      "知识库统一迁移完成",
+    );
+  }
+  if (kbMigrate.renameFailed > 0) {
+    log.warn(`${kbMigrate.renameFailed} 个用户的旧 knowledge_base/ 目录 rename 失败，下次启动重试`);
+  }
   const gitAccessGate = new GitAccessGate(
     repositoryMaterializer,
     credentialSets,
@@ -403,6 +436,9 @@ async function main(): Promise<void> {
     agentStore,
     agentShareStore,
     agentCallbackStore,
+    kbLibraryStore,
+    kbShareStore,
+    kbRevisionStore,
     callbackRateLimitPerMin: cfg.callbackRateLimitPerMin,
     gitAccessGate,
     selfImproveGitRepository: selfImproveGitRepository,

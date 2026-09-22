@@ -315,6 +315,27 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "authenticated" },
     },
 
+    // 知识库（spec 2026-09-22-knowledge-base-design §7）：canUse/canManage/personal/builtin
+    // 全部判定收敛在 handler 引用的 kb-policy.ts；守卫只管登录与公开性。
+    { method: "GET", pattern: "/api/kb", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/kb", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/by-share/:token", access: { kind: "public" } },
+    { method: "GET", pattern: "/api/kb/:id", access: { kind: "authenticated" } },
+    { method: "PATCH", pattern: "/api/kb/:id", access: { kind: "authenticated" } },
+    { method: "DELETE", pattern: "/api/kb/:id", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/:id/tree", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/:id/entry", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/:id/revisions", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/:id/share", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/kb/:id/share", access: { kind: "authenticated" } },
+    {
+      method: "DELETE",
+      pattern: "/api/kb/:id/share/grants/:gid",
+      access: { kind: "authenticated" },
+    },
+    { method: "POST", pattern: "/api/kb/:id/accept-share", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/kb/:id/duplicate", access: { kind: "authenticated" } },
+
     // 文件浏览（fileBrowser 内部做属主与路径越界校验）
     { method: "GET", pattern: "/api/files/tree", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/files/content", access: { kind: "authenticated" } },

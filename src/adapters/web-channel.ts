@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, cpSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
   type IncomingMessage as HttpRequest,
@@ -23,6 +23,10 @@ import {
   resolveDuplicateName,
 } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
+import { lineDiff } from "../domain/kb-diff.js";
+import type { KbLibrary } from "../domain/kb.js";
+import { parseKbLibrary, KbLibraryInputSchema } from "../domain/kb.js";
+import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-policy.js";
 import {
   type Connector,
   ConnectorInputSchema,
@@ -107,6 +111,16 @@ import {
 } from "../domain/user-llm-provider.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import {
+  countKbEntries,
+  deleteKbEntry,
+  ensureKbDir,
+  kbRootDir,
+  listKbTree,
+  readKbEntry,
+  sha256Text,
+  writeKbEntry,
+} from "../util/kb-files.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
@@ -126,6 +140,7 @@ import {
 } from "../orchestrator/skill-forge-agent.js";
 import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
+import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type {
@@ -402,6 +417,10 @@ export interface WebChannelDeps {
   commentStore?: CommentStore;
   /** 反馈模块存储（缺省=反馈端点 503） */
   feedbackStore?: FeedbackStore;
+  /** 知识库三表存储（spec 2026-09-22-knowledge-base-design；缺省=KB 端点 503） */
+  kbLibraryStore?: KbLibraryStore;
+  kbShareStore?: KbShareStore;
+  kbRevisionStore?: KbRevisionStore;
   sessionStore?: SessionStore;
   /** CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange） */
   cliToken?: string;
@@ -499,6 +518,9 @@ export class WebChannel implements Channel {
   private readonly agentStore?: AgentStore;
   private readonly agentShareStore?: AgentShareStore;
   private readonly agentCallbackStore?: AgentCallbackStore;
+  private readonly kbLibraryStore?: KbLibraryStore;
+  private readonly kbShareStore?: KbShareStore;
+  private readonly kbRevisionStore?: KbRevisionStore;
   private readonly connectorStore?: ConnectorStore;
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly inviteStore?: InviteStore;
@@ -521,6 +543,9 @@ export class WebChannel implements Channel {
     this.agentStore = deps.agentStore;
     this.agentShareStore = deps.agentShareStore;
     this.agentCallbackStore = deps.agentCallbackStore;
+    this.kbLibraryStore = deps.kbLibraryStore;
+    this.kbShareStore = deps.kbShareStore;
+    this.kbRevisionStore = deps.kbRevisionStore;
     this.connectorStore = deps.connectorStore;
     this.agentMeta = deps.agentMeta;
     this.inviteStore = deps.inviteStore;
@@ -3704,6 +3729,310 @@ export class WebChannel implements Channel {
       if (!duplicated) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(res, { ...this.agentToDTO(duplicated, true), warnings });
     }
+    // === 知识库（spec 2026-09-22-knowledge-base-design §7；权限判定统一走 kb-policy，禁止内联重复） ===
+    // url 含查询串（铁律：反馈轮 ?token= 404 事故），KB 段统一剥 query 后再匹配
+    const kbPath = url.split("?")[0];
+
+    // GET /api/kb —— 本人可见全量：个人库（懒 ensure，spec §5.2）+ 我创建的 + 分享给我的 + 系统默认
+    if (kbPath === "/api/kb" && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const personal = await kb.libraries.ensurePersonalLibrary(me);
+      const mine = await kb.libraries.listByOwner(me);
+      const shared = await kb.libraries.listSharedWith(me);
+      const builtins = (await kb.libraries.listAll()).filter((l) => l.builtin);
+      const actor = await this.kbActor(me);
+      const seen = new Set<string>();
+      const out: Record<string, unknown>[] = [];
+      for (const lib of [personal, ...mine, ...shared, ...builtins]) {
+        if (seen.has(lib.id)) continue;
+        seen.add(lib.id);
+        out.push(this.kbToDTO(lib, actor, false));
+      }
+      return this.json(res, out);
+    }
+    // POST /api/kb —— 建库：目录 + 骨架 index.md + create 修订
+    if (kbPath === "/api/kb" && req.method === "POST") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const body = JSON.parse(await this.readBody(req));
+      const input = KbLibraryInputSchema.parse({
+        ...(body as Record<string, unknown>),
+        ownerId: me,
+        builtin: false,
+        personal: false,
+      });
+      let lib: KbLibrary;
+      try {
+        lib = await kb.libraries.create(input);
+      } catch (e) {
+        if (String((e as Error).message).includes("UNIQUE")) {
+          return this.json(res, { error: "已存在同名知识库" }, 409);
+        }
+        throw e;
+      }
+      const root = kbRootDir(this.workspaceDir, lib.id);
+      ensureKbDir(root);
+      const skeleton = [
+        `# ${lib.name}`,
+        "",
+        lib.description || "（待补充描述）",
+        "",
+        "> 目录结构由库提示词规范；内容通过对话维护，每次变更自动记入修订。",
+        "",
+      ].join("\n");
+      writeKbEntry(root, "index.md", skeleton);
+      await kb.revisions.record({
+        kbId: lib.id,
+        path: "index.md",
+        action: "create",
+        actorUserId: me,
+        actorKind: "manual",
+        afterHash: sha256Text(skeleton),
+        summary: "创建知识库（生成骨架 index.md）",
+      });
+      return this.json(res, this.kbToDTO(lib, await this.kbActor(me), true), 201);
+    }
+    // GET /api/kb/by-share/:token —— 公开探查（守卫 public）：只回名称/描述，不泄配置
+    const kbByShareMatch = kbPath.match(/^\/api\/kb\/by-share\/([A-Za-z0-9_-]+)$/);
+    if (kbByShareMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const ref = await kb.shares.findByToken(kbByShareMatch[1] ?? "");
+      if (!ref || !ref.enabled) return this.json(res, { error: "not found" }, 404);
+      const lib = await kb.libraries.get(ref.kbId);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      return this.json(res, { kbId: lib.id, name: lib.name, description: lib.description, requiresLogin: true });
+    }
+    // GET /api/kb/:id/tree —— 目录树（条目上限 2000，spec §7）
+    const kbTreeMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/tree$/);
+    if (kbTreeMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbTreeMatch[1] ?? "";
+      if (!(await this.requireKbRead(kb, id, me, res))) return;
+      return this.json(res, listKbTree(kbRootDir(this.workspaceDir, id)));
+    }
+    // GET /api/kb/:id/entry?path= —— 读 markdown 源文本（仅 .md；containment+相对根复判在 util 层）
+    const kbEntryMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/entry$/);
+    if (kbEntryMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbEntryMatch[1] ?? "";
+      if (!(await this.requireKbRead(kb, id, me, res))) return;
+      const relPath = this.extractQuery(url, "path") ?? "";
+      const result = readKbEntry(kbRootDir(this.workspaceDir, id), relPath);
+      if ("error" in result) return this.json(res, { error: result.error }, 404);
+      return this.json(res, { path: relPath, content: result.content });
+    }
+    // GET /api/kb/:id/revisions —— 修订账本（被分享者可见：能读库即能看变更史）
+    const kbRevMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/revisions$/);
+    if (kbRevMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbRevMatch[1] ?? "";
+      if (!(await this.requireKbRead(kb, id, me, res))) return;
+      const pathQ = this.extractQuery(url, "path");
+      const limit = Number(this.extractQuery(url, "limit") ?? "100");
+      const offset = Number(this.extractQuery(url, "offset") ?? "0");
+      const revisions = await kb.revisions.listByKb(id, {
+        ...(pathQ ? { path: pathQ } : {}),
+        limit: Number.isFinite(limit) ? limit : 100,
+        offset: Number.isFinite(offset) ? offset : 0,
+      });
+      return this.json(res, { revisions });
+    }
+    // GET/POST /api/kb/:id/share —— 分享开关（canManage；personal/builtin 禁分享）
+    const kbShareMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/share$/);
+    if (kbShareMatch) {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbShareMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+      if (!kbShareable(lib)) return this.json(res, { error: "个人知识库与系统默认库不支持分享" }, 403);
+      if (req.method === "GET") {
+        const share = await kb.shares.getShare(id);
+        const grants = share?.enabled ? ((await kb.shares.listGrants(id)) ?? []) : [];
+        return this.json(res, {
+          enabled: !!share?.enabled,
+          token: share?.token,
+          url: share?.token ? `/kb-share/${share.token}` : null,
+          grants,
+        });
+      }
+      if (req.method === "POST") {
+        const { enabled } = JSON.parse(await this.readBody(req)) as { enabled: boolean };
+        if (enabled) {
+          const s = await kb.shares.enableShare(id);
+          return this.json(res, { enabled: true, token: s.token, url: `/kb-share/${s.token}` });
+        }
+        await kb.shares.disableShare(id);
+        return this.json(res, { enabled: false, token: null, url: null });
+      }
+    }
+    // DELETE /api/kb/:id/share/grants/:gid —— 移除单个授权
+    const kbGrantMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/share\/grants\/([\w-]+)$/);
+    if (kbGrantMatch && req.method === "DELETE") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbGrantMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(lib, actor) || !kbShareable(lib)) {
+        return this.json(res, { error: "forbidden" }, 403);
+      }
+      await kb.shares.removeGrant(id, kbGrantMatch[2] ?? "");
+      return this.json(res, { ok: true });
+    }
+    // POST /api/kb/:id/accept-share —— 凭链接加入名单（幂等）
+    const kbAcceptMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/accept-share$/);
+    if (kbAcceptMatch && req.method === "POST") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbAcceptMatch[1] ?? "";
+      const body = JSON.parse(await this.readBody(req)) as { token?: string };
+      const ref = await kb.shares.findByToken(typeof body.token === "string" ? body.token : "");
+      if (!ref || !ref.enabled || ref.kbId !== id) {
+        return this.json(res, { error: "分享链接无效或已关闭" }, 403);
+      }
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      await kb.shares.addGrant(id, me);
+      return this.json(res, { kbId: id, name: lib.name });
+    }
+    // POST /api/kb/:id/duplicate —— 复制库（canManage；personal 仅本人）：拷目录，不带修订历史
+    const kbDupMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/duplicate$/);
+    if (kbDupMatch && req.method === "POST") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbDupMatch[1] ?? "";
+      const src = await kb.libraries.get(id);
+      if (!src) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(src, actor)) return this.json(res, { error: "forbidden" }, 403);
+      if (src.personal && src.ownerId !== me) return this.json(res, { error: "forbidden" }, 403);
+      const isMine = src.ownerId === me;
+      const ownerUser = isMine ? undefined : await this.deps.userStore?.get(src.ownerId);
+      const existingNames = new Set(
+        ((await kb.libraries.listByOwner(me)) ?? []).map((l) => l.name),
+      );
+      const name = resolveDuplicateName(src.name, isMine, ownerUser?.name ?? "分享者", existingNames);
+      const copy = await kb.libraries.create({
+        ownerId: me,
+        name,
+        description: src.description,
+        systemPrompt: src.systemPrompt,
+        builtin: false,
+        personal: false,
+      });
+      const srcRoot = kbRootDir(this.workspaceDir, id);
+      const dstRoot = kbRootDir(this.workspaceDir, copy.id);
+      ensureKbDir(dstRoot);
+      if (existsSync(srcRoot)) cpSync(srcRoot, dstRoot, { recursive: true });
+      await kb.revisions.record({
+        kbId: copy.id,
+        path: "",
+        action: "create",
+        actorUserId: me,
+        actorKind: "manual",
+        summary: `复制自知识库「${src.name}」（不含修订历史）`,
+      });
+      return this.json(res, this.kbToDTO(copy, actor, true), 201);
+    }
+    // GET/PATCH/DELETE /api/kb/:id —— 详情/配置/删除（配置变更记 config 修订；删除账本保留）
+    const kbIdMatch = kbPath.match(/^\/api\/kb\/([\w-]+)$/);
+    if (kbIdMatch && !kbPath.includes("/share") && !kbPath.includes("/accept-share")) {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbIdMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (req.method === "GET") {
+        const granted = await kb.shares.isGranted(id, me);
+        if (!canReadKb(lib, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+        return this.json(res, this.kbToDTO(lib, actor, true));
+      }
+      if (req.method === "PATCH") {
+        if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+        const body = JSON.parse(await this.readBody(req)) as {
+          name?: string;
+          description?: string;
+          systemPrompt?: string;
+        };
+        const patch: Partial<KbLibrary> = {};
+        if (body.name !== undefined) patch.name = body.name;
+        if (body.description !== undefined) patch.description = body.description;
+        if (body.systemPrompt !== undefined) patch.systemPrompt = body.systemPrompt;
+        const before = JSON.stringify({
+          name: lib.name,
+          description: lib.description,
+          systemPrompt: lib.systemPrompt,
+        });
+        let updated: KbLibrary;
+        try {
+          updated = await kb.libraries.update(id, patch);
+        } catch (e) {
+          if (String((e as Error).message).includes("UNIQUE")) {
+            return this.json(res, { error: "已存在同名知识库" }, 409);
+          }
+          throw e;
+        }
+        const after = JSON.stringify({
+          name: updated.name,
+          description: updated.description,
+          systemPrompt: updated.systemPrompt,
+        });
+        if (before !== after) {
+          await kb.revisions.record({
+            kbId: id,
+            path: "",
+            action: "config",
+            actorUserId: me,
+            actorKind: "manual",
+            beforeHash: sha256Text(before),
+            afterHash: sha256Text(after),
+            diffText: lineDiff(before, after),
+            summary: "更新库配置（名称/描述/提示词）",
+          });
+        }
+        return this.json(res, this.kbToDTO(updated, actor, true));
+      }
+      if (req.method === "DELETE") {
+        if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+        if (!kbDeletable(lib)) {
+          return this.json(res, { error: "个人知识库与系统默认库不可删除" }, 403);
+        }
+        const revCount = await kb.revisions.countByKb(id);
+        // 账本保留（spec §6.1）：先写 library-deleted 尾条，再删库记录；文件目录一并清理
+        await kb.revisions.record({
+          kbId: id,
+          path: "",
+          action: "library-deleted",
+          actorUserId: me,
+          actorKind: "system",
+          summary: `删除知识库「${lib.name}」（保留 ${revCount + 1} 条修订供审计）`,
+        });
+        await kb.libraries.delete(id);
+        rmSync(kbRootDir(this.workspaceDir, id), { recursive: true, force: true });
+        return this.json(res, { ok: true, revisionsKept: revCount + 1 });
+      }
+    }
+
     // 智能体回调链接管理（鉴权 + canManageAgent；完整 URL 仅 POST 生成时返回一次）
     const cbAdminMatch = url.match(/^\/api\/agents\/([\w-]+)\/callback$/);
     if (cbAdminMatch) {
@@ -5215,6 +5544,70 @@ export class WebChannel implements Channel {
   }
 
   /** Agent → DTO；detailed=false 时隐藏配置明细，env/headers 永远掩码 */
+  /** KB 三 store 装配检查（缺省=503）；返回 undefined 时响应已写出 */
+  private requireKbStores(res: ServerResponse):
+    | {
+        libraries: KbLibraryStore;
+        shares: KbShareStore;
+        revisions: KbRevisionStore;
+      }
+    | undefined {
+    if (this.kbLibraryStore && this.kbShareStore && this.kbRevisionStore) {
+      return {
+        libraries: this.kbLibraryStore,
+        shares: this.kbShareStore,
+        revisions: this.kbRevisionStore,
+      };
+    }
+    this.json(res, { error: "kb store unavailable" }, 503);
+    return undefined;
+  }
+
+  private async kbActor(userId: string): Promise<{ id: string; role: "admin" | "user" }> {
+    const meUser = await this.deps.userStore?.get(userId);
+    return { id: userId, role: (meUser?.role ?? "user") as "admin" | "user" };
+  }
+
+  /** canReadKb 校验（含 404/403 响应写出）；返回 false 时响应已写出 */
+  private async requireKbRead(
+    kb: { libraries: KbLibraryStore; shares: KbShareStore; revisions: KbRevisionStore },
+    id: string,
+    userId: string,
+    res: ServerResponse,
+  ): Promise<boolean> {
+    const lib = await kb.libraries.get(id);
+    if (!lib) {
+      this.json(res, { error: "not found" }, 404);
+      return false;
+    }
+    const actor = await this.kbActor(userId);
+    const granted = await kb.shares.isGranted(id, userId);
+    if (!canReadKb(lib, actor, granted)) {
+      this.json(res, { error: "forbidden" }, 403);
+      return false;
+    }
+    return true;
+  }
+
+  /** KB DTO：列表形态不含 systemPrompt（瘦身）；detailed 供详情/编辑回填 */
+  private kbToDTO(
+    kb: KbLibrary,
+    actor: { id: string; role: "admin" | "user" },
+    detailed: boolean,
+  ): Record<string, unknown> {
+    return {
+      id: kb.id,
+      name: kb.name,
+      description: kb.description,
+      builtin: kb.builtin,
+      personal: kb.personal,
+      updatedAt: kb.updatedAt,
+      _mine: kb.ownerId === actor.id,
+      _role: canManageKb(kb, actor) ? "manage" : "use",
+      ...(detailed ? { systemPrompt: kb.systemPrompt, createdAt: kb.createdAt } : {}),
+    };
+  }
+
   private agentToDTO(a: Agent, detailed: boolean): Record<string, unknown> {
     const base: Record<string, unknown> = {
       id: a.id,
