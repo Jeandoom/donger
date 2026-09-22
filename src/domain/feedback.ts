@@ -10,6 +10,23 @@ export type FeedbackCategory = (typeof FEEDBACK_CATEGORIES)[number];
 export const FEEDBACK_STATUSES = ["open", "accepted", "resolved", "closed"] as const;
 export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
 
+/** 类别中文标签（反馈引用注入文本与前端候选描述共用，两端语义一致） */
+export const FEEDBACK_CATEGORY_LABELS: Record<FeedbackCategory, string> = {
+  ui: "界面",
+  ue: "体验",
+  feature: "功能",
+  logic: "逻辑",
+  other: "其他",
+};
+
+/** 状态中文标签（同上共用） */
+export const FEEDBACK_STATUS_LABELS: Record<FeedbackStatus, string> = {
+  open: "待处理",
+  accepted: "已采纳",
+  resolved: "已解决",
+  closed: "已关闭",
+};
+
 export interface Feedback {
   id: string;
   /** 提交人（服务端取当前登录者，不信任客户端） */

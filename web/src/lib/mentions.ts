@@ -1,6 +1,6 @@
-export type MentionKind = "file" | "skill" | "connector" | "conversation";
+export type MentionKind = "file" | "skill" | "connector" | "conversation" | "feedback";
 
-/** 输入框引用（@文件 / /技能 / $连接器 / %会话）。id 口径与后端候选端点一致：file = "runtime:<relPath>"，conversation = 会话 id 或「全部会话」哨兵 */
+/** 输入框引用（@文件 / /技能 / $连接器 / %会话 / #反馈）。id 口径与后端候选端点一致：file = "runtime:<relPath>"，conversation = 会话 id 或「全部会话」哨兵，feedback = 反馈 id 或「全部反馈」哨兵 */
 export interface Mention {
   kind: MentionKind;
   id: string;
@@ -12,6 +12,7 @@ export const MENTION_TRIGGERS: Record<MentionKind, string> = {
   skill: "/",
   connector: "$",
   conversation: "%",
+  feedback: "#",
 };
 
 /** % 全部会话的哨兵 id（与后端 domain/mentions CONVERSATION_MENTION_ALL_ID 同值） */
@@ -19,6 +20,12 @@ export const CONVERSATION_MENTION_ALL_ID = "__all__";
 
 /** 「全部会话」候选项的固定 label（= 标记文本 %全部会话） */
 export const CONVERSATION_ALL_LABEL = "全部会话";
+
+/** # 全部反馈的哨兵 id（与后端 domain/mentions FEEDBACK_MENTION_ALL_ID 同值） */
+export const FEEDBACK_MENTION_ALL_ID = "__all__";
+
+/** 「全部反馈」候选项的固定 label（= 标记文本 #全部反馈） */
+export const FEEDBACK_ALL_LABEL = "全部反馈";
 
 /**
  * 会话标记 label：去空白 + 仅保留标记体合法字符（字母/数字/下划线/连字符/中文）+ 截 24 字。
@@ -77,7 +84,7 @@ function matchMentionBody(text: string, start: number, trigger: string): string 
   return text.slice(start, end);
 }
 
-/** 用户消息高亮分词：仅识别词首的 @/​/$/% 标记（邮箱 a@b.com、普通文本不误伤） */
+/** 用户消息高亮分词：仅识别词首的 @/​/$/%/# 标记（邮箱 a@b.com、#123 金额序号、普通文本不误伤） */
 export function tokenizeMentionMarkers(text: string): MentionToken[] {
   const tokens: MentionToken[] = [];
   let plain = "";
@@ -86,7 +93,8 @@ export function tokenizeMentionMarkers(text: string): MentionToken[] {
     const ch = text[i] ?? "";
     const prev = i > 0 ? (text[i - 1] ?? "") : "";
     const atWordStart = prev === "" || /\s/.test(prev);
-    const isTrigger = (ch === "@" || ch === "/" || ch === "$" || ch === "%") && atWordStart;
+    const isTrigger =
+      (ch === "@" || ch === "/" || ch === "$" || ch === "%" || ch === "#") && atWordStart;
     const body = isTrigger ? matchMentionBody(text, i + 1, ch) : null;
     if (body !== null && body.length > 0) {
       if (plain) {
@@ -97,7 +105,15 @@ export function tokenizeMentionMarkers(text: string): MentionToken[] {
         type: "mention",
         text: `${ch}${body}`,
         kind:
-          ch === "@" ? "file" : ch === "/" ? "skill" : ch === "$" ? "connector" : "conversation",
+          ch === "@"
+            ? "file"
+            : ch === "/"
+              ? "skill"
+              : ch === "$"
+                ? "connector"
+                : ch === "%"
+                  ? "conversation"
+                  : "feedback",
       });
       i += 1 + body.length;
     } else {

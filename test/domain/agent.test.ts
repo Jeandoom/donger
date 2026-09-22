@@ -4,7 +4,9 @@ import {
   AgentSchema,
   appendDefaultSkill,
   effectiveConversationScope,
+  effectiveFeedbackScope,
   filterConversationsByScope,
+  filterFeedbacksByScope,
   normalizeAgentCredentialRefs,
   parseAgent,
   resolveDuplicateName,
@@ -241,5 +243,77 @@ describe("resolveDuplicateName（复制命名规则 §3.3）", () => {
     expect(resolveDuplicateName("tool", false, "用户1", new Set(["tool", "tool-用户1"]))).toBe(
       "tool-用户1-2",
     );
+  });
+});
+
+describe("feedbackScope 反馈资源范围", () => {
+  it("缺省字段 = 功能未开启，存量数据零迁移", () => {
+    const a = parseAgent(valid);
+    expect(a.feedbackScope).toBeUndefined();
+    expect(effectiveFeedbackScope(a)).toBeUndefined();
+  });
+
+  it("enabled=false 时 effectiveFeedbackScope 返回 undefined；开启后 days 缺省不限、limit 缺省 10", () => {
+    const off = parseAgent({ ...valid, feedbackScope: { enabled: false } });
+    expect(effectiveFeedbackScope(off)).toBeUndefined();
+    const on = parseAgent({ ...valid, feedbackScope: { enabled: true } });
+    expect(effectiveFeedbackScope(on)).toEqual({ limit: 10 });
+    const full = parseAgent({
+      ...valid,
+      feedbackScope: { enabled: true, days: 7, limit: 30 },
+    });
+    expect(effectiveFeedbackScope(full)).toEqual({ days: 7, limit: 30 });
+  });
+
+  it("days/limit 超界（>99）保存即拒绝", () => {
+    expect(() =>
+      AgentSchema.parse({ ...valid, feedbackScope: { enabled: true, days: 100 } }),
+    ).toThrow();
+    expect(() =>
+      AgentSchema.parse({ ...valid, feedbackScope: { enabled: true, limit: 0 } }),
+    ).toThrow();
+  });
+});
+
+describe("filterFeedbacksByScope", () => {
+  const now = new Date("2026-09-22T12:00:00Z");
+  const day = (n: number) => new Date(now.getTime() - n * 86_400_000).toISOString();
+  const fbScopeAgent = parseAgent({
+    ...valid,
+    feedbackScope: { enabled: true, days: 7, limit: 2 },
+  });
+  const scope = effectiveFeedbackScope(fbScopeAgent) ?? undefined;
+
+  it("窗口外（updatedAt 早于 days）不入集；按 updatedAt 降序截 limit", () => {
+    expect(scope).toBeDefined();
+    if (!scope) return;
+    const out = filterFeedbacksByScope(
+      [
+        { id: "in-new", updatedAt: day(0) },
+        { id: "in-old", updatedAt: day(1) },
+        { id: "out", updatedAt: day(10) },
+        { id: "in-2", updatedAt: day(2) },
+      ],
+      scope,
+      now,
+    );
+    expect(out.map((f) => f.id)).toEqual(["in-new", "in-old"]);
+  });
+
+  it("days 缺省 = 不限天", () => {
+    const noDays = effectiveFeedbackScope(
+      parseAgent({ ...valid, feedbackScope: { enabled: true, limit: 1 } }),
+    );
+    expect(noDays).toBeDefined();
+    if (!noDays) return;
+    const out = filterFeedbacksByScope(
+      [
+        { id: "ancient", updatedAt: "2020-01-01T00:00:00.000Z" },
+        { id: "new", updatedAt: day(0) },
+      ],
+      noDays,
+      now,
+    );
+    expect(out.map((f) => f.id)).toEqual(["new"]);
   });
 });

@@ -21,6 +21,7 @@ export const emptyAgent: AgentEditorForm = {
   conversationScope: { enabled: false, agentIds: [] },
   knowledgeBaseIds: [],
   kbAutoLearn: false,
+  feedbackScope: { enabled: false },
 };
 
 /** 分区定义（锚点导航 + scrollspy 共用；integration 仅编辑态挂载） */

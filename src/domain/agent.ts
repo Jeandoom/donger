@@ -44,6 +44,38 @@ export interface EffectiveConversationScope {
   limit: number;
 }
 
+/** 反馈资源范围（# 反馈引用）：enabled 关闭时候选为空、resolve 一律丢弃 */
+export const AgentFeedbackScopeSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** 最近 N 天（1-99）；缺省不限天。按 updatedAt（回复会 bump，即「最近有活动」） */
+  days: z.number().int().min(1).max(99).optional(),
+  /** 最近 N 条（1-99）；缺省 10 */
+  limit: z.number().int().min(1).max(99).optional(),
+});
+export type AgentFeedbackScope = z.infer<typeof AgentFeedbackScopeSchema>;
+
+/** effectiveFeedbackScope 的展开结果（days 缺省 = 不限天） */
+export interface EffectiveFeedbackScope {
+  days?: number;
+  limit: number;
+}
+
+/**
+ * 反馈引用过滤口径（候选下发/单条校验/全部展开三处共用，杜绝口径漂移）。
+ * agent 未配置或 enabled=false 时返回 undefined（功能未开启）。
+ * 反馈不绑智能体，故无 agentIds 维度；可见性（member 本人 / admin 全量）在调用方按角色分流。
+ */
+export function effectiveFeedbackScope(
+  agent: Pick<Agent, "feedbackScope"> | undefined,
+): EffectiveFeedbackScope | undefined {
+  const scope = agent?.feedbackScope;
+  if (!scope?.enabled) return undefined;
+  return {
+    ...(scope.days !== undefined ? { days: scope.days } : {}),
+    limit: scope.limit ?? 10,
+  };
+}
+
 /**
  * 会话引用过滤口径（候选下发/单条校验/全部展开三处共用，杜绝口径漂移）。
  * agent 未配置或 enabled=false 时返回 undefined（功能未开启）。
@@ -91,6 +123,26 @@ export function filterConversationsByScope(
     .slice(0, scope.limit);
 }
 
+/**
+ * 按反馈范围过滤：时间窗口（按 updatedAt——回复会 bump 主项，即「最近有活动」）
+ * + updatedAt 降序取前 limit 条。可见性（member 本人 / admin 全量）由调用方选源后传入，
+ * 本函数不做属主过滤（store 的 listByUser/listAll 已按 userId 分流）。
+ */
+export function filterFeedbacksByScope<F extends { updatedAt: string }>(
+  feedbacks: readonly F[],
+  scope: EffectiveFeedbackScope,
+  now = new Date(),
+): F[] {
+  const cutoff =
+    scope.days !== undefined
+      ? new Date(now.getTime() - scope.days * 86_400_000).toISOString()
+      : undefined;
+  return feedbacks
+    .filter((f) => cutoff === undefined || f.updatedAt >= cutoff)
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+    .slice(0, scope.limit);
+}
+
 export const AgentSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
@@ -122,6 +174,8 @@ export const AgentSchema = z.object({
   defaultPermissionMode: AgentPermissionModeSchema.default("ask_before_change"),
   /** 会话资源范围（% 会话引用的候选与「全部会话」展开都受此过滤；缺省 = 功能未开启） */
   conversationScope: AgentConversationScopeSchema.optional(),
+  /** 反馈资源范围（# 反馈引用的候选与「全部反馈」展开都受此过滤；缺省 = 功能未开启） */
+  feedbackScope: AgentFeedbackScopeSchema.optional(),
   /** 定义版本：store 在 create 时置 1、每次 update 自增（rollback 也是一次新 update） */
   version: z.number().int().positive().default(1),
   createdAt: z.string(),
