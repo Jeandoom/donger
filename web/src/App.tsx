@@ -4,6 +4,7 @@ import { Shell } from "./components/layout/Shell";
 import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
 import { AgentsPage } from "./pages/AgentsPage";
+import { KbDetailPage } from "./pages/KbDetailPage";
 import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { AuditPage } from "./pages/AuditPage";
 import { AuthorizationPage } from "./pages/AuthorizationPage";
@@ -51,6 +52,7 @@ export function App() {
             <Route path="/" element={<ChatPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/kb" element={<KnowledgeBasePage />} />
+            <Route path="/kb/:id" element={<KbDetailPage />} />
             <Route path="/agents/new" element={<AgentEditorPage />} />
             <Route path="/agents/:id" element={<AgentEditorPage />} />
             <Route path="/agents/:id/chat" element={<AgentChatRedirect />} />

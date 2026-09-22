@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -234,7 +235,12 @@ function Section({
                 <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft text-xs font-bold text-primary">
                   {l.name.charAt(0)}
                 </span>
-                <span className="truncate text-[13px] font-semibold">{l.name}</span>
+                <Link
+                  to={`/kb/${l.id}`}
+                  className="truncate text-[13px] font-semibold hover:underline"
+                >
+                  {l.name}
+                </Link>
               </span>
               {l.personal ? <Badge tone="info">个人</Badge> : null}
               {l.builtin ? <Badge tone="info">内置</Badge> : null}
