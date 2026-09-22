@@ -3461,6 +3461,8 @@ export class WebChannel implements Channel {
       if (bindingError) return this.json(res, { error: bindingError }, 400);
       const connectorError = await this.validateAgentConnectorRefs(me, input);
       if (connectorError) return this.json(res, { error: connectorError }, 400);
+      const kbError = await this.validateKbBindings(me, input.knowledgeBaseIds);
+      if (kbError) return this.json(res, { error: kbError }, 400);
       const created = await this.agentStore?.create(input);
       if (!created) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(
@@ -3578,6 +3580,8 @@ export class WebChannel implements Channel {
         if (bindingError) return this.json(res, { error: bindingError }, 400);
         const connectorError = await this.validateAgentConnectorRefs(me, validated);
         if (connectorError) return this.json(res, { error: connectorError }, 400);
+        const kbError = await this.validateKbBindings(me, validated.knowledgeBaseIds);
+        if (kbError) return this.json(res, { error: kbError }, 400);
         const updated = await this.agentStore?.update(id, validated);
         if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
         return this.json(res, {
@@ -3734,6 +3738,8 @@ export class WebChannel implements Channel {
           src.conversationScope && !isMine
             ? { ...src.conversationScope, agentIds: [] }
             : src.conversationScope,
+        // 知识库绑定弱引用：他人的清空（复制者无权），自有保留（spec §10.2）
+        knowledgeBaseIds: isMine ? src.knowledgeBaseIds : [],
       });
       if (!duplicated) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(res, { ...this.agentToDTO(duplicated, true), warnings });
@@ -3773,6 +3779,19 @@ export class WebChannel implements Channel {
         builtin: false,
         personal: false,
       });
+      // sourceAgentId 仅接受调用者自己的 agent（独立知识库溯源，spec §10.2）
+      if (
+        typeof (body as { sourceAgentId?: unknown }).sourceAgentId === "string" &&
+        (body as { sourceAgentId: string }).sourceAgentId.length > 0
+      ) {
+        const srcAgent = await this.agentStore?.get(
+          (body as { sourceAgentId: string }).sourceAgentId,
+        );
+        if (!srcAgent || srcAgent.ownerId !== me) {
+          return this.json(res, { error: "sourceAgentId 无效" }, 400);
+        }
+        input.sourceAgentId = (body as { sourceAgentId: string }).sourceAgentId;
+      }
       let lib: KbLibrary;
       try {
         lib = await kb.libraries.create(input);
@@ -5594,6 +5613,22 @@ export class WebChannel implements Channel {
   private async kbActor(userId: string): Promise<{ id: string; role: "admin" | "user" }> {
     const meUser = await this.deps.userStore?.get(userId);
     return { id: userId, role: (meUser?.role ?? "user") as "admin" | "user" };
+  }
+
+  /** agent 绑定知识库校验（spec §10.2）：库须存在且调用者可读（canRead）；返回错误消息或 undefined */
+  private async validateKbBindings(
+    userId: string,
+    kbIds: readonly string[] | undefined,
+  ): Promise<string | undefined> {
+    if (!this.kbLibraryStore || !kbIds || kbIds.length === 0) return undefined;
+    const actor = await this.kbActor(userId);
+    for (const id of kbIds) {
+      const lib = await this.kbLibraryStore.get(id);
+      if (!lib) return `知识库不存在: ${id.slice(0, 8)}`;
+      const granted = this.kbShareStore ? await this.kbShareStore.isGranted(id, userId) : false;
+      if (!canReadKb(lib, actor, granted)) return `无权绑定知识库「${lib.name}」`;
+    }
+    return undefined;
   }
 
   /** canReadKb 校验（含 404/403 响应写出）；返回 false 时响应已写出 */

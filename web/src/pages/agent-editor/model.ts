@@ -19,6 +19,8 @@ export const emptyAgent: AgentEditorForm = {
   gitAllowShellGit: false,
   defaultPermissionMode: "ask_before_change",
   conversationScope: { enabled: false, agentIds: [] },
+  knowledgeBaseIds: [],
+  kbAutoLearn: false,
 };
 
 /** 分区定义（锚点导航 + scrollspy 共用；integration 仅编辑态挂载） */
@@ -27,7 +29,8 @@ export const AGENT_EDITOR_SECTIONS = [
   { id: "agent-sec-prompt", no: "2", label: "提示词与技能" },
   { id: "agent-sec-tools", no: "3", label: "工具与权限" },
   { id: "agent-sec-resources", no: "4", label: "资源" },
-  { id: "agent-sec-integration", no: "5", label: "集成与分享" },
+  { id: "agent-sec-kb", no: "5", label: "知识库" },
+  { id: "agent-sec-integration", no: "6", label: "集成与分享" },
 ] as const;
 
 export type SectionId = (typeof AGENT_EDITOR_SECTIONS)[number]["id"];

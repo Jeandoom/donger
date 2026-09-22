@@ -65,6 +65,10 @@ export interface AgentDTO {
   gitAllowShellGit?: boolean;
   /** 会话资源范围（% 会话引用；缺省 = 功能未开启） */
   conversationScope?: AgentConversationScopeDTO;
+  /** 绑定的知识库 id（弱引用；可读即可绑定，被分享库只读挂载） */
+  knowledgeBaseIds?: string[];
+  /** 自动学习与记忆（默认关）：对话收尾后自动沉淀进绑定的可写库 */
+  kbAutoLearn?: boolean;
   /** 会话权限模式默认值（缺省=变更前问询） */
   defaultPermissionMode?: "ask_before_change" | "full_access";
   createdAt: string;

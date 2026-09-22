@@ -10,8 +10,8 @@ function scenarioVocabulary(): string {
 }
 
 /** 登记表段：空集合时明示「路由 none」，避免 LLM 对空表自由发挥 */
-function registrySection(visibleAgents: Agent[]): string {
-  const table = renderAgentRegistry(visibleAgents);
+function registrySection(visibleAgents: Agent[], kbNames?: Map<string, string>): string {
+  const table = renderAgentRegistry(visibleAgents, kbNames);
   if (visibleAgents.length === 0) {
     return `${table}\n\n（当前暂无可用智能体：任何任务输入 agentId 都填 none。）`;
   }
@@ -19,12 +19,15 @@ function registrySection(visibleAgents: Agent[]): string {
 }
 
 /** dispatcher 系统提示词：登记表/场景词表/路由规则全部内联（读时渲染，无静态文件） */
-export function dispatcherSystemPrompt(visibleAgents: Agent[]): string {
+export function dispatcherSystemPrompt(
+  visibleAgents: Agent[],
+  kbNames?: Map<string, string>,
+): string {
   return [
     "你是 donger 的任务分发器。唯一职责：把用户任务路由给最合适的执行智能体，不执行任务本身，不写任何文件、不使用任何工具。",
     "",
     "## 执行智能体登记表（当前用户可见的智能体，实时生成）",
-    registrySection(visibleAgents),
+    registrySection(visibleAgents, kbNames),
     "",
     "## 场景词表（登记表「适用任务类型」列的取值）",
     scenarioVocabulary(),
@@ -42,13 +45,13 @@ export function dispatcherSystemPrompt(visibleAgents: Agent[]): string {
 }
 
 /** dispatcher 是系统内置 agent：代码内构造、不入库、不可在 UI 编辑。 */
-export function buildDispatcherAgent(visibleAgents: Agent[]) {
+export function buildDispatcherAgent(visibleAgents: Agent[], kbNames?: Map<string, string>) {
   return parseAgent({
     id: "builtin-dispatcher",
     ownerId: "system",
     name: "dispatcher",
     description: "系统任务分发器：把当前用户可见的执行智能体与任务做匹配路由",
-    systemPrompt: dispatcherSystemPrompt(visibleAgents),
+    systemPrompt: dispatcherSystemPrompt(visibleAgents, kbNames),
     skills: ["task-dispatch"],
     // Read 仅作兜底（runner 对空白名单的行为边界未验证）；正常路径不使用任何工具
     tools: { mode: "whitelist", whitelist: ["Read"] },

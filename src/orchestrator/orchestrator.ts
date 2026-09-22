@@ -911,7 +911,14 @@ export class Orchestrator {
     if (!this.deps.agentStore) {
       throw new RunnerError("DISPATCH_FAILED", "任务分发未装配（agentStore 缺失）");
     }
-    const dispatcher = buildDispatcherAgent(await this.listDispatchableAgents(p.user));
+    // 登记表「业务知识库」列：知识库 id → 名称（绑定库列名，spec §10.2）
+    let kbNames: Map<string, string> | undefined;
+    if (this.deps.kbLibraryStore) {
+      kbNames = new Map(
+        (await this.deps.kbLibraryStore.listAll()).map((l) => [l.id, l.name]),
+      );
+    }
+    const dispatcher = buildDispatcherAgent(await this.listDispatchableAgents(p.user), kbNames);
     const r = await this.runTurn({
       task: { ...p.task, prompt: p.prompt },
       user: p.user,

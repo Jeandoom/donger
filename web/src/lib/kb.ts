@@ -82,6 +82,8 @@ export async function createKb(input: {
   name: string;
   description?: string;
   systemPrompt?: string;
+  /** agent「独立知识库」溯源（仅本人 agent；编辑态保存时携带） */
+  sourceAgentId?: string;
 }): Promise<KbLibraryDTO> {
   const r = await apiFetch("/api/kb", {
     method: "POST",

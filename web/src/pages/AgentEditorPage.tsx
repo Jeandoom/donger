@@ -11,10 +11,12 @@ import {
   updateAgent,
 } from "../lib/agents";
 import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
+import { createKb } from "../lib/kb";
 import { fetchCredentialTemplates } from "../lib/skills";
 import { cn } from "../lib/utils";
 import { BasicSection } from "./agent-editor/BasicSection";
 import { IntegrationSection } from "./agent-editor/IntegrationSection";
+import { KnowledgeSection } from "./agent-editor/KnowledgeSection";
 import {
   AGENT_EDITOR_SECTIONS,
   type AgentEditorForm,
@@ -43,6 +45,8 @@ export function AgentEditorPage() {
     llmPresets: [],
   });
   const [form, setForm] = useState<AgentEditorForm>(emptyAgent);
+  /** 独立知识库创建名（保存时先建库回填；见 handleSave） */
+  const [kbNewName, setKbNewName] = useState("");
   const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -185,7 +189,22 @@ export function AgentEditorPage() {
     setSaving(true);
     setWarnings(undefined);
     try {
-      const saved = isNew ? await createAgent(form) : await updateAgent(id ?? "", form);
+      // 独立知识库：保存前先建库并并入绑定（spec §10.2；编辑态带 sourceAgentId 溯源）
+      let formToSave = form;
+      if (kbNewName.trim().length > 0) {
+        const newKb = await createKb({
+          name: kbNewName.trim(),
+          description: `智能体「${form.name || "未命名"}」的独立知识库`,
+          ...(!isNew && id ? { sourceAgentId: id } : {}),
+        });
+        formToSave = {
+          ...form,
+          knowledgeBaseIds: [...(form.knowledgeBaseIds ?? []), newKb.id],
+        };
+        setForm(formToSave);
+        setKbNewName("");
+      }
+      const saved = isNew ? await createAgent(formToSave) : await updateAgent(id ?? "", formToSave);
       if (saved.warnings && saved.warnings.length > 0) {
         // 装备告警不阻断：后端已保存成功，更新基线消除未保存标记，留在编辑页展示告警
         setWarnings(saved.warnings);
@@ -392,6 +411,11 @@ export function AgentEditorPage() {
             onMcpJsonErrorChange={setMcpJsonError}
           />
           <ResourcesSection {...sectionProps} gitCredentialOptions={gitCredentialOptions} />
+          <KnowledgeSection
+            {...sectionProps}
+            kbNewName={kbNewName}
+            onKbNewNameChange={setKbNewName}
+          />
           {!isNew && id ? <IntegrationSection agentId={id} /> : null}
         </main>
       </div>
