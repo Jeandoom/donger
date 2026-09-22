@@ -1087,7 +1087,11 @@ export class Orchestrator {
         threadId: msg.threadId,
         requesterId: msg.requesterId,
         prompt: appendDefaultSkill(
-          appendMentions(appendMessageFiles(msg.text, msg.files, attachmentCwd), msg.mentions),
+          appendMentions(
+            appendMessageFiles(msg.text, msg.files, attachmentCwd),
+            msg.mentions,
+            attachmentCwd,
+          ),
           agent?.defaultSkill,
         ),
         status: "created",

@@ -43,6 +43,15 @@ export interface AgentConversationScopeDTO {
   limit?: number;
 }
 
+/** 反馈资源范围（# 反馈引用）：enabled 关闭时候选为空（与后端 AgentFeedbackScopeSchema 同构；反馈不绑智能体，无 agentIds 维度） */
+export interface AgentFeedbackScopeDTO {
+  enabled: boolean;
+  /** 最近 N 天（1-99）；缺省不限天（按 updatedAt，回复会 bump） */
+  days?: number;
+  /** 最近 N 条（1-99）；缺省 10 */
+  limit?: number;
+}
+
 export interface AgentDTO {
   id: string;
   ownerId: string;
@@ -65,6 +74,8 @@ export interface AgentDTO {
   gitAllowShellGit?: boolean;
   /** 会话资源范围（% 会话引用；缺省 = 功能未开启） */
   conversationScope?: AgentConversationScopeDTO;
+  /** 反馈资源范围（# 反馈引用；缺省 = 功能未开启） */
+  feedbackScope?: AgentFeedbackScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */
   defaultPermissionMode?: "ask_before_change" | "full_access";
   createdAt: string;

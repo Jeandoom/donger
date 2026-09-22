@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, copyFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
   type IncomingMessage as HttpRequest,
@@ -17,7 +17,9 @@ import type { Viewer } from "../domain/access-policy.js";
 import {
   type Agent,
   effectiveConversationScope,
+  effectiveFeedbackScope,
   filterConversationsByScope,
+  filterFeedbacksByScope,
   parseAgent,
   parseAgentInput,
   resolveDuplicateName,
@@ -43,6 +45,8 @@ import {
   isRelativeExtensionPath,
 } from "../domain/extension-directory.js";
 import {
+  FEEDBACK_CATEGORY_LABELS,
+  FEEDBACK_STATUS_LABELS,
   type Feedback,
   type FeedbackReply,
   isFeedbackCategory,
@@ -70,6 +74,9 @@ import { type Loop, parseLoopInput } from "../domain/loop.js";
 import {
   CONVERSATION_MENTION_ALL_ID,
   conversationMarkerLabel,
+  FEEDBACK_IMAGE_TOTAL_BUDGET,
+  FEEDBACK_MENTION_ALL_ID,
+  feedbackMarkerLabel,
   type MentionInput,
   MentionInputSchema,
   type ResolvedMention,
@@ -5021,11 +5028,13 @@ export class WebChannel implements Channel {
   }
 
   /**
-   * 解析消息中的 @/​/$/% 引用（发送时执行，不落库）：
+   * 解析消息中的 @/​/$/%/# 引用（发送时执行，不落库）：
    * - 文件：经 FileBrowser.resolveFilePath 换算为属主/边界/symlink 全校验的绝对路径；
    * - 技能：按该 agent 实际装配集过滤（显式 skills 或用户启用 Pack）；
    * - 连接器：须在 agent.connectorIds 内且对当前用户可见可用；
-   * - 会话：属主 + 智能体范围/时间窗口校验后内联 wrapUntrusted 内容（开关未开启一律丢弃）。
+   * - 会话：属主 + 智能体范围/时间窗口校验后内联 wrapUntrusted 内容（开关未开启一律丢弃）；
+   * - 反馈：可见性（member 本人 / admin 全量）+ 时间窗口校验后内联 wrapUntrusted 内容并物化截图
+   *   （开关未开启一律丢弃）。
    * fail-closed：任何未命中的引用直接丢弃，绝不让未校验路径进 prompt。
    */
   private async resolveMentions(
@@ -5044,6 +5053,9 @@ export class WebChannel implements Channel {
         : undefined;
     const skillOptions = agent ? await this.effectiveAgentSkillOptions(agent.id, userId ?? "") : [];
     const seenConversations = new Set<string>();
+    const seenFeedbacks = new Set<string>();
+    // 截图物化的单条消息共享预算（跨反馈引用累计）
+    const imageBudget = { remaining: FEEDBACK_IMAGE_TOTAL_BUDGET };
     for (const m of mentions) {
       if (m.kind === "file") {
         const abs = await this.resolveMentionFile(userId, conversationId, m.id);
@@ -5062,6 +5074,17 @@ export class WebChannel implements Channel {
         const items = await this.resolveConversationMentions(userId, conversationId, agent, m);
         const fresh = items.filter((it) => !seenConversations.has(it.conversationId));
         for (const it of fresh) seenConversations.add(it.conversationId);
+        resolved.push(...fresh);
+      } else if (m.kind === "feedback" && agent) {
+        const items = await this.resolveFeedbackMentions(
+          userId,
+          conversationId,
+          agent,
+          m,
+          imageBudget,
+        );
+        const fresh = items.filter((it) => !seenFeedbacks.has(it.feedbackId));
+        for (const it of fresh) seenFeedbacks.add(it.feedbackId);
         resolved.push(...fresh);
       }
     }
@@ -5107,6 +5130,82 @@ export class WebChannel implements Channel {
     return out;
   }
 
+  /**
+   * # 反馈引用 → 经可见性+窗口校验的反馈内容（含截图物化）。
+   * 开关未开启（含 agent 不在 store）一律丢弃；单条必须在过滤集合内（与候选/全部展开同一口径）；
+   * 「全部反馈」展开为逐反馈条目。可见性与反馈页同口径：member=本人提交、admin=全量（拍板 D2）。
+   * 内容 wrapUntrusted 定界（单条 20k 截断，总预算在 appendMentions）；截图复制到当前会话私有
+   * 附件目录（spec §3.2.1），预算/缺失/失败按张降级并计入 imagesOmitted（防「已看图」幻觉）。
+   */
+  private async resolveFeedbackMentions(
+    userId: string | undefined,
+    conversationId: string,
+    agent: Agent,
+    m: MentionInput,
+    imageBudget: { remaining: number },
+  ): Promise<Array<Extract<ResolvedMention, { kind: "feedback" }>>> {
+    if (!userId || !this.deps.feedbackStore) return [];
+    const scope = effectiveFeedbackScope(agent);
+    if (!scope) return [];
+    const store = this.deps.feedbackStore;
+    // 可见性分流：admin 全量 / member 仅本人；userStore 缺失时按 member 收窄（fail-closed）
+    const viewer = this.deps.userStore ? await this.deps.userStore.get(userId) : undefined;
+    const list =
+      viewer?.role === "admin" ? await store.listAll() : await store.listByUser(userId);
+    const matched = filterFeedbacksByScope(list, scope).filter(
+      (f) => m.id === FEEDBACK_MENTION_ALL_ID || f.id === m.id,
+    );
+    // 会话私有附件目录（= 会话属主 homeDir 下 sessions/<id>/workspace/attachments）；
+    // handleSendMessage 已校验发送者即会话属主。取不到时截图整体降级为未物化。
+    const sessionRoot = await this.resolveAttachmentDir(conversationId, userId);
+    const out: Array<Extract<ResolvedMention, { kind: "feedback" }>> = [];
+    for (const fb of matched) {
+      const replies = await store.listReplies(fb.id);
+      const replyLines = replies.map(
+        (r) =>
+          `${r.authorRole === "admin" ? "【官方回复】" : "【用户补充】"}${r.createdAt} ${r.content}`,
+      );
+      const text = [
+        `【反馈】类别：${FEEDBACK_CATEGORY_LABELS[fb.category]}  状态：${FEEDBACK_STATUS_LABELS[fb.status]}  提交：${fb.createdAt}  最近活动：${fb.updatedAt}`,
+        fb.content,
+        ...replyLines,
+      ].join("\n");
+      const { wrapped } = wrapUntrusted(text, `feedback:${fb.id}`);
+
+      const imagePaths: string[] = [];
+      let imagesOmitted = 0;
+      for (const name of fb.images) {
+        const src = sessionRoot ? this.resolveFeedbackAttachment(fb.id, name) : undefined;
+        if (!sessionRoot || !src || !existsSync(src) || imageBudget.remaining <= 0) {
+          imagesOmitted += 1;
+          continue;
+        }
+        const dest = resolve(sessionRoot, `feedback-${fb.id.slice(0, 8)}-${name}`);
+        try {
+          // 已存在则跳过复制（反馈附件创建后不可变），但仍占预算并注入——上限按「注入张数」计
+          if (!existsSync(dest)) {
+            mkdirSync(sessionRoot, { recursive: true });
+            copyFileSync(src, dest);
+          }
+          imagePaths.push(dest);
+          imageBudget.remaining -= 1;
+        } catch {
+          imagesOmitted += 1;
+        }
+      }
+
+      out.push({
+        kind: "feedback",
+        label: feedbackMarkerLabel(fb.content, fb.createdAt),
+        feedbackId: fb.id,
+        content: wrapped,
+        imagePaths,
+        imagesOmitted,
+      });
+    }
+    return out;
+  }
+
   /** @ 文件引用 → 绝对路径；id 形如 "runtime:<relPath>"（与候选端点下发的 scope 口径一致） */
   private async resolveMentionFile(
     userId: string | undefined,
@@ -5140,7 +5239,7 @@ export class WebChannel implements Channel {
     return all.filter((s) => picked.has(s.id));
   }
 
-  /** GET /api/agents/:id/mention-candidates 的响应体（输入框 @/​/$/% 引用候选） */
+  /** GET /api/agents/:id/mention-candidates 的响应体（输入框 @/​/$/%/# 引用候选） */
   private async mentionCandidates(
     viewerId: string,
     agent: Agent,
@@ -5153,6 +5252,17 @@ export class WebChannel implements Channel {
     /** 会话引用是否已在该智能体上开启（关闭=conversations 恒空，前端提示功能未开启） */
     conversationRefEnabled: boolean;
     conversations: Array<{ id: string; title: string; updatedAt: string }>;
+    /** 反馈引用是否已在该智能体上开启（关闭=feedbacks 恒空，前端提示功能未开启） */
+    feedbackRefEnabled: boolean;
+    feedbacks: Array<{
+      id: string;
+      label: string;
+      category: string;
+      status: string;
+      updatedAt: string;
+      /** 正文前 ~60 字（候选描述行展示，不做标记） */
+      preview: string;
+    }>;
   }> {
     const skills = await this.effectiveAgentSkillOptions(agent.id, viewerId);
     const connectors = this.deps.connectorStore
@@ -5199,12 +5309,41 @@ export class WebChannel implements Channel {
         .slice(0, 50)
         .map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt }));
     }
+    // 反馈候选：开关未开启时恒空（不做查询）；可见性与反馈页同口径（member 本人 / admin 全量）
+    const fbScope = effectiveFeedbackScope(agent);
+    let feedbacks: Array<{
+      id: string;
+      label: string;
+      category: string;
+      status: string;
+      updatedAt: string;
+      preview: string;
+    }> = [];
+    if (fbScope && this.deps.feedbackStore) {
+      const viewer = this.deps.userStore ? await this.deps.userStore.get(viewerId) : undefined;
+      const list =
+        viewer?.role === "admin"
+          ? await this.deps.feedbackStore.listAll()
+          : await this.deps.feedbackStore.listByUser(viewerId);
+      feedbacks = filterFeedbacksByScope(list, fbScope)
+        .slice(0, 50)
+        .map((f) => ({
+          id: f.id,
+          label: feedbackMarkerLabel(f.content, f.createdAt),
+          category: f.category,
+          status: f.status,
+          updatedAt: f.updatedAt,
+          preview: f.content.replace(/\s+/g, " ").trim().slice(0, 60),
+        }));
+    }
     return {
       skills: skills.slice(0, 50),
       connectors: visible.map((c) => ({ id: c.id, name: c.name, description: c.description })),
       files,
       conversationRefEnabled: scope !== undefined,
       conversations,
+      feedbackRefEnabled: fbScope !== undefined,
+      feedbacks,
     };
   }
 

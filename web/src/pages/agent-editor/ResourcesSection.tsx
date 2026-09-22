@@ -8,7 +8,11 @@ import { FormField, FormSection } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { Switch } from "../../components/ui/switch";
-import { type AgentConversationScopeDTO, fetchAgents } from "../../lib/agents";
+import {
+  type AgentConversationScopeDTO,
+  type AgentFeedbackScopeDTO,
+  fetchAgents,
+} from "../../lib/agents";
 import { fetchCredentialTemplates, fetchMyCredentials } from "../../lib/skills";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm } from "./model";
@@ -79,6 +83,11 @@ export function ResourcesSection({
       <ConversationScopePicker
         value={form.conversationScope ?? { enabled: false, agentIds: [] }}
         onChange={(conversationScope) => patch({ conversationScope })}
+      />
+
+      <FeedbackScopePicker
+        value={form.feedbackScope ?? { enabled: false }}
+        onChange={(feedbackScope) => patch({ feedbackScope })}
       />
 
       <FormField
@@ -510,6 +519,74 @@ function toScopeInt(raw: string): number | undefined {
   const n = Math.floor(Number(raw));
   if (!Number.isFinite(n) || n < 1) return undefined;
   return Math.min(n, 99);
+}
+
+/**
+ * 反馈资源范围（# 反馈引用）：启用开关（默认关）+ 时间窗口。
+ * 反馈不绑智能体，无范围多选；可见性固定为 member 本人 / admin 全量（与反馈页一致）。
+ * 关闭时配置项置灰但仍展示，暗示开启后可配。
+ */
+function FeedbackScopePicker({
+  value,
+  onChange,
+}: {
+  value: AgentFeedbackScopeDTO;
+  onChange: (scope: AgentFeedbackScopeDTO) => void;
+}) {
+  return (
+    <FormField
+      label="反馈"
+      hint="开启后可在对话中用 # 引用反馈记录（含正文、回复与截图）；引用范围与「全部反馈」都受以下配置限制"
+    >
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center gap-2.5 rounded-[10px] border border-border bg-card px-3 py-2">
+          <Switch
+            checked={value.enabled}
+            onCheckedChange={(v) => onChange({ ...value, enabled: v })}
+          />
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[13px] font-semibold">启用反馈引用</span>
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              默认关闭；开启后可引用自己提交的反馈（管理员可引用全部用户的反馈）
+            </span>
+          </div>
+        </div>
+
+        <div
+          className={cn(
+            "grid gap-2.5 sm:grid-cols-2",
+            !value.enabled && "pointer-events-none opacity-50",
+          )}
+          aria-disabled={!value.enabled}
+        >
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">最近天数（1-99，留空不限）</span>
+            <Input
+              type="number"
+              min={1}
+              max={99}
+              aria-label="引用反馈的最近天数"
+              placeholder="如 7"
+              value={value.days ?? ""}
+              onChange={(e) => onChange({ ...value, days: toScopeInt(e.target.value) })}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">最近条数（1-99，留空默认 10）</span>
+            <Input
+              type="number"
+              min={1}
+              max={99}
+              aria-label="引用反馈的最近条数"
+              placeholder="如 20"
+              value={value.limit ?? ""}
+              onChange={(e) => onChange({ ...value, limit: toScopeInt(e.target.value) })}
+            />
+          </div>
+        </div>
+      </div>
+    </FormField>
+  );
 }
 
 /**

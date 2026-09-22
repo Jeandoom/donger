@@ -5,9 +5,19 @@ import {
   unstable_useMentionAdapter,
   useAuiState,
 } from "@assistant-ui/react";
-import { AtSign, History, type LucideIcon, Paperclip, Plug, Plus, Slash } from "lucide-react";
+import {
+  AtSign,
+  History,
+  type LucideIcon,
+  MessageSquareWarning,
+  Paperclip,
+  Plug,
+  Plus,
+  Slash,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAX_MESSAGE_ATTACHMENTS } from "../../lib/chatMessageAdapter";
+import { STATUS_LABELS as FEEDBACK_STATUS_LABELS } from "../../lib/feedback";
 import {
   EMPTY_MENTION_CANDIDATES,
   fetchMentionCandidates,
@@ -17,6 +27,8 @@ import {
   CONVERSATION_ALL_LABEL,
   CONVERSATION_MENTION_ALL_ID,
   conversationMarkerLabel,
+  FEEDBACK_ALL_LABEL,
+  FEEDBACK_MENTION_ALL_ID,
   fileMarkerLabel,
   type Mention,
   type MentionKind,
@@ -209,6 +221,13 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps) {
                 hint="该智能体开启的历史会话记录"
                 onClick={() => closeAndInsert("%")}
               />
+              <PlusMenuItem
+                icon={MessageSquareWarning}
+                trigger="#"
+                label="引用反馈记录"
+                hint="该智能体开启的反馈记录（含截图）"
+                onClick={() => closeAndInsert("#")}
+              />
             </>
           ) : null}
         </div>
@@ -346,6 +365,31 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
       syncCaretAfterInsert();
     },
   });
+  const feedbackAdapter = unstable_useMentionAdapter({
+    items: useMemo(() => {
+      const all: Unstable_TriggerItem = {
+        id: FEEDBACK_MENTION_ALL_ID,
+        type: "feedback",
+        label: FEEDBACK_ALL_LABEL,
+        description: "按智能体反馈配置，引用全部符合条件的反馈",
+      };
+      const list = props.candidates.feedbacks.map(
+        (f): Unstable_TriggerItem => ({
+          id: f.id,
+          type: "feedback",
+          // label 由后端从正文派生（feedbackMarkerLabel）；原文前缀另在描述行展示
+          label: f.label,
+          description: `${FEEDBACK_STATUS_LABELS[f.status]} · ${f.preview}`,
+        }),
+      );
+      return [all, ...list];
+    }, [props.candidates.feedbacks]),
+    formatter: markerFormatter("#"),
+    onInserted: (item) => {
+      props.onMentionInserted({ kind: "feedback", id: item.id, label: item.label });
+      syncCaretAfterInsert();
+    },
+  });
   return (
     <>
       <MentionTrigger
@@ -391,6 +435,20 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
             : "会话引用功能未开启，请在智能体编辑页的资源分区开启"
         }
         rowLabel="历史会话"
+      />
+      <MentionTrigger
+        char="#"
+        kind="feedback"
+        adapter={feedbackAdapter.adapter}
+        directive={feedbackAdapter.directive}
+        isLoading={props.loading}
+        error={props.error}
+        emptyText={
+          props.candidates.feedbackRefEnabled
+            ? "暂无可引用的反馈记录"
+            : "反馈引用功能未开启，请在智能体编辑页的资源分区开启"
+        }
+        rowLabel="反馈"
       />
     </>
   );

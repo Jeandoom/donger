@@ -97,6 +97,13 @@ describe("tokenizeMentionMarkers", () => {
     ).toEqual([]);
   });
 
+  it("# 识别词首反馈标记；#123 数字体不误伤；词中 # 不误伤", () => {
+    const tokens = tokenizeMentionMarkers("处理 #移动端附件无反应 和 #123 与 C#语法");
+    const mentions = tokens.filter((t) => t.type === "mention");
+    expect(mentions.map((t) => t.text)).toEqual(["#移动端附件无反应"]);
+    expect(mentions.map((t) => t.kind)).toEqual(["feedback"]);
+  });
+
   it("纯文本原样切分", () => {
     expect(tokenizeMentionMarkers("你好，世界")).toEqual([{ type: "text", text: "你好，世界" }]);
   });

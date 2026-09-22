@@ -3,9 +3,18 @@ import type { MessageFile } from "./types.js";
 import { wrapUntrusted } from "./untrusted-content.js";
 
 /**
- * 将已由 WebChannel 校验过的附件路径显式交给 Agent。
- * cwd=该轮运行时工作目录时，附件路径按 cwd 相对化注入——模型照抄路径写命令时
+ * 附件/引用截图路径的展示形态：cwd=该轮运行时工作目录时按 cwd 相对化——模型照抄路径写命令时
  * 不会再带出部署目录前缀（.deploy 等绝对路径曾误触 deploy 审批门，2026-09-21）。
+ * 相对化失败（跨盘等）或空结果时回退绝对路径。appendMessageFiles 与 appendMentions 共用。
+ */
+export function displayPathForCwd(abs: string, cwd?: string): string {
+  if (!cwd || !isAbsolute(abs)) return abs;
+  const rel = relative(cwd, abs);
+  return rel && !isAbsolute(rel) ? rel : abs;
+}
+
+/**
+ * 将已由 WebChannel 校验过的附件路径显式交给 Agent。
  */
 export function appendMessageFiles(
   prompt: string,
@@ -13,18 +22,12 @@ export function appendMessageFiles(
   cwd?: string,
 ): string {
   if (!files?.length) return prompt;
-  const display = (abs: string): string => {
-    if (!cwd || !isAbsolute(abs)) return abs;
-    const rel = relative(cwd, abs);
-    // 相对化失败（跨盘等）或空结果时回退绝对路径
-    return rel && !isAbsolute(rel) ? rel : abs;
-  };
   // 文件名是用户可控文本（规格 §5.1）：整段列表按不可信内容定界
   const list = wrapUntrusted(
     files
       .map(
         (file) =>
-          `- ${JSON.stringify(display(file.path))} (${file.type}): ${JSON.stringify(file.name)}`,
+          `- ${JSON.stringify(displayPathForCwd(file.path, cwd))} (${file.type}): ${JSON.stringify(file.name)}`,
       )
       .join("\n"),
     "attachment-list",
