@@ -102,3 +102,91 @@ describe("donger-kb 工具", () => {
     expect(escape.isError).toBe(true);
   });
 });
+
+describe("donger-kb 工具 v2（按库寻址，spec §8）", () => {
+  function twoMountTools(onChange?: Parameters<typeof kbToolDefinitions>[0]["onChange"]) {
+    const rootA = freshRoot();
+    const rootB = freshRoot();
+    writeFileSync(join(rootA, "a.md"), "# A\n库A内容\n", "utf8");
+    writeFileSync(join(rootB, "b.md"), "# B\n库B内容\n", "utf8");
+    return kbToolDefinitions({
+      mounts: [
+        { kbId: "kb-a", name: "库A", root: rootA, writable: true },
+        { kbId: "kb-b", name: "库B", root: rootB, writable: false },
+      ],
+      defaultKbId: "kb-a",
+      onChange,
+    });
+  }
+
+  it("kb_list 多库无参 → 挂载清单（含只读标记）", async () => {
+    const tools = twoMountTools();
+    const r = await findTool(tools, "kb_list").handler({});
+    const text = r.content[0]?.text ?? "";
+    expect(text).toContain("kbId=kb-a");
+    expect(text).toContain("可写");
+    expect(text).toContain("kbId=kb-b");
+    expect(text).toContain("只读");
+  });
+
+  it("kb_read 缺省回落 defaultKbId；指定 kbId 读对应库", async () => {
+    const tools = twoMountTools();
+    const a = await findTool(tools, "kb_read").handler({ path: "a.md" });
+    expect(a.content[0]?.text).toContain("库A内容");
+    const b = await findTool(tools, "kb_read").handler({ kbId: "kb-b", path: "b.md" });
+    expect(b.content[0]?.text).toContain("库B内容");
+    const unknown = await findTool(tools, "kb_read").handler({ kbId: "kb-x", path: "a.md" });
+    expect(unknown.isError).toBe(true);
+  });
+
+  it("kb_write 缺省写主库并回调记账；只读库拒绝", async () => {
+    const changes: Array<{ kbId: string; path: string; action: string }> = [];
+    const tools = twoMountTools(async (e) => {
+      changes.push({ kbId: e.kbId, path: e.path, action: e.action });
+    });
+    const write = await findTool(tools, "kb_write").handler({
+      path: "new/条目.md",
+      content: "# 新条目",
+    });
+    expect(write.isError).toBeUndefined();
+    expect(changes).toEqual([{ kbId: "kb-a", path: "new/条目.md", action: "create" }]);
+    const ro = await findTool(tools, "kb_write").handler({
+      kbId: "kb-b",
+      path: "x.md",
+      content: "x",
+    });
+    expect(ro.isError).toBe(true);
+    expect(ro.content[0]?.text).toContain("只读");
+  });
+
+  it("kb_write expectedHash 乐观锁：hash 不匹配拒绝", async () => {
+    const tools = twoMountTools();
+    const bad = await findTool(tools, "kb_write").handler({
+      path: "a.md",
+      content: "overwrite",
+      expectedHash: "deadbeef",
+    });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]?.text).toContain("重新 kb_read");
+  });
+
+  it("kb_delete 可写库删除+记账；只读库拒绝", async () => {
+    const changes: Array<{ path: string; action: string }> = [];
+    const tools = twoMountTools(async (e) => {
+      changes.push({ path: e.path, action: e.action });
+    });
+    const del = await findTool(tools, "kb_delete").handler({ path: "a.md" });
+    expect(del.isError).toBeUndefined();
+    expect(changes).toEqual([{ path: "a.md", action: "delete" }]);
+    const ro = await findTool(tools, "kb_delete").handler({ kbId: "kb-b", path: "b.md" });
+    expect(ro.isError).toBe(true);
+  });
+
+  it("kb_search \"all\" 跨库检索并带 kbId 前缀", async () => {
+    const tools = twoMountTools();
+    const r = await findTool(tools, "kb_search").handler({ query: "内容", kbId: "all" });
+    const text = r.content[0]?.text ?? "";
+    expect(text).toContain("kb-a:a.md");
+    expect(text).toContain("kb-b:b.md");
+  });
+});

@@ -326,6 +326,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/kb/:id/tree", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/entry", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/revisions", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/:id/conversation", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/share", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/kb/:id/share", access: { kind: "authenticated" } },
     {

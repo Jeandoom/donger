@@ -23,6 +23,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureAgentIdColumn();
     this.ensurePermissionModeColumn();
     this.ensureLastModelRefColumn();
+    this.ensureKbIdColumn();
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(userId, archived, updatedAt DESC)",
     );
@@ -52,6 +53,14 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
+  /** KB 会话绑定列（spec 2026-09-22-knowledge-base-design）；NULL = 非知识库会话 */
+  private ensureKbIdColumn(): void {
+    const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "kbId")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN kbId TEXT");
+    }
+  }
+
   async create(userId: string, channelId: string, title: string): Promise<Conversation> {
     return this.createWithAgent(userId, channelId, title, "");
   }
@@ -61,7 +70,7 @@ export class SqliteConversationStore implements ConversationStore {
     channelId: string,
     title: string,
     agentId: string,
-    opts?: { permissionMode?: Conversation["permissionMode"] },
+    opts?: { permissionMode?: Conversation["permissionMode"]; kbId?: string },
   ): Promise<Conversation> {
     const now = new Date().toISOString();
     const conv: Conversation = {
@@ -71,6 +80,7 @@ export class SqliteConversationStore implements ConversationStore {
       title,
       channelId,
       agentId,
+      ...(opts?.kbId ? { kbId: opts.kbId } : {}),
       permissionMode: opts?.permissionMode,
       createdAt: now,
       updatedAt: now,
@@ -78,7 +88,7 @@ export class SqliteConversationStore implements ConversationStore {
     };
     this.db
       .prepare(
-        "INSERT INTO conversations (id, userId, sdkSessionId, title, channelId, agentId, permissionMode, createdAt, updatedAt, archived) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO conversations (id, userId, sdkSessionId, title, channelId, agentId, kbId, permissionMode, createdAt, updatedAt, archived) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       )
       .run(
         conv.id,
@@ -87,6 +97,7 @@ export class SqliteConversationStore implements ConversationStore {
         conv.title,
         conv.channelId,
         conv.agentId,
+        conv.kbId ?? null,
         conv.permissionMode ?? null,
         conv.createdAt,
         conv.updatedAt,
@@ -133,12 +144,13 @@ export class SqliteConversationStore implements ConversationStore {
     const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
     this.db
       .prepare(
-        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, permissionMode = ?, lastModelRef = ?, archived = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, archived = ?, updatedAt = ? WHERE id = ?",
       )
       .run(
         updated.sdkSessionId,
         updated.title,
         updated.agentId,
+        updated.kbId ?? null,
         updated.permissionMode ?? null,
         updated.lastModelRef ?? null,
         updated.archived ? 1 : 0,
@@ -159,6 +171,7 @@ export class SqliteConversationStore implements ConversationStore {
       title: row.title as string,
       channelId: row.channelId as string,
       agentId: (row.agentId as string) ?? "",
+      ...(typeof row.kbId === "string" && row.kbId !== "" ? { kbId: row.kbId } : {}),
       permissionMode,
       lastModelRef: (row.lastModelRef as string) || undefined,
       createdAt: row.createdAt as string,

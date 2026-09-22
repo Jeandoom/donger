@@ -10,6 +10,10 @@ export const BUILTIN_AUDITOR_AGENT_ID = "builtin-auditor";
 /** 内置平台进化官 ID（与后端 src/orchestrator/self-improver-agent.ts 保持一致）；仅管理员可见 */
 export const BUILTIN_SELF_IMPROVER_AGENT_ID = "builtin-self-improver";
 
+/** 内置知识库管家 ID（与后端 src/orchestrator/kb-assistant-agent.ts 保持一致）；
+ *  KB 会话专属（从侧栏「知识库」分组进入），不进「内置智能体」合成条目 */
+export const BUILTIN_KB_ASSISTANT_ID = "builtin-kb-assistant";
+
 /** 全部内置智能体 id（与后端各 *-agent.ts 保持一致；不入库，仅前端合成条目） */
 export const BUILTIN_AGENT_IDS: readonly string[] = [
   BUILTIN_ASSIST_AGENT_ID,

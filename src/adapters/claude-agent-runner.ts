@@ -3,6 +3,7 @@ import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import { bashKbWriteGuard } from "../domain/bash-kb-guard.js";
 import { matchesShellGit } from "../domain/git-shell-guard.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
 import { isStartupSensitivePath } from "../domain/startup-sensitive-paths.js";
@@ -97,6 +98,25 @@ export class ClaudeAgentRunner implements AgentRunner {
                 "git 操作请使用 donger-git 工具（git_clone/git_pull/git_push 等）。如确需 shell git，请在智能体配置中开启「允许 shell git」。",
               toolUseID: ctx.toolUseID,
             };
+          }
+          // KB 目录 Bash 写守卫（spec §9，D6 本期实施）：知识库内容变更唯一通道=kb_* 工具
+          // （工具内记账 kb_revisions）；Bash 命中库目录+写模式一律 deny，防止绕过修订账本。
+          // 静态检测防常规写法；残余（变量拼接路径等）由 audit_events Bash 全文留痕兜底。
+          if (
+            toolName === "Bash" &&
+            typeof input.command === "string" &&
+            opts.kbWriteGuardRoots &&
+            opts.kbWriteGuardRoots.length > 0
+          ) {
+            const guard = bashKbWriteGuard(input.command, opts.kbWriteGuardRoots);
+            if (guard.blocked) {
+              return {
+                behavior: "deny" as const,
+                message:
+                  "写入拒绝：知识库目录仅允许经 kb_* 工具变更（自动记入修订账本）。请使用 kb_read/kb_write/kb_delete；如需查阅可用 kb_list/kb_search。",
+                toolUseID: ctx.toolUseID,
+              };
+            }
           }
           // 启动敏感路径硬 deny（规格 §5.3）：.claude/settings.json 承载 hooks/permissions 且
           // CLI 直接执行（不过 canUseTool 审批门），workspace 可写即注入持久化逃逸通道；

@@ -38,11 +38,13 @@ export function useWebChat() {
     }
   }, []);
 
-  /** 创建新会话（agentId 缺省=默认会话；defaultPermissionMode=绑定智能体的默认对话模式，仅 UI 预填） */
+  /** 创建新会话（agentId 缺省=默认会话；defaultPermissionMode=绑定智能体的默认对话模式，仅 UI 预填；
+   *  kbId=知识库会话绑定库（agentId 须为 builtin-kb-assistant）） */
   const newConversation = useCallback(
     async (
       agentId?: string,
       defaultPermissionMode?: AgentPermissionMode,
+      kbId?: string,
     ): Promise<ConversationSummary> => {
       const now = new Date().toISOString();
       const conversation: ConversationSummary = {
@@ -52,6 +54,7 @@ export function useWebChat() {
         title: "新会话",
         channelId: "web",
         agentId: agentId ?? "",
+        ...(kbId ? { kbId } : {}),
         // 仅预填展示值：permissionMode 保持空 = 跟随智能体默认，与转正后后端计算一致
         effectivePermissionMode: defaultPermissionMode ?? "ask_before_change",
         createdAt: now,
@@ -378,6 +381,7 @@ export function useWebChat() {
               userId: draft.userId,
               channelId: draft.channelId,
               agentId: draft.agentId || undefined,
+              kbId: draft.kbId || undefined,
             }),
           });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);

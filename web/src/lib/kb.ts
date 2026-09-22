@@ -179,3 +179,10 @@ export async function acceptKbShare(
   if (!r.ok) throw new Error(await readErrorMessage(r, `accept ${r.status}`));
   return (await r.json()) as { kbId: string; name: string };
 }
+
+/** 知识库会话 get-or-create（后端按 kbId 复用最新会话；agentId=builtin-kb-assistant） */
+export async function getOrCreateKbConversation(kbId: string): Promise<{ id: string }> {
+  const r = await apiFetch(`/api/kb/${kbId}/conversation`);
+  if (!r.ok) throw new Error(`kb conv ${r.status}`);
+  return (await r.json()) as { id: string };
+}

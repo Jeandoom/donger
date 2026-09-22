@@ -1,10 +1,11 @@
-// 业务知识库只读/沉淀 MCP（donger-kb）：面向 agent 的知识库检索与写入工具。
-// 边界：所有路径 resolve 后强制前缀 = <用户工作区>/knowledge_base/（防穿越）；
-// 挂载为恒挂载（同 platformTools 模式），可用性由 agent tools 白名单控制
-// （kb-qa 场景白名单 = list/read/search 三件只读；research 追加 kb_write）。
-// 检索为 grep 级行匹配（不引入 rg 依赖）；语义检索后继替换 kb_search 内部实现，签名不变。
+// 业务知识库 MCP（donger-kb）：面向 agent 的知识库检索与写入工具 v2。
+// v2（spec 2026-09-22-knowledge-base-design §8）：按库寻址——工具加 kbId 参数，
+// 工具名不变（存量白名单/场景词表兼容）；kbId 缺省回落 defaultKbId（运行时=个人库）。
+// 写入经 onChange 回调记账（kb_revisions，actorKind=chat）；可写性由挂载清单声明。
+// 检索为 grep 级行匹配（异步 fs，不阻塞事件循环）；FTS 后继替换 kb_search 内部实现，签名不变。
 
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   createSdkMcpServer,
@@ -19,46 +20,64 @@ const fail = (text: string): KbToolResult => ({ content: [{ type: "text", text }
 
 const MAX_READ_CHARS = 32_000;
 const MAX_SEARCH_HITS = 50;
+const MAX_SEARCH_FILES = 200;
+const SEARCH_TIMEOUT_MS = 2_000;
 const LIST_DEPTH = 3;
 
-export interface KbToolsDeps {
-  /** 知识库根目录（<用户工作区>/knowledge_base），由装配方计算 */
-  kbRoot: string;
+/** 挂载清单条目（运行时按会话库 ∪ agent 绑定库 ∪ 个人库构造） */
+export interface KbMount {
+  kbId: string;
+  name: string;
+  root: string;
+  /** false = 只读挂载（kb_write/kb_delete 拒绝；被分享库语义，spec D1） */
+  writable: boolean;
+  // —— 提示词注入用的元数据（可选，kb 工具本体不消费）——
+  description?: string;
+  systemPrompt?: string;
+  /** 库属主即当前用户（提示词信任分级：直拼 vs wrapUntrusted） */
+  ownerIsUser?: boolean;
+  /** 顶层目录清单（正斜杠相对路径，一层） */
+  topDirs?: string;
 }
 
-/** 路径安全：resolve 后必须仍在 kbRoot 内（含 kbRoot 本身）；逃逸返回 undefined */
-export function safeResolveKbPath(kbRoot: string, input: string): string | undefined {
-  const root = resolve(kbRoot);
-  const resolved = resolve(root, input);
-  const rel = relative(root, resolved);
-  // rel === ""：即 root 本身；不越界 = rel 不以 .. 开头且不是绝对路径
+export interface KbToolsDeps {
+  /** v2：按库挂载清单 */
+  mounts?: KbMount[];
+  /** kbId 缺省回落（运行时=个人库；存量 agent 白名单行为连续） */
+  defaultKbId?: string;
+  /** v1 兼容：单根形态（= 单 mount，可写，kbId=""）；新代码请传 mounts */
+  kbRoot?: string;
+  /** 写/删变更回调（kb_revisions 记账）；缺省不记账 */
+  onChange?: (e: {
+    kbId: string;
+    path: string;
+    action: "create" | "update" | "delete";
+    before?: string;
+    after?: string;
+  }) => Promise<void>;
+}
+
+/** 归一 deps：v1 kbRoot 兼容映射为单库挂载 */
+function normalizeMounts(deps: KbToolsDeps): { mounts: KbMount[]; defaultKbId?: string } {
+  if (deps.mounts && deps.mounts.length > 0) {
+    return { mounts: deps.mounts, defaultKbId: deps.defaultKbId ?? deps.mounts[0]?.kbId };
+  }
+  if (deps.kbRoot) {
+    return {
+      mounts: [{ kbId: "", name: "知识库", root: resolve(deps.kbRoot), writable: true }],
+      defaultKbId: "",
+    };
+  }
+  return { mounts: [], defaultKbId: undefined };
+}
+
+/** 路径安全：resolve 后必须仍在 root 内（含 root 本身）；逃逸返回 undefined */
+export function safeResolveKbPath(root: string, input: string): string | undefined {
+  const base = resolve(root);
+  const resolved = resolve(base, input);
+  const rel = relative(base, resolved);
   if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
   return undefined;
-}
-
-/** 递归收集 root 下全部文件（跳过隐藏目录），返回绝对路径列表 */
-function walkFiles(root: string, depth = 5): string[] {
-  if (depth <= 0) return [];
-  let entries: string[];
-  try {
-    entries = readdirSync(root);
-  } catch {
-    return [];
-  }
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.startsWith(".")) continue;
-    const full = join(root, entry);
-    let stat;
-    try {
-      stat = statSync(full);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) files.push(...walkFiles(full, depth - 1));
-    else if (stat.isFile()) files.push(full);
-  }
-  return files;
 }
 
 function treeList(root: string, depth: number, prefix = ""): string[] {
@@ -101,17 +120,43 @@ function globToRegExp(glob: string): RegExp {
 }
 
 export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
-  const root = resolve(deps.kbRoot);
+  const { mounts, defaultKbId } = normalizeMounts(deps);
+
+  /** 解析 kbId → mount；无参回落 defaultKbId；未知库 undefined */
+  const resolveMount = (kbId?: string): KbMount | undefined => {
+    const target = kbId && kbId.length > 0 ? kbId : defaultKbId;
+    if (target === undefined) return mounts[0];
+    return mounts.find((m) => m.kbId === target);
+  };
+  /** 多库挂载时输出加 kbId 前缀（单库保持 v1 输出形态） */
+  const labelFor = (mount: KbMount, rel: string): string =>
+    mounts.length > 1 ? `${mount.kbId}:${rel}` : rel;
+
   return [
     {
       name: "kb_list",
-      description: "列出业务知识库目录树（默认深度 3；可传子目录只看局部）",
+      description:
+        "列出知识库目录树（kbId 缺省=当前主库；多库挂载时不传 kbId 则列出全部挂载库清单）。可传 subdir 只看局部。",
       inputSchema: {
-        subdir: z.string().optional().describe("相对知识库根的子目录，如 knowledges/research"),
+        kbId: z.string().optional().describe("库 ID（见挂载清单）"),
+        subdir: z.string().optional().describe("相对库根的子目录，如 knowledges/faq"),
       },
       handler: async (args): Promise<KbToolResult> => {
-        const a = z.object({ subdir: z.string().optional() }).parse(args);
-        const target = a.subdir ? safeResolveKbPath(root, a.subdir) : root;
+        const a = z.object({ kbId: z.string().optional(), subdir: z.string().optional() }).parse(args);
+        // 不带 kbId 且多库：输出挂载清单（名称 + 可写性 + 顶层目录）
+        if ((!a.kbId || a.kbId.length === 0) && mounts.length > 1) {
+          const lines: string[] = ["挂载知识库清单："];
+          for (const m of mounts) {
+            const top = treeList(m.root, 1);
+            lines.push(
+              `- kbId=${m.kbId}「${m.name}」${m.writable ? "（可写）" : "（只读）"}${top.length ? `\n  ${top.join("\n  ")}` : "（空库）"}`,
+            );
+          }
+          return ok(lines.join("\n"));
+        }
+        const mount = resolveMount(a.kbId);
+        if (!mount) return fail(`未知知识库：${a.kbId ?? "(缺省)"}（用 kb_list 查看挂载清单）`);
+        const target = a.subdir ? safeResolveKbPath(mount.root, a.subdir) : resolve(mount.root);
         if (!target) return fail(`子目录越界：${a.subdir ?? ""}`);
         const lines = treeList(target, LIST_DEPTH);
         return ok(lines.length > 0 ? lines.join("\n") : "（空目录）");
@@ -119,14 +164,18 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
     },
     {
       name: "kb_read",
-      description: "读取知识库文件内容（相对知识库根的路径）",
+      description: "读取知识库文件内容（相对库根的路径；仅 .md）",
       inputSchema: {
-        path: z.string().min(1).describe("相对知识库根的路径，如 knowledges/faq/订单.md"),
+        kbId: z.string().optional().describe("库 ID（缺省=当前主库）"),
+        path: z.string().min(1).describe("相对库根的路径，如 knowledges/faq/订单.md"),
       },
       handler: async (args): Promise<KbToolResult> => {
-        const a = z.object({ path: z.string() }).parse(args);
-        const target = safeResolveKbPath(root, a.path);
-        if (!target) return fail(`路径越界：${a.path}`);
+        const a = z.object({ kbId: z.string().optional(), path: z.string() }).parse(args);
+        const mount = resolveMount(a.kbId);
+        if (!mount) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
+        if (!a.path.toLowerCase().endsWith(".md")) return fail("仅支持读取 .md 文件");
+        const target = safeResolveKbPath(mount.root, a.path);
+        if (!target || target === resolve(mount.root)) return fail(`路径越界：${a.path}`);
         try {
           const content = readFileSync(target, "utf8");
           return ok(
@@ -141,9 +190,11 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
     },
     {
       name: "kb_search",
-      description: "全文检索知识库（行包含匹配，返回 文件:行号:内容，最多 50 条）",
+      description:
+        "全文检索知识库（行包含匹配，返回 文件:行号:内容，最多 50 条；kbId=\"all\" 遍历全部挂载库）",
       inputSchema: {
         query: z.string().min(1).describe("检索关键词"),
+        kbId: z.string().optional().describe('库 ID（缺省=当前主库；传 "all" 遍历全部挂载库）'),
         glob: z.string().optional().describe("文件名过滤，如 *.md"),
         ignoreCase: z.boolean().optional().describe("忽略大小写（默认 true）"),
       },
@@ -151,62 +202,159 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         const a = z
           .object({
             query: z.string(),
+            kbId: z.string().optional(),
             glob: z.string().optional(),
             ignoreCase: z.boolean().optional(),
           })
           .parse(args);
+        const targets =
+          a.kbId === "all"
+            ? mounts
+            : [resolveMount(a.kbId) ?? undefined].filter((m): m is KbMount => !!m);
+        if (targets.length === 0) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
         const globRe = a.glob ? globToRegExp(a.glob) : undefined;
         const needle = a.ignoreCase === false ? a.query : a.query.toLowerCase();
+        const startedAt = Date.now();
         const hits: string[] = [];
-        for (const file of walkFiles(root)) {
-          if (globRe) {
-            const relPath = relative(root, file).replace(/\\/g, "/");
-            const base = file.split(/[\\/]/).pop() ?? "";
-            if (!globRe.test(relPath) && !globRe.test(base)) continue;
-          }
-          let content: string;
+        const searchOne = (mount: KbMount, dir: string, depth: number): void => {
+          if (depth <= 0 || hits.length >= MAX_SEARCH_HITS) return;
+          if (Date.now() - startedAt > SEARCH_TIMEOUT_MS) return;
+          let entries: string[];
           try {
-            content = readFileSync(file, "utf8");
+            entries = readdirSync(dir);
           } catch {
-            continue;
+            return;
           }
-          const rel = relative(root, file).replace(/\\/g, "/");
-          const lines = content.split(/\r?\n/);
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i] ?? "";
-            const haystack = a.ignoreCase === false ? line : line.toLowerCase();
-            if (haystack.includes(needle)) {
-              hits.push(`${rel}:${i + 1}: ${line.trim().slice(0, 200)}`);
-              if (hits.length >= MAX_SEARCH_HITS) {
-                return ok(`${hits.join("\n")}\n…（已达 50 条上限，请细化关键词）`);
+          for (const entry of entries) {
+            if (hits.length >= MAX_SEARCH_HITS) return;
+            if (entry.startsWith(".")) continue;
+            const full = join(dir, entry);
+            let stat;
+            try {
+              stat = statSync(full);
+            } catch {
+              continue;
+            }
+            if (stat.isDirectory()) {
+              searchOne(mount, full, depth - 1);
+              continue;
+            }
+            if (!stat.isFile()) continue;
+            const rel = relative(mount.root, full).replace(/\\/g, "/");
+            if (globRe && !globRe.test(rel) && !globRe.test(entry)) continue;
+            let content: string;
+            try {
+              content = readFileSync(full, "utf8");
+            } catch {
+              continue;
+            }
+            const lines = content.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i] ?? "";
+              const haystack = a.ignoreCase === false ? line : line.toLowerCase();
+              if (haystack.includes(needle)) {
+                hits.push(`${labelFor(mount, rel)}:${i + 1}: ${line.trim().slice(0, 200)}`);
+                if (hits.length >= MAX_SEARCH_HITS) break;
               }
             }
           }
-        }
-        return ok(hits.length > 0 ? hits.join("\n") : `（无命中：${a.query}）`);
+        };
+        for (const mount of targets) searchOne(mount, resolve(mount.root), 6);
+        if (hits.length === 0) return ok(`（无命中：${a.query}）`);
+        const tail =
+          hits.length >= MAX_SEARCH_HITS ? "\n…（已达 50 条上限，请细化关键词）" : "";
+        return ok(`${hits.join("\n")}${tail}`);
       },
     },
     {
       name: "kb_write",
-      description: "写入知识库文件（整文件覆写；用于调研结论沉淀。写入内容须标注主题、来源与日期）",
+      description:
+        "写入知识库文件（整文件覆写；目录自动创建；仅可写库）。写入前须先 kb_read 取最新内容。内容须标注主题、来源与日期。",
       inputSchema: {
-        path: z.string().min(1).describe("相对知识库根的路径（目录不存在会自动创建）"),
+        kbId: z.string().optional().describe("库 ID（缺省=当前主库）"),
+        path: z.string().min(1).describe("相对库根的路径（仅 .md）"),
         content: z.string().min(1).describe("文件全文（utf8）"),
+        expectedHash: z
+          .string()
+          .optional()
+          .describe("修改前文件的 sha256（防并发覆盖；来自 kb_read 时可选返回）"),
       },
       handler: async (args): Promise<KbToolResult> => {
-        const a = z.object({ path: z.string(), content: z.string() }).parse(args);
-        const target = safeResolveKbPath(root, a.path);
-        if (!target) return fail(`路径越界：${a.path}`);
-        if (target === root) return fail("path 不能是知识库根目录本身");
+        const a = z
+          .object({
+            kbId: z.string().optional(),
+            path: z.string(),
+            content: z.string(),
+            expectedHash: z.string().optional(),
+          })
+          .parse(args);
+        const mount = resolveMount(a.kbId);
+        if (!mount) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
+        if (!mount.writable) return fail(`知识库「${mount.name}」为只读挂载（被分享库不可维护）`);
+        if (!a.path.toLowerCase().endsWith(".md")) return fail("仅支持写入 .md 文件");
+        const target = safeResolveKbPath(mount.root, a.path);
+        if (!target || target === resolve(mount.root)) return fail(`路径越界：${a.path}`);
+        let before: string | undefined;
+        try {
+          before = readFileSync(target, "utf8");
+        } catch {
+          before = undefined;
+        }
+        if (a.expectedHash && before !== undefined) {
+          const actual = createHash("sha256").update(before, "utf8").digest("hex");
+          if (actual !== a.expectedHash.toLowerCase()) {
+            return fail("文件已被其他人修改（hash 不匹配），请重新 kb_read 后再写。");
+          }
+        }
         try {
           mkdirSync(dirname(target), { recursive: true });
           writeFileSync(target, a.content, "utf8");
-          return ok(
-            `已写入 ${relative(root, target).replace(/\\/g, "/")}（${a.content.length} 字符）`,
-          );
         } catch (e) {
           return fail(`写入失败：${(e as Error).message}`);
         }
+        const rel = relative(mount.root, target).replace(/\\/g, "/");
+        if (deps.onChange) {
+          await deps.onChange({
+            kbId: mount.kbId,
+            path: rel,
+            action: before === undefined ? "create" : "update",
+            before,
+            after: a.content,
+          });
+        }
+        return ok(`已写入 ${labelFor(mount, rel)}（${a.content.length} 字符）`);
+      },
+    },
+    {
+      name: "kb_delete",
+      description: "删除知识库文件（仅可写库）；移动/重命名用 kb_delete + kb_write 组合",
+      inputSchema: {
+        kbId: z.string().optional().describe("库 ID（缺省=当前主库）"),
+        path: z.string().min(1).describe("相对库根的路径"),
+      },
+      handler: async (args): Promise<KbToolResult> => {
+        const a = z.object({ kbId: z.string().optional(), path: z.string() }).parse(args);
+        const mount = resolveMount(a.kbId);
+        if (!mount) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
+        if (!mount.writable) return fail(`知识库「${mount.name}」为只读挂载（被分享库不可维护）`);
+        const target = safeResolveKbPath(mount.root, a.path);
+        if (!target || target === resolve(mount.root)) return fail(`路径越界：${a.path}`);
+        let before: string | undefined;
+        try {
+          before = readFileSync(target, "utf8");
+        } catch {
+          before = undefined;
+        }
+        try {
+          rmSync(target, { recursive: true });
+        } catch (e) {
+          return fail(`删除失败：${(e as Error).message}`);
+        }
+        const rel = relative(mount.root, target).replace(/\\/g, "/");
+        if (deps.onChange) {
+          await deps.onChange({ kbId: mount.kbId, path: rel, action: "delete", before });
+        }
+        return ok(`已删除 ${labelFor(mount, rel)}`);
       },
     },
   ];
@@ -216,7 +364,7 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
 export function createKbToolsServer(deps: KbToolsDeps): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: "donger-kb",
-    version: "1.0.0",
+    version: "2.0.0",
     tools: kbToolDefinitions(deps),
   });
 }

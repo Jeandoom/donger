@@ -103,6 +103,10 @@ export const AgentSchema = z.object({
   mcpServers: z.array(McpServerConfigSchema).default([]),
   /** 勾选的连接器 id（弱引用：连接器模块注册的 HTTP MCP；运行时解析为 mcpServers，重名在保存时硬拦） */
   connectorIds: z.array(z.string()).default([]),
+  /** 绑定的知识库 id（弱引用：失效库读时忽略；运行时挂载 kb 工具与提示词注入，spec §8；缺省=未绑定） */
+  knowledgeBaseIds: z.array(z.string()).optional(),
+  /** 自动学习与记忆（默认关）：对话收尾后 LLM 梳理沉淀进绑定的可写库（spec §9.3） */
+  kbAutoLearn: z.boolean().optional(),
   /** 勾选的凭证模板 code（弱引用：执行时按当前用户解析，未配置的注入 _MISSING 标记） */
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,

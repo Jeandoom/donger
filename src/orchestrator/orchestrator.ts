@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
@@ -6,6 +7,9 @@ import type { Conversation } from "../domain/conversation.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { AgentGitRepository } from "../domain/git.js";
+import type { KbLibrary } from "../domain/kb.js";
+import { lineDiff } from "../domain/kb-diff.js";
+import { canManageKb, canReadKb } from "../domain/kb-policy.js";
 import { appendMentions } from "../domain/mentions.js";
 import { appendMessageFiles } from "../domain/message-files.js";
 import {
@@ -18,6 +22,7 @@ import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
 import type { User } from "../domain/user.js";
+import { wrapUntrusted } from "../domain/untrusted-content.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type {
   AgentRunner,
@@ -32,6 +37,7 @@ import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
@@ -41,6 +47,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { kbRootDir, sha256Text } from "../util/kb-files.js";
 import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
@@ -54,7 +61,8 @@ import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
-import { createKbToolsServer } from "./kb-tools.js";
+import { createKbToolsServer, type KbMount } from "./kb-tools.js";
+import { BUILTIN_KB_ASSISTANT_AGENT, BUILTIN_KB_ASSISTANT_ID } from "./kb-assistant-agent.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
@@ -80,6 +88,12 @@ export interface OrchestratorDeps {
   agentStore?: AgentStore;
   /** 智能体分享/授权存储 */
   agentShareStore?: AgentShareStore;
+  /** 知识库三表（spec 2026-09-22-knowledge-base-design；缺省=kb 工具回落 v1 个人目录语义） */
+  kbLibraryStore?: KbLibraryStore;
+  kbShareStore?: KbShareStore;
+  kbRevisionStore?: KbRevisionStore;
+  /** 知识库文件根（<workspaceDir>/kb）；缺省=不可挂载库 */
+  workspaceDir?: string;
   gitAccessGate?: GitAccessGate;
   /** AI 生成子模块：技能安装器（assist 会话写技能用） */
   installer?: SkillInstaller;
@@ -275,6 +289,7 @@ export class Orchestrator {
   }> {
     // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
     if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
+    if (agentId === BUILTIN_KB_ASSISTANT_ID) return { agent: BUILTIN_KB_ASSISTANT_AGENT };
     if (agentId === BUILTIN_SKILL_FORGE_AGENT_ID) return { agent: BUILTIN_SKILL_FORGE_AGENT };
     if (agentId === BUILTIN_AUDITOR_AGENT_ID) return { agent: BUILTIN_AUDITOR_AGENT };
     if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
@@ -327,6 +342,91 @@ export class Orchestrator {
       return { agent, sharedAgentSkillOwner, gitMaterializeItems: gitAccess.materializeItems };
     }
     return { agent, sharedAgentSkillOwner };
+  }
+
+  /**
+   * 知识库挂载清单（spec §8）：会话绑定库（canReadKb 越权抛）→ agent 绑定库（弱引用失效
+   * 忽略；无读权不挂）→ 个人库兜底（恒挂载语义连续，kbId 缺省=个人库）。可写=canManageKb。
+   */
+  private async resolveKbMounts(
+    user: User,
+    conversation: Conversation,
+    agent?: Agent,
+  ): Promise<{ mounts: KbMount[]; defaultKbId?: string }> {
+    const libs = this.deps.kbLibraryStore;
+    const shareStore = this.deps.kbShareStore;
+    if (!libs || !this.deps.workspaceDir) return { mounts: [] };
+    const actor = { id: user.id, role: user.role };
+    const isGranted = async (kbId: string): Promise<boolean> =>
+      shareStore ? shareStore.isGranted(kbId, user.id) : false;
+    const push = async (lib: KbLibrary): Promise<void> => {
+      if (mounts.some((m) => m.kbId === lib.id)) return;
+      let topDirs = "";
+      try {
+        topDirs = readdirSync(kbRootDir(this.deps.workspaceDir ?? ".", lib.id))
+          .filter((n) => !n.startsWith("."))
+          .slice(0, 12)
+          .map((n) => `${n}/`)
+          .join(" ");
+      } catch {
+        topDirs = "";
+      }
+      mounts.push({
+        kbId: lib.id,
+        name: lib.name,
+        root: kbRootDir(this.deps.workspaceDir ?? ".", lib.id),
+        writable: canManageKb(lib, actor),
+        description: lib.description,
+        systemPrompt: lib.systemPrompt,
+        ownerIsUser: lib.ownerId === user.id,
+        topDirs,
+      });
+    };
+
+    const mounts: KbMount[] = [];
+    let defaultKbId: string | undefined;
+    if (conversation.kbId) {
+      const lib = await libs.get(conversation.kbId);
+      if (!lib) {
+        throw new NotFoundError("KB_NOT_FOUND", `知识库不存在: ${conversation.kbId}`);
+      }
+      if (!canReadKb(lib, actor, await isGranted(lib.id))) {
+        throw new ForbiddenError("KB_FORBIDDEN", "无权访问该知识库");
+      }
+      await push(lib);
+      defaultKbId = lib.id;
+    }
+    // agent 绑定库（弱引用；knowledgeBaseIds 为 M3 接线字段，schema 缺省空数组）
+    for (const kbId of agent?.knowledgeBaseIds ?? []) {
+      const lib = await libs.get(kbId);
+      if (!lib) continue;
+      if (!canReadKb(lib, actor, await isGranted(lib.id))) continue;
+      await push(lib);
+    }
+    // 兜底：个人库恒挂载（存量 kb-qa/research 无绑定时的行为连续）
+    const personal = await libs.ensurePersonalLibrary(user.id);
+    await push(personal);
+    return { mounts, defaultKbId: defaultKbId ?? personal.id };
+  }
+
+  /** 知识库上下文注入（spec §8）：清单+各库提示词（他人库 wrapUntrusted，防属主跨用户注入）+顶层目录 */
+  private kbContextPrompt(mounts: KbMount[]): string {
+    if (mounts.length === 0) return "";
+    const lines: string[] = ["## 可用知识库（用 kb_* 工具访问；kbId 缺省=主库）"];
+    for (const m of mounts) {
+      lines.push(
+        `- kbId=${m.kbId}「${m.name}」${m.writable ? "（可维护）" : "（只读）"}${m.description ? `：${m.description}` : ""}`,
+      );
+      if (m.systemPrompt && m.systemPrompt.length > 0) {
+        lines.push(
+          m.ownerIsUser
+            ? `  库提示词：${m.systemPrompt}`
+            : String(wrapUntrusted(m.systemPrompt, `kb:${m.kbId}:systemPrompt`)),
+        );
+      }
+      if (m.topDirs && m.topDirs.length > 0) lines.push(`  顶层目录：${m.topDirs}`);
+    }
+    return lines.join("\n");
   }
 
   /**
@@ -385,11 +485,46 @@ export class Orchestrator {
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
       base = { ...base, permissionMode: () => this.effectivePermissionMode(p.conversation.id) };
-      // 业务知识库工具恒挂载（路径安全限制在 <用户工作区>/knowledge_base/ 内；可用性由白名单控制）
+      // 知识库挂载清单（spec §8）：会话绑定库 ∪ agent 绑定库 ∪ 个人库兜底（kbId 缺省=个人库，
+      // 存量白名单/场景词表行为连续）；写经 onChange 落 kb_revisions；可写库根传 runner 做 Bash 写守卫（§9）
+      const { mounts: kbMounts, defaultKbId: kbDefault } = await this.resolveKbMounts(
+        p.user,
+        p.conversation,
+        p.agent,
+      );
       base = {
         ...base,
-        kbTools: createKbToolsServer({ kbRoot: join(p.user.homeDir, "knowledge_base") }),
+        kbTools: createKbToolsServer({
+          mounts: kbMounts,
+          defaultKbId: kbDefault,
+          onChange: async (e) => {
+            const revisions = this.deps.kbRevisionStore;
+            if (!revisions) return;
+            const diff = e.action === "delete" ? undefined : lineDiff(e.before ?? "", e.after ?? "");
+            await revisions.record({
+              kbId: e.kbId,
+              path: e.path,
+              action: e.action,
+              actorUserId: p.user.id,
+              actorKind: "chat",
+              conversationId: p.conversation.id,
+              taskId: p.task.id,
+              beforeHash: e.before !== undefined ? sha256Text(e.before) : undefined,
+              afterHash: e.after !== undefined ? sha256Text(e.after) : undefined,
+              ...(diff ? { diffText: diff } : {}),
+              summary: `对话维护（${p.conversation.title || "会话"}）`,
+            });
+          },
+        }),
+        kbWriteGuardRoots: kbMounts.map((m) => m.root),
       };
+      const kbPrompt = this.kbContextPrompt(kbMounts);
+      if (kbPrompt) {
+        base = {
+          ...base,
+          systemPromptAppend: [base.systemPromptAppend, kbPrompt].filter((s) => s && s.length > 0).join("\n\n"),
+        };
+      }
       // 审计读取工具（donger-audit）：内置审计智能体、技能工坊、平台进化官挂载。
       // viewer=发起用户，构造时闭包绑定——member 仅本人 / admin 全量，store L2 visible 兜底。
       if (

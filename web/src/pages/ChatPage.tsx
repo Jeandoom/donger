@@ -224,6 +224,9 @@ export function ChatPage() {
             const agent = agents.find((a) => a.id === agentId);
             void wc.newConversation(agentId, agent?.defaultPermissionMode);
           },
+          onNewKbConversation: (kbId) => {
+            void wc.newConversation("builtin-kb-assistant", undefined, kbId);
+          },
         }}
         messages={wc.messages}
         loadingMessages={wc.loadingMessages}

@@ -141,6 +141,8 @@ export interface ConversationSummary {
   title: string;
   channelId: string;
   agentId: string;
+  /** 知识库会话绑定的库（agentId=builtin-kb-assistant；普通会话无此字段） */
+  kbId?: string;
   /** 会话级权限模式覆盖；空 = 跟随绑定智能体的默认配置 */
   permissionMode?: AgentPermissionMode;
   /** 生效权限模式（后端按 会话覆盖 ?? 智能体默认 ?? 变更前问询 计算） */

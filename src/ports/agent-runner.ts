@@ -59,6 +59,9 @@ export interface RunOptions {
   gitPlatformTools?: McpSdkServerConfigWithInstance;
   /** in-process 业务知识库 MCP server（恒挂载，可用性由 agent tools 白名单控制） */
   kbTools?: McpSdkServerConfigWithInstance;
+  /** KB 目录根清单（<workspaceDir>/kb/<kbId>）：Bash 写守卫的敏感根（spec §9，D6）——
+   *  Bash 命中写模式+这些根 → deny+引导 kb_* 工具；KB 目录不进 allowedWriteRoots，本清单只供守卫 */
+  kbWriteGuardRoots?: string[];
   /** in-process 审计读取 MCP server（内置审计/技能工坊智能体注入；viewer 在构造时闭包绑定） */
   auditTools?: McpSdkServerConfigWithInstance;
   /**

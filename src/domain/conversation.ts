@@ -8,6 +8,8 @@ export const ConversationSchema = z.object({
   title: z.string(),
   channelId: z.string(),
   agentId: z.string(),
+  /** 知识库对话绑定的库（KB 会话：agentId 恒为 builtin-kb-assistant + kbId 定位库；普通会话为空） */
+  kbId: z.string().optional(),
   /** 会话权限模式覆盖；空 = 跟随绑定智能体的 defaultPermissionMode */
   permissionMode: AgentPermissionModeSchema.optional(),
   /** 用户最近一次显式选择的 LLM（modelRef）；空 = 未选过（fallback 系统默认/用户默认 provider）。

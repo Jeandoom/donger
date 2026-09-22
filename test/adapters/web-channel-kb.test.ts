@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
+import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import {
   SqliteKbLibraryStore,
   SqliteKbRevisionStore,
@@ -37,6 +38,8 @@ async function startChannel(): Promise<number> {
   userStore = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
   userStore.migrate();
   userStore.migrateCredentials();
+  const conversationStore = new SqliteConversationStore(db);
+  conversationStore.migrate();
   libraries = new SqliteKbLibraryStore(db);
   libraries.migrate();
   shares = new SqliteKbShareStore(db);
@@ -49,6 +52,7 @@ async function startChannel(): Promise<number> {
     workspaceDir: tmpDir,
     sessionStore,
     userStore,
+    conversationStore,
     kbLibraryStore: libraries,
     kbShareStore: shares,
     kbRevisionStore: revisions,
@@ -306,5 +310,43 @@ describe("文件真源一致性", () => {
     expect(readFileSync(join(root, "index.md"), "utf8")).toContain("真源库");
     await req(port, "DELETE", `/api/kb/${kb.id}`, alice.token);
     expect(existsSync(root)).toBe(false);
+  });
+});
+
+describe("KB 会话（M2）", () => {
+  it("GET /api/kb/:id/conversation get-or-create：同库复用同一会话；未授权 403", async () => {
+    const kb = await createKb(alice.token, "会话库");
+    const r1 = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
+    expect(r1.status).toBe(200);
+    const c1 = (await r1.json()) as { id: string; agentId: string; kbId?: string };
+    expect(c1.agentId).toBe("builtin-kb-assistant");
+    expect(c1.kbId).toBe(kb.id);
+    const r2 = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
+    expect(((await r2.json()) as { id: string }).id).toBe(c1.id);
+    // bob 未授权：403
+    expect((await req(port, "GET", `/api/kb/${kb.id}/conversation`, bob.token)).status).toBe(403);
+    // 被授予后（只读 canUse）也可对话查阅
+    const er = await req(port, "POST", `/api/kb/${kb.id}/share`, alice.token, { enabled: true });
+    const { token } = (await er.json()) as { token: string };
+    await req(port, "POST", `/api/kb/${kb.id}/accept-share`, bob.token, { token });
+    expect((await req(port, "GET", `/api/kb/${kb.id}/conversation`, bob.token)).status).toBe(200);
+  });
+
+  it("POST /api/conversations 组合校验：kbId 仅限 builtin-kb-assistant", async () => {
+    const bad = await req(port, "POST", "/api/conversations", alice.token, {
+      channelId: "web",
+      agentId: "some-agent",
+      kbId: "kb-1",
+    });
+    expect(bad.status).toBe(400);
+    const okr = await req(port, "POST", "/api/conversations", alice.token, {
+      channelId: "web",
+      agentId: "builtin-kb-assistant",
+      kbId: "kb-1",
+    });
+    expect(okr.status).toBe(201);
+    const conv = (await okr.json()) as { agentId: string; kbId?: string };
+    expect(conv.agentId).toBe("builtin-kb-assistant");
+    expect(conv.kbId).toBe("kb-1");
   });
 });

@@ -129,6 +129,7 @@ import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-g
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
+import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
 import {
   BUILTIN_SELF_IMPROVER_AGENT_ID,
@@ -2986,11 +2987,18 @@ export class WebChannel implements Channel {
     // POST /api/conversations —— 会话归属强制为当前登录者（防代他人建会话）
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
-      const { channelId, agentId } = JSON.parse(body) as {
+      const { channelId, agentId, kbId } = JSON.parse(body) as {
         userId?: string;
         channelId?: string;
         agentId?: string;
+        kbId?: string;
       };
+      // KB 会话组合校验（spec §10.1）：kbId 非空 ⇔ agentId=builtin-kb-assistant，防未定义组合
+      if (kbId && agentId !== BUILTIN_KB_ASSISTANT_ID) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "kbId 仅支持知识库会话（agentId=builtin-kb-assistant）" }));
+        return;
+      }
       const userId = this.requireRequestUser(req);
       if (this.deps.userStore) {
         const user = await this.deps.userStore.get(userId);
@@ -3006,6 +3014,7 @@ export class WebChannel implements Channel {
             channelId ?? "web",
             "新对话",
             agentId,
+            kbId ? { kbId } : undefined,
           )
         : await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
       res.writeHead(201);
@@ -3731,7 +3740,7 @@ export class WebChannel implements Channel {
     }
     // === 知识库（spec 2026-09-22-knowledge-base-design §7；权限判定统一走 kb-policy，禁止内联重复） ===
     // url 含查询串（铁律：反馈轮 ?token= 404 事故），KB 段统一剥 query 后再匹配
-    const kbPath = url.split("?")[0];
+    const kbPath = url.split("?")[0] ?? url;
 
     // GET /api/kb —— 本人可见全量：个人库（懒 ensure，spec §5.2）+ 我创建的 + 分享给我的 + 系统默认
     if (kbPath === "/api/kb" && req.method === "GET") {
@@ -3894,6 +3903,25 @@ export class WebChannel implements Channel {
       }
       await kb.shares.removeGrant(id, kbGrantMatch[2] ?? "");
       return this.json(res, { ok: true });
+    }
+    // GET /api/kb/:id/conversation —— KB 会话 get-or-create（canUseKb；agentId=builtin-kb-assistant + kbId）
+    const kbConvMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/conversation$/);
+    if (kbConvMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbConvMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      const granted = await kb.shares.isGranted(id, me);
+      if (!canReadKb(lib, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
+      const existing = list.find((c) => c.kbId === id && c.agentId === BUILTIN_KB_ASSISTANT_ID);
+      const conv =
+        existing ??
+        (await this.deps.conversationStore?.createWithAgent(me, "web", lib.name, BUILTIN_KB_ASSISTANT_ID, { kbId: id }));
+      return this.json(res, conv);
     }
     // POST /api/kb/:id/accept-share —— 凭链接加入名单（幂等）
     const kbAcceptMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/accept-share$/);
