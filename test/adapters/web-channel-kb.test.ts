@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
+import { SqliteAuditStore } from "../../src/adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import {
   SqliteKbLibraryStore,
@@ -40,6 +41,8 @@ async function startChannel(): Promise<number> {
   userStore.migrateCredentials();
   const conversationStore = new SqliteConversationStore(db);
   conversationStore.migrate();
+  const auditStore = new SqliteAuditStore(db);
+  auditStore.migrate();
   libraries = new SqliteKbLibraryStore(db);
   libraries.migrate();
   shares = new SqliteKbShareStore(db);
@@ -53,6 +56,7 @@ async function startChannel(): Promise<number> {
     sessionStore,
     userStore,
     conversationStore,
+    auditStore,
     kbLibraryStore: libraries,
     kbShareStore: shares,
     kbRevisionStore: revisions,
@@ -348,5 +352,13 @@ describe("KB 会话（M2）", () => {
     const conv = (await okr.json()) as { agentId: string; kbId?: string };
     expect(conv.agentId).toBe("builtin-kb-assistant");
     expect(conv.kbId).toBe("kb-1");
+  });
+
+  it("GET /api/audit/kb-search-stats（R-E）：member 403、admin 200 统计结构", async () => {
+    expect((await req(port, "GET", "/api/audit/kb-search-stats", alice.token)).status).toBe(403);
+    const r = await req(port, "GET", "/api/audit/kb-search-stats", admin.token);
+    expect(r.status).toBe(200);
+    const stats = (await r.json()) as { total: number; zeroHit: number };
+    expect(stats.total).toBe(0);
   });
 });

@@ -4114,6 +4114,19 @@ export class WebChannel implements Channel {
       return this.json(res, { revisions, kbNames });
     }
 
+    // GET /api/audit/kb-search-stats —— kb_search 0 命中率（R-E：检索质量信号，admin 口径）
+    if (kbPath === "/api/audit/kb-search-stats" && req.method === "GET") {
+      if (this.currentViewer(req).role !== "admin") {
+        return this.json(res, { error: "forbidden" }, 403);
+      }
+      if (!this.deps.auditStore?.kbSearchStats) {
+        return this.json(res, { error: "audit store unavailable" }, 503);
+      }
+      const limit = Number(this.extractQuery(url, "limit") ?? "500");
+      const stats = await this.deps.auditStore.kbSearchStats(Number.isFinite(limit) ? limit : 500);
+      return this.json(res, stats);
+    }
+
     // 智能体回调链接管理（鉴权 + canManageAgent；完整 URL 仅 POST 生成时返回一次）
     const cbAdminMatch = url.match(/^\/api\/agents\/([\w-]+)\/callback$/);
     if (cbAdminMatch) {

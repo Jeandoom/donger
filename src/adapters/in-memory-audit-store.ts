@@ -119,4 +119,24 @@ export class InMemoryAuditStore implements AuditStore {
     }
     return out;
   }
+
+  /** kb_search 0 命中统计（R-E）：按 toolUseId 关联 tool_result 判空命中 */
+  async kbSearchStats(limit = 500): Promise<{ total: number; zeroHit: number }> {
+    const uses = [...this.byId.values()]
+      .filter((e) => e.type === "tool_use" && e.toolName === "mcp__donger-kb__kb_search")
+      .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+      .slice(0, limit);
+    let total = 0;
+    let zeroHit = 0;
+    for (const use of uses) {
+      if (!use.toolUseId) continue;
+      total++;
+      const result = [...this.byId.values()].find(
+        (e) => e.type === "tool_result" && e.toolUseId === use.toolUseId,
+      );
+      const output = result?.toolOutput ?? "";
+      if (output.includes('"hits":[]') || output.includes("（无命中")) zeroHit++;
+    }
+    return { total, zeroHit };
+  }
 }

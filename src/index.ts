@@ -64,6 +64,7 @@ import { createLogger } from "./util/logger.js";
 import { migrateKnowledgeBases } from "./util/kb-migrate.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
+import { createKbFts, migrateKbFts } from "./util/kb-fts.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -157,11 +158,15 @@ async function main(): Promise<void> {
   kbShareStore.migrate();
   const kbRevisionStore = new SqliteKbRevisionStore(db);
   kbRevisionStore.migrate();
+  // FTS 三列式影子索引（R-A：seg=CJK 逐字切分，查询短语化；中文 0 命中修复）
+  migrateKbFts(db);
+  const kbFts = createKbFts(db);
   const kbMigrate = await migrateKnowledgeBases({
     libraryStore: kbLibraryStore,
     workspaceDir: cfg.workspaceDir,
     usersDir,
     log,
+    kbFts,
   });
   if (kbMigrate.ensuredPersonal > 0 || kbMigrate.mergedLegacy > 0) {
     log.info(
@@ -295,6 +300,7 @@ async function main(): Promise<void> {
       kbShareStore,
       kbRevisionStore,
       workspaceDir: cfg.workspaceDir,
+      kbFts,
       llm: cfg.llm,
       gitAccessGate,
       installer: skillInstaller,

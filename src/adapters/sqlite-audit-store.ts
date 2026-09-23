@@ -202,6 +202,31 @@ export class SqliteAuditStore implements AuditStore {
     return rows.map((r) => this.rowToEv(r));
   }
 
+  /** kb_search 0 命中统计（R-E）：近 limit 次调用，按 toolUseId 关联 tool_result 判空命中 */
+  async kbSearchStats(limit = 500): Promise<{ total: number; zeroHit: number }> {
+    const uses = this.db
+      .prepare(
+        `SELECT toolUseId FROM audit_events
+         WHERE type = 'tool_use' AND toolName = 'mcp__donger-kb__kb_search'
+         ORDER BY recordedAt DESC LIMIT ?`,
+      )
+      .all(limit) as Array<{ toolUseId: string | null }>;
+    const resultStmt = this.db.prepare(
+      `SELECT toolOutput FROM audit_events WHERE type = 'tool_result' AND toolUseId = ?`,
+    );
+    let total = 0;
+    let zeroHit = 0;
+    for (const use of uses) {
+      if (!use.toolUseId) continue;
+      total++;
+      const row = resultStmt.get(use.toolUseId) as { toolOutput?: string } | undefined;
+      const output = row?.toolOutput ?? "";
+      // R-B 结构化空 hits / 旧格式（M2-M5 期间）无命中标记，两种都计
+      if (output.includes('"hits":[]') || output.includes("（无命中")) zeroHit++;
+    }
+    return { total, zeroHit };
+  }
+
   private rowToEv(row: Record<string, unknown>): AuditEvent {
     const usage =
       row.inputTokens !== null && row.outputTokens !== null

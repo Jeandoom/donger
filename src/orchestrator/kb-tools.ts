@@ -55,6 +55,11 @@ export interface KbToolsDeps {
     before?: string;
     after?: string;
   }) => Promise<void>;
+  /**
+   * FTS 影子索引检索（R-A/R-B）：返回命中文件清单，工具内做行级定位生成 line/snippet；
+   * 未装配或 0 命中时回落 grep 级全文扫描。
+   */
+  ftsSearch?: (kbIds: readonly string[], query: string) => Array<{ kbId: string; path: string }>;
 }
 
 /** 归一 deps：v1 kbRoot 兼容映射为单库挂载 */
@@ -191,7 +196,7 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
     {
       name: "kb_search",
       description:
-        "全文检索知识库（行包含匹配，返回 文件:行号:内容，最多 50 条；kbId=\"all\" 遍历全部挂载库）",
+        '全文检索知识库（FTS 索引优先，grep 兜底）。返回 JSON：{"query","kbId","total","truncated","hits":[{"kbId","path","line","snippet"}]}，最多 50 条；kbId="all" 遍历全部挂载库。',
       inputSchema: {
         query: z.string().min(1).describe("检索关键词"),
         kbId: z.string().optional().describe('库 ID（缺省=当前主库；传 "all" 遍历全部挂载库）'),
@@ -214,56 +219,94 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         if (targets.length === 0) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
         const globRe = a.glob ? globToRegExp(a.glob) : undefined;
         const needle = a.ignoreCase === false ? a.query : a.query.toLowerCase();
-        const startedAt = Date.now();
-        const hits: string[] = [];
-        const searchOne = (mount: KbMount, dir: string, depth: number): void => {
-          if (depth <= 0 || hits.length >= MAX_SEARCH_HITS) return;
-          if (Date.now() - startedAt > SEARCH_TIMEOUT_MS) return;
-          let entries: string[];
+        const hits: Array<{ kbId: string; path: string; line: number; snippet: string }> = [];
+        const truncatedFlag = { value: false };
+
+        /** 行级定位：读文件原文，产出 {kbId,path,line,snippet}（R-B 溯源形态） */
+        const locateLines = (mount: KbMount, rel: string, full: string): void => {
+          if (hits.length >= MAX_SEARCH_HITS) {
+            truncatedFlag.value = true;
+            return;
+          }
+          let content: string;
           try {
-            entries = readdirSync(dir);
+            content = readFileSync(full, "utf8");
           } catch {
             return;
           }
-          for (const entry of entries) {
-            if (hits.length >= MAX_SEARCH_HITS) return;
-            if (entry.startsWith(".")) continue;
-            const full = join(dir, entry);
-            let stat;
-            try {
-              stat = statSync(full);
-            } catch {
-              continue;
-            }
-            if (stat.isDirectory()) {
-              searchOne(mount, full, depth - 1);
-              continue;
-            }
-            if (!stat.isFile()) continue;
-            const rel = relative(mount.root, full).replace(/\\/g, "/");
-            if (globRe && !globRe.test(rel) && !globRe.test(entry)) continue;
-            let content: string;
-            try {
-              content = readFileSync(full, "utf8");
-            } catch {
-              continue;
-            }
-            const lines = content.split(/\r?\n/);
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i] ?? "";
-              const haystack = a.ignoreCase === false ? line : line.toLowerCase();
-              if (haystack.includes(needle)) {
-                hits.push(`${labelFor(mount, rel)}:${i + 1}: ${line.trim().slice(0, 200)}`);
-                if (hits.length >= MAX_SEARCH_HITS) break;
+          const lines = content.split(/\r?\n/);
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i] ?? "";
+            const hay = a.ignoreCase === false ? line : line.toLowerCase();
+            if (hay.includes(needle)) {
+              hits.push({
+                kbId: mount.kbId,
+                path: rel,
+                line: i + 1,
+                snippet: line.trim().slice(0, 200),
+              });
+              if (hits.length >= MAX_SEARCH_HITS) {
+                truncatedFlag.value = true;
+                return;
               }
             }
           }
         };
-        for (const mount of targets) searchOne(mount, resolve(mount.root), 6);
-        if (hits.length === 0) return ok(`（无命中：${a.query}）`);
-        const tail =
-          hits.length >= MAX_SEARCH_HITS ? "\n…（已达 50 条上限，请细化关键词）" : "";
-        return ok(`${hits.join("\n")}${tail}`);
+
+        // FTS 优先（R-A 影子索引）：跳过不含关键词的文件，仅对命中文件做行级定位
+        if (deps.ftsSearch) {
+          const files = deps.ftsSearch(targets.map((t) => t.kbId), a.query);
+          for (const f of files) {
+            if (hits.length >= MAX_SEARCH_HITS) break;
+            const mount = targets.find((t) => t.kbId === f.kbId);
+            if (!mount) continue;
+            const base = f.path.split("/").pop() ?? "";
+            if (globRe && !globRe.test(f.path) && !globRe.test(base)) continue;
+            locateLines(mount, f.path, join(mount.root, ...f.path.split("/")));
+          }
+        }
+        // grep 兜底：FTS 未装配或 0 命中（含 FTS 与内容脱同步的场景）
+        if (hits.length === 0) {
+          const startedAt = Date.now();
+          const searchOne = (mount: KbMount, dir: string, depth: number): void => {
+            if (depth <= 0 || hits.length >= MAX_SEARCH_HITS) return;
+            if (Date.now() - startedAt > SEARCH_TIMEOUT_MS) return;
+            let entries: string[];
+            try {
+              entries = readdirSync(dir);
+            } catch {
+              return;
+            }
+            for (const entry of entries) {
+              if (hits.length >= MAX_SEARCH_HITS) return;
+              if (entry.startsWith(".")) continue;
+              const full = join(dir, entry);
+              let stat;
+              try {
+                stat = statSync(full);
+              } catch {
+                continue;
+              }
+              if (stat.isDirectory()) {
+                searchOne(mount, full, depth - 1);
+                continue;
+              }
+              if (!stat.isFile()) continue;
+              const rel = relative(mount.root, full).replace(/\\/g, "/");
+              if (globRe && !globRe.test(rel) && !globRe.test(entry)) continue;
+              locateLines(mount, rel, full);
+            }
+          };
+          for (const mount of targets) searchOne(mount, resolve(mount.root), 6);
+        }
+        const body = {
+          query: a.query,
+          kbId: a.kbId ?? "(default)",
+          total: hits.length,
+          truncated: truncatedFlag.value,
+          hits,
+        };
+        return ok(JSON.stringify(body));
       },
     },
     {
