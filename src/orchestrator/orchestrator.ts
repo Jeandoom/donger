@@ -48,6 +48,7 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
+import { type KbFtsIndex } from "../util/kb-fts.js";
 import { kbRootDir, sha256Text } from "../util/kb-files.js";
 import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
@@ -96,6 +97,8 @@ export interface OrchestratorDeps {
   kbRevisionStore?: KbRevisionStore;
   /** 知识库文件根（<workspaceDir>/kb）；缺省=不可挂载库 */
   workspaceDir?: string;
+  /** FTS 影子索引（R-A）；缺省=kb_search 走 grep 兜底、写入不同步索引 */
+  kbFts?: KbFtsIndex;
   /** 全局 LLM 配置（自动学习等内部 LLM 调用）；缺省=自动学习不可用 */
   llm?: LLMConfig;
   gitAccessGate?: GitAccessGate;
@@ -501,10 +504,25 @@ export class Orchestrator {
         kbTools: createKbToolsServer({
           mounts: kbMounts,
           defaultKbId: kbDefault,
+          // FTS 影子索引（R-A）：命中文件先行过滤，工具内行级定位；未装配时 grep 兜底
+          ftsSearch: this.deps.kbFts
+            ? (kbIds, query) => {
+                const fts = this.deps.kbFts;
+                return fts ? fts.search(kbIds, query) : [];
+              }
+            : undefined,
           onChange: async (e) => {
             const revisions = this.deps.kbRevisionStore;
             if (!revisions) return;
             const diff = e.action === "delete" ? undefined : lineDiff(e.before ?? "", e.after ?? "");
+            // FTS 影子索引同步（R-A）：写即 upsert、删即 delete（与账本同事务语义：先记后同步均可）
+            if (this.deps.kbFts) {
+              if (e.action === "delete" && e.before !== undefined) {
+                this.deps.kbFts.delete(e.kbId, e.path);
+              } else if (e.after !== undefined) {
+                this.deps.kbFts.upsert(e.kbId, e.path, e.after);
+              }
+            }
             await revisions.record({
               kbId: e.kbId,
               path: e.path,
@@ -886,6 +904,7 @@ export class Orchestrator {
               workspaceDir,
               llm,
               revisionStore: revisions,
+              kbFts: this.deps.kbFts,
             },
             `${p.task.prompt}\n\n---\n\n${resultText}`,
           );
@@ -1286,7 +1305,17 @@ export class Orchestrator {
     try {
       let memory: MemoryStore | undefined;
       try {
-        memory = new MemoryStore(join(user.homeDir, "knowledge_base", "user"));
+        // 记忆目录统一进标准知识库架构（spec §5.4，D5）：个人库 memory/ 子目录；
+        // 迁移器已把旧 knowledge_base/user 并入并退役，此处绝不再落旧路径（会重建自成一体）
+        const personalKb =
+          this.deps.kbLibraryStore && this.deps.workspaceDir
+            ? await this.deps.kbLibraryStore.ensurePersonalLibrary(user.id)
+            : undefined;
+        memory = new MemoryStore(
+          personalKb && this.deps.workspaceDir
+            ? join(kbRootDir(this.deps.workspaceDir, personalKb.id), "memory")
+            : join(user.homeDir, "knowledge_base", "user"),
+        );
       } catch {
         memory = undefined;
       }

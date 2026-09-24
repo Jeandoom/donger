@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
+import { SqliteAuditStore } from "../../src/adapters/sqlite-audit-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import {
   SqliteKbLibraryStore,
@@ -40,6 +41,8 @@ async function startChannel(): Promise<number> {
   userStore.migrateCredentials();
   const conversationStore = new SqliteConversationStore(db);
   conversationStore.migrate();
+  const auditStore = new SqliteAuditStore(db);
+  auditStore.migrate();
   libraries = new SqliteKbLibraryStore(db);
   libraries.migrate();
   shares = new SqliteKbShareStore(db);
@@ -53,6 +56,9 @@ async function startChannel(): Promise<number> {
     sessionStore,
     userStore,
     conversationStore,
+    auditStore,
+    // 装良性 gate：让 preflight/发消息路径真正走进 resolveGitConversationContext
+    gitAccessGate: { check: async () => ({ ready: true, requirements: [] }) } as never,
     kbLibraryStore: libraries,
     kbShareStore: shares,
     kbRevisionStore: revisions,
@@ -332,6 +338,15 @@ describe("KB 会话（M2）", () => {
     expect((await req(port, "GET", `/api/kb/${kb.id}/conversation`, bob.token)).status).toBe(200);
   });
 
+  it("GET /api/conversations/:id/preflight：KB 会话（内置 kb-assistant 不入库）免 git 检查恒 ready", async () => {
+    const kb = await createKb(alice.token, "preflight 库");
+    const cr = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
+    const conv = (await cr.json()) as { id: string };
+    const r = await req(port, "GET", `/api/conversations/${conv.id}/preflight`, alice.token);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ready: true, requirements: [] });
+  });
+
   it("POST /api/conversations 组合校验：kbId 仅限 builtin-kb-assistant", async () => {
     const bad = await req(port, "POST", "/api/conversations", alice.token, {
       channelId: "web",
@@ -348,5 +363,13 @@ describe("KB 会话（M2）", () => {
     const conv = (await okr.json()) as { agentId: string; kbId?: string };
     expect(conv.agentId).toBe("builtin-kb-assistant");
     expect(conv.kbId).toBe("kb-1");
+  });
+
+  it("GET /api/audit/kb-search-stats（R-E）：member 403、admin 200 统计结构", async () => {
+    expect((await req(port, "GET", "/api/audit/kb-search-stats", alice.token)).status).toBe(403);
+    const r = await req(port, "GET", "/api/audit/kb-search-stats", admin.token);
+    expect(r.status).toBe(200);
+    const stats = (await r.json()) as { total: number; zeroHit: number };
+    expect(stats.total).toBe(0);
   });
 });

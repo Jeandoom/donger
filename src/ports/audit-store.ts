@@ -34,4 +34,10 @@ export interface AuditStore {
   searchByKeyword(keyword: string, limit: number): Promise<AuditEvent[]>;
   /** 仅检索属于 viewer 的会话事件 text 关键词检索（同样经 conversations.userId 收口） */
   searchByKeywordVisible(viewerId: string, keyword: string, limit: number): Promise<AuditEvent[]>;
+
+  /**
+   * kb_search 0 命中统计（R-E：检索质量信号，向量层触发依据）：
+   * 近 limit 次 kb_search 调用中 0 命中的次数（tool_result 空 hits / 旧格式无命中标记）。
+   */
+  kbSearchStats(limit?: number): Promise<{ total: number; zeroHit: number }>;
 }

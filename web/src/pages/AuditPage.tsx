@@ -26,6 +26,7 @@ import {
   fetchAuditConversations,
   fetchAuditDetail,
   fetchKbAuditRevisions,
+  fetchKbSearchStats,
   formatDateTime,
   formatDurationMs,
   formatTokens,
@@ -126,6 +127,16 @@ export function AuditPage() {
         setKbError(reason instanceof Error ? reason.message : String(reason)),
       );
   }, []);
+
+  // kb_search 0 命中率（R-E，admin）：检索质量信号——持续偏高说明 grep/词面检索触及上限，
+  // 是评估引入向量检索层的客观触发依据
+  const [searchStats, setSearchStats] = useState<{ total: number; zeroHit: number } | null>(null);
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetchKbSearchStats()
+      .then(setSearchStats)
+      .catch(() => setSearchStats(null));
+  }, [isAdmin]);
 
   const loadEvents = useCallback(() => {
     setEventsError("");
@@ -394,6 +405,13 @@ export function AuditPage() {
                 刷新
               </Button>
             </div>
+            {isAdmin && searchStats && searchStats.total > 0 ? (
+              <div className="border-b border-border px-4 py-1.5 text-[11px] text-muted-foreground">
+                kb_search 近 {searchStats.total} 次 · 0 命中 {searchStats.zeroHit} 次（
+                {Math.round((searchStats.zeroHit / searchStats.total) * 100)}
+                %）——持续偏高为引入向量检索层的触发信号
+              </div>
+            ) : null}
             <div className="flex-1 overflow-y-auto p-2">
               {kbError ? (
                 <p className="px-2 py-1 text-xs text-destructive">{kbError}</p>

@@ -64,18 +64,25 @@ describe("donger-kb 工具", () => {
     expect(bad.isError).toBe(true);
   });
 
-  it("kb_search：关键词命中带 文件:行号；glob 过滤；无命中提示", async () => {
+  it("kb_search：结构化命中（path/line/snippet）；glob 过滤；无命中空数组", async () => {
     const root = freshRoot();
     const tools = kbToolDefinitions({ kbRoot: root });
     const r = await findTool(tools, "kb_search").handler({ query: "退款" });
-    const text = r.content[0]?.text ?? "";
-    expect(text).toContain("knowledges/faq/订单.md:2");
-    expect(text).toContain("knowledges/research.md:2");
+    const body = JSON.parse(r.content[0]?.text ?? "{}") as {
+      total: number;
+      truncated: boolean;
+      hits: Array<{ path: string; line: number; snippet: string }>;
+    };
+    expect(body.total).toBeGreaterThanOrEqual(2);
+    expect(body.hits.some((h) => h.path === "knowledges/faq/订单.md" && h.line === 2)).toBe(true);
+    expect(body.hits.some((h) => h.path === "knowledges/research.md" && h.line === 2)).toBe(true);
+    expect(body.hits[0]?.snippet).toBeTruthy();
     const mdOnly = await findTool(tools, "kb_search").handler({
       query: "note",
       glob: "*.md",
     });
-    expect(mdOnly.content[0]?.text).toContain("无命中");
+    const mdBody = JSON.parse(mdOnly.content[0]?.text ?? "{}") as { total: number };
+    expect(mdBody.total).toBe(0);
   });
 
   it("kb_write：自动建目录写入并可读回；写根目录拒绝；越界拒绝", async () => {
@@ -182,11 +189,29 @@ describe("donger-kb 工具 v2（按库寻址，spec §8）", () => {
     expect(ro.isError).toBe(true);
   });
 
-  it("kb_search \"all\" 跨库检索并带 kbId 前缀", async () => {
+  it("kb_search \"all\" 跨库检索并带 kbId 溯源", async () => {
     const tools = twoMountTools();
     const r = await findTool(tools, "kb_search").handler({ query: "内容", kbId: "all" });
-    const text = r.content[0]?.text ?? "";
-    expect(text).toContain("kb-a:a.md");
-    expect(text).toContain("kb-b:b.md");
+    const body = JSON.parse(r.content[0]?.text ?? "{}") as {
+      hits: Array<{ kbId: string; path: string }>;
+    };
+    expect(body.hits.some((h) => h.kbId === "kb-a" && h.path === "a.md")).toBe(true);
+    expect(body.hits.some((h) => h.kbId === "kb-b" && h.path === "b.md")).toBe(true);
+  });
+
+  it("kb_search FTS 优先：ftsSearch 命中文件做行级定位；0 命中回落 grep", async () => {
+    const root = freshRoot();
+    const tools = kbToolDefinitions({
+      kbRoot: root,
+      ftsSearch: (kbIds, query) =>
+        // 影子索引只返回一个命中文件（模拟索引先过滤），行级定位仍能给出多行命中
+        query.includes("退款") ? [{ kbId: kbIds[0] ?? "", path: "knowledges/research.md" }] : [],
+    });
+    const r = await findTool(tools, "kb_search").handler({ query: "退款" });
+    const body = JSON.parse(r.content[0]?.text ?? "{}") as {
+      hits: Array<{ path: string }>;
+    };
+    expect(body.hits.every((h) => h.path === "knowledges/research.md")).toBe(true);
+    expect(body.hits.length).toBeGreaterThanOrEqual(1);
   });
 });

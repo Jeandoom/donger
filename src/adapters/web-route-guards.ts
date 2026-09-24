@@ -246,6 +246,8 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/audit/conversations", access: { kind: "authenticated" } },
     // 知识库修订审计（spec §10.4）：admin 全量 / member 本人相关库（handler 按 role 分流）
     { method: "GET", pattern: "/api/audit/kb-revisions", access: { kind: "authenticated" } },
+    // kb_search 0 命中率（R-E 检索质量信号）：admin 口径
+    { method: "GET", pattern: "/api/audit/kb-search-stats", access: { kind: "admin" } },
     {
       method: "GET",
       pattern: "/api/audit/conversations/:id",

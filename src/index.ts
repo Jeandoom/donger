@@ -65,6 +65,7 @@ import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
+import { createKbFts, migrateKbFts } from "./util/kb-fts.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -175,11 +176,15 @@ async function main(): Promise<void> {
   kbShareStore.migrate();
   const kbRevisionStore = new SqliteKbRevisionStore(db);
   kbRevisionStore.migrate();
+  // FTS 三列式影子索引（R-A：seg=CJK 逐字切分，查询短语化；中文 0 命中修复）
+  migrateKbFts(db);
+  const kbFts = createKbFts(db);
   const kbMigrate = await migrateKnowledgeBases({
     libraryStore: kbLibraryStore,
     workspaceDir: cfg.workspaceDir,
     usersDir,
     log,
+    kbFts,
   });
   if (kbMigrate.ensuredPersonal > 0 || kbMigrate.mergedLegacy > 0) {
     log.info(
@@ -284,6 +289,9 @@ async function main(): Promise<void> {
         ].join("\n"),
         agentLlmPresets: cfg.agentLlmPresets,
         sessionIdleRollHours: cfg.sessionIdleRollHours,
+        // 要害路径读守卫（2026-09-24 审计 H1/D3）：数据库目录+平台安装根（含 .env、
+        // .deploy、源码）对 agent Bash/Read 拒绝；本人工作区经 allowRead 豁免
+        sensitivePaths: [dirname(cfg.dbPath), process.cwd()],
       },
       skillPackStore,
       credentialSets,
@@ -313,6 +321,7 @@ async function main(): Promise<void> {
       kbShareStore,
       kbRevisionStore,
       workspaceDir: cfg.workspaceDir,
+      kbFts,
       llm: cfg.llm,
       gitAccessGate,
       installer: skillInstaller,

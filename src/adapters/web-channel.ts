@@ -1043,8 +1043,28 @@ export class WebChannel implements Channel {
   private async handleHttp(req: HttpRequest, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
 
+    // 安全响应头（2026-09-24 审计 M2）：setHeader 先置，后续 writeHead 合并生效。
+    // nosniff 全站（MIME 嗅探是上传回读链路的执行跳板）；DENY 防整站点击劫持；
+    // Referrer 收敛（?token= 形态的鉴权 URL 不随跨站跳转外泄）；HSTS 仅 HTTPS 部署。
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    if (this.deps.https) res.setHeader("Strict-Transport-Security", "max-age=31536000");
+
     // /hooks/* —— Hook 触发器入口，免认证（外部系统回调）
     if (url.startsWith("/hooks/")) {
+      // 免认证通道限流（2026-09-24 审计 M1）：hook fire 会拉起整轮 agent 运行，
+      // 无限流时一个可猜/泄漏的 path 就是无限 LLM 成本放大器；IP 维度防扫描，path
+      // 维度防分布式打单点（外部系统重试风暴也在此收敛）。
+      const hookPath = url.split("?")[0] ?? "";
+      if (
+        !this.rateLimiter.hit(`hook-ip:${this.clientIp(req)}`, 60_000, 120) ||
+        !this.rateLimiter.hit(`hook-path:${hookPath}`, 60_000, 20)
+      ) {
+        res.writeHead(429, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("too many requests");
+        return;
+      }
       try {
         await this.handleHook(req, res);
       } catch (e) {
@@ -3099,11 +3119,15 @@ export class WebChannel implements Channel {
       return this.json(res, { conversationId: conv.id }, 201);
     }
 
-    // GET /api/users
+    // GET /api/users —— 用户列表（2026-09-24 审计 M3：改 adminUserDto 收敛信息面，
+    // 不回 homeDir/原始记录；CLI users 命令与页面消费的 id/role/name 字段保持不变）
     if (url === "/api/users" && req.method === "GET") {
       const users = (await this.deps.userStore?.list()) ?? [];
+      const rows = (
+        await Promise.all(users.map(async (u) => this.adminUserDto(u.id)))
+      ).filter((u) => u !== null);
       res.writeHead(200);
-      res.end(JSON.stringify(users));
+      res.end(JSON.stringify(rows));
       return;
     }
 
@@ -4471,6 +4495,19 @@ export class WebChannel implements Channel {
       const kbNames: Record<string, string> = {};
       for (const l of all) kbNames[l.id] = l.name;
       return this.json(res, { revisions, kbNames });
+    }
+
+    // GET /api/audit/kb-search-stats —— kb_search 0 命中率（R-E：检索质量信号，admin 口径）
+    if (kbPath === "/api/audit/kb-search-stats" && req.method === "GET") {
+      if (this.currentViewer(req).role !== "admin") {
+        return this.json(res, { error: "forbidden" }, 403);
+      }
+      if (!this.deps.auditStore?.kbSearchStats) {
+        return this.json(res, { error: "audit store unavailable" }, 503);
+      }
+      const limit = Number(this.extractQuery(url, "limit") ?? "500");
+      const stats = await this.deps.auditStore.kbSearchStats(Number.isFinite(limit) ? limit : 500);
+      return this.json(res, stats);
     }
 
     // 智能体回调链接管理（鉴权 + canManageAgent；完整 URL 仅 POST 生成时返回一次）
@@ -6454,12 +6491,13 @@ export class WebChannel implements Channel {
       throw new ForbiddenError("CONVERSATION_FORBIDDEN", "会话不存在或不属于当前用户");
     }
     if (!conversation.agentId) return undefined;
-    // 内置智能体（assist/builder/skill-forge/auditor）不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
+    // 内置智能体（assist/builder/skill-forge/auditor/kb-assistant）不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
     if (
       conversation.agentId === BUILTIN_ASSIST_AGENT_ID ||
       conversation.agentId === AGENT_BUILDER_ID ||
       conversation.agentId === BUILTIN_SKILL_FORGE_AGENT_ID ||
-      conversation.agentId === BUILTIN_AUDITOR_AGENT_ID
+      conversation.agentId === BUILTIN_AUDITOR_AGENT_ID ||
+      conversation.agentId === BUILTIN_KB_ASSISTANT_ID
     ) {
       return undefined;
     }

@@ -140,3 +140,10 @@ export async function fetchKbAuditRevisions(): Promise<KbAuditResponse> {
   if (!r.ok) throw new Error(`kb-revisions ${r.status}`);
   return (await r.json()) as KbAuditResponse;
 }
+
+/** kb_search 0 命中统计（R-E：向量层触发信号） */
+export async function fetchKbSearchStats(limit = 500): Promise<{ total: number; zeroHit: number }> {
+  const r = await apiFetch(`/api/audit/kb-search-stats?limit=${limit}`);
+  if (!r.ok) throw new Error(`kb-search-stats ${r.status}`);
+  return (await r.json()) as { total: number; zeroHit: number };
+}

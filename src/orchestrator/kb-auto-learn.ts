@@ -58,6 +58,8 @@ export interface AutoLearnParams {
       diffText?: string;
     }): Promise<unknown>;
   };
+  /** FTS 影子索引（R-A）：产出落盘后同步；缺省不同步（该库检索回落 grep） */
+  kbFts?: { upsert(kbId: string, path: string, content: string): void };
 }
 
 /** 同会话串行队列：上一轮学习未完成时排队，防乱序写库 */
@@ -140,6 +142,7 @@ export async function runAutoLearn(params: AutoLearnParams, conversationText: st
     before = undefined;
   }
   writeKbEntry(root, parsed.path, parsed.content);
+  params.kbFts?.upsert(target.id, parsed.path, parsed.content);
   const diff = lineDiff(before ?? "", parsed.content);
   await revisionStore.record({
     kbId: target.id,
