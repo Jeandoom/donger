@@ -206,7 +206,7 @@ describe("POST /api/auth/register", () => {
     expect(res.status).toBe(403);
   });
 
-  it("重复邮箱 → 409；弱密码 → 400", async () => {
+  it("重复邮箱 → 202 同形响应（防枚举，2026-09-24 审计收口）；弱密码 → 400", async () => {
     const port = await startChannel({ domains: ["example.com"] });
     expect(
       (await post(port, "/api/auth/register", { email: "a@example.com", password: "abc" })).status,
@@ -215,10 +215,11 @@ describe("POST /api/auth/register", () => {
       (await post(port, "/api/auth/register", { email: "a@example.com", password: "abcd1234" }))
         .status,
     ).toBe(202);
+    // 已注册邮箱返回与首次注册完全相同的 202，杜绝「409=已注册」的存在性探测
     expect(
       (await post(port, "/api/auth/register", { email: "a@example.com", password: "abcd1234" }))
         .status,
-    ).toBe(409);
+    ).toBe(202);
   });
 
   it("同分钟内超过 5 次 → 429（IP 限流）", async () => {

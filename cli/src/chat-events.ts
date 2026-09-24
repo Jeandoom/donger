@@ -7,7 +7,7 @@ export type EventAction =
   | { kind: "thinking"; text: string }
   | { kind: "activity"; text: string }
   | { kind: "round_end"; ok: boolean; text: string }
-  | { kind: "approval"; gateId: string; title: string; summary: string }
+  | { kind: "approval"; respondId: string; gateId: string; title: string; summary: string }
   | {
       kind: "credential_missing";
       reqId: string;
@@ -38,7 +38,14 @@ export function classifyEvent(e: SSEEvent, streaming: { messageId: string | null
       return { kind: "print", text: e.text };
     }
     case "approval_card":
-      return { kind: "approval", gateId: e.gateId, title: e.title, summary: e.summary };
+      // respond 目标 = 一次性 approvalId（老服务端无此字段时退回 gateId）
+      return {
+        kind: "approval",
+        respondId: e.approvalId ?? e.gateId,
+        gateId: e.gateId,
+        title: e.title,
+        summary: e.summary,
+      };
     case "credential_missing_card":
       return { kind: "credential_missing", reqId: e.reqId, items: e.items };
     case "result":

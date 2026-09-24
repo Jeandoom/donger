@@ -25,6 +25,7 @@ import {
   resolveDuplicateName,
 } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
+import { sanitizeLlmInputAudit } from "../domain/audit.js";
 import { lineDiff } from "../domain/kb-diff.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { parseKbLibrary, KbLibraryInputSchema } from "../domain/kb.js";
@@ -322,7 +323,14 @@ type SSEEvent =
   | { type: "activity"; text: string }
   | { type: "tool_use"; toolUseId: string; tool: string; inputPreview: string }
   | { type: "tool_result"; toolUseId: string; outputPreview: string; isError: boolean }
-  | { type: "approval_card"; gateId: string; title: string; summary: string }
+  | {
+      type: "approval_card";
+      /** 一次性审批实例 id（respond 目标）；gateId 是全局静态常量不可作键 */
+      approvalId: string;
+      gateId: string;
+      title: string;
+      summary: string;
+    }
   | {
       type: "credential_missing_card";
       reqId: string;
@@ -504,7 +512,6 @@ export interface WebChannelDeps {
  * 废弃 WebSocket，全部改用 HTTP + SSE：
  *   - 用户发消息：POST /api/conversations/:id/messages
  *   - 流式接收回复：GET /api/conversations/:id/stream (SSE)
- *   - 审批请求推送：GET /api/approvals/stream (SSE)
  *   - 审批响应：POST /api/approvals/:id/respond
  */
 export class WebChannel implements Channel {
@@ -516,6 +523,8 @@ export class WebChannel implements Channel {
   private readyPromise?: Promise<void>;
   /** 会话 ID → SSE 客户端集合 */
   private readonly sseClients = new Map<string, Set<SSEClient>>();
+  /** 每 user 的在途 SSE 连接数（防单用户海量连接耗尽 fd/内存） */
+  private readonly sseConnectionsByUser = new Map<string, number>();
   /** 审批 ID → SSE 客户端（审批请求推送） */
   private readonly approvalStreams = new Map<string, SSEClient>();
   private readonly webRoot: string;
@@ -648,12 +657,15 @@ export class WebChannel implements Channel {
     return !this.deps.moduleConfigStore.getFlag("setup_completed");
   }
 
-  /** 限流取 IP：TRUST_PROXY（反代部署）取 X-Forwarded-For 首段，否则 socket 直连地址 */
+  /** 限流取 IP：TRUST_PROXY（反代部署）取 X-Forwarded-For 最右段（本站直连反代所见的来源，
+   * 客户端伪造的 XFF 前缀会被反代追加的真实值顶到左边），否则 socket 直连地址。
+   * 取首段会被客户端伪造头绕过限流。 */
   private clientIp(req: HttpRequest): string {
     if (this.deps.trustProxy) {
       const xff = req.headers["x-forwarded-for"];
-      const first = Array.isArray(xff) ? xff[0] : xff?.split(",")[0];
-      if (first?.trim()) return first.trim();
+      const list = (Array.isArray(xff) ? xff[0] : xff)?.split(",") ?? [];
+      const last = list[list.length - 1]?.trim();
+      if (last) return last;
     }
     return req.socket.remoteAddress ?? "unknown";
   }
@@ -661,6 +673,24 @@ export class WebChannel implements Channel {
   /** 注册/登录限流：每 IP 每分钟 5 次（register 与 login 共用键） */
   private checkSignupRateLimit(ip: string): boolean {
     return this.rateLimiter.hit(RateLimitKeys.signup(ip), 60_000, 5);
+  }
+
+  /** OAuth state 浏览器绑定 cookie（HttpOnly，5 分钟，与 state Map 的有效期一致）。
+   * 按 provider 分名：登录页会同时预取钉钉+GitHub 的 authorize URL，同名 cookie 会互相
+   * 覆盖，导致其中一种登录方式必然校验失败。 */
+  private oauthStateCookie(state: string, provider: "dt" | "gh"): string {
+    return `donger_oauth_state_${provider}=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300`;
+  }
+
+  /** 从 Cookie 头取单个值（无 / 畸形返回 undefined） */
+  private extractCookie(header: string | undefined, name: string): string | undefined {
+    if (!header) return undefined;
+    for (const part of header.split(";")) {
+      const idx = part.indexOf("=");
+      if (idx < 0) continue;
+      if (part.slice(0, idx).trim() === name) return part.slice(idx + 1).trim();
+    }
+    return undefined;
   }
 
   /** 惰性清理过期的 OAuth state（登录与绑定共用），防 Map 无界增长 */
@@ -759,44 +789,39 @@ export class WebChannel implements Channel {
     this.broadcastToConversation(conversationId, { type: "result", subtype, text });
   }
 
-  /** 推送审批卡片（SSE） */
-  pushApprovalCard(
-    conversationId: string,
-    gateId: string,
-    title: string,
-    summary: string,
-  ): Promise<void> {
-    // 审批卡片通过 SSE 推送给对应会话
-    this.broadcastToConversation(conversationId, { type: "approval_card", gateId, title, summary });
-    return Promise.resolve();
-  }
+  // （pushApprovalCard 独立推送路径已移除：无 approvalId 的卡片不可决议；
+  // 审批卡统一由 requestApproval 广播并携带一次性 approvalId。）
 
   /** 等待审批响应（通过 HTTP POST /api/approvals/:id/respond） */
   async requestApproval(
     threadId: string,
     card: ApprovalCard,
   ): Promise<{ approved: boolean; reason?: string }> {
+    // 审批实例 id 用一次性随机值：gateId 是全局静态常量（deploy/authoring/git-write），
+    // 以它做 Map 键会被并发会话互相覆盖，造成「人审的卡片与实际放行的命令不一致」
+    const approvalId = crypto.randomUUID();
     // V21 修复：先把审批卡广播给会话订阅者（此前卡片从不推送，前端/CLI 全程看不到门）
     this.broadcastToConversation(threadId, {
       type: "approval_card",
+      approvalId,
       gateId: card.gateId,
       title: card.title,
       summary: card.summary,
     });
     return new Promise((resolve) => {
-      this.approvalStreams.set(card.gateId, {
+      this.approvalStreams.set(approvalId, {
         write: (_event: SSEEvent) => {},
         close: () => {},
       });
 
       // 审批不设超时：何时批由用户决定（人工评审可能数小时后处理）。挂起解除路径 =
       // 用户批/拒（HTTP respond）| 停止任务（cancelPendingApprovals 统一解开）| 服务重启清扫。
-      // 注意：实际的审批响应通过 HTTP POST /api/approvals/:id/respond 处理
+      // 注意：实际的审批响应通过 HTTP POST /api/approvals/:approvalId/respond 处理
       // 这里返回一个占位 Promise，实际响应由 HTTP 处理器调用 resolve
-      this.pendingApprovalResolves.set(card.gateId, {
+      this.pendingApprovalResolves.set(approvalId, {
         conversationId: threadId,
         resolve: (result) => {
-          this.approvalStreams.delete(card.gateId);
+          this.approvalStreams.delete(approvalId);
           resolve(result);
         },
       });
@@ -1036,10 +1061,7 @@ export class WebChannel implements Channel {
         await this.handleSSEStream(req, res);
         return;
       }
-      if (url.startsWith("/api/approvals/stream")) {
-        await this.handleApprovalStream(req, res);
-        return;
-      }
+      // （僵尸端点 /api/approvals/stream 已移除：无任何前端消费，纯占空闲连接放大 DoS 面）
       // 审批/凭证/消息/取消：任何异常都以 500 响应，绝不逃逸打崩进程
       try {
         // 审批响应
@@ -1107,9 +1129,24 @@ export class WebChannel implements Channel {
         res.end("unauthorized");
         return;
       }
-      // 剥离查询串（?token= 不得混入文件路径）
-      const relPath = decodeURIComponent(url.split("?")[0]!.replace("/uploads/", ""));
+      // 剥离查询串（?token= 不得混入文件路径）；畸形百分号序列按 400 拒绝（裸 decodeURIComponent
+      // 抛 URIError 会成为未处理 rejection 打死进程）
+      let relPath: string;
+      try {
+        relPath = decodeURIComponent(url.split("?")[0]!.replace("/uploads/", ""));
+      } catch {
+        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("bad request");
+        return;
+      }
       const [conversationId, ...fileParts] = relPath.split(/[\\/]/);
+      // 点段拒绝：属主判定用原始首段、读取路径经 resolve 归一，二者可被 .. 解耦
+      //（convA/../convB 形态 = 跨会话读他人 legacy 附件）
+      if (relPath.split(/[\\/]/).some((s) => s === "." || s === ".." || s === "")) {
+        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("bad request");
+        return;
+      }
       const fileName = fileParts.join(sep);
       const attachmentDir = conversationId
         ? await this.resolveAttachmentDir(conversationId, uploadUser)
@@ -1127,10 +1164,16 @@ export class WebChannel implements Channel {
       const legacyRoot = resolve(this.workspaceDir, "sessions");
       const legacyPath = resolve(legacyRoot, relPath);
       const insideLegacyRoot = legacyPath === legacyRoot || legacyPath.startsWith(legacyRoot + sep);
+      // legacy 布局兜底同样要求会话属主：无属主校验的回退 = 跨用户读任意旧会话附件
+      let legacyAllowed = false;
+      if (insideLegacyRoot && conversationId && this.deps.conversationStore) {
+        const legacyConv = await this.deps.conversationStore.get(conversationId);
+        legacyAllowed = !!legacyConv && legacyConv.userId === uploadUser;
+      }
       const absPath =
         insideAttachmentDir && existsSync(candidate)
           ? candidate
-          : insideLegacyRoot
+          : legacyAllowed && existsSync(legacyPath)
             ? legacyPath
             : "";
       if (existsSync(absPath)) {
@@ -1206,6 +1249,7 @@ export class WebChannel implements Channel {
     const conversationId = match[1] ?? "";
 
     // 认证
+    let sseOwnerId: string | undefined;
     if (this.sessionStore) {
       const authUserId = await this.authMiddleware(req);
       if (!authUserId) {
@@ -1213,6 +1257,15 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
+      sseOwnerId = authUserId;
+      // 每用户连接上限（半开连接不清不闭也会持续堆积写缓冲）
+      const count = (this.sseConnectionsByUser.get(sseOwnerId) ?? 0) + 1;
+      if (count > 50) {
+        res.writeHead(429);
+        res.end(JSON.stringify({ error: "too many stream connections" }));
+        return;
+      }
+      this.sseConnectionsByUser.set(sseOwnerId, count);
     }
 
     // SSE 头（不带 CORS 通配：流内容含会话私密数据，跨站订阅一律拒绝）
@@ -1252,55 +1305,18 @@ export class WebChannel implements Channel {
     req.on("close", () => {
       clearInterval(keepAlive);
       this.unsubscribeSSE(conversationId, client);
+      if (sseOwnerId) {
+        const remaining = (this.sseConnectionsByUser.get(sseOwnerId) ?? 1) - 1;
+        if (remaining <= 0) this.sseConnectionsByUser.delete(sseOwnerId);
+        else this.sseConnectionsByUser.set(sseOwnerId, remaining);
+      }
     });
   }
 
   /**
-   * GET /api/approvals/stream
-   * SSE 流：客户端订阅以接收审批请求推送
+   * （GET /api/approvals/stream 已移除，2026-09-24 审计：无前端消费的僵尸 SSE 端点，
+   * 只会挂起空闲连接放大资源耗尽面。审批卡经会话 stream 的 approval_card 事件推送。）
    */
-  private async handleApprovalStream(req: HttpRequest, res: ServerResponse): Promise<void> {
-    if (this.sessionStore) {
-      const authUserId = await this.authMiddleware(req);
-      if (!authUserId) {
-        res.writeHead(401);
-        res.end(JSON.stringify({ error: "unauthorized" }));
-        return;
-      }
-    }
-
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-
-    const client: SSEClient = {
-      write: (event: SSEEvent) => {
-        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-      },
-      close: () => {
-        try {
-          res.end();
-        } catch {
-          /* ignore */
-        }
-      },
-    };
-
-    const keepAlive = setInterval(() => {
-      try {
-        res.write(":\n\n");
-      } catch {
-        /* ignore */
-      }
-    }, 30_000);
-
-    req.on("close", () => {
-      clearInterval(keepAlive);
-      client.close();
-    });
-  }
 
   /**
    * POST /api/approvals/:id/respond
@@ -1339,12 +1355,15 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: "approval not found or expired" }));
       return;
     }
-    // 会话属主校验（多用户隔离）：仅会话 owner 可决议
-    const conv = await this.deps.conversationStore?.get(pending.conversationId);
-    if (conv && authUserId && conv.userId !== authUserId) {
-      res.writeHead(403);
-      res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
-      return;
+    // 会话属主校验（多用户隔离）：仅会话 owner 可决议；会话查不到按 fail-closed 拒绝
+    //（内存 pending 与会话行生命周期不同步，取不到时放行 = 任意登录用户可决议他人审批门）
+    if (this.sessionStore) {
+      const conv = await this.deps.conversationStore?.get(pending.conversationId);
+      if (!conv || !authUserId || conv.userId !== authUserId) {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
+        return;
+      }
     }
     this.pendingApprovalResolves.delete(approvalId);
     // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
@@ -1397,11 +1416,14 @@ export class WebChannel implements Channel {
     }
     const pending = this.pendingMissingDecides.get(reqId);
     if (pending) {
-      const conv = await this.deps.conversationStore?.get(pending.conversationId);
-      if (conv && authUserId && conv.userId !== authUserId) {
-        res.writeHead(403);
-        res.end(JSON.stringify({ error: "forbidden: 仅会话属主可决议" }));
-        return;
+      // 属主校验 fail-closed（同审批 respond）：会话查不到即拒绝
+      if (this.sessionStore) {
+        const conv = await this.deps.conversationStore?.get(pending.conversationId);
+        if (!conv || !authUserId || conv.userId !== authUserId) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: "forbidden: 仅会话属主可决议" }));
+          return;
+        }
       }
       pending.resolve(decision);
       res.writeHead(200);
@@ -1458,8 +1480,11 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: "question not found or expired" }));
       return;
     }
-    const conv = await this.deps.conversationStore?.get(pending.conversationId);
-    if (conv && authUserId && conv.userId !== authUserId) {
+    const conv = this.sessionStore
+      ? await this.deps.conversationStore?.get(pending.conversationId)
+      : undefined;
+    // 属主校验 fail-closed（同审批 respond）：登录态下会话查不到即拒绝
+    if (this.sessionStore && (!conv || !authUserId || conv.userId !== authUserId)) {
       res.writeHead(403);
       res.end(JSON.stringify({ error: "forbidden: 仅会话属主可作答" }));
       return;
@@ -1758,7 +1783,7 @@ export class WebChannel implements Channel {
       if (!this.deps.userStore || !this.deps.moduleConfigStore || !this.sessionStore) {
         return this.json(res, { error: "服务未启用" }, 503);
       }
-      const ip = req.socket.remoteAddress ?? "unknown";
+      const ip = this.clientIp(req);
       if (!this.checkSignupRateLimit(ip)) {
         return this.json(res, { error: "尝试过于频繁，请稍后再试" }, 429);
       }
@@ -1818,6 +1843,12 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "CLI_TOKEN 未配置，交换端点未启用" }));
         return;
       }
+      // 在线暴力尝试防护：共享密钥无个人化成分，必须限速否则可常驻爆破
+      if (!this.rateLimiter.hit("cli-exchange", 60_000, 10)) {
+        res.writeHead(429);
+        res.end(JSON.stringify({ error: "尝试过于频繁，请稍后再试" }));
+        return;
+      }
       const body = JSON.parse(await this.readBody(req)) as { token?: string };
       const provided = Buffer.from(body.token ?? "");
       const expected = Buffer.from(this.deps.cliToken);
@@ -1863,7 +1894,9 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "钉钉登录未配置" }));
         return;
       }
-      const state = `${Date.now()}-${Math.random()}`;
+      // state 用 CSPRNG 且双通道校验：服务端 Map（一次性）+ 浏览器 state cookie（绑定发起页）。
+      // 只查 Map 时，攻击者可拿自己的 state+code 组装回调链接投毒给受害者（login CSRF/会话固定）
+      const state = randomBytes(16).toString("hex");
       this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000);
       for (const [s, exp] of this.oauthStateMap) {
         if (Date.now() > exp) this.oauthStateMap.delete(s);
@@ -1871,7 +1904,7 @@ export class WebChannel implements Channel {
       const redirectUri =
         dtCfg.redirectUriOverride?.trim() || `${this.oauthBaseUrl()}/api/auth/dingtalk/callback`;
       const qrUrl = `https://login.dingtalk.com/oauth2/auth?redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&client_id=${encodeURIComponent(dtCfg.appKey)}&scope=${encodeURIComponent("openid corpid")}&state=${state}&prompt=consent`;
-      res.writeHead(200);
+      res.writeHead(200, { "Set-Cookie": this.oauthStateCookie(state, "dt") });
       res.end(JSON.stringify({ url: qrUrl }));
       return;
     }
@@ -1888,7 +1921,8 @@ export class WebChannel implements Channel {
       // state 强校验（规格 M4）：CSRF 防护不可只告警不阻断；缺失/过期一律拒绝
       const stateExp = state ? this.oauthStateMap.get(state) : undefined;
       this.oauthStateMap.delete(state ?? "");
-      if (!stateExp || Date.now() > stateExp) {
+      const stateCookie = this.extractCookie(req.headers.cookie, "donger_oauth_state_dt");
+      if (!stateExp || Date.now() > stateExp || !state || stateCookie !== state) {
         console.warn("[auth] OAuth state 校验失败或过期:", state);
         res.writeHead(302, {
           Location: `/login?error=${encodeURIComponent("登录会话已过期，请重新扫码")}`,
@@ -1937,9 +1971,10 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "GitHub 登录未配置" }));
         return;
       }
-      const state = `${Date.now()}-${Math.random()}`;
+      const state = randomBytes(16).toString("hex");
       this.oauthStateMap.set(state, Date.now() + 5 * 60 * 1000);
       this.pruneOauthStates();
+      res.setHeader("Set-Cookie", this.oauthStateCookie(state, "gh"));
       this.json(res, {
         url: buildGithubAuthorizeUrl({
           clientId: ghCfg.clientId,
@@ -1959,9 +1994,10 @@ export class WebChannel implements Channel {
         return;
       }
       const userId = this.requireRequestUser(req);
-      const state = `${Date.now()}-${Math.random()}`;
+      const state = randomBytes(16).toString("hex");
       this.githubBindStateMap.set(state, { userId, exp: Date.now() + 5 * 60 * 1000 });
       this.pruneOauthStates();
+      res.setHeader("Set-Cookie", this.oauthStateCookie(state, "gh"));
       this.json(res, {
         url: buildGithubAuthorizeUrl({
           clientId: ghCfg.clientId,
@@ -1979,6 +2015,14 @@ export class WebChannel implements Channel {
       if (!code || !state) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: "缺少 code/state 参数" }));
+        return;
+      }
+      // state 双通道校验（Map 一次性在分支内做；此处先做浏览器绑定校验）：
+      // 防「攻击者拿自己的 state+code 组装回调链接投毒」的 login CSRF/会话固定
+      const stateCookie = this.extractCookie(req.headers.cookie, "donger_oauth_state_gh");
+      if (stateCookie !== state) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "state 校验失败，请重新发起登录" }));
         return;
       }
       const ghCfg = this.effectiveGithub();
@@ -2052,7 +2096,7 @@ export class WebChannel implements Channel {
       if (!this.deps.userStore || !this.inviteStore || !this.sessionStore) {
         return this.json(res, { error: "注册服务未启用" }, 503);
       }
-      const ip = req.socket.remoteAddress ?? "unknown";
+      const ip = this.clientIp(req);
       if (!this.checkSignupRateLimit(ip)) {
         return this.json(res, { error: "尝试过于频繁，请稍后再试" }, 429);
       }
@@ -2079,11 +2123,21 @@ export class WebChannel implements Channel {
 
       const existing = await this.deps.userStore.findByIdentity("email", email);
       if (existing) {
-        // 过期未验证的 pending 账号允许复注册（裁决②：24h 不验证即失效）；其余 409 防枚举
+        // 防枚举：已注册（非可复活的过期 pending）也返回 202 同形响应，差异只能通过
+        // 「收不到验证邮件」体现——409「已注册」等于向任意人确认某邮箱存在
         const v = await this.deps.userStore.getEmailVerification(existing.id);
         const expired =
           v && !v.verified && v.expiresAt !== null && new Date(v.expiresAt).getTime() <= Date.now();
-        if (!expired) return this.json(res, { error: "该邮箱已注册，请直接登录" }, 409);
+        if (!expired) {
+          return this.json(
+            res,
+            {
+              ok: true,
+              message: "注册已受理，请通过管理员提供的验证链接完成邮箱验证（24 小时内有效）",
+            },
+            202,
+          );
+        }
       }
 
       if (inviteToken) {
@@ -2117,7 +2171,7 @@ export class WebChannel implements Channel {
       if (!this.deps.userStore || !this.sessionStore) {
         return this.json(res, { error: "登录服务未启用" }, 503);
       }
-      const ip = req.socket.remoteAddress ?? "unknown";
+      const ip = this.clientIp(req);
       if (!this.checkSignupRateLimit(ip)) {
         return this.json(res, { error: "尝试过于频繁，请稍后再试" }, 429);
       }
@@ -2425,7 +2479,15 @@ export class WebChannel implements Channel {
           }
         }
         const prevRole = target.role;
-        await store.updateRole(targetId, role);
+        if (role === "user" && store.demoteAdminGuarded) {
+          // 降级走单事务（守卫复核+写入原子化）：两步写法在并发互降下可把 admin 清零
+          const outcome = await store.demoteAdminGuarded(targetId);
+          if (outcome === "last-admin") {
+            return this.json(res, { error: "至少保留一位管理员" }, 409);
+          }
+        } else {
+          await store.updateRole(targetId, role);
+        }
         // 系统事件留痕（审计页「事件」栏；决策③）
         const actor = await store.get(viewer.id);
         await this.deps.systemEventStore?.record({
@@ -3179,9 +3241,15 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "no audit data" }));
         return;
       }
+      // 存量 llm_input 行兜底打码（打码逻辑上线前的旧行 mcpServers 里可能是明文凭证）
+      const sanitizedEvents = events.map((e) =>
+        e.type === "llm_input"
+          ? { ...e, llmInput: sanitizeLlmInputAudit(e.llmInput ?? "") }
+          : e,
+      );
       const conversation = await this.deps.conversationStore?.get(conversationId);
-      const byTask = new Map<string, typeof events>();
-      for (const e of events) {
+      const byTask = new Map<string, typeof sanitizedEvents>();
+      for (const e of sanitizedEvents) {
         const arr = byTask.get(e.taskId) ?? [];
         arr.push(e);
         byTask.set(e.taskId, arr);
@@ -3451,7 +3519,9 @@ export class WebChannel implements Channel {
       const seen = new Set<string>();
       const out: Array<Record<string, unknown> & { id: string; _mine: boolean }> = [
         ...mine.map((a) => ({ ...this.agentToDTO(a, true), id: a.id, _mine: true })),
-        ...shared.map((a) => ({ ...this.agentToDTO(a, true), id: a.id, _mine: false })),
+        // 被分享者只拿概要（与 GET /api/agents/:id 的 403 收口同口径）：
+        // detailed 会下发 systemPrompt/mcpServers/git 仓库等完整配置，违反「配置不下发」铁律
+        ...shared.map((a) => ({ ...this.agentToDTO(a, false), id: a.id, _mine: false })),
       ];
       const deduped = out.filter((a) => {
         if (seen.has(a.id)) return false;
@@ -3735,7 +3805,15 @@ export class WebChannel implements Channel {
         ...src,
         ownerId: me,
         name: resolveDuplicateName(src.name, isMine, ownerUser?.name ?? "分享者", existingNames),
-        mcpServers: src.mcpServers.map(({ env: _env, headers: _headers, ...rest }) => rest),
+        // 剥 env/headers；复制他人的 agent 时 url/args/command 一并清空——实践中凭证常
+        // 内嵌于这三处（?key=xxx、--header Authorization:…），掩码语义被原样拷贝绕过
+        mcpServers: src.mcpServers.map(({ env: _env, headers: _headers, ...rest }) => {
+          if (isMine) return rest;
+          const hasInlineSecret =
+            /(?:key|token|secret|password|sig)=[^&\s]+/i.test(rest.url ?? "") ||
+            (rest.args ?? []).some((v) => /(?:bearer|token|key|secret|password)[\s=:]/i.test(v));
+          return hasInlineSecret ? { ...rest, url: "", args: [] } : rest;
+        }),
         credentials: [],
         connectorIds: [],
         gitRepositories: src.gitRepositories.map(({ credentialCode: _cc, ...rest }) => rest),
@@ -4273,6 +4351,44 @@ export class WebChannel implements Channel {
     return l;
   }
 
+  /**
+   * workflow 引用校验：trigger 必须本人所有（触发器不可共享）；agent 必须本人可使用
+   * （自有或被分享启用）。零校验时 loop 可借他人 workflow 携带的 agent/trigger 装备运行
+   * （2026-09-24 审计）。
+   */
+  private async assertWorkflowRefsUsable(
+    input: Pick<Workflow, "triggerId" | "agentId">,
+    uid: string,
+  ): Promise<void> {
+    const trigger = await this.deps.triggerStore?.get(input.triggerId);
+    if (!trigger || trigger.ownerId !== uid) {
+      throw new ValidationError("TRIGGER_REF_INVALID", "workflow 引用的 trigger 不存在或非本人所有");
+    }
+    if (this.deps.agentStore) {
+      const agent = await this.deps.agentStore.get(input.agentId);
+      if (!agent) {
+        throw new ValidationError("AGENT_REF_INVALID", "workflow 引用的 agent 不存在");
+      }
+      const granted = this.deps.agentShareStore
+        ? await this.deps.agentShareStore.isGranted(input.agentId, uid)
+        : false;
+      if (!canUseAgent(agent, { id: uid, role: "user" }, granted)) {
+        throw new ValidationError("AGENT_REF_INVALID", "workflow 引用的 agent 不可用");
+      }
+    }
+  }
+
+  /** loop 引用校验：workflowId 必须指向本人 workflow。 */
+  private async assertLoopWorkflowUsable(
+    input: Pick<Loop, "workflowId">,
+    uid: string,
+  ): Promise<void> {
+    const wf = await this.deps.workflowStore?.get(input.workflowId);
+    if (!wf || wf.ownerId !== uid) {
+      throw new ValidationError("WORKFLOW_REF_INVALID", "loop 引用的 workflow 不存在或非本人所有");
+    }
+  }
+
   /** AppError 子类 → HTTP 状态码映射（缺省 500）。 */
   private writeApiError(res: ServerResponse, e: unknown): void {
     let status = 500;
@@ -4307,6 +4423,11 @@ export class WebChannel implements Channel {
 
     // POST /api/connectors/test —— 未保存也可测（body 即表单）；用发起者的凭证解析 {{credential:*}}
     if (basePath === "/api/connectors/test" && req.method === "POST") {
+      // 限流：探活端点是出站请求通道（10 次/分钟，与 llm provider test 同档）
+      if (!this.rateLimiter.hit(`connector-test:${uid}`, 60_000, 10)) {
+        send({ status: 429, json: { error: "测试过于频繁，请稍后再试" } });
+        return true;
+      }
       const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
       const parsed = ConnectorInputSchema.pick({ url: true, headers: true }).safeParse(b);
       if (!parsed.success) {
@@ -4536,6 +4657,8 @@ export class WebChannel implements Channel {
           ...extra,
         },
         body: JSON.stringify(body),
+        // 不自动跟随重定向：公网 302 跳内网是探活收口绕过面
+        redirect: "manual",
         signal: AbortSignal.timeout(5000),
       });
     try {
@@ -4638,6 +4761,11 @@ export class WebChannel implements Channel {
         } else if (!topGiven && hookCfg && hookGiven) {
           body.path = hookCfg.path as string;
         }
+        // hook path 全局唯一：显式 path 抢注他人存量 webhook = 劫持其外部回调数据
+        const hookPath = (hookCfg?.path ?? body.path) as string | undefined;
+        if (hookPath && (await ts?.findByHookPath(hookPath))) {
+          throw new ValidationError("HOOK_PATH_TAKEN", `hook 路径已被占用: ${hookPath}`);
+        }
       }
       const created = await ts?.create(parseTriggerInput({ ...body, ownerId: uid }));
       this.json(res, created, 201);
@@ -4653,7 +4781,15 @@ export class WebChannel implements Channel {
       // store.update 签名虽为 Partial<>，但 HTTP 层强制客户端发全量；如需部分更新请新增 PATCH 路由。
       await this.requireOwnedTrigger(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
-      const updated = await ts?.update(m[1] ?? "", parseTriggerInput({ ...body, ownerId: uid }));
+      const parsed = parseTriggerInput({ ...body, ownerId: uid });
+      // hook path 全局唯一（排除自身）：防改路径撞上他人存量 webhook
+      if (parsed.type === "hook" && parsed.hook) {
+        const existing = await ts?.findByHookPath(parsed.hook.path);
+        if (existing && existing.id !== m[1]) {
+          throw new ValidationError("HOOK_PATH_TAKEN", `hook 路径已被占用: ${parsed.hook.path}`);
+        }
+      }
+      const updated = await ts?.update(m[1] ?? "", parsed);
       // ponytail: trigger cron 可能变更，刷新所有引用此 trigger 的 enabled loops
       await this.deps.scheduler?.refreshByTrigger(m[1] ?? "");
       this.json(res, updated);
@@ -4685,7 +4821,9 @@ export class WebChannel implements Channel {
     }
     if (pathname === "/api/workflows" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req));
-      const created = await ws?.create(parseWorkflowInput({ ...body, ownerId: uid }));
+      const input = parseWorkflowInput({ ...body, ownerId: uid });
+      await this.assertWorkflowRefsUsable(input, uid);
+      const created = await ws?.create(input);
       this.json(res, created, 201);
       return true;
     }
@@ -4698,7 +4836,9 @@ export class WebChannel implements Channel {
       // PUT = 全量替换：parseWorkflowInput 要求完整对象（name/triggerId/agentId 等）。
       await this.requireOwnedWorkflow(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
-      const updated = await ws?.update(m[1] ?? "", parseWorkflowInput({ ...body, ownerId: uid }));
+      const input = parseWorkflowInput({ ...body, ownerId: uid });
+      await this.assertWorkflowRefsUsable(input, uid);
+      const updated = await ws?.update(m[1] ?? "", input);
       this.json(res, updated);
       return true;
     }
@@ -4716,7 +4856,9 @@ export class WebChannel implements Channel {
     }
     if (pathname === "/api/loops" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req));
-      const created = await ls?.create(parseLoopInput({ ...body, ownerId: uid }));
+      const input = parseLoopInput({ ...body, ownerId: uid });
+      await this.assertLoopWorkflowUsable(input, uid);
+      const created = await ls?.create(input);
       this.json(res, created, 201);
       return true;
     }
@@ -4729,7 +4871,9 @@ export class WebChannel implements Channel {
       // PUT = 全量替换：parseLoopInput 要求完整对象（name/workflowId 等）。
       await this.requireOwnedLoop(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
-      const updated = await ls?.update(m[1] ?? "", parseLoopInput({ ...body, ownerId: uid }));
+      const input = parseLoopInput({ ...body, ownerId: uid });
+      await this.assertLoopWorkflowUsable(input, uid);
+      const updated = await ls?.update(m[1] ?? "", input);
       this.json(res, updated);
       return true;
     }

@@ -73,6 +73,7 @@ export class SkillRepoSyncService {
       ? { repoUrl: target.repoUrl, credentialCode: target.credentialCode }
       : await this.deps.repoStore.get(user.id);
     if (!cfg) return { ok: false, message: "未配置技能仓库" };
+    // https-only 校验在 HTTP 入口（skill-repo-api）执行；service 层保留本地路径通道供离线/测试
     const credential = await this.resolveCredential(user.id, cfg.credentialCode, cfg.repoUrl);
     if (!credential) return { ok: false, message: credentialMissingHint(cfg.credentialCode) };
     const r = await this.git(["ls-remote", cfg.repoUrl, "HEAD"], credential);

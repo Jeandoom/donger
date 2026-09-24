@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -30,7 +30,7 @@ function setup() {
     channelId: "loop",
     logger,
   });
-  return { db, triggerStore, workflowStore, loopStore, runner, orchestrator };
+  return { db, triggerStore, workflowStore, loopStore, runner, orchestrator, workspaceRoot };
 }
 
 describe("LoopRunner", () => {
@@ -67,13 +67,15 @@ describe("LoopRunner", () => {
 
   it("testTrigger returns matched=true for bodyContains matcher", async () => {
     const s = setup();
+    // file source 收口后仅允许工作区内路径：源文件落在 workspaceRoot 内
+    writeFileSync(join(s.workspaceRoot, "src.txt"), "hello foo world");
     const t = await s.triggerStore.create({
       ownerId: "u1",
       name: "T",
       type: "scheduler",
       scheduler: {
         cron: "* * * * *",
-        source: { type: "http", url: "data:text/plain,foo", method: "GET" },
+        source: { type: "file", path: "src.txt" },
         matcher: { kind: "bodyContains", keyword: "foo" },
       },
     });

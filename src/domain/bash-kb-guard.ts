@@ -6,11 +6,12 @@
  * 残余由 audit_events 的 Bash 全文留痕 + 中期回溯审计兜底。
  */
 
-/** 写模式记号（词边界敏感的按需处理）：重定向/tee/复制移动删除/原地编辑类 */
+/** 写模式记号（词边界敏感的按需处理）：重定向/tee/复制移动删除/原地编辑/建链类。
+ * ln/mklink 必须入表：symlink 种入库根后 kb_read/kb_write 会跟随越界（守卫缺口，2026-09-24 审计）。 */
 const WRITE_PATTERNS: RegExp[] = [
   /(^|[\s;|&])>{1,2}/, // > 与 >>（含 fd 重定向形态）
   /(^|[\s;|&])tee(\s|$)/,
-  /(^|[\s;|&])(cp|mv|rm|unlink|touch|truncate|dd|install|shred)(\s|$)/,
+  /(^|[\s;|&])(cp|mv|rm|unlink|touch|truncate|dd|install|shred|ln|mklink)(\s|$)/,
   /(^|[\s;|&])(sed|perl)\s+[^;|&]*-i(\s|$|=)/, // 原地编辑
 ];
 

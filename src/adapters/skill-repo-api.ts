@@ -2,7 +2,7 @@
 // 路由登记在 web-route-guards（/api/skills/repo*），鉴权 authenticated，数据按 userId 隔离。
 
 import { z } from "zod";
-import { toUserSkillRepoView, UserSkillRepoInputSchema } from "../domain/user-skill-repo.js";
+import { cleanHttpsRepoUrl, toUserSkillRepoView, UserSkillRepoInputSchema } from "../domain/user-skill-repo.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import type { SkillRepoSyncOutcome } from "./skill-repo-sync.js";
@@ -79,6 +79,11 @@ export async function handleVerifySkillRepo(
     parsed.success && parsed.data.repoUrl && parsed.data.credentialCode
       ? { repoUrl: parsed.data.repoUrl, credentialCode: parsed.data.credentialCode }
       : undefined;
+  // verify 的 repoUrl 直接进 git ls-remote：不做 https-only 校验 = ext::/ssh:// 等任意
+  // 传输协议可达（ext:: 形态 git 会把 URL 余下内容当本机命令执行）。与保存通道同规。
+  if (target && !cleanHttpsRepoUrl(target.repoUrl)) {
+    return { status: 400, json: { ok: false, message: "repoUrl 必须为无凭证内嵌的 HTTPS 地址" } };
+  }
   const outcome = await d.sync.verify({ id: userId }, target);
   return { status: 200, json: outcome };
 }

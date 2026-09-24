@@ -1,5 +1,8 @@
+import { Check, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
@@ -29,13 +32,16 @@ const CHANNELS = [
 
 export function UserProfilePage() {
   const [user, setUser] = useState<UserInfo>();
-  const [identities, setIdentities] = useState<UserIdentity[]>([]);
+  const [identities, setIdentities] = useState<UserIdentity[]>();
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [bindError, setBindError] = useState("");
   // 后端已配置 GitHub OAuth（/api/auth/github/url 200=已配置，503=未配置）
   const [githubConfigured, setGithubConfigured] = useState(false);
 
   const loadProfile = useCallback(() => {
+    setLoading(true);
+    setError("");
     void apiFetch("/api/auth/me")
       .then(async (response) => {
         if (!response.ok) throw new Error(`加载用户信息失败：HTTP ${response.status}`);
@@ -47,7 +53,8 @@ export function UserProfilePage() {
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
-      );
+      )
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -60,6 +67,8 @@ export function UserProfilePage() {
   // 绑定弹窗回传：刷新身份列表
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
+      // 只接受同源消息（绑定回执不含敏感值，但同样不可信跨源注入）
+      if (ev.origin !== window.location.origin) return;
       if (ev.data?.type === "bind-success" && ev.data.provider === "github") {
         loadProfile();
       }
@@ -92,11 +101,34 @@ export function UserProfilePage() {
     <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
       <PageHeader title="个人设置" description="当前登录用户的身份与登录渠道" />
       {error ? (
-        <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{error}</div>
+        <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={loadProfile}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            重试
+          </Button>
+        </div>
+      ) : null}
+
+      {loading && !error ? (
+        <div className="space-y-5" aria-hidden="true">
+          <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-5">
+            <div className="h-16 w-16 animate-pulse rounded-full bg-muted" />
+            <div className="space-y-2">
+              <div className="h-5 w-28 animate-pulse rounded bg-muted" />
+              <div className="h-3 w-44 animate-pulse rounded bg-muted" />
+            </div>
+          </div>
+          <div className="grid gap-3 rounded-xl border border-border bg-card p-5 sm:grid-cols-2">
+            {Array.from({ length: 4 }, (_, i) => (
+              <div key={i} className="h-12 animate-pulse rounded-lg bg-muted" />
+            ))}
+          </div>
+        </div>
       ) : null}
 
       {user ? (
-        <section className="flex items-center gap-4 rounded-lg border bg-background p-5">
+        <Card className="flex items-center gap-4 p-5">
           {user.avatar ? (
             <img src={user.avatar} alt={`${user.name}头像`} className="h-16 w-16 rounded-full" />
           ) : (
@@ -108,52 +140,58 @@ export function UserProfilePage() {
             <div className="text-lg font-semibold">{user.name}</div>
             <div className="mt-1 text-xs text-muted-foreground">用户 ID：{user.id}</div>
           </div>
-        </section>
+        </Card>
       ) : null}
 
-      <section className="space-y-3 rounded-lg border bg-background p-5">
-        <h2 className="font-medium">已绑定的登录渠道</h2>
-        {bindError ? (
-          <div className="rounded bg-destructive-soft p-2 text-sm text-destructive">
-            {bindError}
-          </div>
-        ) : null}
-        <div className="grid gap-3 sm:grid-cols-2">
-          {CHANNELS.map((channel) => {
-            const identity = identities.find((item) => item.provider === channel.provider);
-            const bound = Boolean(identity);
-            const available = channelAvailable(channel.provider);
-            return (
-              <div
-                key={channel.provider}
-                className={`flex items-center justify-between rounded border px-3 py-2 ${
-                  available ? "" : "opacity-50"
-                }`}
-              >
-                <div>
-                  <div className="text-sm font-medium">{channel.label}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {bound
-                      ? `已绑定${identity?.name ? `：${identity.name}` : ""}`
-                      : available
-                        ? "未绑定"
-                        : "待开发"}
+      {identities ? (
+        <Card className="space-y-3 p-5">
+          <h2 className="text-sm font-semibold">已绑定的登录渠道</h2>
+          {bindError ? (
+            <div className="rounded-lg bg-destructive-soft p-2 text-sm text-destructive">
+              {bindError}
+            </div>
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {CHANNELS.map((channel) => {
+              const identity = identities.find((item) => item.provider === channel.provider);
+              const bound = Boolean(identity);
+              const available = channelAvailable(channel.provider);
+              return (
+                <div
+                  key={channel.provider}
+                  className={`flex items-center justify-between rounded-lg border border-border px-3 py-2 ${
+                    available ? "" : "opacity-50"
+                  }`}
+                >
+                  <div>
+                    <div className="text-sm font-medium">{channel.label}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {bound
+                        ? `已绑定${identity?.name ? `：${identity.name}` : ""}`
+                        : available
+                          ? channel.provider === "dingtalk"
+                            ? "未绑定（用钉钉登录后自动绑定）"
+                            : "未绑定"
+                          : "待开发"}
+                    </div>
                   </div>
+                  {bound ? (
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-success-soft text-success">
+                      <Check className="h-3 w-3" aria-hidden="true" />
+                    </span>
+                  ) : channel.provider === "github" && available ? (
+                    <Button variant="outline" size="sm" onClick={startGithubBind}>
+                      绑定
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
                 </div>
-                {bound ? (
-                  <span className="text-xs text-muted-foreground">✓</span>
-                ) : channel.provider === "github" && available ? (
-                  <Button variant="outline" size="sm" onClick={startGithubBind}>
-                    绑定
-                  </Button>
-                ) : (
-                  <span className="text-xs text-muted-foreground">—</span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              );
+            })}
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }

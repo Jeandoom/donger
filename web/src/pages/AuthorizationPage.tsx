@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
+import { Switch } from "../components/ui/switch";
+import { Textarea } from "../components/ui/textarea";
 import { type AdminUser, fetchAdminUsers, updateUserRole } from "../lib/adminUsers";
 import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
 
@@ -9,6 +15,7 @@ import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
  * 授权模块（admin，spec 2026-09-21-auth-module-design §3.3）：
  * 钉钉 / GitHub / 邮箱注册与验证 的配置统一在此维护。
  * 「应用」即生效：登录配置每请求读库即时生效；钉钉机器人消息通道保存后运行时换血，无需重启。
+ * 加载完成前表单不渲染、应用按钮禁用——防止把空配置 PUT 上去（清空 AppKey = 停用钉钉登录）。
  */
 
 interface AuthConfigsView {
@@ -32,14 +39,46 @@ interface EmailVerification {
   verifyPath: string | null;
 }
 
-const inputClass =
-  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary";
-
 const PROVIDER_LABEL: Record<string, string> = {
   email: "邮箱",
   dingtalk: "钉钉",
   github: "GitHub",
 };
+
+/** 保存结果横幅：成功/失败统一软底色 + 语义色文字 */
+function ApplyMsg({ msg }: { msg: { ok: boolean; text: string } | null }) {
+  if (!msg) return null;
+  return (
+    <div
+      className={`rounded-lg p-2.5 text-sm ${
+        msg.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive"
+      }`}
+    >
+      {msg.text}
+    </div>
+  );
+}
+
+/** 分区卡头：标题 + 状态徽标（与设计稿 P24 一致） */
+function SectionHead({
+  title,
+  description,
+  status,
+}: {
+  title: string;
+  description: string;
+  status: { label: string; tone: "success" | "neutral" } | null;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        {status ? <Badge tone={status.tone}>{status.label}</Badge> : null}
+      </div>
+      <p className="text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
 
 /** 用户管理区块（admin，spec 2026-09-21-user-management-design §2.4）：
  *  全量用户 + 管理员授予/取消。自己不可变更自己；白名单用户/最后一位 admin 由后端 409 兜底提示。 */
@@ -96,13 +135,14 @@ function UserManagementSection() {
   };
 
   return (
-    <section className="space-y-3 rounded-lg border bg-background p-5">
-      <h2 className="font-medium">用户管理</h2>
-      <p className="text-xs text-muted-foreground">
-        全部注册用户与管理员授予/取消。变更下一个请求即生效；不能变更自己的角色，系统至少保留一位管理员
-      </p>
+    <Card className="space-y-3 p-5">
+      <SectionHead
+        title="用户管理"
+        description="全部注册用户与管理员授予/取消。变更下一个请求即生效；不能变更自己的角色，系统至少保留一位管理员"
+        status={null}
+      />
       {loadError ? (
-        <div className="flex items-center justify-between gap-2 rounded bg-destructive-soft p-2.5 text-sm text-destructive">
+        <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-2.5 text-sm text-destructive">
           <span>{loadError}</span>
           <Button variant="outline" size="sm" onClick={load}>
             重试
@@ -110,12 +150,11 @@ function UserManagementSection() {
         </div>
       ) : (
         <>
-          <input
+          <Input
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="按名称或邮箱过滤"
-            className={inputClass}
           />
           <div className="space-y-2">
             {filtered.map((u) => {
@@ -131,38 +170,27 @@ function UserManagementSection() {
               return (
                 <div
                   key={u.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">{u.name}</span>
-                      {u.role === "admin" ? (
-                        <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                          管理员
-                        </span>
-                      ) : null}
-                      {isSelf ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          我
-                        </span>
-                      ) : null}
+                      {u.role === "admin" ? <Badge tone="primary">管理员</Badge> : null}
+                      {isSelf ? <Badge tone="neutral">我</Badge> : null}
                     </div>
                     <div className="mt-0.5 flex flex-wrap gap-1">
                       {u.identities.map((i) => (
-                        <span
-                          key={`${i.provider}:${i.externalId}`}
-                          className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                        >
+                        <Badge key={`${i.provider}:${i.externalId}`} tone="neutral">
                           {PROVIDER_LABEL[i.provider] ?? i.provider}
-                          {i.provider === "email" ? "： " : "： "}
+                          {"： "}
                           <span className="font-mono">{i.externalId}</span>
-                        </span>
+                        </Badge>
                       ))}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <span
-                      className="text-[10px] text-muted-foreground"
+                      className="text-[11px] text-muted-foreground"
                       title={new Date(u.createdAt).toLocaleString()}
                     >
                       {new Date(u.createdAt).toLocaleDateString()}
@@ -209,7 +237,7 @@ function UserManagementSection() {
           setConfirmError("");
         }}
       />
-    </section>
+    </Card>
   );
 }
 
@@ -231,6 +259,20 @@ function CopyButton({ text, label = "复制" }: { text: string; label?: string }
     >
       {copied ? "已复制" : label}
     </Button>
+  );
+}
+
+/** 分区加载骨架（配置请求返回前不渲染表单） */
+function SectionSkeleton() {
+  return (
+    <Card className="space-y-3 p-5" aria-hidden="true">
+      <div className="h-5 w-32 animate-pulse rounded bg-muted" />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="h-9 animate-pulse rounded-lg bg-muted" />
+        <div className="h-9 animate-pulse rounded-lg bg-muted" />
+      </div>
+      <div className="h-9 w-24 animate-pulse rounded-lg bg-muted" />
+    </Card>
   );
 }
 
@@ -260,6 +302,8 @@ export function AuthorizationPage() {
 
   // 待验证账号管理（自邀请页迁入）
   const [verifications, setVerifications] = useState<EmailVerification[] | null>(null);
+
+  const loaded = view !== null;
 
   const load = useCallback(() => {
     setLoadError("");
@@ -296,6 +340,7 @@ export function AuthorizationPage() {
   }, [load]);
 
   const applyDingtalk = () => {
+    if (!loaded) return;
     setDtBusy(true);
     setDtMsg(null);
     void apiFetch("/api/admin/auth-configs/dingtalk", {
@@ -329,6 +374,7 @@ export function AuthorizationPage() {
   };
 
   const applyGithub = () => {
+    if (!loaded) return;
     setGhBusy(true);
     setGhMsg(null);
     void apiFetch("/api/admin/auth-configs/github", {
@@ -349,6 +395,7 @@ export function AuthorizationPage() {
   };
 
   const applyEmail = () => {
+    if (!loaded) return;
     setEmailBusy(true);
     setEmailMsg(null);
     void apiFetch("/api/admin/auth-configs/email", {
@@ -377,181 +424,188 @@ export function AuthorizationPage() {
         description="钉钉 / GitHub / 邮箱注册的授权配置与用户管理。修改后点击「应用」立即生效，无需重启服务"
       />
       {loadError ? (
-        <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{loadError}</div>
+        <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
+          <span>{loadError}</span>
+          <Button variant="outline" size="sm" onClick={load}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            重试
+          </Button>
+        </div>
+      ) : !loaded ? (
+        <>
+          <SectionSkeleton />
+          <SectionSkeleton />
+        </>
       ) : null}
 
       {/* 钉钉登录 */}
-      <section className="space-y-3 rounded-lg border bg-background p-5">
-        <h2 className="font-medium">钉钉登录</h2>
-        <p className="text-xs text-muted-foreground">
-          企业自建应用（钉钉开放平台）；机器人消息通道相关字段保存后自动重载通道，无需重启
-        </p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="space-y-1 text-sm">
-            <span>AppKey</span>
-            <input
-              type="text"
-              value={dtAppKey}
-              onChange={(e) => setDtAppKey(e.target.value)}
-              placeholder="留空 = 停用钉钉登录"
-              className={inputClass}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span>App Secret{view?.dingtalk.appSecretSet ? "（已设置，留空保留）" : ""}</span>
-            <input
-              type="password"
-              value={dtAppSecret}
-              onChange={(e) => setDtAppSecret(e.target.value)}
-              placeholder={view?.dingtalk.appSecretSet ? "••••••••" : "未设置"}
-              autoComplete="new-password"
-              className={inputClass}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span>Robot Code（机器人消息通道）</span>
-            <input
-              type="text"
-              value={dtRobotCode}
-              onChange={(e) => setDtRobotCode(e.target.value)}
-              className={inputClass}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span>AI 卡片模板 ID（可选）</span>
-            <input
-              type="text"
-              value={dtCardTemplateId}
-              onChange={(e) => setDtCardTemplateId(e.target.value)}
-              className={inputClass}
-            />
-          </label>
-        </div>
-        {view ? (
+      {loaded ? (
+        <Card className="space-y-3 p-5">
+          <SectionHead
+            title="钉钉登录"
+            description="企业自建应用（钉钉开放平台）；机器人消息通道相关字段保存后自动重载通道，无需重启"
+            status={
+              view.dingtalk.appKey ? { label: "已启用", tone: "success" } : { label: "未配置", tone: "neutral" }
+            }
+          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-[13px] font-semibold">AppKey</span>
+              <Input
+                type="text"
+                value={dtAppKey}
+                onChange={(e) => setDtAppKey(e.target.value)}
+                placeholder="留空 = 停用钉钉登录"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-[13px] font-semibold">
+                App Secret{view.dingtalk.appSecretSet ? "（已设置，留空保留）" : ""}
+              </span>
+              <Input
+                type="password"
+                value={dtAppSecret}
+                onChange={(e) => setDtAppSecret(e.target.value)}
+                placeholder={view.dingtalk.appSecretSet ? "••••••••" : "未设置"}
+                autoComplete="new-password"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-[13px] font-semibold">Robot Code（机器人消息通道）</span>
+              <Input
+                type="text"
+                value={dtRobotCode}
+                onChange={(e) => setDtRobotCode(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-[13px] font-semibold">AI 卡片模板 ID（可选）</span>
+              <Input
+                type="text"
+                value={dtCardTemplateId}
+                onChange={(e) => setDtCardTemplateId(e.target.value)}
+              />
+            </label>
+          </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>回调地址（须与钉钉开放平台登记一致）：</span>
             <code className="rounded bg-muted px-1.5 py-0.5">{view.dingtalk.callbackUrl}</code>
             <CopyButton text={view.dingtalk.callbackUrl} />
           </div>
-        ) : null}
-        {dtMsg ? (
-          <div
-            className={`rounded p-2.5 text-sm ${dtMsg.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive"}`}
-          >
-            {dtMsg.text}
-          </div>
-        ) : null}
-        <Button onClick={applyDingtalk} disabled={dtBusy}>
-          {dtBusy ? "应用中…" : "应用"}
-        </Button>
-      </section>
+          <ApplyMsg msg={dtMsg} />
+          <Button onClick={applyDingtalk} disabled={dtBusy || !loaded}>
+            {dtBusy ? "应用中…" : "应用"}
+          </Button>
+        </Card>
+      ) : null}
 
       {/* GitHub 登录 */}
-      <section className="space-y-3 rounded-lg border bg-background p-5">
-        <h2 className="font-medium">GitHub 登录</h2>
-        <p className="text-xs text-muted-foreground">
-          OAuth App（github.com/settings/developers）；仅取身份（read:user），不涉及仓库权限
-        </p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="space-y-1 text-sm">
-            <span>Client ID</span>
-            <input
-              type="text"
-              value={ghClientId}
-              onChange={(e) => setGhClientId(e.target.value)}
-              placeholder="留空 = 停用 GitHub 登录"
-              className={inputClass}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span>Client Secret{view?.github.clientSecretSet ? "（已设置，留空保留）" : ""}</span>
-            <input
-              type="password"
-              value={ghClientSecret}
-              onChange={(e) => setGhClientSecret(e.target.value)}
-              placeholder={view?.github.clientSecretSet ? "••••••••" : "未设置"}
-              autoComplete="new-password"
-              className={inputClass}
-            />
-          </label>
-        </div>
-        {view ? (
+      {loaded ? (
+        <Card className="space-y-3 p-5">
+          <SectionHead
+            title="GitHub 登录"
+            description="OAuth App（github.com/settings/developers）；仅取身份（read:user），不涉及仓库权限"
+            status={
+              view.github.clientId
+                ? { label: "已启用", tone: "success" }
+                : { label: "未配置", tone: "neutral" }
+            }
+          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-[13px] font-semibold">Client ID</span>
+              <Input
+                type="text"
+                value={ghClientId}
+                onChange={(e) => setGhClientId(e.target.value)}
+                placeholder="留空 = 停用 GitHub 登录"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-[13px] font-semibold">
+                Client Secret{view.github.clientSecretSet ? "（已设置，留空保留）" : ""}
+              </span>
+              <Input
+                type="password"
+                value={ghClientSecret}
+                onChange={(e) => setGhClientSecret(e.target.value)}
+                placeholder={view.github.clientSecretSet ? "••••••••" : "未设置"}
+                autoComplete="new-password"
+              />
+            </label>
+          </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>回调地址（须与 OAuth App 登记一致）：</span>
             <code className="rounded bg-muted px-1.5 py-0.5">{view.github.callbackUrl}</code>
             <CopyButton text={view.github.callbackUrl} />
           </div>
-        ) : null}
-        {ghMsg ? (
-          <div
-            className={`rounded p-2.5 text-sm ${ghMsg.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive"}`}
-          >
-            {ghMsg.text}
-          </div>
-        ) : null}
-        <Button onClick={applyGithub} disabled={ghBusy}>
-          {ghBusy ? "应用中…" : "应用"}
-        </Button>
-      </section>
+          <ApplyMsg msg={ghMsg} />
+          <Button onClick={applyGithub} disabled={ghBusy || !loaded}>
+            {ghBusy ? "应用中…" : "应用"}
+          </Button>
+        </Card>
+      ) : null}
 
       {/* 邮箱注册与验证 */}
-      <section className="space-y-3 rounded-lg border bg-background p-5">
-        <h2 className="font-medium">邮箱注册与验证</h2>
-        <p className="text-xs text-muted-foreground">
-          域名白名单为空 =
-          关闭无邀请自助注册（仅邀请链接可注册）；新注册账号需管理员转交验证链接完成验证
-        </p>
-        <label className="block space-y-1 text-sm">
-          <span>邮箱域名白名单（每行一个，支持 .example.com 通配子域）</span>
-          <textarea
-            rows={3}
-            value={domainsText}
-            onChange={(e) => setDomainsText(e.target.value)}
-            placeholder={"example.com\n.corp.cn"}
-            className={inputClass}
+      {loaded ? (
+        <Card className="space-y-3 p-5">
+          <SectionHead
+            title="邮箱注册与验证"
+            description="域名白名单为空 = 关闭无邀请自助注册（仅邀请链接可注册）；新注册账号需管理员转交验证链接完成验证"
+            status={
+              view.email.loginEnabled
+                ? { label: "已启用", tone: "success" }
+                : { label: "已停用", tone: "neutral" }
+            }
           />
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={emailLoginEnabled}
-            onChange={(e) => setEmailLoginEnabled(e.target.checked)}
-          />
-          启用邮箱登录（登录页展示邮箱表单）
-        </label>
-        {emailMsg ? (
-          <div
-            className={`rounded p-2.5 text-sm ${emailMsg.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive"}`}
-          >
-            {emailMsg.text}
-          </div>
-        ) : null}
-        <Button onClick={applyEmail} disabled={emailBusy}>
-          {emailBusy ? "应用中…" : "应用"}
-        </Button>
-      </section>
+          <label className="flex flex-col gap-1.5 text-sm">
+            <span className="text-[13px] font-semibold">
+              邮箱域名白名单（每行一个，支持 .example.com 通配子域）
+            </span>
+            <Textarea
+              rows={3}
+              value={domainsText}
+              onChange={(e) => setDomainsText(e.target.value)}
+              placeholder={"example.com\n.corp.cn"}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch
+              checked={emailLoginEnabled}
+              onCheckedChange={setEmailLoginEnabled}
+              aria-label="启用邮箱登录"
+            />
+            启用邮箱登录（登录页展示邮箱表单）
+          </label>
+          <ApplyMsg msg={emailMsg} />
+          <Button onClick={applyEmail} disabled={emailBusy || !loaded}>
+            {emailBusy ? "应用中…" : "应用"}
+          </Button>
+        </Card>
+      ) : null}
 
       {/* 待验证账号管理（自邀请页迁入） */}
       {verifications ? (
-        <section className="space-y-3 rounded-lg border bg-background p-5">
-          <h2 className="font-medium">待验证账号</h2>
-          <p className="text-xs text-muted-foreground">
-            邮箱注册账号需凭验证链接完成验证；把链接发给对应用户，对方打开即完成验证并自动登录
-          </p>
+        <Card className="space-y-3 p-5">
+          <SectionHead
+            title="待验证账号"
+            description="邮箱注册账号需凭验证链接完成验证；把链接发给对应用户，对方打开即完成验证并自动登录"
+            status={null}
+          />
           {verifications.length === 0 ? (
             <p className="text-sm text-muted-foreground">暂无邮箱验证记录</p>
           ) : (
             <div className="space-y-2">
               {verifications.map((v) => {
                 const status = v.verified
-                  ? { label: "已验证", cls: "text-success" }
+                  ? { label: "已验证", tone: "success" as const }
                   : v.expired
-                    ? { label: "已过期", cls: "text-muted-foreground" }
-                    : { label: "待验证", cls: "text-amber-600" };
+                    ? { label: "已过期", tone: "neutral" as const }
+                    : { label: "待验证", tone: "warning" as const };
                 return (
                   <div
                     key={v.userId}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2"
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
                   >
                     <div className="min-w-0">
                       <div className="text-sm">{v.email}</div>
@@ -562,7 +616,7 @@ export function AuthorizationPage() {
                       ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <span className={`text-xs font-medium ${status.cls}`}>{status.label}</span>
+                      <Badge tone={status.tone}>{status.label}</Badge>
                       {status.label === "待验证" && v.verifyPath ? (
                         <CopyButton
                           text={`${window.location.origin}${v.verifyPath}`}
@@ -575,7 +629,7 @@ export function AuthorizationPage() {
               })}
             </div>
           )}
-        </section>
+        </Card>
       ) : null}
 
       {/* 用户管理（admin；spec 2026-09-21-user-management-design §2.4） */}

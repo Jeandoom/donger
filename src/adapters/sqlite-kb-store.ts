@@ -254,6 +254,11 @@ export class SqliteKbShareStore implements KbShareStore {
 
   async removeGrant(kbId: string, userId: string): Promise<void> {
     this.db.prepare("DELETE FROM kb_share_grants WHERE kbId = ? AND userId = ?").run(kbId, userId);
+    // 驱离语义（同 agent 分享，2026-09-24 审计）：被移除者凭旧链接 accept-share 重入的
+    // 路径随旧 token 失效；属主重新分发新链接。
+    this.db
+      .prepare("UPDATE kb_shares SET token = ? WHERE kbId = ?")
+      .run(crypto.randomUUID(), kbId);
   }
 
   async isGranted(kbId: string, userId: string): Promise<boolean> {

@@ -13,7 +13,7 @@ import {
   deleteCredentialTemplate,
   updateCredentialTemplate,
 } from "../../lib/skills";
-import { DialogShell } from "./dialog-shell";
+import { DialogShell } from "../../components/ui/dialog-shell";
 import { CREDENTIAL_KEY_PATTERN, validateCredentialCode } from "./model";
 
 /** git PAT 凭证固定键名（与服务端 GIT_PAT_KEY_SPECS 契约对齐，键名不可自定义） */

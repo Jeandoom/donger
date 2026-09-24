@@ -24,6 +24,10 @@
   --success-soft: 152 95% 96%; /* #ECFDF5 */
   --warning: 38 92% 50%; /* #FBBF24 */
   --warning-soft: 48 100% 96%; /* #FFFBEB */
+  --warning-foreground: 27 91% 37%; /* #B45309 */
+  --info: 221 83% 53%; /* #2563EB */
+  --info-soft: 214 100% 97%; /* #EFF6FF */
+  --info-foreground: 224 76% 48%; /* #1D4ED8 */
   --destructive: 0 84% 60%; /* #EF4444 */
   --destructive-soft: 0 86% 98%; /* #FEF2F2 */
 

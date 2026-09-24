@@ -12,6 +12,7 @@ const buttonVariants = cva(
         ghost: "bg-primary-soft text-primary hover:opacity-80",
         outline: "border border-border bg-card hover:bg-muted",
         danger: "bg-destructive-soft text-destructive hover:opacity-80",
+        "danger-solid": "bg-destructive text-white hover:opacity-90",
       },
       size: {
         default: "h-9 px-4 py-2",

@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { validateTriggerHttpUrlDeep } from "../domain/net-target.js";
 import type { Trigger } from "../domain/trigger.js";
 import { evaluateMatcher } from "../domain/trigger-matcher.js";
 import type { IncomingMessage } from "../domain/types.js";
@@ -18,7 +19,12 @@ export interface LoopRunnerDeps {
   workspaceRoot: string;
   channelId: string;
   logger: Logger;
+  /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
+  allowPrivateNet?: boolean;
 }
+
+/** 触发器 http source 响应体上限：防大响应打爆内存（matcher 只需小样本即可判定） */
+const TRIGGER_HTTP_MAX_BODY_BYTES = 1024 * 1024;
 
 export interface TestTriggerResult {
   sourceOutput: string;
@@ -58,10 +64,17 @@ export class LoopRunner {
     const loop = await loopStore.get(loopId);
     if (!loop) throw new Error(`loop 不存在: ${loopId}`);
     const workflow = loop.workflowId ? await workflowStore.get(loop.workflowId) : undefined;
+    // 属主复核（纵深）：workflow 与 loop 必须同人，防历史脏数据借他人 agent 装备运行
+    if (workflow && workflow.ownerId !== loop.ownerId) {
+      this.deps.logger.warn({ loopId, workflowId: workflow.id }, "workflow owner mismatch, skip run");
+      return;
+    }
     const trigger = workflow?.triggerId ? await triggerStore.get(workflow.triggerId) : undefined;
     const now = new Date().toISOString();
     const runId = crypto.randomUUID();
-    const loopDir = workflow ? join(workspaceRoot, workflow.name, runId) : null;
+    // workflow.name 会拼进全局 workspaceRoot 下的运行目录，未消毒的 .. / 分隔符 = 任意位置建目录
+    const safeWorkflowName = sanitizeWorkflowDirName(workflow?.name);
+    const loopDir = safeWorkflowName ? join(workspaceRoot, safeWorkflowName, runId) : null;
     const run = await loopStore.createRun({
       id: runId,
       loopId,
@@ -152,24 +165,50 @@ export class LoopRunner {
     let headers: Record<string, string> | undefined;
     try {
       if (sched.source.type === "http") {
+        // SSRF 收口：仅 http/https、默认拒绝内网（含解析级复判，防通配域名挂私网地址）、
+        // 手动跟随重定向（防 302 跳内网绕过）
+        const validated = await validateTriggerHttpUrlDeep(
+          sched.source.url,
+          !!this.deps.allowPrivateNet,
+        );
+        if (!validated) {
+          return {
+            sourceOutput: "",
+            matched: false,
+            error: "source url 被拒绝：仅支持 http/https 公网目标（内网目标须 TRIGGER_ALLOW_PRIVATE_NET=true）",
+          };
+        }
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 10_000);
         try {
-          const r = await fetch(sched.source.url, {
+          const r = await fetch(validated, {
             method: sched.source.method,
             headers: sched.source.headers,
-            body: sched.source.body,
+            ...(sched.source.body ? { body: sched.source.body } : {}),
             signal: ctrl.signal,
+            redirect: "manual",
           });
           httpStatus = r.status;
           headers = Object.fromEntries(r.headers.entries());
-          sourceOutput = await r.text();
+          sourceOutput = await readBodyWithCap(r, TRIGGER_HTTP_MAX_BODY_BYTES);
         } finally {
           clearTimeout(timer);
         }
       } else {
+        // file source 收口：仅允许工作区内路径（否则 /test 即任意文件读取回显）
         const { readFile } = await import("node:fs/promises");
-        sourceOutput = await readFile(sched.source.path, "utf8");
+        const root = resolve(this.deps.workspaceRoot);
+        const target = resolve(root, sched.source.path);
+        const inside =
+          target === root || target.startsWith(root + sep);
+        if (!inside) {
+          return {
+            sourceOutput: "",
+            matched: false,
+            error: "source path 必须位于工作区内",
+          };
+        }
+        sourceOutput = (await readFile(target, "utf8")).slice(0, TRIGGER_HTTP_MAX_BODY_BYTES);
       }
     } catch (e) {
       return {
@@ -187,4 +226,37 @@ export class LoopRunner {
       error: result.error,
     };
   }
+}
+
+/** 带上限读取响应体：超过 cap 即截断（防大响应打爆内存） */
+async function readBodyWithCap(r: Response, cap: number): Promise<string> {
+  const reader = r.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let out = "";
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    out += decoder.decode(value, { stream: true });
+    if (received >= cap) {
+      void reader.cancel().catch(() => {});
+      return `${out.slice(0, cap)}\n[truncated: response exceeded ${cap} bytes]`;
+    }
+  }
+  out += decoder.decode();
+  return out;
+}
+
+/** 运行目录名消毒：仅保留字面安全字符，空结果返回 null（调用方不建目录） */
+function sanitizeWorkflowDirName(name: string | undefined): string | null {
+  if (!name) return null;
+  const cleaned = name
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\.\./g, "_")
+    .replace(/^[\s.]+|[\s.]+$/g, "")
+    .trim();
+  if (!cleaned || cleaned.length > 64) return null;
+  return cleaned;
 }

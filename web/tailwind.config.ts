@@ -24,6 +24,12 @@ export default {
         warning: {
           DEFAULT: "hsl(var(--warning))",
           soft: "hsl(var(--warning-soft))",
+          foreground: "hsl(var(--warning-foreground))",
+        },
+        info: {
+          DEFAULT: "hsl(var(--info))",
+          soft: "hsl(var(--info-soft))",
+          foreground: "hsl(var(--info-foreground))",
         },
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
