@@ -55,6 +55,59 @@ export function redactSecrets(text: string): string {
   return out;
 }
 
+/** 审计口径的 MCP 服务器描述（llm_input.options.mcpServers 的形状子集） */
+export interface AuditableMcpServer {
+  name?: unknown;
+  headers?: Record<string, unknown> | null;
+  env?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+/**
+ * MCP 服务器 headers/env 值打码（键保留，值统一 ••••）。
+ * 背景（2026-09-24 审计）：连接器按属主解析后的明文凭证会随 runOptions.mcpServers
+ * 进入 llm_input 序列化，redactSecrets 的模式匹配覆盖不了任意形态的 header 值，
+ * 共享智能体场景即成跨用户凭证泄露（被分享者可经审计详情读回属主密钥）。
+ */
+export function maskMcpSecrets(
+  servers: AuditableMcpServer[] | undefined,
+): AuditableMcpServer[] | undefined {
+  if (!Array.isArray(servers)) return servers;
+  const mask = (rec?: Record<string, unknown> | null) =>
+    rec && typeof rec === "object"
+      ? Object.fromEntries(Object.keys(rec).map((k) => [k, "••••"]))
+      : rec;
+  return servers.map((s) => ({
+    ...s,
+    ...(s.headers ? { headers: mask(s.headers) } : {}),
+    ...(s.env ? { env: mask(s.env) } : {}),
+  }));
+}
+
+/**
+ * llm_input 审计文本统一打码：解析 JSON → 打码 options.mcpServers 的 headers/env →
+ * 整体再过 redactSecrets（保住 url query/args 里的 token=、Bearer 等已知模式——
+ * mcpServers.url 是凭证常驻位，2026-09-24 复核实锤仅 mask headers/env 会漏）。
+ * 落库与读取（存量行）两侧共用；非 JSON 文本退回 redactSecrets。
+ */
+export function sanitizeLlmInputAudit(llmInput: string): string {
+  try {
+    const parsed = JSON.parse(llmInput) as { options?: { mcpServers?: AuditableMcpServer[] } };
+    const servers = parsed.options?.mcpServers;
+    if (parsed.options && Array.isArray(servers)) {
+      return redactSecrets(
+        JSON.stringify({
+          ...parsed,
+          options: { ...parsed.options, mcpServers: maskMcpSecrets(servers) },
+        }),
+      );
+    }
+  } catch {
+    // 非 JSON：走模式打码
+  }
+  return redactSecrets(llmInput);
+}
+
 /** 把一条 RunnerEvent 映射成待持久化的 AuditEvent（不含 id，由 store 生成）。 */
 export function toAuditEvent(
   e: AuditableRunnerEvent,
@@ -72,7 +125,8 @@ export function toAuditEvent(
     case "session_init":
       return { ...base, type: "session_init" };
     case "llm_input":
-      return { ...base, type: "llm_input", llmInput: redactSecrets(e.input) };
+      // mcpServers.headers/env 含运行时解析后的明文凭证，落库前统一打码
+      return { ...base, type: "llm_input", llmInput: sanitizeLlmInputAudit(e.input) };
     case "llm_output":
       return { ...base, type: "llm_output", llmOutput: redactSecrets(e.output) };
     case "text":

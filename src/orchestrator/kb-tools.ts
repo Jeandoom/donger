@@ -4,7 +4,7 @@
 // 写入经 onChange 回调记账（kb_revisions，actorKind=chat）；可写性由挂载清单声明。
 // 检索为 grep 级行匹配（异步 fs，不阻塞事件循环）；FTS 后继替换 kb_search 内部实现，签名不变。
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -78,6 +78,24 @@ export function safeResolveKbPath(root: string, input: string): string | undefin
   const rel = relative(base, resolved);
   if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
   return undefined;
+}
+
+/**
+ * 纵深：词法判定之外对已存在目标做 realpath 复判——Bash `ln -s` 种入库根的 symlink
+ * 会让 kb_read/kb_write/kb_delete 跟随越界（词法 containment 不解析链接）。
+ * 目标不存在（新建写路径）时退回其父目录 realpath；父目录也不存在视为通过（逐级新建）。
+ * 返回 undefined = 越界。
+ */
+function ensureRealpathInside(target: string, root: string, forWrite = false): string | undefined {
+  try {
+    const real = realpathSync(forWrite && !existsSync(target) ? dirname(target) : target);
+    const rel = relative(realpathSync(root), real);
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return target;
+    return undefined;
+  } catch {
+    // 目标与父目录均不存在：无链接可跟随，词法判定已兜底
+    return target;
+  }
 }
 
 function treeList(root: string, depth: number, prefix = ""): string[] {
@@ -176,6 +194,7 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         if (!a.path.toLowerCase().endsWith(".md")) return fail("仅支持读取 .md 文件");
         const target = safeResolveKbPath(mount.root, a.path);
         if (!target || target === resolve(mount.root)) return fail(`路径越界：${a.path}`);
+        if (!ensureRealpathInside(target, mount.root)) return fail(`路径越界：${a.path}`);
         try {
           const content = readFileSync(target, "utf8");
           return ok(
@@ -294,6 +313,7 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         if (!a.path.toLowerCase().endsWith(".md")) return fail("仅支持写入 .md 文件");
         const target = safeResolveKbPath(mount.root, a.path);
         if (!target || target === resolve(mount.root)) return fail(`路径越界：${a.path}`);
+        if (!ensureRealpathInside(target, mount.root, true)) return fail(`路径越界：${a.path}`);
         let before: string | undefined;
         try {
           before = readFileSync(target, "utf8");
@@ -339,6 +359,7 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         if (!mount.writable) return fail(`知识库「${mount.name}」为只读挂载（被分享库不可维护）`);
         const target = safeResolveKbPath(mount.root, a.path);
         if (!target || target === resolve(mount.root)) return fail(`路径越界：${a.path}`);
+        if (!ensureRealpathInside(target, mount.root)) return fail(`路径越界：${a.path}`);
         let before: string | undefined;
         try {
           before = readFileSync(target, "utf8");

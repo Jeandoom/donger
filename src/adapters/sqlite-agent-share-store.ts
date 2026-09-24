@@ -78,6 +78,11 @@ export class SqliteAgentShareStore implements AgentShareStore {
     this.db
       .prepare("DELETE FROM agent_share_grants WHERE agentId = ? AND userId = ?")
       .run(agentId, userId);
+    // 驱离语义（2026-09-24 审计）：被移除者曾持分享链接，不轮换 token 则可凭原链接
+    // accept-share 自行重入名单。移除即换链：属主重新分发新链接，旧链接立即失效。
+    this.db
+      .prepare("UPDATE agent_shares SET token = ? WHERE agentId = ?")
+      .run(crypto.randomUUID(), agentId);
   }
 
   async isGranted(agentId: string, userId: string): Promise<boolean> {

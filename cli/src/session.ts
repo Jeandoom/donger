@@ -219,7 +219,7 @@ export class Session {
           autoApprovalResponse();
         this.gateName = null;
         await this.api
-          .respondApproval(action.gateId, resp.approved, resp.reason)
+          .respondApproval(action.respondId, resp.approved, resp.reason)
           .catch((e: Error) => this.events.onPrint(`⚠️ 审批提交失败：${e.message}`));
         break;
       }

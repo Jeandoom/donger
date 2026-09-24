@@ -22,6 +22,11 @@ async function exchangeToken(port: number, location: string): Promise<string> {
   return body.token;
 }
 
+/** 从 authorize/bind 响应取 state cookie（2026-09-24 起 callback 强校验浏览器绑定） */
+function stateCookieOf(setCookie: string | null): string {
+  return (setCookie ?? "").split(";")[0] ?? "";
+}
+
 /**
  * GitHub OAuth 登录/绑定契约测试。
  * 全局 fetch 仅拦截 github.com 域名（模拟 OAuth 端点），其余（本地服务器）透传真实 fetch。
@@ -144,21 +149,24 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
     const port = await startChannel({
       github: { clientId: "cid", clientSecret: "secret" },
     });
-    // 先取合法 state，再手动将其置为过期：通过第二个通道无法注入，故直接用伪造 state 断言 400 后，
-    // 走一遍完整流程拿 state，再用“二次消费”（state 已删除）断言过期路径同样 400。
+    // 先取合法 state（带 state cookie），再手动将其置为过期：通过第二个通道无法注入，
+    // 故直接用伪造 state 断言 400 后，走一遍完整流程拿 state，再用“二次消费”（state 已删除）
+    // 断言过期路径同样 400。
     const urlRes = await realFetch(`http://127.0.0.1:${port}/api/auth/github/url`);
     const { url } = (await urlRes.json()) as { url: string };
     const state = new URL(url).searchParams.get("state") ?? "";
+    const cookie = stateCookieOf(urlRes.headers.get("set-cookie"));
     stubGithubHttp();
     // 第一次消费：成功
     const ok = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
-      { redirect: "manual" },
+      { redirect: "manual", headers: { Cookie: cookie } },
     );
     expect(ok.status).toBe(302);
     // state 一次性，二次消费 → 400
     const replay = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
+      { headers: { Cookie: cookie } },
     );
     expect(replay.status).toBe(400);
   });
@@ -170,11 +178,12 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
     const urlRes = await realFetch(`http://127.0.0.1:${port}/api/auth/github/url`);
     const { url } = (await urlRes.json()) as { url: string };
     const state = new URL(url).searchParams.get("state") ?? "";
+    const cookie = stateCookieOf(urlRes.headers.get("set-cookie"));
     stubGithubHttp();
 
     const res = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
-      { redirect: "manual" },
+      { redirect: "manual", headers: { Cookie: cookie } },
     );
     expect(res.status).toBe(302);
     const location = res.headers.get("location") ?? "";
@@ -200,7 +209,10 @@ describe("GET /api/auth/github/callback（登录流程）", () => {
     const state2 = new URL(url2).searchParams.get("state") ?? "";
     const res2 = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state2}`,
-      { redirect: "manual" },
+      {
+        redirect: "manual",
+        headers: { Cookie: stateCookieOf(urlRes2.headers.get("set-cookie")) },
+      },
     );
     const token2 = await exchangeToken(port, res2.headers.get("location") ?? "");
     const me2 = await realFetch(`http://127.0.0.1:${port}/api/auth/me`, {
@@ -224,7 +236,10 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
     stubGithubHttp();
     const res = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
-      { redirect: "manual" },
+      {
+        redirect: "manual",
+        headers: { Cookie: stateCookieOf(urlRes.headers.get("set-cookie")) },
+      },
     );
     const token = await exchangeToken(port, res.headers.get("location") ?? "");
     const me = (await (
@@ -260,7 +275,10 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
 
     const cbRes = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
-      { redirect: "manual" },
+      {
+        redirect: "manual",
+        headers: { Cookie: stateCookieOf(bindRes.headers.get("set-cookie")) },
+      },
     );
     expect(cbRes.status).toBe(302);
     const location = cbRes.headers.get("location") ?? "";
@@ -302,7 +320,10 @@ describe("GET /api/auth/github/bind + callback（绑定流程）", () => {
 
     const cbRes = await realFetch(
       `http://127.0.0.1:${port}/api/auth/github/callback?code=good-code&state=${state}`,
-      { redirect: "manual" },
+      {
+        redirect: "manual",
+        headers: { Cookie: stateCookieOf(bindRes.headers.get("set-cookie")) },
+      },
     );
     expect(cbRes.status).toBe(302);
     const location = cbRes.headers.get("location") ?? "";

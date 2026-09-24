@@ -128,10 +128,25 @@ async function main(): Promise<void> {
   mcpTokenStore.migrate();
 
   // Agent 密钥加密器 + Agent/分享 store
+  const bootAppConfig = new SqliteModuleConfigStore(
+    db,
+    loadOrGenerateAppSecret(db, "module_config_secret_key"),
+  );
+  bootAppConfig.migrate();
   if (!cfg.secretKeySeed) {
-    log.warn("SECRET_KEY 与 JWT_SECRET 均为空，agent MCP 密钥将使用不安全默认密钥");
+    // SECRET_KEY 与 JWT_SECRET 均未配置：生成一次性随机 seed 持久化到 app_config
+    //（此前回退硬编码公开常量 = 拿到库文件即可解密全部 MCP 密钥）
+    const persisted = bootAppConfig.getFlag("secret_key_seed");
+    if (persisted) {
+      cfg.secretKeySeed = persisted;
+      log.warn("SECRET_KEY 未配置，使用首次启动生成的持久化随机密钥（建议显式配置 SECRET_KEY）");
+    } else {
+      cfg.secretKeySeed = randomBytes(32).toString("hex");
+      bootAppConfig.setFlag("secret_key_seed", cfg.secretKeySeed);
+      log.warn("SECRET_KEY 未配置，已生成并持久化随机密钥到 app_config（建议显式配置 SECRET_KEY）");
+    }
   }
-  const secretCipher = createSecretCipher(cfg.secretKeySeed || "donger-insecure-default");
+  const secretCipher = createSecretCipher(cfg.secretKeySeed);
   const agentStore = new SqliteAgentStore(db, secretCipher);
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
@@ -479,6 +494,7 @@ async function main(): Promise<void> {
     workspaceRoot: cfg.workspaceDir,
     channelId: "web",
     logger: log,
+    allowPrivateNet: cfg.triggerAllowPrivateNet,
   });
   const scheduler = new SchedulerService({
     loopStore,

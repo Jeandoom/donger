@@ -95,6 +95,11 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  // 触发器 http source 是否允许内网目标（默认拒绝防 SSRF；内网联动场景显式开启）
+  TRIGGER_ALLOW_PRIVATE_NET: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */
@@ -181,6 +186,8 @@ export interface AppConfig {
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
   gitAllowPrivateHosts: boolean;
+  /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
+  triggerAllowPrivateNet: boolean;
   /** 智能体回调链接发起限流（次/分钟/token） */
   callbackRateLimitPerMin: number;
   /** LLM 流停摆看门狗阈值（毫秒；0=关闭） */
@@ -238,6 +245,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
+    triggerAllowPrivateNet: e.TRIGGER_ALLOW_PRIVATE_NET,
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,

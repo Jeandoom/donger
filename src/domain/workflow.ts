@@ -1,9 +1,19 @@
 import { z } from "zod";
 
+// name 会拼进运行目录路径（loop-runner join(workspaceRoot, name, runId)）：
+// 禁路径分隔符、.. 与首尾点空格，防 mkdirSync 落到工作区之外
+const isSafeWorkflowName = (v: string): boolean =>
+  v.length >= 1 &&
+  v.length <= 64 &&
+  !/[\\/:*?"<>|]/.test(v) &&
+  !v.includes("..") &&
+  !/^[\s.]/.test(v) &&
+  !/[\s.]$/.test(v);
+
 export const WorkflowSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
-  name: z.string().min(1),
+  name: z.string().refine(isSafeWorkflowName, "name 不可包含路径分隔符、.. 或首尾点空格（≤64 字）"),
   description: z.string().optional(),
   triggerId: z.string(),
   agentId: z.string(),

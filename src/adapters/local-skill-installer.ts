@@ -26,6 +26,9 @@ export interface LocalSkillInstallerDeps {
   credentialSets?: CredentialSetStore;
   /** 测试注入 git 执行器；缺省 runGit（AskPass 凭证注入） */
   gitRunner?: typeof runGit;
+  /** 允许本地路径 git 源（离线安装）。生产 HTTP 端点默认关闭——放行本机路径 =
+   * 克隆服务器任意 git 仓库并回读内容，UNC 形态还会外泄 NTLM 认证（2026-09-24 审计）。 */
+  allowLocalGitSource?: boolean;
 }
 
 export class LocalSkillInstaller implements SkillInstaller {
@@ -33,7 +36,7 @@ export class LocalSkillInstaller implements SkillInstaller {
 
   async installFromGit(userId: string, req: InstallGitReq): Promise<SkillPack> {
     const url = req.url.trim();
-    validateGitSourceUrl(url);
+    validateGitSourceUrl(url, !!this.deps.allowLocalGitSource);
     const credential = await this.resolveCredential(
       userId,
       req.credentialCode?.trim() || undefined,
@@ -275,6 +278,7 @@ export class LocalSkillInstaller implements SkillInstaller {
   ): Promise<SkillPack> {
     const fm = parseFrontmatter(args.content);
     const skillName = args.name ?? fm.name ?? "skill";
+    validateSkillName(skillName);
     const slug = await this.deriveSlug(userId, args.slugHint ?? slugify(skillName));
     const dir = this.userPackDir(userId, slug);
     const skillDir = join(dir, "skills", skillName);
@@ -426,19 +430,37 @@ function normalizeSubPath(value?: string): string | undefined {
   return normalized || undefined;
 }
 
-/** git 来源校验：无凭证内嵌的 HTTPS 地址（本地路径保留为离线/测试通道）；杜绝 option 注入与 URL 内嵌 token */
-function validateGitSourceUrl(url: string): void {
+/** git 来源校验：无凭证内嵌的 HTTPS 地址；本地路径仅 allowLocal（离线安装开关）时放行 */
+function validateGitSourceUrl(url: string, allowLocal: boolean): void {
   if (url.startsWith("-")) {
     throw new SkillInstallError("GIT_URL_INVALID", "git 地址非法");
   }
   if (/^[a-zA-Z]:[\\/]/.test(url) || url.startsWith("/") || url.startsWith("\\\\")) {
-    return;
+    if (allowLocal) return;
+    throw new SkillInstallError(
+      "GIT_URL_INVALID",
+      "git 地址仅支持 HTTPS 远程仓库；本地路径安装须在服务端开启 allowLocalGitSource",
+    );
   }
   if (!cleanHttpsRepoUrl(url)) {
     throw new SkillInstallError(
       "GIT_URL_INVALID",
       "git 地址须为无凭证内嵌的 HTTPS 地址；私有仓库请通过勾选凭证注入 token",
     );
+  }
+}
+
+/** 技能名会拼进安装目录路径（join(packDir, "skills", name)）：未校验的 ../ 段 = 任意目录写 */
+function validateSkillName(name: string): void {
+  if (
+    !name ||
+    name.length > 120 ||
+    name.includes("..") ||
+    /[\\/:*?"<>|\u0000-\u001f]/.test(name) ||
+    /^[\s.]/.test(name) ||
+    /[\s.]$/.test(name)
+  ) {
+    throw new SkillInstallError("SKILL_NAME_INVALID", `技能名非法: ${JSON.stringify(name)}`);
   }
 }
 

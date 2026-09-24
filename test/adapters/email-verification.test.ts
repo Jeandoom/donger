@@ -172,22 +172,22 @@ describe("邮箱验证状态机", () => {
     ).toBe(200);
   });
 
-  it("未过期 + 已验证账号复注册 → 409（防枚举语义保留）", async () => {
+  it("未过期 + 已验证账号复注册 → 202 同形（防枚举，2026-09-24 审计收口）", async () => {
     const port = await startChannel();
     await registerPending(port, "dave@example.com");
-    // 未过期 pending：409
+    // 未过期 pending：202 同形响应（不发新验证 token）
     expect(
       (await post(port, "/api/auth/register", { email: "dave@example.com", password: "abcd1234" }))
         .status,
-    ).toBe(409);
-    // 验证后：409
+    ).toBe(202);
+    // 验证后：202 同形
     const u = (await userStore.findByIdentity("email", "dave@example.com"))!;
     const v = (await userStore.getEmailVerification(u.id))!;
     await userStore.markEmailVerified(v.token!);
     expect(
       (await post(port, "/api/auth/register", { email: "dave@example.com", password: "abcd1234" }))
         .status,
-    ).toBe(409);
+    ).toBe(202);
   });
 
   it("admin 守卫：member 访问验证列表 → 403", async () => {
