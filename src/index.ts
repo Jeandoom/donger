@@ -286,6 +286,9 @@ async function main(): Promise<void> {
         ].join("\n"),
         agentLlmPresets: cfg.agentLlmPresets,
         sessionIdleRollHours: cfg.sessionIdleRollHours,
+        // 要害路径读守卫（2026-09-24 审计 H1/D3）：数据库目录+平台安装根（含 .env、
+        // .deploy、源码）对 agent Bash/Read 拒绝；本人工作区经 allowRead 豁免
+        sensitivePaths: [dirname(cfg.dbPath), process.cwd()],
       },
       skillPackStore,
       credentialSets,

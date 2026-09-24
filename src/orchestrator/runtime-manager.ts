@@ -44,6 +44,11 @@ export interface RuntimeManagerConfig {
   agentLlmPresets: LlmPreset[];
   /** 会话空闲滚动阈值（小时；undefined/0=关闭）：闲置超限的会话重开新 SDK 会话 */
   sessionIdleRollHours?: number;
+  /**
+   * 服务端要害路径（生产库目录/部署目录/平台源码根；2026-09-24 审计 H1/D3）：
+   * agent 的 Bash/Read 拒绝触达，allowReadRoots=本人工作区+扩展目录豁免。
+   */
+  sensitivePaths?: string[];
 }
 
 export interface PrepareOpts {
@@ -319,6 +324,19 @@ export class RuntimeManager {
       sessionStore,
       capabilityVersion: 1,
       credentialsEnv,
+      ...(this.deps.config.sensitivePaths?.length
+        ? {
+            sensitiveReadPolicy: {
+              denyRoots: this.deps.config.sensitivePaths,
+              // allow 优先于 deny：用户自己的工作区/扩展目录即使落在平台根之下也可读
+              allowReadRoots: [
+                resolve(user.homeDir),
+                ...(additionalDirectories ?? []),
+                ...(allowedWriteRoots ?? []),
+              ],
+            },
+          }
+        : {}),
       ...(pythonPaths.length ? { pythonPaths } : {}),
       ...(allowedTools ? { allowedTools } : {}),
       gitAllowShellGit,

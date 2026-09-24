@@ -6,6 +6,10 @@ import type { GateRouter } from "../domain/gate-router.js";
 import { bashKbWriteGuard } from "../domain/bash-kb-guard.js";
 import { matchesShellGit } from "../domain/git-shell-guard.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
+import {
+  matchSensitiveRead,
+  sensitiveReadDenyMessage,
+} from "../domain/sensitive-read-guard.js";
 import { isStartupSensitivePath } from "../domain/startup-sensitive-paths.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
@@ -70,7 +74,26 @@ export class ClaudeAgentRunner implements AgentRunner {
           enabled: true,
           failIfUnavailable: false,
           allowUnsandboxedCommands: true,
-          ...(readOnlyRoots?.length ? { filesystem: { denyWrite: readOnlyRoots } } : {}),
+          // 要害路径 OS 级读隔离（与 canUseTool 字符串守卫双层；denyRead 同时约束
+          // 沙箱内 Bash 与 Read 工具；allowRead 优先级高于 denyRead）
+          ...(opts.sensitiveReadPolicy?.denyRoots.length
+            ? {
+                filesystem: {
+                  ...(readOnlyRoots?.length ? { denyWrite: readOnlyRoots } : {}),
+                  denyRead: opts.sensitiveReadPolicy.denyRoots,
+                  ...(opts.sensitiveReadPolicy.allowReadRoots.length
+                    ? { allowRead: opts.sensitiveReadPolicy.allowReadRoots }
+                    : {}),
+                },
+              }
+            : readOnlyRoots?.length
+              ? { filesystem: { denyWrite: readOnlyRoots } }
+              : {}),
+          // 沙箱内命令脱密：系统 LLM key 对 Bash 子进程恒不可见（脚本无需它；
+          // env 直读是注入渗出最短路径）。用户自身凭证不脱——技能脚本合法消费。
+          credentials: {
+            envVars: [{ name: "ANTHROPIC_AUTH_TOKEN", mode: "deny" as const }],
+          },
         },
         permissionMode: "default",
         canUseTool: async (toolName, input, ctx) => {
@@ -116,6 +139,31 @@ export class ClaudeAgentRunner implements AgentRunner {
                   "写入拒绝：知识库目录仅允许经 kb_* 工具变更（自动记入修订账本）。请使用 kb_read/kb_write/kb_delete；如需查阅可用 kb_list/kb_search。",
                 toolUseID: ctx.toolUseID,
               };
+            }
+          }
+          // 服务端要害路径读守卫（2026-09-24 审计 H1/D3 收口，全权限模式生效）：
+          // 审批门未覆盖的 Bash/Read 直读（cat 生产库、读 .deploy 部署目录、跨用户工作区）
+          // 是注入渗出的主通道；字符串守卫是沙箱 denyRead 不可用时的兜底层。
+          if (opts.sensitiveReadPolicy && opts.sensitiveReadPolicy.denyRoots.length > 0) {
+            const probe =
+              toolName === "Bash"
+                ? typeof input.command === "string"
+                  ? input.command
+                  : null
+                : toolName === "Read"
+                  ? typeof input.file_path === "string"
+                    ? input.file_path
+                    : null
+                  : null;
+            if (probe) {
+              const hit = matchSensitiveRead(probe, opts.cwd, opts.sensitiveReadPolicy);
+              if (hit) {
+                return {
+                  behavior: "deny" as const,
+                  message: sensitiveReadDenyMessage(hit),
+                  toolUseID: ctx.toolUseID,
+                };
+              }
             }
           }
           // 启动敏感路径硬 deny（规格 §5.3）：.claude/settings.json 承载 hooks/permissions 且

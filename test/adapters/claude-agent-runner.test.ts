@@ -72,10 +72,28 @@ describe("ClaudeAgentRunner", () => {
 
     // settingSources 已移除（规格 §5.3）：workspace 的 .claude/settings.json 不得成为配置源
     expect(captured?.settingSources).toBeUndefined();
+    // 沙箱内命令恒脱密系统 LLM key（2026-09-24 审计 H1：env 直读是注入渗出最短路径）
     expect(captured?.sandbox).toEqual({
       enabled: true,
       failIfUnavailable: false,
       allowUnsandboxedCommands: true,
+      credentials: { envVars: [{ name: "ANTHROPIC_AUTH_TOKEN", mode: "deny" }] },
+    });
+  });
+
+  it("sensitiveReadPolicy 注入 sandbox denyRead/allowRead 与 canUseTool 守卫", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const denyRoot = "D:\\srv\\donger\\.deploy";
+    const allowRoot = "D:\\srv\\donger\\data\\users\\u1";
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(task, {
+        ...opts,
+        sensitiveReadPolicy: { denyRoots: [denyRoot], allowReadRoots: [allowRoot] },
+      }, async () => ({ approved: true })),
+    );
+    expect(captured?.sandbox).toMatchObject({
+      filesystem: { denyRead: [denyRoot], allowRead: [allowRoot] },
     });
   });
 
