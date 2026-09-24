@@ -151,6 +151,25 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "owner", resource: "conversation" },
       ...ownerConversation,
     },
+    // 会话文件变更（audit 写入类 tool_use 还原；当前内容经 fileBrowser 读活文件）
+    {
+      method: "GET",
+      pattern: "/api/conversations/:id/file-changes",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
+    {
+      method: "GET",
+      pattern: "/api/conversations/:id/file-changes/detail",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
+    {
+      method: "GET",
+      pattern: "/api/conversations/:id/file-changes/content",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
     {
       method: "GET",
       pattern: "/api/conversations/:id/pending-question",

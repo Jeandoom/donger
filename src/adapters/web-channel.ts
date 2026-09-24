@@ -79,6 +79,13 @@ import {
 } from "../domain/invite.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { KbLibraryInputSchema, parseKbLibrary } from "../domain/kb.js";
+import {
+  conversationWorkspaceRoots,
+  parseFileChanges,
+  relativeUnderRoot,
+  type FileChangeSegment,
+  type FileChangeSummary,
+} from "../domain/file-changes.js";
 import { lineDiff } from "../domain/kb-diff.js";
 import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-policy.js";
 import type { LLMConfig } from "../domain/llm-config.js";
@@ -1754,6 +1761,35 @@ export class WebChannel implements Channel {
   // 原有 API 路由
   // ---------------------------------------------------------------------------
 
+  /** 会话文件变更解析（REST 与 MCP 工具共用）；会话不可见返回 null */
+  private async parseConversationFileChanges(
+    viewer: Viewer,
+    conversationId: string,
+  ): Promise<{ files: FileChangeSummary[]; segmentsByPath: Map<string, FileChangeSegment[]> } | null> {
+    const conv =
+      viewer.role === "admin"
+        ? await this.deps.conversationStore?.get(conversationId)
+        : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
+    if (!conv) return null;
+    const user = await this.deps.userStore?.get(conv.userId);
+    const events =
+      viewer.role === "admin"
+        ? ((await this.deps.auditStore?.listByConversation(conversationId)) ?? [])
+        : ((await this.deps.auditStore?.listByConversationVisible(viewer.id, conversationId)) ?? []);
+    const displayRoots = user
+      ? conversationWorkspaceRoots(user.homeDir, { id: conv.id, agentId: conv.agentId || null })
+      : [];
+    return parseFileChanges(events, { displayRoots });
+  }
+
+  private async listConversationFileChanges(
+    viewer: Viewer,
+    conversationId: string,
+  ): Promise<FileChangeSummary[] | null> {
+    const parsed = await this.parseConversationFileChanges(viewer, conversationId);
+    return parsed?.files ?? null;
+  }
+
   /**
    * POST /mcp —— MCP Streamable HTTP（无状态）：Bearer 令牌 → 用户 viewer，
    * 工具集与 web 端同源 store/权限口径。GET/DELETE 405（不提供 SSE 与会话管理）。
@@ -1796,6 +1832,11 @@ export class WebChannel implements Channel {
       workspaceDir: this.workspaceDir,
       submitMessage: (msg) => this.handler?.(msg),
       gitAccess: (uid, conversationId) => this.checkConversationGitAccess(uid, conversationId),
+      fileChanges: (conversationId) =>
+        this.listConversationFileChanges(
+          { id: user.id, role: user.role === "admin" ? "admin" : "user" },
+          conversationId,
+        ),
     });
     const result = await handleMcpMessage(payload, {
       tools,
@@ -3092,6 +3133,70 @@ export class WebChannel implements Channel {
       res.writeHead(200);
       res.end(JSON.stringify(messages));
       return;
+    }
+
+    // === 会话文件变更（spec 2026-09-24-mcp-auth-files-design §4；属主判定由 routeGuard 执行）===
+    // 数据源=audit 写入类 tool_use 还原；当前内容经 fileBrowser 读活文件兜底
+    const fcListMatch = url.match(/^\/api\/conversations\/([\w-]+)\/file-changes$/);
+    if (fcListMatch && req.method === "GET") {
+      const files = await this.listConversationFileChanges(this.currentViewer(req), fcListMatch[1] ?? "");
+      if (files === null) return this.json(res, { error: "会话不存在" }, 404);
+      return this.json(res, { files });
+    }
+    const fcDetailMatch = url.match(/^\/api\/conversations\/([\w-]+)\/file-changes\/detail(?:\?.*)?$/);
+    if (fcDetailMatch && req.method === "GET") {
+      const conversationId = fcDetailMatch[1] ?? "";
+      const viewer = this.currentViewer(req);
+      const parsed = await this.parseConversationFileChanges(viewer, conversationId);
+      if (!parsed) return this.json(res, { error: "会话不存在" }, 404);
+      const path = this.extractQuery(url, "path") ?? "";
+      const segments = parsed.segmentsByPath.get(path);
+      if (!segments) return this.json(res, { error: "该文件没有变更记录" }, 404);
+      const summary = parsed.files.find((f) => f.path === path);
+      return this.json(res, {
+        path,
+        displayPath: summary?.displayPath ?? path,
+        language: summary?.language ?? "text",
+        segments,
+      });
+    }
+    const fcContentMatch = url.match(/^\/api\/conversations\/([\w-]+)\/file-changes\/content(?:\?.*)?$/);
+    if (fcContentMatch && req.method === "GET") {
+      const conversationId = fcContentMatch[1] ?? "";
+      const viewer = this.currentViewer(req);
+      const conv =
+        viewer.role === "admin"
+          ? await this.deps.conversationStore?.get(conversationId)
+          : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
+      if (!conv) return this.json(res, { error: "会话不存在" }, 404);
+      const user = await this.deps.userStore?.get(conv.userId);
+      const path = this.extractQuery(url, "path") ?? "";
+      if (!user) return this.json(res, { error: "用户不存在" }, 404);
+      const [workspaceRoot] = conversationWorkspaceRoots(user.homeDir, {
+        id: conv.id,
+        agentId: conv.agentId || null,
+      });
+      const rel = workspaceRoot ? relativeUnderRoot(path, workspaceRoot) : undefined;
+      if (!rel || !this.fileBrowser) {
+        return this.json(res, { error: "当前内容不可用（文件不在会话工作区内）" }, 404);
+      }
+      try {
+        const content = await this.fileBrowser.readFile(conv.userId, "runtime", rel, conversationId, {
+          maxBytes: 2 * 1024 * 1024,
+        });
+        return this.json(res, {
+          path,
+          mime: content.mime,
+          content: content.buffer.toString("utf8"),
+        });
+      } catch (e) {
+        const status = e instanceof PayloadTooLargeError ? 413 : 404;
+        return this.json(
+          res,
+          { error: e instanceof PayloadTooLargeError ? "文件超过 2MB 预览上限" : "文件当前不可读（可能已被删除）" },
+          status,
+        );
+      }
     }
 
     // GET /api/conversations —— 仅本人会话列表（admin 可经 ?userId= 代查）

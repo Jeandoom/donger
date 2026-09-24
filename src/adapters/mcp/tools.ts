@@ -3,6 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { Viewer } from "../../domain/access-policy.js";
 import { canManageAgent, canUseAgent } from "../../domain/agent-policy.js";
+import type { FileChangeSummary } from "../../domain/file-changes.js";
 import type { KbLibrary } from "../../domain/kb.js";
 import { canManageKb, canReadKb } from "../../domain/kb-policy.js";
 import type { IncomingMessage } from "../../domain/types.js";
@@ -102,6 +103,8 @@ export interface McpToolsDeps {
     userId: string,
     conversationId: string,
   ) => Promise<{ ready: boolean; requirements?: unknown } | undefined>;
+  /** 会话文件变更清单（与 REST 同源解析）；会话不存在/无权返回 null */
+  fileChanges?: (conversationId: string) => Promise<FileChangeSummary[] | null>;
 }
 
 function schema(properties: Record<string, unknown>, required: string[] = []) {
@@ -515,6 +518,21 @@ export function buildMcpTools(deps: McpToolsDeps): McpToolDef[] {
     },
   };
 
+  const getFileChanges: McpToolDef = {
+    name: "get_conversation_file_changes",
+    description:
+      "列出会话中的文件变更（由 Write/Edit 等写入工具的审计记录还原），含相对路径、新增/删除行数与最近变更时间。",
+    inputSchema: schema({ conversationId: { type: "string" } }, ["conversationId"]),
+    handler: async (args) => {
+      if (!deps.fileChanges) return textResult("文件变更服务未装配", true);
+      const conversationId = String(args.conversationId ?? "");
+      const files = await deps.fileChanges(conversationId);
+      if (files === null) return textResult("会话不存在或无权访问", true);
+      if (files.length === 0) return textResult("该会话还没有文件变更");
+      return textResult(JSON.stringify(files, null, 2));
+    },
+  };
+
   return [
     listAgents,
     getAgent,
@@ -526,5 +544,6 @@ export function buildMcpTools(deps: McpToolsDeps): McpToolDef[] {
     listKnowledgeBases,
     searchKnowledgeBase,
     readKnowledgeBase,
+    getFileChanges,
   ];
 }
