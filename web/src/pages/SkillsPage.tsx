@@ -1,11 +1,17 @@
-import { GitBranch, RefreshCw, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, GitBranch, RefreshCw, Sparkles } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { DialogShell } from "../components/ui/dialog-shell";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
+import { Segmented } from "../components/ui/segmented";
+import { Select } from "../components/ui/select";
+import { Switch } from "../components/ui/switch";
+import { Textarea } from "../components/ui/textarea";
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
   credentialStatus,
@@ -26,39 +32,88 @@ import {
 } from "../lib/skills";
 import { cn } from "../lib/utils";
 
+type GitCredential = { code: string; name: string; filledKeys: string[] };
+
+/** 拉取 kind=git 凭证下拉；失败置 credLoadError 提示（不阻塞弹窗其余字段） */
+function useGitCredentials() {
+  const [credentials, setCredentials] = useState<GitCredential[]>([]);
+  const [credLoadError, setCredLoadError] = useState(false);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const all = await fetchMyCredentials();
+        setCredentials(
+          all
+            .filter((c) => c.kind === "git")
+            .map((c) => ({ code: c.code, name: c.name, filledKeys: c.filledKeys })),
+        );
+      } catch {
+        setCredLoadError(true);
+      }
+    })();
+  }, []);
+  return { credentials, credLoadError };
+}
+
+/** 凭证未填令牌的行内提醒 */
+function CredTokenHint({ selected }: { selected?: GitCredential }) {
+  if (!selected || selected.filledKeys.includes("access_token")) return null;
+  return (
+    <p className="text-xs text-warning-foreground">
+      该凭证尚未填写 access_token，请先到「我的凭证」补全后再操作。
+    </p>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1.5 text-sm">
+      <span className="text-[13px] font-semibold">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 export function SkillsPage() {
   const navigate = useNavigate();
   const [packs, setPacks] = useState<SkillPackDTO[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadSeq, setReloadSeq] = useState(0);
   const [installOpen, setInstallOpen] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [repo, setRepo] = useState<SkillRepoConfigDTO | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncTip, setSyncTip] = useState<string | null>(null);
+  const [syncTip, setSyncTip] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [busyError, setBusyError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
     try {
       const [packList, repoCfg] = await Promise.all([fetchPacks(), fetchSkillRepo()]);
       setPacks(packList);
       setRepo(repoCfg);
-      setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      setLoadError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, reloadSeq]);
 
   const wrap = async (fn: () => Promise<void>) => {
     setBusy(true);
+    setBusyError(null);
     try {
       await fn();
       await reload();
     } catch (e) {
-      setError((e as Error).message);
+      setBusyError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -69,10 +124,10 @@ export function SkillsPage() {
     setSyncTip(null);
     try {
       const r = await syncSkillRepo();
-      setSyncTip(r.message);
+      setSyncTip({ ok: true, text: r.message });
       await reload();
     } catch (e) {
-      setSyncTip((e as Error).message);
+      setSyncTip({ ok: false, text: (e as Error).message });
     } finally {
       setSyncing(false);
     }
@@ -97,14 +152,16 @@ export function SkillsPage() {
               <GitBranch aria-hidden="true" size={14} className="inline" />
               Git 仓库
             </Button>
-            <Button onClick={() => setInstallOpen(true)}>+ 安装技能包</Button>
+            <Button onClick={() => setInstallOpen(true)}>＋ 安装技能包</Button>
           </>
         }
       />
       {repo && (
         <Card className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
           <GitBranch aria-hidden="true" size={14} className="text-muted-foreground" />
-          <span className="font-mono text-xs">{repo.repoUrl}</span>
+          <span className="min-w-0 truncate font-mono text-xs" title={repo.repoUrl}>
+            {repo.repoUrl}
+          </span>
           {repo.lastSyncStatus === "ok" && <Badge tone="success">同步正常</Badge>}
           {repo.lastSyncStatus === "failed" && <Badge tone="warning">同步失败</Badge>}
           {repo.lastSyncStatus === "skipped" && <Badge>同步停用</Badge>}
@@ -121,23 +178,42 @@ export function SkillsPage() {
           </Button>
         </Card>
       )}
-      {(repo?.lastSyncError || syncTip) && (
+      {repo?.lastSyncStatus === "failed" && repo.lastSyncError && (
+        <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
+          {repo.lastSyncError}
+        </div>
+      )}
+      {syncTip && (
         <div
           className={cn(
             "mb-3 rounded-lg px-3 py-2 text-sm",
-            (repo?.lastSyncStatus === "failed" || syncTip?.startsWith("推送失败")) &&
-              "bg-destructive-soft text-destructive",
+            syncTip.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive",
           )}
         >
-          {syncTip ?? repo?.lastSyncError}
+          {syncTip.text}
         </div>
       )}
-      {error && (
+      {busyError && (
         <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
-          {error}
+          {busyError}
         </div>
       )}
-      {packs.length === 0 ? (
+      {loadError && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
+          <span>{loadError}</span>
+          <Button variant="outline" size="sm" onClick={() => setReloadSeq((v) => v + 1)}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            重试
+          </Button>
+        </div>
+      )}
+      {loading && packs.length === 0 ? (
+        <div className="space-y-3" aria-hidden="true">
+          {Array.from({ length: 2 }, (_, i) => (
+            <div key={i} className="h-24 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
+      ) : packs.length === 0 && !loadError ? (
         <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
           暂无技能包，点击「安装技能包」添加
         </div>
@@ -194,30 +270,11 @@ function SkillRepoDialog({
   const [repoUrl, setRepoUrl] = useState(repo?.repoUrl ?? "");
   const [branch, setBranch] = useState(repo?.branch ?? "main");
   const [credentialCode, setCredentialCode] = useState(repo?.credentialCode ?? "");
-  const [credentials, setCredentials] = useState<
-    Array<{ code: string; name: string; filledKeys: string[] }>
-  >([]);
-  const [credLoadError, setCredLoadError] = useState(false);
-  const [probeTip, setProbeTip] = useState<string | null>(null);
-  const [probeError, setProbeError] = useState(false);
+  const { credentials, credLoadError } = useGitCredentials();
+  const [probeTip, setProbeTip] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirmUnbind, setConfirmUnbind] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const all = await fetchMyCredentials();
-        setCredentials(
-          all
-            .filter((c) => c.kind === "git")
-            .map((c) => ({ code: c.code, name: c.name, filledKeys: c.filledKeys })),
-        );
-      } catch {
-        setCredLoadError(true);
-      }
-    })();
-  }, []);
 
   const selected = credentials.find((c) => c.code === credentialCode);
   const canSubmit = isCleanHttpsUrl(repoUrl) && credentialCode !== "";
@@ -235,86 +292,27 @@ function SkillRepoDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[560px] rounded-xl border border-border bg-card p-5 shadow-xl">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="font-semibold">技能 Git 仓库</h2>
-          <button type="button" onClick={onClose} className="text-muted-foreground">
-            ✕
-          </button>
-        </div>
-        <p className="mb-3 text-xs leading-5 text-muted-foreground">
-          绑定后，你自建与 AI
-          生成的技能（含启停、卸载等管理操作）会自动同步到该仓库，以提交历史留痕。
-          请确保该仓库可写且仅你自己可见敏感技能内容。
-        </p>
-        <div className="space-y-2">
-          <input
-            className="w-full rounded-md border border-border px-3 py-2 text-sm"
-            placeholder="https://gitee.com/user/my-skills.git（HTTPS，不含凭证）"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <input
-              className="w-40 rounded-md border border-border px-3 py-2 text-sm"
-              placeholder="分支（默认 main）"
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-            />
-            <select
-              className="flex-1 rounded-md border border-border bg-card px-3 py-2 text-sm"
-              value={credentialCode}
-              onChange={(e) => setCredentialCode(e.target.value)}
-            >
-              <option value="">选择 git PAT 凭证…</option>
-              {credentials.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.name}
-                  {c.filledKeys.includes("access_token") ? "" : "（未填令牌）"}
-                </option>
-              ))}
-            </select>
-          </div>
-          {credLoadError && (
-            <div className="text-xs text-warning">
-              凭证列表加载失败，请刷新重试或前往「我的凭证」。
-            </div>
-          )}
-          {credentialCode && selected && !selected.filledKeys.includes("access_token") && (
-            <div className="text-xs text-warning">
-              该凭证尚未填写 access_token，请先到「我的凭证」补全后再测试/同步。
-            </div>
-          )}
-        </div>
-        {probeTip && (
-          <div className={cn("mt-2 text-sm", probeError ? "text-destructive" : "text-success")}>
-            {probeTip}
-          </div>
-        )}
-        {error && <div className="mt-2 text-sm text-destructive">{error}</div>}
-        <div className="mt-4 flex items-center gap-2">
+    <DialogShell
+      title="技能 Git 仓库"
+      subtitle="绑定后，自建与 AI 生成的技能（含启停、卸载）自动同步到该仓库，以提交历史留痕"
+      onClose={onClose}
+      ariaLabel="技能 Git 仓库"
+      footer={
+        <>
           {repo && (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-destructive"
+            <Button
+              variant="danger"
+              size="sm"
               disabled={busy}
               onClick={() => setConfirmUnbind(true)}
             >
               解绑仓库
-            </button>
+            </Button>
           )}
           <span className="flex-1" />
-          <button
-            type="button"
-            className="rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+          <Button
+            variant="secondary"
+            size="sm"
             disabled={busy || !canSubmit}
             onClick={() =>
               run(async () => {
@@ -322,16 +320,17 @@ function SkillRepoDialog({
                   repoUrl: repoUrl.trim(),
                   credentialCode,
                 });
-                setProbeTip(r.message);
-                setProbeError(!r.ok);
+                setProbeTip({ ok: r.ok, text: r.message });
               })
             }
           >
             测试连接
-          </button>
-          <button
-            type="button"
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            size="sm"
             disabled={busy || !canSubmit}
             onClick={() =>
               run(async () => {
@@ -345,25 +344,78 @@ function SkillRepoDialog({
             }
           >
             {busy ? "保存中…" : "保存"}
-          </button>
-        </div>
-        <ConfirmDialog
-          open={confirmUnbind}
-          title="解绑技能仓库？"
-          description="本地技能不受影响，仅停止自动同步；仓库中已同步的历史提交会保留。"
-          confirmText="解绑"
-          destructive
-          onConfirm={() =>
-            run(async () => {
-              await saveSkillRepo({ repoUrl: "", credentialCode: "" });
-              setConfirmUnbind(false);
-              onSaved();
-            })
-          }
-          onCancel={() => setConfirmUnbind(false)}
+          </Button>
+        </>
+      }
+    >
+      <Field label="仓库地址（HTTPS，不含凭证）">
+        <Input
+          mono
+          placeholder="https://gitee.com/user/my-skills.git"
+          value={repoUrl}
+          onChange={(e) => setRepoUrl(e.target.value)}
         />
+      </Field>
+      <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
+        <Field label="分支">
+          <Input
+            placeholder="main"
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+          />
+        </Field>
+        <Field label="git PAT 凭证">
+          <Select value={credentialCode} onChange={(e) => setCredentialCode(e.target.value)}>
+            <option value="">选择凭证…</option>
+            {credentials.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.name}
+                {c.filledKeys.includes("access_token") ? "" : "（未填令牌）"}
+              </option>
+            ))}
+          </Select>
+        </Field>
       </div>
-    </div>
+      {credLoadError && (
+        <p className="text-xs text-warning-foreground">
+          凭证列表加载失败，请刷新重试或前往「我的凭证」。
+        </p>
+      )}
+      <CredTokenHint selected={selected} />
+      <p className="text-xs leading-5 text-muted-foreground">
+        请确保该仓库可写且仅你自己可见敏感技能内容；解绑不影响本地技能。
+      </p>
+      {probeTip && (
+        <div
+          className={cn(
+            "rounded-lg px-2.5 py-2 text-sm",
+            probeTip.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive",
+          )}
+        >
+          {probeTip.text}
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg bg-destructive-soft px-2.5 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmUnbind}
+        title="解绑技能仓库？"
+        description="本地技能不受影响，仅停止自动同步；仓库中已同步的历史提交会保留。"
+        confirmText="解绑"
+        destructive
+        onConfirm={() =>
+          run(async () => {
+            await saveSkillRepo({ repoUrl: "", credentialCode: "" });
+            setConfirmUnbind(false);
+            onSaved();
+          })
+        }
+        onCancel={() => setConfirmUnbind(false)}
+      />
+    </DialogShell>
   );
 }
 
@@ -387,7 +439,7 @@ function PackCard({
   const cs = credentialStatus(pack);
   return (
     <Card className={cn("p-4", !pack.enabled && "opacity-60")}>
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-semibold">{pack.name}</span>
@@ -406,56 +458,59 @@ function PackCard({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <label className="flex cursor-pointer items-center gap-1 text-xs">
-            <input
-              type="checkbox"
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            启用
+            <Switch
               checked={pack.enabled}
               disabled={disabled}
-              onChange={(e) => onTogglePack(e.target.checked)}
+              onCheckedChange={onTogglePack}
             />
-            启用
           </label>
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={expanded}
             onClick={() => setExpanded((v) => !v)}
           >
-            {pack.skills.length} 技能 {expanded ? "▲" : "▼"}
-          </button>
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+            {pack.skills.length} 技能
+          </Button>
           {onUpdate && (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={onUpdate}
-              disabled={disabled}
-            >
+            <Button variant="secondary" size="sm" onClick={onUpdate} disabled={disabled}>
               更新
-            </button>
+            </Button>
           )}
           {!pack.builtin && (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-destructive"
+            <Button
+              variant="danger"
+              size="sm"
               onClick={() => setConfirmUninstall(true)}
               disabled={disabled}
             >
               删除
-            </button>
+            </Button>
           )}
         </div>
       </div>
       {expanded && (
-        <div className="mt-2 space-y-1 border-t border-border pt-2">
+        <div className="mt-2 space-y-1.5 border-t border-border pt-2">
           {pack.skills.map((s) => (
-            <label key={s.id} className="flex cursor-pointer items-center gap-2 text-sm">
-              <input
-                type="checkbox"
+            <div
+              key={s.id}
+              className="flex items-center gap-2.5 rounded-lg bg-muted/60 px-2.5 py-1.5 text-sm"
+            >
+              <Switch
                 checked={s.enabled}
-                onChange={(e) => onToggleSkill(s.id, e.target.checked)}
+                disabled={disabled}
+                onCheckedChange={(en) => onToggleSkill(s.id, en)}
               />
-              <span className="font-mono">{s.name}</span>
+              <span className="font-mono text-[13px]">{s.name}</span>
               <span className="truncate text-xs text-muted-foreground">{s.description}</span>
-            </label>
+            </div>
           ))}
         </div>
       )}
@@ -482,31 +537,13 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
   const [gitSubPath, setGitSubPath] = useState("");
   const [gitSlug, setGitSlug] = useState("");
   const [credentialCode, setCredentialCode] = useState("");
-  const [credentials, setCredentials] = useState<
-    Array<{ code: string; name: string; filledKeys: string[] }>
-  >([]);
-  const [credLoadError, setCredLoadError] = useState(false);
+  const { credentials, credLoadError } = useGitCredentials();
   const [pasteContent, setPasteContent] = useState("");
   const [pasteSlug, setPasteSlug] = useState("");
   const [fileName, setFileName] = useState("");
   const [fileContent, setFileContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const all = await fetchMyCredentials();
-        setCredentials(
-          all
-            .filter((c) => c.kind === "git")
-            .map((c) => ({ code: c.code, name: c.name, filledKeys: c.filledKeys })),
-        );
-      } catch {
-        setCredLoadError(true);
-      }
-    })();
-  }, []);
 
   const selectedCred = credentials.find((c) => c.code === credentialCode);
 
@@ -543,130 +580,114 @@ function InstallDialog({ onClose, onInstalled }: { onClose: () => void; onInstal
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[520px] rounded-xl border border-border bg-card p-5 shadow-xl">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="font-semibold">安装技能</h2>
-          <button type="button" onClick={onClose} className="text-muted-foreground">
-            ✕
-          </button>
-        </div>
-        <div className="mb-3 flex gap-2 text-sm">
-          {(["git", "upload", "paste"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={cn(
-                "rounded-md px-3 py-1",
-                tab === t ? "bg-muted text-accent-foreground" : "hover:bg-muted",
-              )}
-            >
-              {t === "git" ? "Git 仓库" : t === "upload" ? "上传文件" : "黏贴文本"}
-            </button>
-          ))}
-        </div>
-        <div className="space-y-2">
-          {tab === "git" && (
-            <>
-              <input
-                className="w-full rounded-md border border-border px-3 py-2 text-sm"
-                placeholder="https://github.com/user/skills-repo（支持 GitHub / Gitee / GitLab·极狐）"
-                value={gitUrl}
-                onChange={(e) => setGitUrl(e.target.value)}
-              />
-              <input
-                className="w-full rounded-md border border-border px-3 py-2 text-sm"
-                placeholder="技能目录（可选，如 skills/.../skill-name；留空安装全部）"
-                value={gitSubPath}
-                onChange={(e) => setGitSubPath(e.target.value)}
-              />
-              <input
-                className="w-full rounded-md border border-border px-3 py-2 text-sm"
-                placeholder="slug（可选，默认取仓库名）"
-                value={gitSlug}
-                onChange={(e) => setGitSlug(e.target.value)}
-              />
-              <select
-                className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm"
-                value={credentialCode}
-                onChange={(e) => setCredentialCode(e.target.value)}
-              >
-                <option value="">不使用凭证（公开仓库匿名拉取）</option>
-                {credentials.map((c) => (
-                  <option key={c.code} value={c.code}>
-                    {c.name}
-                    {c.filledKeys.includes("access_token") ? "" : "（未填令牌）"}
-                  </option>
-                ))}
-              </select>
-              {credLoadError && (
-                <div className="text-xs text-warning">
-                  凭证列表加载失败，请刷新重试或前往「我的凭证」。
-                </div>
-              )}
-              {selectedCred && !selectedCred.filledKeys.includes("access_token") && (
-                <div className="text-xs text-warning">
-                  该凭证尚未填写 access_token，请先到「我的凭证」补全后再安装。
-                </div>
-              )}
-              {!credentialCode && (
-                <div className="text-xs leading-5 text-muted-foreground">
-                  GitLab / Gitee 等私有仓库请先在「我的凭证」建 kind=git 的 PAT
-                  凭证并填好令牌，再在此勾选后安装。
-                </div>
-              )}
-            </>
+    <DialogShell
+      title="安装技能"
+      subtitle="Git 仓库 / 上传 SKILL.md / 直接黏贴内容，三选一"
+      onClose={onClose}
+      ariaLabel="安装技能"
+      footer={
+        <>
+          {error ? (
+            <span className="min-w-0 flex-1 truncate text-xs text-destructive">{error}</span>
+          ) : (
+            <span className="flex-1" />
           )}
-          {tab === "upload" && (
-            <input
-              type="file"
-              accept=".md,.markdown,text/markdown,text/plain"
-              className="text-sm"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (!f) return;
-                setFileName(f.name);
-                f.text().then(setFileContent);
-              }}
-            />
-          )}
-          {tab === "paste" && (
-            <>
-              <textarea
-                className="h-48 w-full rounded-md border border-border px-3 py-2 font-mono text-xs"
-                placeholder={"---\nname: my-skill\ndescription: ...\n---\n# 指令正文"}
-                value={pasteContent}
-                onChange={(e) => setPasteContent(e.target.value)}
-              />
-              <input
-                className="w-full rounded-md border border-border px-3 py-2 text-sm"
-                placeholder="slug（可选，默认取 frontmatter name）"
-                value={pasteSlug}
-                onChange={(e) => setPasteSlug(e.target.value)}
-              />
-            </>
-          )}
-        </div>
-        {error && <div className="mt-2 text-sm text-destructive">{error}</div>}
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
+          <Button variant="secondary" size="sm" onClick={onClose}>
             取消
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={busy}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
+          </Button>
+          <Button size="sm" disabled={busy} onClick={() => void submit()}>
             {busy ? "安装中…" : "安装"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </>
+      }
+    >
+      <Segmented
+        name="安装方式"
+        options={[
+          { value: "git", label: "Git 仓库" },
+          { value: "upload", label: "上传文件" },
+          { value: "paste", label: "黏贴文本" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {tab === "git" && (
+        <>
+          <Field label="仓库地址">
+            <Input
+              mono
+              placeholder="https://github.com/user/skills-repo（支持 GitHub / Gitee / GitLab·极狐）"
+              value={gitUrl}
+              onChange={(e) => setGitUrl(e.target.value)}
+            />
+          </Field>
+          <Field label="技能目录（可选，留空安装全部）">
+            <Input
+              mono
+              placeholder="skills/.../skill-name"
+              value={gitSubPath}
+              onChange={(e) => setGitSubPath(e.target.value)}
+            />
+          </Field>
+          <Field label="slug（可选，默认取仓库名）">
+            <Input value={gitSlug} onChange={(e) => setGitSlug(e.target.value)} />
+          </Field>
+          <Field label="git 凭证">
+            <Select value={credentialCode} onChange={(e) => setCredentialCode(e.target.value)}>
+              <option value="">不使用凭证（公开仓库匿名拉取）</option>
+              {credentials.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                  {c.filledKeys.includes("access_token") ? "" : "（未填令牌）"}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {credLoadError && (
+            <p className="text-xs text-warning-foreground">
+              凭证列表加载失败，请刷新重试或前往「我的凭证」。
+            </p>
+          )}
+          <CredTokenHint selected={selectedCred} />
+          {!credentialCode && (
+            <p className="text-xs leading-5 text-muted-foreground">
+              GitLab / Gitee 等私有仓库请先在「我的凭证」建 kind=git 的 PAT
+              凭证并填好令牌，再在此勾选后安装。
+            </p>
+          )}
+        </>
+      )}
+      {tab === "upload" && (
+        <Field label="SKILL.md 文件">
+          <input
+            type="file"
+            accept=".md,.markdown,text/markdown,text/plain"
+            className="text-sm"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              setFileName(f.name);
+              f.text().then(setFileContent);
+            }}
+          />
+        </Field>
+      )}
+      {tab === "paste" && (
+        <>
+          <Field label="SKILL.md 内容">
+            <Textarea
+              mono
+              rows={8}
+              placeholder={"---\nname: my-skill\ndescription: ...\n---\n# 指令正文"}
+              value={pasteContent}
+              onChange={(e) => setPasteContent(e.target.value)}
+            />
+          </Field>
+          <Field label="slug（可选，默认取 frontmatter name）">
+            <Input value={pasteSlug} onChange={(e) => setPasteSlug(e.target.value)} />
+          </Field>
+        </>
+      )}
+    </DialogShell>
   );
 }

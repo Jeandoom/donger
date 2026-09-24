@@ -29,6 +29,8 @@ export function LoginPage() {
   // 监听弹窗 postMessage（钉钉/GitHub 授权弹窗回传）
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
+      // 只接受同源消息：跨源页面 postMessage 的 token 会把本浏览器登录成攻击者指定账号
+      if (ev.origin !== window.location.origin) return;
       if (ev.data?.type === "login-success" && typeof ev.data.token === "string") {
         setToken(ev.data.token);
         navigate(next, { replace: true });

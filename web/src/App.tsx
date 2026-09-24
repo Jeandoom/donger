@@ -4,8 +4,6 @@ import { Shell } from "./components/layout/Shell";
 import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
 import { AgentsPage } from "./pages/AgentsPage";
-import { KbDetailPage } from "./pages/KbDetailPage";
-import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { AuditPage } from "./pages/AuditPage";
 import { AuthorizationPage } from "./pages/AuthorizationPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -13,6 +11,8 @@ import { ConnectorsPage } from "./pages/ConnectorsPage";
 import { CredentialsPage } from "./pages/credentials/CredentialsPage";
 import { FeedbackPage } from "./pages/FeedbackPage";
 import { InvitesPage } from "./pages/InvitesPage";
+import { KbDetailPage } from "./pages/KbDetailPage";
+import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { LoopDetailPage } from "./pages/LoopDetailPage";
@@ -74,6 +74,8 @@ export function App() {
             <Route path="/invites" element={<InvitesPage />} />
             {/* 授权/代理模块（admin 专属；接口侧由守卫 fail-closed 兜底） */}
             <Route path="/authorization" element={<AuthorizationPage />} />
+            {/* MCP 接入单区入口（所有登录用户；同一页面组件按路由锁定 MCP 分区） */}
+            <Route path="/mcp" element={<AuthorizationPage />} />
             <Route path="/proxy" element={<ProxyPage />} />
             <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/settings" element={<Navigate to="/profile" replace />} />

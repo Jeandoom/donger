@@ -92,20 +92,36 @@ export function KbDetailPage() {
 
 function ContentTab({ kbId }: { kbId: string }) {
   const [tree, setTree] = useState<KbTreeDTO | null>(null);
-  const [selected, setSelected] = useState<string>("index.md");
+  const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<string>("");
   const [error, setError] = useState<string>();
+  const [entryError, setEntryError] = useState<string>();
 
   useEffect(() => {
     fetchKbTree(kbId)
-      .then(setTree)
+      .then((t) => {
+        setTree(t);
+        // 默认选中首个 markdown 条目（迁移生成的个人库没有 index.md 骨架，不能硬编码）
+        setSelected((cur) => cur ?? firstMarkdownEntry(t.entries)?.path ?? null);
+      })
       .catch((e) => setError(String(e)));
   }, [kbId]);
 
   useEffect(() => {
+    if (!selected) {
+      setContent("");
+      setEntryError("");
+      return;
+    }
     fetchKbEntry(kbId, selected)
-      .then(setContent)
-      .catch((e) => setError(String(e)));
+      .then((c) => {
+        setContent(c);
+        setEntryError("");
+      })
+      .catch((e) => {
+        setContent("");
+        setEntryError(e instanceof Error ? e.message : String(e));
+      });
   }, [kbId, selected]);
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
@@ -118,15 +134,38 @@ function ContentTab({ kbId }: { kbId: string }) {
           目录（{tree.total}
           {tree.truncated ? "，已截断" : ""}）
         </p>
-        <TreeNodes entries={tree.entries} selected={selected} onSelect={setSelected} depth={0} />
+        <TreeNodes
+          entries={tree.entries}
+          selected={selected ?? ""}
+          onSelect={setSelected}
+          depth={0}
+        />
       </Card>
       <Card className="min-w-0 flex-1 overflow-y-auto p-5">
-        <article className="prose prose-sm max-w-none dark:prose-invert">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-        </article>
+        {entryError ? (
+          <p className="text-sm text-destructive">{entryError}</p>
+        ) : selected ? (
+          <article className="prose prose-sm max-w-none dark:prose-invert">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+          </article>
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无内容，可通过对话让智能体维护知识库。</p>
+        )}
       </Card>
     </div>
   );
+}
+
+function firstMarkdownEntry(entries: KbTreeEntryDTO[]): KbTreeEntryDTO | undefined {
+  for (const e of entries) {
+    if (e.type === "file") {
+      if (e.name.toLowerCase().endsWith(".md")) return e;
+    } else if (e.children?.length) {
+      const hit = firstMarkdownEntry(e.children);
+      if (hit) return hit;
+    }
+  }
+  return undefined;
 }
 
 function TreeNodes({

@@ -30,7 +30,9 @@ export function LoginSuccessPage() {
       // 身份绑定回调：通知主页面刷新绑定列表（不落 token，主窗口会话保持不变）
       if (mode === "bind") {
         if (window.opener) {
-          window.opener.postMessage({ type: "bind-success", provider }, "*");
+          // targetOrigin 必须限定本站源：'*' 会把消息（含 token 形态）送进任意 opener，
+          // 弹窗链被钓鱼页面持有即整段 JWT 外泄
+          window.opener.postMessage({ type: "bind-success", provider }, window.location.origin);
           setStatus("done");
           setTimeout(() => window.close(), 500);
         } else {
@@ -44,7 +46,7 @@ export function LoginSuccessPage() {
 
       // 通知主页面
       if (window.opener) {
-        window.opener.postMessage({ type: "login-success", token }, "*");
+        window.opener.postMessage({ type: "login-success", token }, window.location.origin);
         setStatus("done");
         // 短暂延迟后关闭弹窗，给主页面处理时间
         setTimeout(() => window.close(), 500);

@@ -7,7 +7,14 @@ export type SSEEvent =
   | { type: "text_delta"; messageId: string; text: string }
   | { type: "thinking_delta"; messageId: string; text: string }
   | { type: "activity"; text: string }
-  | { type: "approval_card"; gateId: string; title: string; summary: string }
+  | {
+      type: "approval_card";
+      /** 一次性审批实例 id（respond 目标）；老服务端缺省时退回 gateId */
+      approvalId?: string;
+      gateId: string;
+      title: string;
+      summary: string;
+    }
   | {
       type: "credential_missing_card";
       reqId: string;

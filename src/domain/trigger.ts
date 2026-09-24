@@ -15,6 +15,43 @@ export const TriggerSourceSchema = z.discriminatedUnion("type", [
 ]);
 export type TriggerSource = z.infer<typeof TriggerSourceSchema>;
 
+/**
+ * bodyRegex 灾难性回溯静态启发式（宁可误杀）。matcher 在事件循环上同步 new RegExp，
+ * 一条灾难回溯正则 + 几十字节输入即可冻结整个服务进程。覆盖三类经典形态：
+ * 1. 内含量词（加号/星号/{n,}）的分组整体再接量词：(a+)+、(?:\d+)*、(a{2,}){3}
+ * 2. 含交替且分支间存在前缀重叠的分组再接量词：(a|aa)+、(x|xy)*（分支重叠才回溯爆炸）
+ * 3. 超长 pattern（大于 256 字符的匹配意图本身可疑）
+ */
+function isReDoSSuspect(pattern: string): boolean {
+  if (pattern.length > 256) return true;
+  const quantifier = String.raw`(?:[+*]|\{\d*,?\d*\})`;
+  // 形态 1：组内含 +/*/开放区间 {n,}，组整体再接量词
+  if (new RegExp(String.raw`\([^()]*[+*][^()]*\)\s*${quantifier}`).test(pattern)) return true;
+  if (new RegExp(String.raw`\([^()]*\{\d+,\}[^()]*\)\s*${quantifier}`).test(pattern)) return true;
+  // 形态 2：交替分支前缀重叠或等值（近似：剥非捕获前缀与量词字符后比对）
+  const quantifiedGroups = pattern.matchAll(
+    new RegExp(String.raw`\(([^()]*)\)\s*${quantifier}`, "g"),
+  );
+  for (const m of quantifiedGroups) {
+    const content = (m[1] ?? "").replace(/^\?:/, "");
+    if (!content.includes("|")) continue;
+    const branches = content.split("|").map((b) => b.replace(/[+*?{}\[\]]/g, "").trim());
+    for (let i = 0; i < branches.length; i++) {
+      for (let j = 0; j < branches.length; j++) {
+        if (i === j) continue;
+        const shorter = branches[i] ?? "";
+        const longer = branches[j] ?? "";
+        if (shorter.length < 1) continue;
+        // 等值分支（(a|a)*）与前缀重叠分支（(a|aa)+）均为回溯爆炸形态
+        if (longer === shorter || (longer.length > shorter.length && longer.startsWith(shorter))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export const TriggerMatcherSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("always") }),
   z.object({ kind: z.literal("statusEq"), value: z.number() }),
@@ -30,7 +67,12 @@ export const TriggerMatcherSchema = z.discriminatedUnion("kind", [
     value: z.number(),
   }),
   z.object({ kind: z.literal("bodyContains"), keyword: z.string() }),
-  z.object({ kind: z.literal("bodyRegex"), pattern: z.string() }),
+  z.object({
+    kind: z.literal("bodyRegex"),
+    pattern: z
+      .string()
+      .refine((p) => !isReDoSSuspect(p), "正则含嵌套量词（灾难回溯风险），已拒绝"),
+  }),
   z.object({ kind: z.literal("bodyFieldEq"), field: z.string(), value: z.string() }),
   z.object({ kind: z.literal("headerEq"), header: z.string(), value: z.string() }),
 ]);

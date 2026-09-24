@@ -474,7 +474,7 @@ export function useWebChat() {
       const token = getToken();
       dispatch({ type: "clear_error", key: "approval" });
       try {
-        const response = await fetch(`/api/approvals/${pending.gateId}/respond`, {
+        const response = await fetch(`/api/approvals/${pending.respondId}/respond`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

@@ -403,7 +403,12 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
     case "approval_card":
       return {
         ...state,
-        pendingApproval: { gateId: msg.gateId, title: msg.title, summary: msg.summary },
+        pendingApproval: {
+          respondId: msg.approvalId ?? msg.gateId,
+          gateId: msg.gateId,
+          title: msg.title,
+          summary: msg.summary,
+        },
       };
     case "credential_missing_card":
       return {

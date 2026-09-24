@@ -2,6 +2,7 @@ import type { McpSdkServerConfigWithInstance, SessionStore } from "@anthropic-ai
 import type { McpServerConfig } from "../domain/agent.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { AgentPermissionMode } from "../domain/permission-mode.js";
+import type { SensitiveReadPolicy } from "../domain/sensitive-read-guard.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -62,6 +63,12 @@ export interface RunOptions {
   /** KB 目录根清单（<workspaceDir>/kb/<kbId>）：Bash 写守卫的敏感根（spec §9，D6）——
    *  Bash 命中写模式+这些根 → deny+引导 kb_* 工具；KB 目录不进 allowedWriteRoots，本清单只供守卫 */
   kbWriteGuardRoots?: string[];
+  /**
+   * 服务端要害路径读守卫（2026-09-24 审计 H1/D3 收口）：denyRoots（生产库/部署目录/
+   * 平台源码/其他用户工作区）中的路径禁止 Bash 与 Read 工具触达，allowReadRoots
+   * （本人工作区等）优先。双层执行：canUseTool 字符串守卫 + SDK sandbox denyRead。
+   */
+  sensitiveReadPolicy?: SensitiveReadPolicy;
   /** in-process 审计读取 MCP server（内置审计/技能工坊智能体注入；viewer 在构造时闭包绑定） */
   auditTools?: McpSdkServerConfigWithInstance;
   /**

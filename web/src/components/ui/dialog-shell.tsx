@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 import { type ReactNode, useEffect } from "react";
 import { cn } from "../../lib/utils";
 
-/** 凭证页表单弹窗外壳：Esc/遮罩关闭，样式与 ConfirmDialog 同族，宽度可容纳表单 */
+/** 全站统一的表单/内容弹窗外壳：Esc/遮罩关闭，样式与 ConfirmDialog 同族，宽度可容纳表单 */
 export function DialogShell(props: {
   title: ReactNode;
   subtitle?: ReactNode;

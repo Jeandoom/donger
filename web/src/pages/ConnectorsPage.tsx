@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { Play, Plus, X } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { DialogShell } from "../components/ui/dialog-shell";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
+import { Segmented } from "../components/ui/segmented";
+import { Select } from "../components/ui/select";
+import { Switch } from "../components/ui/switch";
 import {
   type ConnectorDTO,
   type ConnectorInput,
@@ -90,27 +98,47 @@ function headersOf(d: Draft): Record<string, string> {
   return {};
 }
 
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1.5 text-sm">
+      <span className="text-[13px] font-semibold">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 export function ConnectorsPage() {
   const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadSeq, setReloadSeq] = useState(0);
+
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ConnectorDTO | null>(null);
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
+  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ConnectorTestResult | null>(null);
+  const [testBusy, setTestBusy] = useState(false);
+
   const [confirmDelete, setConfirmDelete] = useState<ConnectorDTO | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<ConnectorTestResult | null>(null);
-  const [testBusy, setTestBusy] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
   const [credentialOptions, setCredentialOptions] = useState<Array<{ code: string; name: string }>>(
     [],
   );
 
   const reload = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
     try {
       setConnectors(await fetchConnectors());
-      setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      setLoadError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -121,14 +149,33 @@ export function ConnectorsPage() {
         setCredentialOptions(templates.map((t) => ({ code: t.code, name: t.name }))),
       )
       .catch(() => {});
-  }, [reload]);
+  }, [reload, reloadSeq]);
 
   const mine = connectors.filter((c) => c.createdByMe);
   const global = connectors.filter((c) => !c.createdByMe && c.shareScope === "global");
 
+  const openCreate = () => {
+    setEditing(null);
+    setDraft(emptyDraft);
+    setTestResult(null);
+    setSaveError(null);
+    setDialogOpen(true);
+  };
+
+  const openEdit = (c: ConnectorDTO) => {
+    setEditing(c);
+    setDraft(draftFromConnector(c));
+    setTestResult(null);
+    setSaveError(null);
+    setDialogOpen(true);
+  };
+
+  const closeDialog = () => setDialogOpen(false);
+
   const save = async () => {
     if (!draft.name.trim() || !draft.url.trim()) return;
     setBusy(true);
+    setSaveError(null);
     try {
       const input: ConnectorInput = {
         name: draft.name.trim(),
@@ -143,12 +190,10 @@ export function ConnectorsPage() {
       } else {
         await createConnector(input);
       }
-      setDraft(emptyDraft);
-      setEditing(null);
+      setDialogOpen(false);
       await reload();
-      setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      setSaveError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -183,6 +228,7 @@ export function ConnectorsPage() {
   };
 
   const toggleEnabled = async (c: ConnectorDTO) => {
+    setTogglingId(c.id);
     try {
       await updateConnector(c.id, {
         name: c.name,
@@ -194,51 +240,71 @@ export function ConnectorsPage() {
       });
       await reload();
     } catch (e) {
-      setError((e as Error).message);
+      setLoadError((e as Error).message);
+    } finally {
+      setTogglingId(null);
     }
   };
 
   const renderCard = (c: ConnectorDTO) => (
-    <div key={c.id} className="rounded-lg border border-border p-3">
+    <Card key={c.id} className="space-y-2 p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium">{c.name}</span>
-        <span className="rounded bg-blue-500/10 px-1 text-xs text-blue-600">HTTP</span>
-        {c.shareScope === "global" && (
-          <span className="rounded bg-emerald-500/10 px-1 text-xs text-emerald-600">全局</span>
+        <Badge tone="info">HTTP</Badge>
+        <span className="text-sm font-semibold">{c.name}</span>
+        {c.shareScope === "global" ? (
+          <Badge tone="primary">全局</Badge>
+        ) : (
+          <Badge tone="neutral">私有</Badge>
         )}
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          <input type="checkbox" checked={c.enabled} onChange={() => void toggleEnabled(c)} />
+        <span className="flex-1" />
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           启用
+          <Switch
+            checked={c.enabled}
+            disabled={togglingId === c.id}
+            onCheckedChange={() => void toggleEnabled(c)}
+          />
         </label>
       </div>
-      <div className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{c.url}</div>
+      <div className="truncate font-mono text-xs text-muted-foreground" title={c.url}>
+        {c.url}
+      </div>
       {c.description && <div className="text-xs text-muted-foreground">{c.description}</div>}
-      <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-        <span>被 {c.usedBy} 个智能体引用</span>
-        <button
-          type="button"
-          className="hover:text-foreground"
-          onClick={() => {
-            setEditing(c);
-            setDraft(draftFromConnector(c));
-            setTestResult(null);
-            setError(null);
-          }}
-        >
+      <div className="flex items-center gap-3">
+        <span className="flex-1 text-xs text-muted-foreground">
+          被 {c.usedBy} 个智能体引用
+        </span>
+        <Button variant="secondary" size="sm" onClick={() => openEdit(c)}>
           编辑
-        </button>
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-destructive"
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
           onClick={() => {
             setConfirmDelete(c);
             setDeleteError(null);
           }}
         >
           删除
-        </button>
+        </Button>
       </div>
-    </div>
+    </Card>
+  );
+
+  const renderSection = (title: string, hint: string, list: ConnectorDTO[], empty: string) => (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <span className="text-xs text-muted-foreground">{hint}</span>
+      </div>
+      {list.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+          {empty}
+        </div>
+      ) : (
+        <div className="space-y-3">{list.map(renderCard)}</div>
+      )}
+    </section>
   );
 
   return (
@@ -246,203 +312,228 @@ export function ConnectorsPage() {
       <PageHeader
         className="mb-5"
         title="连接器"
-        description="MCP / API 外部工具接入，供智能体调用"
+        description="HTTP MCP 服务注册：配置一次，多个智能体勾选复用，凭证不进上下文"
+        actions={
+          <Button onClick={openCreate}>
+            <Plus className="h-4 w-4" />
+            新建连接器
+          </Button>
+        }
       />
       <p className="mb-4 text-xs text-muted-foreground">
-        连接器是 HTTP MCP 服务注册：配置一次，多个智能体勾选复用。鉴权头支持引用
+        鉴权头支持引用
         <span className="font-medium text-foreground">凭证模板</span>（{"{{credential:code}}"}
         ）——共享连接器执行时使用
         <span className="font-medium text-foreground">访问者自己的</span>凭证值。
       </p>
-      {error && (
-        <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
-          {error}
+
+      {loadError ? (
+        <div className="mb-4 flex items-center justify-between gap-2 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
+          <span>{loadError}</span>
+          <Button variant="outline" size="sm" onClick={() => setReloadSeq((v) => v + 1)}>
+            重试
+          </Button>
         </div>
+      ) : null}
+
+      {loading && connectors.length === 0 ? (
+        <div className="space-y-3" aria-hidden="true">
+          {Array.from({ length: 2 }, (_, i) => (
+            <div key={i} className="h-28 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
+      ) : (
+        <>
+          {renderSection(
+            "我的连接器",
+            `${mine.length} 个`,
+            mine,
+            "暂无连接器，点击右上角「新建连接器」创建。",
+          )}
+          {renderSection(
+            "全局连接器",
+            `${global.length} 个 · 人人可用，仅创建人可管理`,
+            global,
+            "暂无他人共享的全局连接器。",
+          )}
+        </>
       )}
 
-      {/* 新建 / 编辑表单 */}
-      <Card className="mb-4 p-4">
-        <div className="mb-2 text-sm font-medium">
-          {editing ? `编辑连接器 ${editing.name}` : "新建连接器"}
-        </div>
-        <div className="mb-2 flex flex-wrap gap-2">
-          <input
-            className="w-48 rounded-md border border-border px-2 py-1.5 text-sm"
-            placeholder="名称*"
-            value={draft.name}
-            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-          />
-          <input
-            className="w-64 rounded-md border border-border px-2 py-1.5 text-sm"
-            placeholder="说明（可选）"
-            value={draft.description}
-            onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-          />
-          <input
-            className="w-80 rounded-md border border-border px-2 py-1.5 font-mono text-sm"
-            placeholder="URL*（https://…/mcp）"
-            value={draft.url}
-            onChange={(e) => setDraft((d) => ({ ...d, url: e.target.value }))}
-          />
-          <select
-            className="rounded-md border border-border px-2 py-1.5 text-sm"
-            value={draft.shareScope}
-            onChange={(e) =>
-              setDraft((d) => ({ ...d, shareScope: e.target.value as "private" | "global" }))
-            }
-          >
-            <option value="private">仅我可见</option>
-            <option value="global">全局共享</option>
-          </select>
-        </div>
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted-foreground">鉴权</span>
-          {(["none", "bearer", "custom"] as const).map((m) => (
-            <label key={m} className="flex items-center gap-1 text-sm">
-              <input
-                type="radio"
-                checked={draft.authMode === m}
-                onChange={() => setDraft((d) => ({ ...d, authMode: m }))}
+      {/* 新建 / 编辑弹窗 */}
+      {dialogOpen && (
+        <DialogShell
+          title={editing ? `编辑连接器 ${editing.name}` : "新建连接器"}
+          subtitle="鉴权头支持 {{credential:code}} 凭证引用，共享时按访问者解析"
+          onClose={closeDialog}
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={testBusy || !draft.url.trim()}
+                onClick={() => void runTest()}
+              >
+                <Play className="h-3 w-3" />
+                {testBusy ? "测试中…" : "测试连接"}
+              </Button>
+              {testResult ? (
+                testResult.ok ? (
+                  <Badge tone="success">
+                    连接成功 · {testResult.latencyMs}ms · {testResult.toolCount} 个工具
+                  </Badge>
+                ) : (
+                  <Badge tone="danger">{testResult.error}</Badge>
+                )
+              ) : null}
+              <span className="flex-1" />
+              <Button variant="secondary" size="sm" onClick={closeDialog}>
+                取消
+              </Button>
+              <Button
+                size="sm"
+                disabled={busy || !draft.name.trim() || !draft.url.trim()}
+                onClick={() => void save()}
+              >
+                {busy ? "保存中…" : editing ? "保存修改" : "创建"}
+              </Button>
+            </>
+          }
+        >
+          {saveError ? (
+            <div className="rounded-lg bg-destructive-soft p-2.5 text-sm text-destructive">
+              {saveError}
+            </div>
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="名称">
+              <Input
+                value={draft.name}
+                onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                placeholder="如：企业 CRM 查询"
               />
-              {m === "none" ? "无" : m === "bearer" ? "Bearer Token" : "自定义头部"}
-            </label>
-          ))}
+            </Field>
+            <Field label="可见范围">
+              <Select
+                value={draft.shareScope}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, shareScope: e.target.value as "private" | "global" }))
+                }
+              >
+                <option value="private">仅我可见</option>
+                <option value="global">全局共享</option>
+              </Select>
+            </Field>
+          </div>
+          <Field label="说明（可选）">
+            <Input
+              value={draft.description}
+              onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+              placeholder="这个连接器提供什么工具"
+            />
+          </Field>
+          <Field label="URL">
+            <Input
+              mono
+              value={draft.url}
+              onChange={(e) => setDraft((d) => ({ ...d, url: e.target.value }))}
+              placeholder="https://…/mcp"
+            />
+          </Field>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-semibold">鉴权方式</span>
+            <Segmented
+              name="鉴权方式"
+              options={[
+                { value: "none", label: "无" },
+                { value: "bearer", label: "Bearer Token" },
+                { value: "custom", label: "自定义头部" },
+              ]}
+              value={draft.authMode}
+              onChange={(m) => setDraft((d) => ({ ...d, authMode: m }))}
+            />
+          </div>
           {draft.authMode === "bearer" && (
-            <select
-              className="rounded-md border border-border px-2 py-1.5 text-sm"
-              value={draft.bearerCode}
-              onChange={(e) => setDraft((d) => ({ ...d, bearerCode: e.target.value }))}
-            >
-              <option value="">选择凭证模板…</option>
-              {credentialOptions.map((t) => (
-                <option key={t.code} value={t.code}>
-                  {t.name}（{t.code}）
-                </option>
-              ))}
-            </select>
+            <Field label="凭证模板">
+              <Select
+                value={draft.bearerCode}
+                onChange={(e) => setDraft((d) => ({ ...d, bearerCode: e.target.value }))}
+              >
+                <option value="">选择凭证模板…</option>
+                {credentialOptions.map((t) => (
+                  <option key={t.code} value={t.code}>
+                    {t.name}（{t.code}）
+                  </option>
+                ))}
+              </Select>
+            </Field>
           )}
           {draft.authMode === "bearer" && draft.bearerCode && (
-            <span className="font-mono text-xs text-muted-foreground">
+            <p className="font-mono text-xs text-muted-foreground">
               Authorization: Bearer {"{{credential:"}
               {draft.bearerCode}
               {"}}"}
-            </span>
+            </p>
           )}
-        </div>
-        {draft.authMode === "custom" && (
-          <div className="mb-2 space-y-1">
-            {draft.rows.map((row) => (
-              <div key={row.id} className="flex gap-2">
-                <input
-                  className="w-48 rounded-md border border-border px-2 py-1 font-mono text-sm"
-                  placeholder="Header 名（如 X-Api-Key）"
-                  value={row.key}
-                  onChange={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      rows: d.rows.map((r) =>
-                        r.id === row.id ? { ...r, key: e.target.value } : r,
-                      ),
-                    }))
-                  }
-                />
-                <input
-                  className="flex-1 rounded-md border border-border px-2 py-1 font-mono text-sm"
-                  placeholder="值（支持 {{credential:code}} 引用；•••• = 保留原值）"
-                  value={row.value}
-                  onChange={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      rows: d.rows.map((r) =>
-                        r.id === row.id ? { ...r, value: e.target.value } : r,
-                      ),
-                    }))
-                  }
-                />
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-2 text-xs hover:bg-muted"
-                  onClick={() =>
-                    setDraft((d) => ({ ...d, rows: d.rows.filter((r) => r.id !== row.id) }))
-                  }
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted"
-              onClick={() =>
-                setDraft((d) => ({
-                  ...d,
-                  rows: [...d.rows, { id: crypto.randomUUID(), key: "", value: "" }],
-                }))
-              }
-            >
-              ＋ 添加头部
-            </button>
-          </div>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={save}
-            disabled={busy || !draft.name.trim() || !draft.url.trim()}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {busy ? "保存中…" : editing ? "保存修改" : "创建"}
-          </button>
-          {editing && (
-            <button
-              type="button"
-              className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
-              onClick={() => {
-                setEditing(null);
-                setDraft(emptyDraft);
-                setTestResult(null);
-              }}
-            >
-              取消编辑
-            </button>
+          {draft.authMode === "custom" && (
+            <div className="space-y-1.5">
+              {draft.rows.map((row) => (
+                <div key={row.id} className="flex items-center gap-2">
+                  <Input
+                    className="w-48"
+                    mono
+                    placeholder="Header 名（如 X-Api-Key）"
+                    value={row.key}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        rows: d.rows.map((r) =>
+                          r.id === row.id ? { ...r, key: e.target.value } : r,
+                        ),
+                      }))
+                    }
+                  />
+                  <Input
+                    className="flex-1"
+                    mono
+                    placeholder="值（支持 {{credential:code}} 引用；•••• = 保留原值）"
+                    value={row.value}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        rows: d.rows.map((r) =>
+                          r.id === row.id ? { ...r, value: e.target.value } : r,
+                        ),
+                      }))
+                    }
+                  />
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    aria-label="删除该头部"
+                    onClick={() =>
+                      setDraft((d) => ({ ...d, rows: d.rows.filter((r) => r.id !== row.id) }))
+                    }
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  setDraft((d) => ({
+                    ...d,
+                    rows: [...d.rows, { id: crypto.randomUUID(), key: "", value: "" }],
+                  }))
+                }
+              >
+                <Plus className="h-3.5 w-3.5" />
+                添加头部
+              </Button>
+            </div>
           )}
-          <button
-            type="button"
-            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-            disabled={testBusy || !draft.url.trim()}
-            onClick={() => void runTest()}
-          >
-            {testBusy ? "测试中…" : "▶ 测试连接"}
-          </button>
-          {testResult &&
-            (testResult.ok ? (
-              <span className="text-xs text-emerald-600">
-                ✓ 连接成功 · {testResult.latencyMs}ms · {testResult.toolCount} 个工具
-                {testResult.tools && testResult.tools.length > 0
-                  ? `（${testResult.tools.slice(0, 5).join(", ")}${(testResult.tools.length ?? 0) > 5 ? "…" : ""}）`
-                  : ""}
-              </span>
-            ) : (
-              <span className="text-xs text-destructive">✕ {testResult.error}</span>
-            ))}
-        </div>
-      </Card>
-
-      {/* 双区列表 */}
-      <div className="mb-2 text-sm font-semibold text-muted-foreground">我的连接器</div>
-      {mine.length === 0 ? (
-        <div className="mb-4 text-sm text-muted-foreground">暂无连接器，用上方表单创建。</div>
-      ) : (
-        <div className="mb-4 space-y-2">{mine.map(renderCard)}</div>
-      )}
-
-      <div className="mb-2 text-sm font-semibold text-muted-foreground">
-        全局连接器（人人可用；仅创建人可管理）
-      </div>
-      {global.length === 0 ? (
-        <div className="text-sm text-muted-foreground">暂无他人共享的全局连接器。</div>
-      ) : (
-        <div className="space-y-2">{global.map(renderCard)}</div>
+        </DialogShell>
       )}
 
       <ConfirmDialog

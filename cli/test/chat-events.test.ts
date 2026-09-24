@@ -31,11 +31,36 @@ describe("classifyEvent", () => {
     });
   });
 
-  it("审批卡片 → approval 动作", () => {
+  it("审批卡片 → approval 动作（老事件缺 approvalId 时 respondId 退回 gateId）", () => {
     const s = { messageId: null };
     expect(
       classifyEvent({ type: "approval_card", gateId: "g1", title: "部署", summary: "确认?" }, s),
-    ).toEqual({ kind: "approval", gateId: "g1", title: "部署", summary: "确认?" });
+    ).toEqual({
+      kind: "approval",
+      respondId: "g1",
+      gateId: "g1",
+      title: "部署",
+      summary: "确认?",
+    });
+    // 新服务端携带一次性 approvalId：respond 目标 = approvalId
+    expect(
+      classifyEvent(
+        {
+          type: "approval_card",
+          approvalId: "a-uuid",
+          gateId: "g1",
+          title: "部署",
+          summary: "确认?",
+        },
+        s,
+      ),
+    ).toEqual({
+      kind: "approval",
+      respondId: "a-uuid",
+      gateId: "g1",
+      title: "部署",
+      summary: "确认?",
+    });
   });
 
   it("缺失卡片 → credential_missing 动作", () => {

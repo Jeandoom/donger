@@ -5,7 +5,7 @@ import { Button } from "../../components/ui/button";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
 import { Input } from "../../components/ui/input";
 import { deleteCredentialValue, upsertCredentialValue } from "../../lib/skills";
-import { DialogShell } from "./dialog-shell";
+import { DialogShell } from "../../components/ui/dialog-shell";
 import type { CredentialRow } from "./model";
 
 /**

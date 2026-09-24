@@ -26,7 +26,6 @@ import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
-import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import {
   SqliteKbLibraryStore,
@@ -35,9 +34,11 @@ import {
 } from "./adapters/sqlite-kb-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
+import { SqliteMcpTokenStore } from "./adapters/sqlite-mcp-token-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
+import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
 import { SqliteTriggerStore } from "./adapters/sqlite-trigger-store.js";
@@ -62,10 +63,10 @@ import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
 import { configureGithubProxy } from "./util/github-oauth-api.js";
-import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
-import { createLogger } from "./util/logger.js";
 import { migrateKnowledgeBases } from "./util/kb-migrate.js";
+import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
+import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
 import { createKbFts, migrateKbFts } from "./util/kb-fts.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
@@ -127,12 +128,29 @@ async function main(): Promise<void> {
   messageStore.migrate();
   const transcriptStore = new SqliteTranscriptStore(db);
   transcriptStore.migrate();
+  const mcpTokenStore = new SqliteMcpTokenStore(db);
+  mcpTokenStore.migrate();
 
   // Agent 密钥加密器 + Agent/分享 store
+  const bootAppConfig = new SqliteModuleConfigStore(
+    db,
+    loadOrGenerateAppSecret(db, "module_config_secret_key"),
+  );
+  bootAppConfig.migrate();
   if (!cfg.secretKeySeed) {
-    log.warn("SECRET_KEY 与 JWT_SECRET 均为空，agent MCP 密钥将使用不安全默认密钥");
+    // SECRET_KEY 与 JWT_SECRET 均未配置：生成一次性随机 seed 持久化到 app_config
+    //（此前回退硬编码公开常量 = 拿到库文件即可解密全部 MCP 密钥）
+    const persisted = bootAppConfig.getFlag("secret_key_seed");
+    if (persisted) {
+      cfg.secretKeySeed = persisted;
+      log.warn("SECRET_KEY 未配置，使用首次启动生成的持久化随机密钥（建议显式配置 SECRET_KEY）");
+    } else {
+      cfg.secretKeySeed = randomBytes(32).toString("hex");
+      bootAppConfig.setFlag("secret_key_seed", cfg.secretKeySeed);
+      log.warn("SECRET_KEY 未配置，已生成并持久化随机密钥到 app_config（建议显式配置 SECRET_KEY）");
+    }
   }
-  const secretCipher = createSecretCipher(cfg.secretKeySeed || "donger-insecure-default");
+  const secretCipher = createSecretCipher(cfg.secretKeySeed);
   const agentStore = new SqliteAgentStore(db, secretCipher);
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
@@ -274,6 +292,9 @@ async function main(): Promise<void> {
         ].join("\n"),
         agentLlmPresets: cfg.agentLlmPresets,
         sessionIdleRollHours: cfg.sessionIdleRollHours,
+        // 要害路径读守卫（2026-09-24 审计 H1/D3）：数据库目录+平台安装根（含 .env、
+        // .deploy、源码）对 agent Bash/Read 拒绝；本人工作区经 allowRead 豁免
+        sensitivePaths: [dirname(cfg.dbPath), process.cwd()],
       },
       skillPackStore,
       credentialSets,
@@ -439,6 +460,7 @@ async function main(): Promise<void> {
     commentStore,
     feedbackStore,
     sessionStore,
+    mcpTokenStore,
     cliToken: cfg.cliToken || undefined,
     moduleConfigStore,
     dingtalkChannelController: { apply: applyDingTalkChannel },
@@ -489,6 +511,7 @@ async function main(): Promise<void> {
     workspaceRoot: cfg.workspaceDir,
     channelId: "web",
     logger: log,
+    allowPrivateNet: cfg.triggerAllowPrivateNet,
   });
   const scheduler = new SchedulerService({
     loopStore,
