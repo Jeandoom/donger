@@ -2651,7 +2651,12 @@ export class WebChannel implements Channel {
       if (!provider) return this.json(res, { error: "配置不存在" }, 404);
       const model = provider.models[0] ?? "";
       if (!model) return this.json(res, { error: "该配置没有可用模型" }, 400);
-      const result = await tester.test({ baseUrl: provider.baseUrl, key: provider.key, model });
+      const result = await tester.test({
+        baseUrl: provider.baseUrl,
+        key: provider.key,
+        model,
+        sdkType: provider.sdkType,
+      });
       return this.json(res, result);
     }
 

@@ -11,6 +11,7 @@ import {
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import type { LlmSdkType } from "../domain/llm-platforms.js";
 import { parseModelRef } from "../domain/model-ref.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
@@ -137,12 +138,15 @@ export class RuntimeManager {
     // ① 消息显式 modelRef ② conversation.lastModelRef（上次选择，兼作无选择 UI 渠道 fallback）
     // ③ 用户默认 provider ④ 全局 .env
     // （agent 侧 presetId/modelRefs 配置已退役，specs/2026-09-21-agent-config-llm-removal-skills-tree-design.md）
+    // sdkType 随来源走（specs/2026-09-21-codex-openai-runner-design.md §6）：provider 自带；
+    // preset 是历史 anthropic 端点清单，覆盖 baseUrl 时强制 anthropic（防 openai 基底被 preset 换端后协议错配）。
     const defaultProvider = await this.deps.llmProviderStore?.findDefaultWithKey(user.id);
     const baseLlm: LLMConfig = defaultProvider
       ? {
           model: defaultProvider.models[0] ?? this.deps.config.llm.model,
           baseUrl: defaultProvider.baseUrl,
           authToken: defaultProvider.key,
+          sdkType: defaultProvider.sdkType,
         }
       : this.deps.config.llm;
     let llm: LLMConfig = baseLlm;
@@ -303,6 +307,12 @@ export class RuntimeManager {
       idleRollMs > 0 &&
       Boolean(conversation.sdkSessionId) &&
       Date.now() - Date.parse(conversation.updatedAt) > idleRollMs;
+    // 会话切型：claude sessionId 与 codex threadId 不同命名空间，引擎换了必须弃 resume
+    // 开新线程（历史消息仍在 UI 流里，specs/2026-09-21-codex-openai-runner-design.md §7.4）
+    const sdkTypeMismatch =
+      Boolean(conversation.sdkSessionId) &&
+      conversation.llmSdkType !== undefined &&
+      conversation.llmSdkType !== (llm.sdkType ?? "anthropic");
 
     const runOptions: RunOptions = {
       cwd: runtimeDir,
@@ -311,7 +321,7 @@ export class RuntimeManager {
       llm,
       systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
       abortSignal: opts.abortSignal,
-      resume: idleTooLong ? undefined : conversation.sdkSessionId || undefined,
+      resume: idleTooLong || sdkTypeMismatch ? undefined : conversation.sdkSessionId || undefined,
       workspaceRoot: user.homeDir,
       additionalDirectories,
       allowedWriteRoots,
@@ -345,11 +355,11 @@ export class RuntimeManager {
     if (parsed.kind === "preset") {
       const preset = this.deps.config.agentLlmPresets.find((p) => p.id === parsed.id);
       if (!preset) return undefined;
-      return { ...baseLlm, model: preset.model, baseUrl: preset.baseUrl };
+      return { ...baseLlm, model: preset.model, baseUrl: preset.baseUrl, sdkType: "anthropic" };
     }
     const provider = await this.deps.llmProviderStore?.getWithKey(user.id, parsed.providerId);
     if (!provider?.models.includes(parsed.model)) return undefined;
-    return { model: parsed.model, baseUrl: provider.baseUrl, authToken: provider.key };
+    return { model: parsed.model, baseUrl: provider.baseUrl, authToken: provider.key, sdkType: provider.sdkType };
   }
 
   /**
@@ -473,11 +483,15 @@ export class RuntimeManager {
     return extra ? `${base}\n\n${extra}` : base;
   }
 
-  async commit(conversationId: string, patch: { sdkSessionId?: string }): Promise<void> {
-    if (patch.sdkSessionId !== undefined) {
-      await this.deps.conversationStore.update(conversationId, {
-        sdkSessionId: patch.sdkSessionId,
-      });
+  async commit(
+    conversationId: string,
+    patch: { sdkSessionId?: string; llmSdkType?: LlmSdkType },
+  ): Promise<void> {
+    const update: Record<string, string> = {};
+    if (patch.sdkSessionId !== undefined) update.sdkSessionId = patch.sdkSessionId;
+    if (patch.llmSdkType !== undefined) update.llmSdkType = patch.llmSdkType;
+    if (Object.keys(update).length > 0) {
+      await this.deps.conversationStore.update(conversationId, update);
     }
   }
 

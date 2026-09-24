@@ -399,6 +399,7 @@ describe("RuntimeManager agent 分支", () => {
       model: "claude-sonnet",
       baseUrl: "https://user-llm.example.com/anthropic",
       authToken: "user-key",
+      sdkType: "anthropic",
     });
   });
 
@@ -465,6 +466,7 @@ describe("RuntimeManager agent 分支", () => {
       model: "glm-4.5",
       baseUrl: "https://open.bigmodel.cn/api/anthropic",
       authToken: "prov-key",
+      sdkType: "anthropic",
     });
     expect(convStore.snapshot(conv.id)?.lastModelRef).toBe("provider:prov-1:glm-4.5");
   });

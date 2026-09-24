@@ -1,7 +1,8 @@
 // 预支持 LLM 平台注册表（单一事实源：设置页下拉、provider 校验、迁移反查共用）。
-// 端点均为 Anthropic 协议兼容（SDK 经 ANTHROPIC_BASE_URL 消费）；
-// OpenAI 官方无 Anthropic 端点，待 Codex Agent SDK 轮次以 sdkType="openai" 原生接入，
-// 本版仅保留 custom 兜底（自定义 baseUrl / 网关）。
+// sdkType="anthropic"：端点均为 Anthropic 协议兼容（SDK 经 ANTHROPIC_BASE_URL 消费）；
+// sdkType="openai"：OpenAI 协议端点（chat/completions 形态），经 Codex Agent SDK +
+// 内置 Responses↔Chat 桥原生接入（specs/2026-09-21-codex-openai-runner-design.md）；
+// custom 平台二者可选（按 baseUrl 实际协议形态选择）。
 export const LLM_SDK_TYPES = ["anthropic", "openai"] as const;
 export type LlmSdkType = (typeof LLM_SDK_TYPES)[number];
 
@@ -69,6 +70,41 @@ export const LLM_PLATFORMS: readonly LlmPlatform[] = [
     custom: false,
     sdkType: "anthropic",
   },
+  // —— OpenAI 协议平台（sdkType="openai"，CodexAgentRunner 引擎；specs/2026-09-21-codex-openai-runner-design.md）——
+  // baseUrl 均为 chat/completions 形态根：codex 0.155+ 已移除 wire_api="chat"，
+  // 全部经内置 Responses↔Chat 桥翻译（上游 key 留服务端，不进 agent 进程）。
+  {
+    id: "openai",
+    name: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    models: ["gpt-5.1", "gpt-5.1-codex", "gpt-4.1"],
+    custom: false,
+    sdkType: "openai",
+  },
+  {
+    id: "deepseek-openai",
+    name: "DeepSeek（OpenAI 协议）",
+    baseUrl: "https://api.deepseek.com/v1",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+    custom: false,
+    sdkType: "openai",
+  },
+  {
+    id: "moonshot-openai",
+    name: "Moonshot Kimi（OpenAI 协议）",
+    baseUrl: "https://api.moonshot.cn/v1",
+    models: ["kimi-k2-turbo-preview", "kimi-k2-0905-preview"],
+    custom: false,
+    sdkType: "openai",
+  },
+  {
+    id: "zhipu-openai",
+    name: "智谱 AI（OpenAI 协议）",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    models: ["glm-5.3-flash", "glm-4.6", "glm-4.5"],
+    custom: false,
+    sdkType: "openai",
+  },
   {
     id: "custom",
     name: "自定义 / 网关",
@@ -76,7 +112,7 @@ export const LLM_PLATFORMS: readonly LlmPlatform[] = [
     models: [],
     custom: true,
     sdkType: "anthropic",
-    note: "自由填写 Anthropic 兼容 baseUrl（含协议转换网关）",
+    note: "自由填写 baseUrl：Anthropic 兼容端点或 OpenAI 协议端点（选 sdkType 决定引擎）",
   },
 ];
 

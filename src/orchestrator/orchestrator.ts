@@ -849,8 +849,13 @@ export class Orchestrator {
     // 回写 sdkSessionId（经 RuntimeManager.commit）；title 仅首轮设置。内部轮（noResume）不回写
     if (!p.noResume && capturedSessionId && capturedSessionId !== p.conversation.sdkSessionId) {
       const wasFirstTurn = !p.conversation.sdkSessionId;
-      await this.deps.runtimeMgr.commit(p.conversation.id, { sdkSessionId: capturedSessionId });
+      const llmSdkType = opts.llm.sdkType;
+      await this.deps.runtimeMgr.commit(p.conversation.id, {
+        sdkSessionId: capturedSessionId,
+        ...(llmSdkType ? { llmSdkType } : {}),
+      });
       p.conversation.sdkSessionId = capturedSessionId;
+      if (llmSdkType) p.conversation.llmSdkType = llmSdkType;
       if (wasFirstTurn) {
         await this.deps.conversationStore.update(p.conversation.id, {
           title: (p.titleText ?? p.task.prompt).slice(0, 30),

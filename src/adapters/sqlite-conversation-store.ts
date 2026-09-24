@@ -24,6 +24,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensurePermissionModeColumn();
     this.ensureLastModelRefColumn();
     this.ensureKbIdColumn();
+    this.ensureLlmSdkTypeColumn();
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(userId, archived, updatedAt DESC)",
     );
@@ -58,6 +59,14 @@ export class SqliteConversationStore implements ConversationStore {
     const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "kbId")) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN kbId TEXT");
+    }
+  }
+
+  /** 最近一次运行所用引擎列（codex 引擎轮 specs/2026-09-21）；NULL = 未运行过/存量 anthropic 会话 */
+  private ensureLlmSdkTypeColumn(): void {
+    const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "llmSdkType")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN llmSdkType TEXT");
     }
   }
 
@@ -144,7 +153,7 @@ export class SqliteConversationStore implements ConversationStore {
     const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
     this.db
       .prepare(
-        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, archived = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, llmSdkType = ?, archived = ?, updatedAt = ? WHERE id = ?",
       )
       .run(
         updated.sdkSessionId,
@@ -153,6 +162,7 @@ export class SqliteConversationStore implements ConversationStore {
         updated.kbId ?? null,
         updated.permissionMode ?? null,
         updated.lastModelRef ?? null,
+        updated.llmSdkType ?? null,
         updated.archived ? 1 : 0,
         updated.updatedAt,
         id,
@@ -174,6 +184,10 @@ export class SqliteConversationStore implements ConversationStore {
       ...(typeof row.kbId === "string" && row.kbId !== "" ? { kbId: row.kbId } : {}),
       permissionMode,
       lastModelRef: (row.lastModelRef as string) || undefined,
+      llmSdkType:
+        row.llmSdkType === "openai" || row.llmSdkType === "anthropic"
+          ? row.llmSdkType
+          : undefined,
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,
       archived: row.archived === 1,

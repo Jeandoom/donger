@@ -68,3 +68,45 @@ describe("LlmProviderTester", () => {
     expect(capturedHeaders["anthropic-version"]).toBe("2023-06-01");
   });
 });
+
+describe("LlmProviderTester openai 分支", () => {
+  const OPENAI_TARGET = {
+    baseUrl: "https://api.deepseek.com/v1/",
+    key: "sk-openai",
+    model: "deepseek-chat",
+    sdkType: "openai" as const,
+  };
+
+  it("探测 {baseUrl}/chat/completions（去尾斜杠），choices 形态→ok", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    mockFetchOnce(async (input, init) => {
+      capturedUrl = input;
+      capturedInit = init;
+      return new Response(JSON.stringify({ choices: [{ message: {} }] }), { status: 200 });
+    });
+    const result = await new LlmProviderTester().test(OPENAI_TARGET);
+    expect(result).toEqual({ ok: true, model: "deepseek-chat" });
+    expect(capturedUrl).toBe("https://api.deepseek.com/v1/chat/completions");
+    const headers = (capturedInit?.headers ?? {}) as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer sk-openai");
+    expect(JSON.parse(String(capturedInit?.body)).messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("401/403→auth；200 无 choices→protocol", async () => {
+    mockFetchOnce(async () => new Response("{}", { status: 401 }));
+    expect(await new LlmProviderTester().test(OPENAI_TARGET)).toMatchObject({ ok: false, kind: "auth" });
+    mockFetchOnce(async () => new Response(JSON.stringify({ content: [] }), { status: 200 }));
+    expect(await new LlmProviderTester().test(OPENAI_TARGET)).toMatchObject({ ok: false, kind: "protocol" });
+  });
+
+  it("缺省 sdkType 仍走 anthropic 探测（既有行为不回归）", async () => {
+    let capturedUrl = "";
+    mockFetchOnce(async (input) => {
+      capturedUrl = input;
+      return new Response(JSON.stringify({ content: [{ type: "text" }] }), { status: 200 });
+    });
+    await new LlmProviderTester().test(TARGET);
+    expect(capturedUrl).toBe(`${TARGET.baseUrl}/v1/messages`);
+  });
+});

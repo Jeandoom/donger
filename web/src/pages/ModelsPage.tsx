@@ -29,6 +29,8 @@ interface ProviderForm {
   key: string;
   modelsText: string;
   isDefault: boolean;
+  /** 仅 custom 平台可选手册（其余平台由注册表锁定）；决定执行引擎 */
+  sdkType: "anthropic" | "openai";
 }
 
 const EMPTY_FORM: ProviderForm = {
@@ -39,6 +41,7 @@ const EMPTY_FORM: ProviderForm = {
   key: "",
   modelsText: "",
   isDefault: false,
+  sdkType: "anthropic",
 };
 
 function platformName(platforms: LlmPlatformInfo[], id: string): string {
@@ -101,6 +104,7 @@ export function ModelsPage() {
       key: "",
       modelsText: provider.models.join("\n"),
       isDefault: provider.isDefault,
+      sdkType: provider.sdkType ?? "anthropic",
     });
   }
 
@@ -109,9 +113,10 @@ export function ModelsPage() {
     setForm((f) => ({
       ...f,
       platform: platformId,
-      // 换平台重置 baseUrl/模型预填（仅新建时可换平台）
+      // 换平台重置 baseUrl/模型预填/sdkType（仅新建时可换平台）
       baseUrl: platform?.custom ? "" : (platform?.baseUrl ?? ""),
       modelsText: (platform?.models ?? []).join("\n"),
+      sdkType: platform?.custom ? "anthropic" : (platform?.sdkType ?? "anthropic"),
     }));
   }
 
@@ -137,6 +142,7 @@ export function ModelsPage() {
         name: form.name.trim(),
         platform: selectedPlatform.id,
         ...(selectedPlatform.custom ? { baseUrl: form.baseUrl.trim() } : {}),
+        ...(selectedPlatform.custom ? { sdkType: form.sdkType } : {}),
         ...(form.key.trim() ? { key: form.key.trim() } : {}),
         models,
         isDefault: form.isDefault,
@@ -272,8 +278,31 @@ export function ModelsPage() {
             />
           </label>
 
+          {selectedPlatform.custom ? (
+            <label className="block space-y-1" htmlFor="llm-provider-sdk-type">
+              <span className="text-sm font-medium">端点协议（决定执行引擎）</span>
+              <Select
+                id="llm-provider-sdk-type"
+                value={form.sdkType}
+                onChange={(e) =>
+                  setForm({ ...form, sdkType: e.target.value as "anthropic" | "openai" })
+                }
+              >
+                <option value="anthropic">Anthropic 兼容（Claude 引擎）</option>
+                <option value="openai">OpenAI 协议（Codex 引擎）</option>
+              </Select>
+              <span className="text-xs text-muted-foreground">
+                OpenAI 协议经内置 Responses↔Chat 桥接入；无交互审批门（命中即拒绝）、AskUserQuestion 不可用
+              </span>
+            </label>
+          ) : null}
+
           <label className="block space-y-1" htmlFor="llm-provider-base-url">
-            <span className="text-sm font-medium">服务地址（Anthropic 兼容 baseUrl）</span>
+            <span className="text-sm font-medium">
+              {form.sdkType === "openai" && selectedPlatform.custom
+                ? "服务地址（OpenAI 协议 baseUrl，chat/completions 根）"
+                : "服务地址（Anthropic 兼容 baseUrl）"}
+            </span>
             <Input
               id="llm-provider-base-url"
               className="font-mono"

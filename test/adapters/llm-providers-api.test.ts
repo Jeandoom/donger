@@ -69,7 +69,8 @@ describe("用户 LLM 供应商配置 API", () => {
     expect(ids).toContain("zhipu-cn");
     expect(ids).toContain("zhipu-global");
     expect(ids).toContain("custom");
-    expect(ids).not.toContain("openai");
+    // openai 协议平台（codex 引擎轮）
+    expect(ids).toContain("openai");
   });
 
   it("CRUD 闭环：新建（脱敏）→ 列表 → 更新（key 留空保持）→ 删除", async () => {
