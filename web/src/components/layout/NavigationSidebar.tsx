@@ -1,4 +1,5 @@
 import {
+  Blocks,
   Bot,
   KeyRound,
   LogOut,
@@ -49,6 +50,8 @@ const mainEntries: LeafItem[] = [
   { to: "/connectors", label: "连接器", icon: Plug },
   // 审计单页：会话栏内置「只看LLM」开关切换历史会话/LLM 观测两种详情形态
   { to: "/audit", label: "审计", icon: ScrollText },
+  // MCP 接入：所有用户；授权页的单区入口（个人令牌与外部 agent 配置）
+  { to: "/mcp", label: "MCP 接入", icon: Blocks },
 ];
 
 // 原设置子模块一级化，沉底展示（个人并入底部用户栏，不再占导航位）
@@ -252,9 +255,7 @@ export function NavigationSidebar({
       <div className="mt-2 shrink-0 border-t border-white/10 pt-2">
         <div className="flex flex-col gap-0.5">
           {bottomEntries.map((e) => renderLeaf(e, collapsed))}
-          {user?.role === "admin"
-            ? adminBottomEntries.map((e) => renderLeaf(e, collapsed))
-            : null}
+          {user?.role === "admin" ? adminBottomEntries.map((e) => renderLeaf(e, collapsed)) : null}
         </div>
       </div>
 

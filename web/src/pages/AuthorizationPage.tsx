@@ -1,21 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
+import { McpSection } from "../components/authorization/McpSection";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { Input } from "../components/ui/input";
-import { PageHeader } from "../components/ui/page-header";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { type AdminUser, fetchAdminUsers, updateUserRole } from "../lib/adminUsers";
 import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
+import { cn } from "../lib/utils";
 
 /**
- * 授权模块（admin，spec 2026-09-21-auth-module-design §3.3）：
- * 钉钉 / GitHub / 邮箱注册与验证 的配置统一在此维护。
- * 「应用」即生效：登录配置每请求读库即时生效；钉钉机器人消息通道保存后运行时换血，无需重启。
+ * 授权模块（spec 2026-09-21-auth-module-design §3.3；布局重构 2026-09-24）：
+ * 左侧固定导航 + 右侧详情（布局对齐 AgentEditorPage 的 sticky 模式）。
+ * 平台授权配置（钉钉/GitHub/邮箱/用户管理，admin）与个人接入（MCP）分区维护；
+ * 「应用」即生效：登录配置每请求读库即时生效，钉钉机器人消息通道保存后运行时换血，无需重启。
  * 加载完成前表单不渲染、应用按钮禁用——防止把空配置 PUT 上去（清空 AppKey = 停用钉钉登录）。
+ * 非 admin 打开本页时仅渲染「MCP 接入」（admin 接口由守卫 fail-closed，前端不发起请求）。
  */
 
 interface AuthConfigsView {
@@ -38,6 +42,24 @@ interface EmailVerification {
   expired: boolean;
   verifyPath: string | null;
 }
+
+type SectionId = "dingtalk" | "github" | "email" | "verifications" | "users" | "mcp";
+
+interface SectionDef {
+  id: SectionId;
+  label: string;
+  group: "平台授权" | "个人接入";
+  adminOnly: boolean;
+}
+
+const SECTIONS: SectionDef[] = [
+  { id: "dingtalk", label: "钉钉登录", group: "平台授权", adminOnly: true },
+  { id: "github", label: "GitHub 登录", group: "平台授权", adminOnly: true },
+  { id: "email", label: "邮箱注册", group: "平台授权", adminOnly: true },
+  { id: "verifications", label: "待验证账号", group: "平台授权", adminOnly: true },
+  { id: "users", label: "用户管理", group: "平台授权", adminOnly: true },
+  { id: "mcp", label: "MCP 接入", group: "个人接入", adminOnly: false },
+];
 
 const PROVIDER_LABEL: Record<string, string> = {
   email: "邮箱",
@@ -77,6 +99,376 @@ function SectionHead({
       </div>
       <p className="text-xs text-muted-foreground">{description}</p>
     </div>
+  );
+}
+
+function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(
+          () => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          },
+          () => undefined,
+        );
+      }}
+    >
+      {copied ? "已复制" : label}
+    </Button>
+  );
+}
+
+/** 分区加载骨架（配置请求返回前不渲染表单） */
+function SectionSkeleton() {
+  return (
+    <Card className="space-y-3 p-5" aria-hidden="true">
+      <div className="h-5 w-32 animate-pulse rounded bg-muted" />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="h-9 animate-pulse rounded-lg bg-muted" />
+        <div className="h-9 animate-pulse rounded-lg bg-muted" />
+      </div>
+      <div className="h-9 w-24 animate-pulse rounded-lg bg-muted" />
+    </Card>
+  );
+}
+
+/** 钉钉登录配置（admin） */
+function DingtalkSection({
+  view,
+  onReload,
+}: {
+  view: AuthConfigsView | null;
+  onReload: () => void;
+}) {
+  const [appKey, setAppKey] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+  const [robotCode, setRobotCode] = useState("");
+  const [cardTemplateId, setCardTemplateId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const loaded = view !== null;
+
+  useEffect(() => {
+    if (!view) return;
+    setAppKey(view.dingtalk.appKey);
+    setAppSecret("");
+    setRobotCode(view.dingtalk.robotCode);
+    setCardTemplateId(view.dingtalk.cardTemplateId);
+  }, [view]);
+
+  const apply = () => {
+    if (!loaded) return;
+    setBusy(true);
+    setMsg(null);
+    void apiFetch("/api/admin/auth-configs/dingtalk", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appKey, appSecret, robotCode, cardTemplateId }),
+    })
+      .then(async (r) => {
+        const data = (await r.json().catch(() => ({}))) as {
+          error?: string;
+          robotChannelActive?: boolean;
+        };
+        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
+        setMsg({
+          ok: true,
+          text: data.robotChannelActive
+            ? "已应用：扫码登录即时生效，机器人消息通道已重载"
+            : "已应用：配置已停用或机器人字段不全，消息通道未启用",
+        });
+        setAppSecret("");
+        onReload();
+      })
+      .catch((reason: unknown) =>
+        setMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card className="space-y-3 p-5">
+      <SectionHead
+        title="钉钉登录"
+        description="企业自建应用（钉钉开放平台）；机器人消息通道相关字段保存后自动重载通道，无需重启"
+        status={
+          view?.dingtalk.appKey
+            ? { label: "已启用", tone: "success" }
+            : { label: "未配置", tone: "neutral" }
+        }
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">AppKey</span>
+          <Input
+            type="text"
+            value={appKey}
+            onChange={(e) => setAppKey(e.target.value)}
+            placeholder="留空 = 停用钉钉登录"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">
+            App Secret{view?.dingtalk.appSecretSet ? "（已设置，留空保留）" : ""}
+          </span>
+          <Input
+            type="password"
+            value={appSecret}
+            onChange={(e) => setAppSecret(e.target.value)}
+            placeholder={view?.dingtalk.appSecretSet ? "••••••••" : "未设置"}
+            autoComplete="new-password"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">Robot Code（机器人消息通道）</span>
+          <Input type="text" value={robotCode} onChange={(e) => setRobotCode(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">AI 卡片模板 ID（可选）</span>
+          <Input
+            type="text"
+            value={cardTemplateId}
+            onChange={(e) => setCardTemplateId(e.target.value)}
+          />
+        </label>
+      </div>
+      {view ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>回调地址（须与钉钉开放平台登记一致）：</span>
+          <code className="rounded bg-muted px-1.5 py-0.5">{view.dingtalk.callbackUrl}</code>
+          <CopyButton text={view.dingtalk.callbackUrl} />
+        </div>
+      ) : null}
+      <ApplyMsg msg={msg} />
+      <Button onClick={apply} disabled={busy || !loaded}>
+        {busy ? "应用中…" : "应用"}
+      </Button>
+    </Card>
+  );
+}
+
+/** GitHub 登录配置（admin） */
+function GithubSection({ view, onReload }: { view: AuthConfigsView | null; onReload: () => void }) {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const loaded = view !== null;
+
+  useEffect(() => {
+    if (!view) return;
+    setClientId(view.github.clientId);
+    setClientSecret("");
+  }, [view]);
+
+  const apply = () => {
+    if (!loaded) return;
+    setBusy(true);
+    setMsg(null);
+    void apiFetch("/api/admin/auth-configs/github", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientId, clientSecret }),
+    })
+      .then(async (r) => {
+        const data = (await r.json().catch(() => ({}))) as { error?: string };
+        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
+        setMsg({ ok: true, text: "已应用：GitHub 登录/绑定即时生效" });
+        setClientSecret("");
+        onReload();
+      })
+      .catch((reason: unknown) =>
+        setMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card className="space-y-3 p-5">
+      <SectionHead
+        title="GitHub 登录"
+        description="OAuth App（github.com/settings/developers）；仅取身份（read:user），不涉及仓库权限"
+        status={
+          view?.github.clientId
+            ? { label: "已启用", tone: "success" }
+            : { label: "未配置", tone: "neutral" }
+        }
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">Client ID</span>
+          <Input
+            type="text"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="留空 = 停用 GitHub 登录"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">
+            Client Secret{view?.github.clientSecretSet ? "（已设置，留空保留）" : ""}
+          </span>
+          <Input
+            type="password"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder={view?.github.clientSecretSet ? "••••••••" : "未设置"}
+            autoComplete="new-password"
+          />
+        </label>
+      </div>
+      {view ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>回调地址（须与 OAuth App 登记一致）：</span>
+          <code className="rounded bg-muted px-1.5 py-0.5">{view.github.callbackUrl}</code>
+          <CopyButton text={view.github.callbackUrl} />
+        </div>
+      ) : null}
+      <ApplyMsg msg={msg} />
+      <Button onClick={apply} disabled={busy || !loaded}>
+        {busy ? "应用中…" : "应用"}
+      </Button>
+    </Card>
+  );
+}
+
+/** 邮箱注册与验证配置（admin） */
+function EmailSection({ view, onReload }: { view: AuthConfigsView | null; onReload: () => void }) {
+  const [domainsText, setDomainsText] = useState("");
+  const [loginEnabled, setLoginEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const loaded = view !== null;
+
+  useEffect(() => {
+    if (!view) return;
+    setDomainsText(view.email.signupAllowedDomains.join("\n"));
+    setLoginEnabled(view.email.loginEnabled);
+  }, [view]);
+
+  const apply = () => {
+    if (!loaded) return;
+    setBusy(true);
+    setMsg(null);
+    void apiFetch("/api/admin/auth-configs/email", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signupAllowedDomains: domainsText, loginEnabled }),
+    })
+      .then(async (r) => {
+        const data = (await r.json().catch(() => ({}))) as { error?: string };
+        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
+        setMsg({ ok: true, text: "已应用：注册白名单与登录开关即时生效" });
+        onReload();
+      })
+      .catch((reason: unknown) =>
+        setMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card className="space-y-3 p-5">
+      <SectionHead
+        title="邮箱注册与验证"
+        description="域名白名单为空 = 关闭无邀请自助注册（仅邀请链接可注册）；新注册账号需管理员转交验证链接完成验证"
+        status={
+          view?.email.loginEnabled
+            ? { label: "已启用", tone: "success" }
+            : { label: "已停用", tone: "neutral" }
+        }
+      />
+      <label className="flex flex-col gap-1.5 text-sm">
+        <span className="text-[13px] font-semibold">
+          邮箱域名白名单（每行一个，支持 .example.com 通配子域）
+        </span>
+        <Textarea
+          rows={3}
+          value={domainsText}
+          onChange={(e) => setDomainsText(e.target.value)}
+          placeholder={"example.com\n.corp.cn"}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <Switch
+          checked={loginEnabled}
+          onCheckedChange={setLoginEnabled}
+          aria-label="启用邮箱登录"
+        />
+        启用邮箱登录（登录页展示邮箱表单）
+      </label>
+      <ApplyMsg msg={msg} />
+      <Button onClick={apply} disabled={busy || !loaded}>
+        {busy ? "应用中…" : "应用"}
+      </Button>
+    </Card>
+  );
+}
+
+/** 待验证账号管理（admin；自邀请页迁入） */
+function VerificationsSection() {
+  const [verifications, setVerifications] = useState<EmailVerification[] | null>(null);
+
+  useEffect(() => {
+    void apiFetch("/api/admin/email-verifications")
+      .then(async (r) =>
+        r.ok ? ((await r.json()) as { verifications: EmailVerification[] }) : null,
+      )
+      .then((data) => setVerifications(data?.verifications ?? null))
+      .catch(() => setVerifications(null));
+  }, []);
+
+  if (!verifications) return null;
+  return (
+    <Card className="space-y-3 p-5">
+      <SectionHead
+        title="待验证账号"
+        description="邮箱注册账号需凭验证链接完成验证；把链接发给对应用户，对方打开即完成验证并自动登录"
+        status={null}
+      />
+      {verifications.length === 0 ? (
+        <p className="text-sm text-muted-foreground">暂无邮箱验证记录</p>
+      ) : (
+        <div className="space-y-2">
+          {verifications.map((v) => {
+            const status = v.verified
+              ? { label: "已验证", tone: "success" as const }
+              : v.expired
+                ? { label: "已过期", tone: "neutral" as const }
+                : { label: "待验证", tone: "warning" as const };
+            return (
+              <div
+                key={v.userId}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm">{v.email}</div>
+                  {v.expiresAt ? (
+                    <div className="text-xs text-muted-foreground">
+                      验证有效期至 {new Date(v.expiresAt).toLocaleString()}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge tone={status.tone}>{status.label}</Badge>
+                  {status.label === "待验证" && v.verifyPath ? (
+                    <CopyButton
+                      text={`${window.location.origin}${v.verifyPath}`}
+                      label="复制验证链接"
+                    />
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -241,69 +633,31 @@ function UserManagementSection() {
   );
 }
 
-function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(
-          () => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-          },
-          () => undefined,
-        );
-      }}
-    >
-      {copied ? "已复制" : label}
-    </Button>
-  );
-}
-
-/** 分区加载骨架（配置请求返回前不渲染表单） */
-function SectionSkeleton() {
-  return (
-    <Card className="space-y-3 p-5" aria-hidden="true">
-      <div className="h-5 w-32 animate-pulse rounded bg-muted" />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="h-9 animate-pulse rounded-lg bg-muted" />
-        <div className="h-9 animate-pulse rounded-lg bg-muted" />
-      </div>
-      <div className="h-9 w-24 animate-pulse rounded-lg bg-muted" />
-    </Card>
-  );
-}
-
+/** 主组件：左侧固定导航 + 右侧详情（/mcp 路由 = MCP 接入单区入口，所有登录用户可用） */
 export function AuthorizationPage() {
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [me, setMe] = useState<CurrentUser | null>(null);
   const [view, setView] = useState<AuthConfigsView | null>(null);
   const [loadError, setLoadError] = useState("");
 
-  // 钉钉表单
-  const [dtAppKey, setDtAppKey] = useState("");
-  const [dtAppSecret, setDtAppSecret] = useState("");
-  const [dtRobotCode, setDtRobotCode] = useState("");
-  const [dtCardTemplateId, setDtCardTemplateId] = useState("");
-  const [dtBusy, setDtBusy] = useState(false);
-  const [dtMsg, setDtMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const mcpOnlyRoute = location.pathname === "/mcp";
+  const isAdmin = me?.role === "admin";
 
-  // GitHub 表单
-  const [ghClientId, setGhClientId] = useState("");
-  const [ghClientSecret, setGhClientSecret] = useState("");
-  const [ghBusy, setGhBusy] = useState(false);
-  const [ghMsg, setGhMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    void fetchMe().then(setMe);
+  }, []);
 
-  // 邮箱表单
-  const [domainsText, setDomainsText] = useState("");
-  const [emailLoginEnabled, setEmailLoginEnabled] = useState(true);
-  const [emailBusy, setEmailBusy] = useState(false);
-  const [emailMsg, setEmailMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const allowed = SECTIONS.filter((s) => mcpOnlyRoute || !s.adminOnly || isAdmin);
+  const requested = mcpOnlyRoute ? "mcp" : (searchParams.get("section") as SectionId | null);
+  const active: SectionId =
+    requested && allowed.some((s) => s.id === requested) ? requested : (allowed[0]?.id ?? "mcp");
 
-  // 待验证账号管理（自邀请页迁入）
-  const [verifications, setVerifications] = useState<EmailVerification[] | null>(null);
-
-  const loaded = view !== null;
+  const select = (id: SectionId) => {
+    if (mcpOnlyRoute) return;
+    if (id === SECTIONS[0]?.id) setSearchParams({}, { replace: true });
+    else setSearchParams({ section: id }, { replace: true });
+  };
 
   const load = useCallback(() => {
     setLoadError("");
@@ -312,328 +666,117 @@ export function AuthorizationPage() {
         if (!r.ok) throw new Error(`加载授权配置失败：HTTP ${r.status}`);
         return (await r.json()) as AuthConfigsView;
       })
-      .then((data) => {
-        setView(data);
-        setDtAppKey(data.dingtalk.appKey);
-        setDtAppSecret("");
-        setDtRobotCode(data.dingtalk.robotCode);
-        setDtCardTemplateId(data.dingtalk.cardTemplateId);
-        setGhClientId(data.github.clientId);
-        setGhClientSecret("");
-        setDomainsText(data.email.signupAllowedDomains.join("\n"));
-        setEmailLoginEnabled(data.email.loginEnabled);
-      })
+      .then(setView)
       .catch((reason: unknown) =>
         setLoadError(reason instanceof Error ? reason.message : String(reason)),
       );
   }, []);
 
+  // admin 配置仅 admin 加载（非 admin 请求只会得到 403 噪音）
   useEffect(() => {
-    load();
-    // 邮箱验证管理以 admin 接口可用性判定渲染（同邀请页原实现）
-    void apiFetch("/api/admin/email-verifications")
-      .then(async (r) =>
-        r.ok ? ((await r.json()) as { verifications: EmailVerification[] }) : null,
-      )
-      .then((data) => setVerifications(data?.verifications ?? null))
-      .catch(() => setVerifications(null));
-  }, [load]);
+    if (isAdmin) load();
+  }, [isAdmin, load]);
 
-  const applyDingtalk = () => {
-    if (!loaded) return;
-    setDtBusy(true);
-    setDtMsg(null);
-    void apiFetch("/api/admin/auth-configs/dingtalk", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        appKey: dtAppKey,
-        appSecret: dtAppSecret,
-        robotCode: dtRobotCode,
-        cardTemplateId: dtCardTemplateId,
-      }),
-    })
-      .then(async (r) => {
-        const data = (await r.json().catch(() => ({}))) as {
-          error?: string;
-          robotChannelActive?: boolean;
-        };
-        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
-        setDtMsg({
-          ok: true,
-          text: data.robotChannelActive
-            ? "已应用：扫码登录即时生效，机器人消息通道已重载"
-            : "已应用：配置已停用或机器人字段不全，消息通道未启用",
-        });
-        setDtAppSecret("");
-      })
-      .catch((reason: unknown) =>
-        setDtMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
-      )
-      .finally(() => setDtBusy(false));
-  };
-
-  const applyGithub = () => {
-    if (!loaded) return;
-    setGhBusy(true);
-    setGhMsg(null);
-    void apiFetch("/api/admin/auth-configs/github", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientId: ghClientId, clientSecret: ghClientSecret }),
-    })
-      .then(async (r) => {
-        const data = (await r.json().catch(() => ({}))) as { error?: string };
-        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
-        setGhMsg({ ok: true, text: "已应用：GitHub 登录/绑定即时生效" });
-        setGhClientSecret("");
-      })
-      .catch((reason: unknown) =>
-        setGhMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
-      )
-      .finally(() => setGhBusy(false));
-  };
-
-  const applyEmail = () => {
-    if (!loaded) return;
-    setEmailBusy(true);
-    setEmailMsg(null);
-    void apiFetch("/api/admin/auth-configs/email", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        signupAllowedDomains: domainsText,
-        loginEnabled: emailLoginEnabled,
-      }),
-    })
-      .then(async (r) => {
-        const data = (await r.json().catch(() => ({}))) as { error?: string };
-        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
-        setEmailMsg({ ok: true, text: "已应用：注册白名单与登录开关即时生效" });
-      })
-      .catch((reason: unknown) =>
-        setEmailMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
-      )
-      .finally(() => setEmailBusy(false));
-  };
+  const groups: Array<SectionDef["group"]> = ["平台授权", "个人接入"];
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
-      <PageHeader
-        title="授权"
-        description="钉钉 / GitHub / 邮箱注册的授权配置与用户管理。修改后点击「应用」立即生效，无需重启服务"
-      />
-      {loadError ? (
-        <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
-          <span>{loadError}</span>
-          <Button variant="outline" size="sm" onClick={load}>
-            <RefreshCw className="h-3.5 w-3.5" />
-            重试
-          </Button>
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      {/* Sticky 顶栏 */}
+      <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-card/95 px-5 backdrop-blur">
+        <div className="min-w-0">
+          <h1 className="text-[15px] font-semibold">授权</h1>
+          <p className="hidden truncate text-xs text-muted-foreground sm:block">
+            平台授权配置与个人接入凭证。配置修改即时生效，无需重启服务
+          </p>
         </div>
-      ) : !loaded ? (
-        <>
-          <SectionSkeleton />
-          <SectionSkeleton />
-        </>
-      ) : null}
+      </header>
 
-      {/* 钉钉登录 */}
-      {loaded ? (
-        <Card className="space-y-3 p-5">
-          <SectionHead
-            title="钉钉登录"
-            description="企业自建应用（钉钉开放平台）；机器人消息通道相关字段保存后自动重载通道，无需重启"
-            status={
-              view.dingtalk.appKey ? { label: "已启用", tone: "success" } : { label: "未配置", tone: "neutral" }
-            }
-          />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[13px] font-semibold">AppKey</span>
-              <Input
-                type="text"
-                value={dtAppKey}
-                onChange={(e) => setDtAppKey(e.target.value)}
-                placeholder="留空 = 停用钉钉登录"
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[13px] font-semibold">
-                App Secret{view.dingtalk.appSecretSet ? "（已设置，留空保留）" : ""}
-              </span>
-              <Input
-                type="password"
-                value={dtAppSecret}
-                onChange={(e) => setDtAppSecret(e.target.value)}
-                placeholder={view.dingtalk.appSecretSet ? "••••••••" : "未设置"}
-                autoComplete="new-password"
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[13px] font-semibold">Robot Code（机器人消息通道）</span>
-              <Input
-                type="text"
-                value={dtRobotCode}
-                onChange={(e) => setDtRobotCode(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[13px] font-semibold">AI 卡片模板 ID（可选）</span>
-              <Input
-                type="text"
-                value={dtCardTemplateId}
-                onChange={(e) => setDtCardTemplateId(e.target.value)}
-              />
-            </label>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>回调地址（须与钉钉开放平台登记一致）：</span>
-            <code className="rounded bg-muted px-1.5 py-0.5">{view.dingtalk.callbackUrl}</code>
-            <CopyButton text={view.dingtalk.callbackUrl} />
-          </div>
-          <ApplyMsg msg={dtMsg} />
-          <Button onClick={applyDingtalk} disabled={dtBusy || !loaded}>
-            {dtBusy ? "应用中…" : "应用"}
-          </Button>
-        </Card>
-      ) : null}
+      <div className="flex flex-1 items-start">
+        {/* 移动端：横向分区 chips（sticky 于顶栏下） */}
+        <nav
+          aria-label="授权配置分区"
+          className="sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur lg:hidden"
+        >
+          {allowed.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={cn(
+                "shrink-0 rounded-full px-3 py-1 text-xs transition-colors",
+                active === s.id
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-foreground hover:opacity-80",
+              )}
+              onClick={() => select(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </nav>
 
-      {/* GitHub 登录 */}
-      {loaded ? (
-        <Card className="space-y-3 p-5">
-          <SectionHead
-            title="GitHub 登录"
-            description="OAuth App（github.com/settings/developers）；仅取身份（read:user），不涉及仓库权限"
-            status={
-              view.github.clientId
-                ? { label: "已启用", tone: "success" }
-                : { label: "未配置", tone: "neutral" }
-            }
-          />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[13px] font-semibold">Client ID</span>
-              <Input
-                type="text"
-                value={ghClientId}
-                onChange={(e) => setGhClientId(e.target.value)}
-                placeholder="留空 = 停用 GitHub 登录"
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[13px] font-semibold">
-                Client Secret{view.github.clientSecretSet ? "（已设置，留空保留）" : ""}
-              </span>
-              <Input
-                type="password"
-                value={ghClientSecret}
-                onChange={(e) => setGhClientSecret(e.target.value)}
-                placeholder={view.github.clientSecretSet ? "••••••••" : "未设置"}
-                autoComplete="new-password"
-              />
-            </label>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>回调地址（须与 OAuth App 登记一致）：</span>
-            <code className="rounded bg-muted px-1.5 py-0.5">{view.github.callbackUrl}</code>
-            <CopyButton text={view.github.callbackUrl} />
-          </div>
-          <ApplyMsg msg={ghMsg} />
-          <Button onClick={applyGithub} disabled={ghBusy || !loaded}>
-            {ghBusy ? "应用中…" : "应用"}
-          </Button>
-        </Card>
-      ) : null}
-
-      {/* 邮箱注册与验证 */}
-      {loaded ? (
-        <Card className="space-y-3 p-5">
-          <SectionHead
-            title="邮箱注册与验证"
-            description="域名白名单为空 = 关闭无邀请自助注册（仅邀请链接可注册）；新注册账号需管理员转交验证链接完成验证"
-            status={
-              view.email.loginEnabled
-                ? { label: "已启用", tone: "success" }
-                : { label: "已停用", tone: "neutral" }
-            }
-          />
-          <label className="flex flex-col gap-1.5 text-sm">
-            <span className="text-[13px] font-semibold">
-              邮箱域名白名单（每行一个，支持 .example.com 通配子域）
-            </span>
-            <Textarea
-              rows={3}
-              value={domainsText}
-              onChange={(e) => setDomainsText(e.target.value)}
-              placeholder={"example.com\n.corp.cn"}
-            />
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={emailLoginEnabled}
-              onCheckedChange={setEmailLoginEnabled}
-              aria-label="启用邮箱登录"
-            />
-            启用邮箱登录（登录页展示邮箱表单）
-          </label>
-          <ApplyMsg msg={emailMsg} />
-          <Button onClick={applyEmail} disabled={emailBusy || !loaded}>
-            {emailBusy ? "应用中…" : "应用"}
-          </Button>
-        </Card>
-      ) : null}
-
-      {/* 待验证账号管理（自邀请页迁入） */}
-      {verifications ? (
-        <Card className="space-y-3 p-5">
-          <SectionHead
-            title="待验证账号"
-            description="邮箱注册账号需凭验证链接完成验证；把链接发给对应用户，对方打开即完成验证并自动登录"
-            status={null}
-          />
-          {verifications.length === 0 ? (
-            <p className="text-sm text-muted-foreground">暂无邮箱验证记录</p>
-          ) : (
-            <div className="space-y-2">
-              {verifications.map((v) => {
-                const status = v.verified
-                  ? { label: "已验证", tone: "success" as const }
-                  : v.expired
-                    ? { label: "已过期", tone: "neutral" as const }
-                    : { label: "待验证", tone: "warning" as const };
-                return (
-                  <div
-                    key={v.userId}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
+        {/* 桌面：左固定导航（sticky；高度保持自然高度，self-stretch 拉满会使 sticky 失效） */}
+        <nav
+          aria-label="授权配置分区"
+          className="sticky top-16 hidden w-52 shrink-0 flex-col gap-1 self-start border-r border-border bg-card/60 p-3 lg:flex"
+        >
+          {groups.map((group) => {
+            const items = allowed.filter((s) => s.group === group);
+            if (items.length === 0) return null;
+            return (
+              <div key={group} className="mb-1">
+                <p className="px-3 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground/70">
+                  {group}
+                </p>
+                {items.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors",
+                      active === s.id
+                        ? "bg-primary-soft font-semibold text-primary"
+                        : "text-foreground hover:bg-muted",
+                    )}
+                    onClick={() => select(s.id)}
                   >
-                    <div className="min-w-0">
-                      <div className="text-sm">{v.email}</div>
-                      {v.expiresAt ? (
-                        <div className="text-xs text-muted-foreground">
-                          验证有效期至 {new Date(v.expiresAt).toLocaleString()}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Badge tone={status.tone}>{status.label}</Badge>
-                      {status.label === "待验证" && v.verifyPath ? (
-                        <CopyButton
-                          text={`${window.location.origin}${v.verifyPath}`}
-                          label="复制验证链接"
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-      ) : null}
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </nav>
 
-      {/* 用户管理（admin；spec 2026-09-21-user-management-design §2.4） */}
-      <UserManagementSection />
+        {/* 右侧详情 */}
+        <main className="min-w-0 flex-1 space-y-5 p-5 pb-16 lg:p-6">
+          {active === "mcp" ? <McpSection /> : null}
+
+          {active !== "mcp" && isAdmin ? (
+            <>
+              {loadError ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
+                  <span>{loadError}</span>
+                  <Button variant="outline" size="sm" onClick={load}>
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    重试
+                  </Button>
+                </div>
+              ) : !view ? (
+                <>
+                  <SectionSkeleton />
+                  <SectionSkeleton />
+                </>
+              ) : null}
+
+              {active === "dingtalk" ? <DingtalkSection view={view} onReload={load} /> : null}
+              {active === "github" ? <GithubSection view={view} onReload={load} /> : null}
+              {active === "email" ? <EmailSection view={view} onReload={load} /> : null}
+              {active === "verifications" ? <VerificationsSection /> : null}
+              {active === "users" ? <UserManagementSection /> : null}
+            </>
+          ) : null}
+        </main>
+      </div>
     </div>
   );
 }
