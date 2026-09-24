@@ -57,6 +57,8 @@ async function startChannel(): Promise<number> {
     userStore,
     conversationStore,
     auditStore,
+    // 装良性 gate：让 preflight/发消息路径真正走进 resolveGitConversationContext
+    gitAccessGate: { check: async () => ({ ready: true, requirements: [] }) } as never,
     kbLibraryStore: libraries,
     kbShareStore: shares,
     kbRevisionStore: revisions,
@@ -334,6 +336,15 @@ describe("KB 会话（M2）", () => {
     const { token } = (await er.json()) as { token: string };
     await req(port, "POST", `/api/kb/${kb.id}/accept-share`, bob.token, { token });
     expect((await req(port, "GET", `/api/kb/${kb.id}/conversation`, bob.token)).status).toBe(200);
+  });
+
+  it("GET /api/conversations/:id/preflight：KB 会话（内置 kb-assistant 不入库）免 git 检查恒 ready", async () => {
+    const kb = await createKb(alice.token, "preflight 库");
+    const cr = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
+    const conv = (await cr.json()) as { id: string };
+    const r = await req(port, "GET", `/api/conversations/${conv.id}/preflight`, alice.token);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ready: true, requirements: [] });
   });
 
   it("POST /api/conversations 组合校验：kbId 仅限 builtin-kb-assistant", async () => {
