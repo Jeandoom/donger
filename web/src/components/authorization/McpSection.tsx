@@ -148,7 +148,8 @@ export function McpSection() {
   };
 
   const tokens = config?.tokens ?? [];
-  const endpoint = config?.endpoint ?? null;
+  // 端点按浏览器 origin 推导（反代/自定义域名部署下服务端 HOST 推导不可用，见 oauthBaseUrl）
+  const endpoint = config?.endpoint ? `${window.location.origin}/mcp` : null;
 
   return (
     <div className="space-y-5">
