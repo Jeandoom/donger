@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Button } from "./button";
 
 /** 统一的确认弹窗：替代原生 confirm，保证与全站风格一致。 */
 export function ConfirmDialog(props: {
@@ -46,23 +47,18 @@ export function ConfirmDialog(props: {
           </div>
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-            onClick={props.onCancel}
-          >
+          <Button type="button" variant="secondary" size="sm" onClick={props.onCancel}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 ${
-              props.destructive ? "bg-destructive hover:opacity-90" : "bg-primary hover:opacity-90"
-            }`}
+            variant={props.destructive ? "danger-solid" : "default"}
+            size="sm"
             disabled={props.busy}
             onClick={props.onConfirm}
           >
             {props.busy ? "处理中…" : (props.confirmText ?? "确定")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

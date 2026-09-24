@@ -1,10 +1,21 @@
-import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  Wrench,
+  X,
+  XCircle,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
-import { Switch } from "../components/ui/switch";
+import { Segmented } from "../components/ui/segmented";
+import { Select } from "../components/ui/select";
+import { Textarea } from "../components/ui/textarea";
 import { fetchSystemEvents, type SystemEvent } from "../lib/adminUsers";
 import { fetchAgentMeta } from "../lib/agents";
 import {
@@ -32,19 +43,65 @@ function systemEventLabel(type: string): string {
   return SYSTEM_EVENT_LABEL[type] ?? "系统";
 }
 
+/** 轮次状态 → 中文标签 + 语义色（未知状态回退 neutral） */
+const TURN_STATUS: Record<string, { label: string; tone: "success" | "danger" | "info" | "warning" | "neutral" }> = {
+  done: { label: "已完成", tone: "success" },
+  success: { label: "成功", tone: "success" },
+  error: { label: "失败", tone: "danger" },
+  failed: { label: "失败", tone: "danger" },
+  running: { label: "运行中", tone: "info" },
+  stopped: { label: "已停止", tone: "warning" },
+};
+
+function turnStatus(status: string) {
+  return TURN_STATUS[status] ?? { label: status, tone: "neutral" as const };
+}
+
+/** 加载失败重试盒：列表/详情/调试三处共用，错误必须可见可重试 */
+function ErrorRetry({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-start gap-2 rounded-lg bg-destructive-soft p-3">
+      <p className="text-xs font-medium text-destructive">加载失败：{message}</p>
+      <Button variant="ghost" size="sm" onClick={onRetry}>
+        <RefreshCw className="h-3.5 w-3.5" />
+        重试
+      </Button>
+    </div>
+  );
+}
+
+/** 列表/详情加载骨架 */
+function ListSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="space-y-1.5" aria-hidden="true">
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="h-10 animate-pulse rounded-lg bg-muted" />
+      ))}
+    </div>
+  );
+}
+
 /**
- * 审计模块唯一页面：会话栏共用，「只看LLM」开关切换右侧详情形态——
- * 关=历史会话（轮次/事件/token），开=LLM 观测（SDK 原始输入输出 + 调试重放）。
+ * 审计模块唯一页面：顶部 Segmented 切换「历史会话 / LLM 观测」双形态——
+ * 历史会话（轮次/事件/token），LLM 观测（SDK 原始输入输出 + 调试重放）。
  * mode 经 URL query 持久化（/audit?mode=llm），刷新/分享不丢。
+ * 响应式：<lg 单列纵排（调试重放为全屏抽屉），lg+ 双栏 + 内联调试栏。
  */
 export function AuditPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const llmMode = searchParams.get("mode") === "llm";
-  const setLlmMode = (on: boolean) => setSearchParams(on ? { mode: "llm" } : {});
+  const setLlmMode = (mode: "history" | "llm") =>
+    setSearchParams(mode === "llm" ? { mode: "llm" } : {});
 
   const [list, setList] = useState<AuditConversationListItem[]>([]);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState("");
+  const [listReload, setListReload] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AuditDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [detailReload, setDetailReload] = useState(0);
 
   // 会话栏折叠 + 系统事件栏（admin 专属，spec 2026-09-21-user-management-design 决策③）
   const [convCollapsed, setConvCollapsed] = useState(false);
@@ -89,6 +146,7 @@ export function AuditPage() {
 
   // LLM 观测的调试重放（仅 LLM 模式使用）
   const [presets, setPresets] = useState<Array<{ id: string; name: string; model: string }>>([]);
+  const [presetsError, setPresetsError] = useState("");
   const [presetId, setPresetId] = useState("");
   const [debugInput, setDebugInput] = useState<string | null>(null);
   const [debugEventId, setDebugEventId] = useState<string | null>(null);
@@ -97,30 +155,62 @@ export function AuditPage() {
   const [debugging, setDebugging] = useState(false);
 
   useEffect(() => {
-    void fetchAuditConversations()
-      .then(setList)
-      .catch(() => setList([]));
-  }, []);
+    let stale = false;
+    setListLoading(true);
+    setListError("");
+    fetchAuditConversations()
+      .then((rows) => {
+        if (!stale) setList(rows);
+      })
+      .catch((reason: unknown) => {
+        if (!stale) setListError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (!stale) setListLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [listReload]);
 
   useEffect(() => {
     if (!llmMode) return;
-    void fetchAgentMeta()
+    setPresetsError("");
+    fetchAgentMeta()
       .then((meta) => {
         setPresets(meta.llmPresets);
         setPresetId((current) => current || meta.llmPresets[0]?.id || "");
       })
-      .catch(() => setPresets([]));
+      .catch((reason: unknown) => {
+        setPresets([]);
+        setPresetsError(reason instanceof Error ? reason.message : String(reason));
+      });
   }, [llmMode]);
 
+  // 详情加载：序号守卫防快速切换会话时的旧响应回写
+  const detailSeq = useRef(0);
   useEffect(() => {
     if (!selected) {
       setDetail(null);
+      setDetailError("");
+      setDetailLoading(false);
       return;
     }
-    void fetchAuditDetail(selected)
-      .then(setDetail)
-      .catch(() => setDetail(null));
-  }, [selected]);
+    const seq = ++detailSeq.current;
+    setDetailLoading(true);
+    setDetailError("");
+    fetchAuditDetail(selected)
+      .then((d) => {
+        if (seq === detailSeq.current) setDetail(d);
+      })
+      .catch((reason: unknown) => {
+        if (seq === detailSeq.current)
+          setDetailError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (seq === detailSeq.current) setDetailLoading(false);
+      });
+  }, [selected, detailReload]);
 
   const llmEventCount = useMemo(
     () => detail?.turns.reduce((sum, turn) => sum + selectLlmEvents(turn.events).length, 0) ?? 0,
@@ -133,6 +223,8 @@ export function AuditPage() {
     setDebugOutput(null);
     setDebugError(null);
   };
+
+  const closeDebug = () => setDebugInput(null);
 
   const submitDebug = async () => {
     if (debugInput === null || !debugInput.trim()) return;
@@ -149,6 +241,16 @@ export function AuditPage() {
     }
   };
 
+  // 调试抽屉 Esc 关闭
+  useEffect(() => {
+    if (debugInput === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeDebug();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [debugInput]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
@@ -159,12 +261,26 @@ export function AuditPage() {
             ? "查看每轮对话的 LLM 原始输入输出，支持改写重放调试"
             : "回看每个任务的轮次、事件与 token 消耗"
         }
+        actions={
+          <Segmented
+            name="审计视图"
+            options={[
+              { value: "history", label: "历史会话" },
+              { value: "llm", label: "LLM 观测" },
+            ]}
+            value={llmMode ? "llm" : "history"}
+            onChange={setLlmMode}
+          />
+        }
       />
-      <div className="flex min-h-0 flex-1 gap-4 overflow-hidden px-7 pb-7 pt-5">
-        {/* 左：会话列表（可折叠）+ 系统事件栏（admin 专属） */}
-        <div className="flex w-80 shrink-0 flex-col gap-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-7 pb-7 pt-5 lg:flex-row lg:overflow-hidden">
+        {/* 左：会话列表（可折叠）+ 系统事件栏（admin 专属）+ 知识库修订 */}
+        <div className="flex w-full shrink-0 flex-col gap-4 lg:w-80">
           <Card
-            className={cn("flex min-h-0 flex-col overflow-hidden", convCollapsed && "shrink-0")}
+            className={cn(
+              "flex min-h-0 max-h-80 flex-col overflow-hidden lg:max-h-none",
+              convCollapsed && "max-h-none shrink-0",
+            )}
           >
             <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
               <button
@@ -180,40 +296,50 @@ export function AuditPage() {
                 )}
                 会话（{list.length}）
               </button>
-              <label
-                htmlFor="audit-llm-switch"
-                className="flex items-center gap-1.5 text-xs text-muted-foreground"
-              >
-                只看LLM
-                <Switch id="audit-llm-switch" checked={llmMode} onCheckedChange={setLlmMode} />
-              </label>
             </div>
             {!convCollapsed && (
               <div className="flex-1 overflow-y-auto p-2">
-                {list.map((c) => (
-                  <button
-                    key={c.conversationId}
-                    type="button"
-                    onClick={() => setSelected(c.conversationId)}
-                    className={cn(
-                      "mb-0.5 block w-full rounded-lg px-3 py-2 text-left",
-                      selected === c.conversationId ? "bg-primary-soft" : "hover:bg-muted",
-                    )}
-                  >
-                    <div
+                {listLoading ? (
+                  <div className="p-1">
+                    <ListSkeleton />
+                  </div>
+                ) : listError ? (
+                  <div className="p-1">
+                    <ErrorRetry
+                      message={listError}
+                      onRetry={() => setListReload((v) => v + 1)}
+                    />
+                  </div>
+                ) : list.length === 0 ? (
+                  <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                    暂无会话记录
+                  </p>
+                ) : (
+                  list.map((c) => (
+                    <button
+                      key={c.conversationId}
+                      type="button"
+                      onClick={() => setSelected(c.conversationId)}
                       className={cn(
-                        "truncate text-[13px] font-medium",
-                        selected === c.conversationId && "text-primary",
+                        "mb-0.5 block w-full rounded-lg px-3 py-2 text-left",
+                        selected === c.conversationId ? "bg-primary-soft" : "hover:bg-muted",
                       )}
                     >
-                      {c.title || "(无标题)"}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {c.turnCount} prompts · {formatTokens(c.totalTokens)} tok ·{" "}
-                      {formatDurationMs(c.totalDurationMs)}
-                    </div>
-                  </button>
-                ))}
+                      <div
+                        className={cn(
+                          "truncate text-[13px] font-medium",
+                          selected === c.conversationId && "text-primary",
+                        )}
+                      >
+                        {c.title || "(无标题)"}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {c.turnCount} prompts · {formatTokens(c.totalTokens)} tok ·{" "}
+                        {formatDurationMs(c.totalDurationMs)}
+                      </div>
+                    </button>
+                  ))
+                )}
               </div>
             )}
           </Card>
@@ -230,14 +356,10 @@ export function AuditPage() {
                 <span className="text-xs font-semibold text-muted-foreground">
                   事件（{events.length}）
                 </span>
-                <button
-                  type="button"
-                  onClick={loadEvents}
-                  className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                >
+                <Button variant="secondary" size="sm" onClick={loadEvents}>
                   <RefreshCw className="h-3 w-3" />
                   刷新
-                </button>
+                </Button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {eventsError ? (
@@ -248,10 +370,8 @@ export function AuditPage() {
                   events.map((ev) => (
                     <div key={ev.id} className="mb-0.5 rounded-lg px-3 py-2 hover:bg-muted">
                       <div className="flex items-center gap-1.5">
-                        <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                          {systemEventLabel(ev.type)}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground">
+                        <Badge tone="primary">{systemEventLabel(ev.type)}</Badge>
+                        <span className="text-[11px] text-muted-foreground">
                           {formatDateTime(ev.createdAt)}
                         </span>
                       </div>
@@ -269,14 +389,10 @@ export function AuditPage() {
               <span className="text-xs font-semibold text-muted-foreground">
                 知识库（{kbRevisions.length}）
               </span>
-              <button
-                type="button"
-                onClick={loadKbRevisions}
-                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-              >
+              <Button variant="secondary" size="sm" onClick={loadKbRevisions}>
                 <RefreshCw className="h-3 w-3" />
                 刷新
-              </button>
+              </Button>
             </div>
             <div className="flex-1 overflow-y-auto p-2">
               {kbError ? (
@@ -288,14 +404,12 @@ export function AuditPage() {
                   <details key={rev.id} className="mb-0.5 rounded-lg px-3 py-2 hover:bg-muted">
                     <summary className="cursor-pointer list-none">
                       <div className="flex items-center gap-1.5">
-                        <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                          {KB_ACTION_LABEL[rev.action] ?? rev.action}
-                        </span>
+                        <Badge tone="primary">{KB_ACTION_LABEL[rev.action] ?? rev.action}</Badge>
                         <span className="min-w-0 truncate text-[12px] font-medium">
                           {kbNames[rev.kbId] ?? "已删除库"}
                           {rev.path ? ` · ${rev.path}` : ""}
                         </span>
-                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
                           {formatDateTime(rev.createdAt)}
                         </span>
                       </div>
@@ -323,72 +437,94 @@ export function AuditPage() {
           </Card>
         </div>
 
-        {/* 右：详情（形态随开关切换；已选会话保持不变） */}
-        <div className="min-w-0 flex-1 space-y-4 overflow-y-auto">
-          {llmMode ? (
+        {/* 右：详情（形态随页头 Segmented 切换；已选会话保持不变） */}
+        <div className="min-w-0 flex-1 space-y-4 lg:overflow-y-auto">
+          {selected && detailError ? (
+            <ErrorRetry message={detailError} onRetry={() => setDetailReload((v) => v + 1)} />
+          ) : detailLoading ? (
+            <Card className="space-y-3 p-4">
+              <div className="h-5 w-40 animate-pulse rounded bg-muted" />
+              <div className="h-24 animate-pulse rounded-lg bg-muted" />
+              <div className="h-24 animate-pulse rounded-lg bg-muted" />
+            </Card>
+          ) : llmMode ? (
             <LlmDetail detail={detail} llmEventCount={llmEventCount} onDebug={startDebug} />
           ) : (
             <HistoryDetail detail={detail} />
           )}
         </div>
 
-        {/* LLM 观测的调试重放侧栏 */}
+        {/* LLM 观测的调试重放：<lg 全屏抽屉（遮罩+Esc），lg+ 内联侧栏 */}
         {llmMode && debugInput !== null && (
-          <aside className="flex w-[min(42rem,45vw)] min-w-[20rem] shrink-0 flex-col overflow-y-auto border-l border-border pl-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="font-semibold">调试 LLM Input</h2>
-              <button
-                type="button"
-                className="text-sm text-muted-foreground"
-                onClick={() => setDebugInput(null)}
-              >
-                关闭
-              </button>
-            </div>
-            <div className="mb-2 flex items-center gap-2 text-sm">
-              <label htmlFor="debug-model">模型</label>
-              <select
-                id="debug-model"
-                value={presetId}
-                onChange={(event) => setPresetId(event.target.value)}
-                className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2 py-1 text-sm focus:border-primary focus:outline-none"
-              >
-                {presets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}（{preset.model}）
-                  </option>
-                ))}
-                {presets.length === 0 && <option value="">默认模型</option>}
-              </select>
-            </div>
-            <textarea
-              aria-label="可编辑的 LLM input"
-              value={debugInput}
-              onChange={(event) => setDebugInput(event.target.value)}
-              className="min-h-64 flex-1 resize-none rounded-lg border border-border bg-card p-3 font-mono text-xs focus:border-primary focus:outline-none"
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+              onClick={closeDebug}
+              aria-hidden="true"
             />
-            <button
-              type="button"
-              disabled={debugging || !debugInput.trim()}
-              onClick={() => void submitDebug()}
-              className="mt-3 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            <aside
+              role="dialog"
+              aria-modal="true"
+              aria-label="调试 LLM Input"
+              className="fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col overflow-y-auto border-l border-border bg-background p-4 shadow-xl lg:static lg:z-auto lg:w-[min(42rem,45vw)] lg:min-w-[20rem] lg:bg-transparent lg:p-0 lg:pl-4 lg:shadow-none"
             >
-              {debugging ? "调用中…" : "发送"}
-            </button>
-            {debugEventId && (
-              <div className="mt-2 text-[10px] text-muted-foreground">来源：{debugEventId}</div>
-            )}
-            {debugError && (
-              <pre className="mt-3 whitespace-pre-wrap break-words rounded bg-destructive/10 p-3 text-xs text-destructive">
-                {debugError}
-              </pre>
-            )}
-            {debugOutput && (
-              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-3 text-xs">
-                {debugOutput}
-              </pre>
-            )}
-          </aside>
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-sm font-semibold">调试 LLM Input</h2>
+                <Button variant="secondary" size="sm" onClick={closeDebug} aria-label="关闭调试">
+                  <X className="h-3.5 w-3.5" />
+                  关闭
+                </Button>
+              </div>
+              <div className="mb-2 flex items-center gap-2 text-sm">
+                <label htmlFor="debug-model" className="shrink-0 text-[13px] font-medium">
+                  模型
+                </label>
+                <Select
+                  id="debug-model"
+                  className="min-w-0 flex-1"
+                  value={presetId}
+                  onChange={(event) => setPresetId(event.target.value)}
+                >
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}（{preset.model}）
+                    </option>
+                  ))}
+                  {presets.length === 0 && <option value="">默认模型</option>}
+                </Select>
+              </div>
+              {presetsError ? (
+                <p className="mb-2 text-[11px] text-warning-foreground">模型预设加载失败，可手动改写输入后用默认模型调试</p>
+              ) : null}
+              <Textarea
+                mono
+                aria-label="可编辑的 LLM input"
+                value={debugInput}
+                onChange={(event) => setDebugInput(event.target.value)}
+                className="min-h-64 flex-1 resize-none"
+              />
+              <Button
+                className="mt-3"
+                disabled={debugging || !debugInput.trim()}
+                onClick={() => void submitDebug()}
+              >
+                {debugging ? "调用中…" : "发送"}
+              </Button>
+              {debugEventId && (
+                <div className="mt-2 text-[11px] text-muted-foreground">来源：{debugEventId}</div>
+              )}
+              {debugError && (
+                <pre className="mt-3 whitespace-pre-wrap break-words rounded-lg bg-destructive-soft p-3 text-xs text-destructive">
+                  {debugError}
+                </pre>
+              )}
+              {debugOutput && (
+                <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs">
+                  {debugOutput}
+                </pre>
+              )}
+            </aside>
+          </>
         )}
       </div>
     </div>
@@ -413,15 +549,12 @@ function HistoryDetail({ detail }: { detail: AuditDetail | null }) {
             t.usage.cacheCreationInputTokens +
             t.usage.cacheReadInputTokens
           : undefined;
+        const status = turnStatus(t.status);
         return (
           <Card key={t.taskId} className="p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div className="text-[13px] font-semibold">Turn {t.taskId.slice(0, 8)}</div>
-              <Badge
-                tone={t.status === "done" ? "success" : t.status === "error" ? "danger" : "info"}
-              >
-                {t.status}
-              </Badge>
+              <Badge tone={status.tone}>{status.label}</Badge>
             </div>
             <div className="mb-3 text-[11px] text-muted-foreground">
               {formatDurationMs(t.durationMs)} · {formatTokens(tok)} tok ·{" "}
@@ -459,28 +592,29 @@ function LlmDetail({
   return (
     <>
       <div>
-        <h1 className="text-lg font-bold">{detail.conversation?.title || "LLM 会话"}</h1>
+        <h2 className="text-lg font-bold">{detail.conversation?.title || "LLM 会话"}</h2>
         <p className="text-xs text-muted-foreground">{llmEventCount} 条 SDK 原始消息</p>
       </div>
-      {detail.turns.map((turn) => (
-        <section
-          key={turn.taskId}
-          className="space-y-3 rounded-xl border border-border bg-card p-4 shadow-[0_2px_8px_rgba(15,23,42,0.06)]"
-        >
-          <div className="text-xs text-muted-foreground">
-            {formatDateTime(turn.createdAt)} · {turn.status}
-          </div>
-          <div>
-            <div className="mb-1 text-xs font-medium text-muted-foreground">用户 Query</div>
-            <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-sm">
-              {turn.prompt}
-            </pre>
-          </div>
-          {selectLlmEvents(turn.events).map((event) => (
-            <LlmEvent key={event.id} event={event} onDebug={onDebug} />
-          ))}
-        </section>
-      ))}
+      {detail.turns.map((turn) => {
+        const status = turnStatus(turn.status);
+        return (
+          <Card key={turn.taskId} className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {formatDateTime(turn.createdAt)}
+              <Badge tone={status.tone}>{status.label}</Badge>
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-medium text-muted-foreground">用户 Query</div>
+              <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-sm">
+                {turn.prompt}
+              </pre>
+            </div>
+            {selectLlmEvents(turn.events).map((event) => (
+              <LlmEvent key={event.id} event={event} onDebug={onDebug} />
+            ))}
+          </Card>
+        );
+      })}
     </>
   );
 }
@@ -511,13 +645,9 @@ function LlmEvent({
       <div className="rounded-lg border border-primary/30 bg-primary-soft/60 p-3">
         <div className="mb-2 flex items-center justify-between text-xs font-medium">
           <span>LLM Input</span>
-          <button
-            type="button"
-            onClick={() => onDebug(event)}
-            className="rounded-lg border border-border bg-card px-2.5 py-1 text-xs hover:bg-muted"
-          >
+          <Button variant="secondary" size="sm" onClick={() => onDebug(event)}>
             调试
-          </button>
+          </Button>
         </div>
         <pre className="overflow-auto whitespace-pre-wrap break-words text-xs">
           {event.llmInput}
@@ -526,7 +656,7 @@ function LlmEvent({
     );
   }
   return (
-    <details open className="rounded border border-success/30 bg-success-soft p-3">
+    <details open className="rounded-lg border border-success/30 bg-success-soft p-3">
       <summary className="cursor-pointer text-xs font-medium">
         LLM Output · {event.recordedAt}
       </summary>
@@ -560,8 +690,8 @@ function EventRow({
   if (e.type === "tool_use") {
     return (
       <div className="flex items-center gap-2 rounded-lg bg-primary-soft/60 px-3 py-2 text-xs">
-        <span className="flex h-5 w-5 items-center justify-center rounded bg-primary text-[10px] text-white">
-          ⚙
+        <span className="flex h-5 w-5 items-center justify-center rounded bg-primary text-white">
+          <Wrench className="h-3 w-3" aria-hidden="true" />
         </span>
         <span className="font-mono font-medium text-primary">{e.toolName}</span>
         <code className="truncate text-muted-foreground">{e.toolInput}</code>
@@ -571,8 +701,12 @@ function EventRow({
   if (e.type === "tool_result") {
     return (
       <details className="px-3 text-xs text-muted-foreground">
-        <summary className="cursor-pointer py-1">
-          └ {e.isError ? "❌ " : ""}output · {formatDurationMs(e.durationMs)}
+        <summary className="flex cursor-pointer items-center gap-1 py-1">
+          └
+          {e.isError ? (
+            <XCircle className="h-3 w-3 text-destructive" aria-hidden="true" />
+          ) : null}
+          output · {formatDurationMs(e.durationMs)}
         </summary>
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-2">
           {e.toolOutput}
@@ -581,7 +715,12 @@ function EventRow({
     );
   }
   if (e.type === "result") {
-    return <div className="px-3 text-xs text-success">✓ result</div>;
+    return (
+      <div className="flex items-center gap-1 px-3 text-xs text-success">
+        <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+        result
+      </div>
+    );
   }
   return null;
 }

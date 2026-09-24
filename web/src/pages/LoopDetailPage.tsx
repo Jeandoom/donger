@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -41,6 +41,13 @@ const STATUS_TONE: Record<LoopRun["status"], "info" | "success" | "danger" | "ne
   stopped: "neutral",
 };
 
+const STATUS_LABEL: Record<LoopRun["status"], string> = {
+  running: "运行中",
+  success: "成功",
+  failed: "失败",
+  stopped: "已停止",
+};
+
 export function LoopDetailPage() {
   const { id } = useParams();
   const [loop, setLoop] = useState<Loop | null>(null);
@@ -48,10 +55,14 @@ export function LoopDetailPage() {
   const [runs, setRuns] = useState<LoopRun[]>([]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
 
   const refresh = useCallback(() => {
     if (!id) return;
+    setLoading(true);
+    setLoadError("");
     Promise.all([
       apiFetch(`/api/loops/${id}`).then((r) => r.json() as Promise<Loop>),
       apiFetch(`/api/loops/${id}/runs`).then((r) => r.json() as Promise<{ runs?: LoopRun[] }>),
@@ -64,7 +75,10 @@ export function LoopDetailPage() {
           if (wfResp.ok) setWorkflow((await wfResp.json()) as Workflow);
         }
       })
-      .catch(() => setLoop(null));
+      .catch((reason: unknown) =>
+        setLoadError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setLoading(false));
   }, [id]);
 
   useEffect(() => {
@@ -99,7 +113,32 @@ export function LoopDetailPage() {
     }
   };
 
-  if (!loop) return <div className="p-7 text-sm text-muted-foreground">加载中…</div>;
+  if (loadError && !loop) {
+    return (
+      <div className="mx-auto w-full max-w-5xl space-y-4 p-7">
+        <div className="flex flex-col items-start gap-3 rounded-lg bg-destructive-soft p-4">
+          <p className="text-sm font-medium text-destructive">加载失败：{loadError}</p>
+          <Button variant="ghost" size="sm" onClick={refresh}>
+            重试
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!loop) {
+    return (
+      <div className="mx-auto w-full max-w-5xl space-y-4 p-7" aria-hidden="true">
+        <div className="h-8 w-64 animate-pulse rounded bg-muted" />
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="h-20 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
+        <div className="h-64 animate-pulse rounded-xl bg-muted" />
+      </div>
+    );
+  }
 
   const successCount = runs.filter((r) => r.status === "success").length;
   const failedCount = runs.filter((r) => r.status === "failed").length;
@@ -142,23 +181,26 @@ export function LoopDetailPage() {
         </div>
       ) : null}
 
-      {/* 统计卡 */}
+      {/* 统计卡：数值卡与文字状态卡（徽标表达）分列 */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        {[
-          { v: String(runs.length), l: "总轮次", cls: "text-primary" },
-          { v: String(successCount), l: "成功", cls: "text-success" },
-          { v: String(failedCount), l: "失败", cls: "text-destructive" },
-          {
-            v: loop.enabled ? "运行中" : "已暂停",
-            l: "状态",
-            cls: loop.enabled ? "text-success" : "text-muted-foreground",
-          },
-        ].map((s) => (
-          <Card key={s.l} className="flex flex-col gap-1.5 p-4">
-            <span className={`text-[22px] font-bold leading-7 ${s.cls}`}>{s.v}</span>
-            <span className="text-xs text-muted-foreground">{s.l}</span>
-          </Card>
-        ))}
+        <Card className="flex flex-col gap-1.5 p-4">
+          <span className="text-[22px] font-bold leading-7 text-primary">{runs.length}</span>
+          <span className="text-xs text-muted-foreground">总轮次</span>
+        </Card>
+        <Card className="flex flex-col gap-1.5 p-4">
+          <span className="text-[22px] font-bold leading-7 text-success">{successCount}</span>
+          <span className="text-xs text-muted-foreground">成功</span>
+        </Card>
+        <Card className="flex flex-col gap-1.5 p-4">
+          <span className="text-[22px] font-bold leading-7 text-destructive">{failedCount}</span>
+          <span className="text-xs text-muted-foreground">失败</span>
+        </Card>
+        <Card className="flex flex-col gap-1.5 p-4">
+          <Badge tone={loop.enabled ? "success" : "neutral"} className="w-fit">
+            {loop.enabled ? "运行中" : "已暂停"}
+          </Badge>
+          <span className="text-xs text-muted-foreground">状态</span>
+        </Card>
       </div>
 
       {(loop.tags?.length ?? 0) > 0 ? (
@@ -171,62 +213,63 @@ export function LoopDetailPage() {
 
       <h2 className="text-base font-semibold">最近轮次</h2>
       <Card className="overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
-              <th className="px-4 py-2.5 font-medium">开始时间</th>
-              <th className="px-4 py-2.5 font-medium">状态</th>
-              <th className="px-4 py-2.5 font-medium">触发输出</th>
-              <th className="px-4 py-2.5 font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((r) => (
-              <>
-                <tr
-                  key={r.id}
-                  className="cursor-pointer border-t border-border hover:bg-muted/40"
-                  onClick={() => setExpandedRun((cur) => (cur === r.id ? null : r.id))}
-                >
-                  <td className="px-4 py-3">{new Date(r.startedAt).toLocaleString()}</td>
-                  <td className="px-4 py-3">
-                    <Badge tone={STATUS_TONE[r.status]}>{r.status}</Badge>
-                  </td>
-                  <td className="max-w-md truncate px-4 py-3 text-muted-foreground">
-                    {r.error ?? r.triggerOutput ?? ""}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {r.agentConversationId && (
-                      <Link
-                        to={`/?conv=${r.agentConversationId}`}
-                        className="text-xs text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        跳会话
-                      </Link>
-                    )}
-                  </td>
-                </tr>
-                {expandedRun === r.id && (
-                  <tr key={`${r.id}-detail`} className="border-t border-border bg-muted/30">
-                    <td colSpan={4} className="p-4">
-                      {r.error && (
-                        <div className="mb-2 text-sm text-destructive">
-                          <strong>错误：</strong>
-                          {r.error}
-                        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+                <th className="px-4 py-2.5 font-medium">开始时间</th>
+                <th className="px-4 py-2.5 font-medium">状态</th>
+                <th className="px-4 py-2.5 font-medium">触发输出</th>
+                <th className="px-4 py-2.5 font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((r) => (
+                <Fragment key={r.id}>
+                  <tr
+                    className="cursor-pointer border-t border-border hover:bg-muted/40"
+                    onClick={() => setExpandedRun((cur) => (cur === r.id ? null : r.id))}
+                  >
+                    <td className="px-4 py-3">{new Date(r.startedAt).toLocaleString()}</td>
+                    <td className="px-4 py-3">
+                      <Badge tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</Badge>
+                    </td>
+                    <td className="max-w-md truncate px-4 py-3 text-muted-foreground">
+                      {r.error ?? r.triggerOutput ?? ""}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {r.agentConversationId && (
+                        <Link
+                          to={`/?conv=${r.agentConversationId}`}
+                          className="text-xs text-primary hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          跳会话
+                        </Link>
                       )}
-                      <div className="mb-1 text-xs text-muted-foreground">renderedPrompt:</div>
-                      <pre className="max-h-60 overflow-auto rounded-lg bg-card p-3 text-xs">
-                        {r.renderedPrompt ?? ""}
-                      </pre>
                     </td>
                   </tr>
-                )}
-              </>
-            ))}
-          </tbody>
-        </table>
+                  {expandedRun === r.id && (
+                    <tr className="border-t border-border bg-muted/30">
+                      <td colSpan={4} className="p-4">
+                        {r.error && (
+                          <div className="mb-2 text-sm text-destructive">
+                            <strong>错误：</strong>
+                            {r.error}
+                          </div>
+                        )}
+                        <div className="mb-1 text-xs text-muted-foreground">renderedPrompt:</div>
+                        <pre className="max-h-60 overflow-auto rounded-lg bg-card p-3 text-xs">
+                          {r.renderedPrompt ?? ""}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {!runs.length ? (
           <div className="p-10 text-center text-sm text-muted-foreground">还没有运行记录</div>
         ) : null}
