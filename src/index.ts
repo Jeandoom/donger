@@ -23,7 +23,6 @@ import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
-import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import {
   SqliteKbLibraryStore,
@@ -32,9 +31,11 @@ import {
 } from "./adapters/sqlite-kb-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
+import { SqliteMcpTokenStore } from "./adapters/sqlite-mcp-token-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
+import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
 import { SqliteTriggerStore } from "./adapters/sqlite-trigger-store.js";
@@ -59,10 +60,10 @@ import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
 import { configureGithubProxy } from "./util/github-oauth-api.js";
-import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
-import { createLogger } from "./util/logger.js";
 import { migrateKnowledgeBases } from "./util/kb-migrate.js";
+import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
+import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
@@ -123,6 +124,8 @@ async function main(): Promise<void> {
   messageStore.migrate();
   const transcriptStore = new SqliteTranscriptStore(db);
   transcriptStore.migrate();
+  const mcpTokenStore = new SqliteMcpTokenStore(db);
+  mcpTokenStore.migrate();
 
   // Agent 密钥加密器 + Agent/分享 store
   if (!cfg.secretKeySeed) {
@@ -425,6 +428,7 @@ async function main(): Promise<void> {
     commentStore,
     feedbackStore,
     sessionStore,
+    mcpTokenStore,
     cliToken: cfg.cliToken || undefined,
     moduleConfigStore,
     dingtalkChannelController: { apply: applyDingTalkChannel },

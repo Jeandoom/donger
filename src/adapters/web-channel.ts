@@ -1,5 +1,15 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, copyFileSync, cpSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import {
   createServer as createHttpServer,
   type IncomingMessage as HttpRequest,
@@ -25,10 +35,6 @@ import {
   resolveDuplicateName,
 } from "../domain/agent.js";
 import { canManageAgent, canUseAgent } from "../domain/agent-policy.js";
-import { lineDiff } from "../domain/kb-diff.js";
-import type { KbLibrary } from "../domain/kb.js";
-import { parseKbLibrary, KbLibraryInputSchema } from "../domain/kb.js";
-import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-policy.js";
 import {
   type Connector,
   ConnectorInputSchema,
@@ -71,6 +77,10 @@ import {
   normalizeEmail,
   passwordPolicyError,
 } from "../domain/invite.js";
+import type { KbLibrary } from "../domain/kb.js";
+import { KbLibraryInputSchema, parseKbLibrary } from "../domain/kb.js";
+import { lineDiff } from "../domain/kb-diff.js";
+import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-policy.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
 import { resolveLlmOptions } from "../domain/llm-selection.js";
@@ -99,6 +109,7 @@ import {
   resolvePermissionMode,
 } from "../domain/permission-mode.js";
 import { validateAgentAgainstPreset } from "../domain/scenario-preset.js";
+import type { SkillPackSource } from "../domain/skill-pack.js";
 import { parseTriggerInput, type Trigger } from "../domain/trigger.js";
 import {
   type ApprovalCard,
@@ -118,25 +129,15 @@ import {
 } from "../domain/user-llm-provider.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import {
-  countKbEntries,
-  deleteKbEntry,
-  ensureKbDir,
-  kbRootDir,
-  listKbTree,
-  readKbEntry,
-  sha256Text,
-  writeKbEntry,
-} from "../util/kb-files.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
 import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "../orchestrator/auditor-agent.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
+import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
-import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
 import {
   BUILTIN_SELF_IMPROVER_AGENT_ID,
@@ -148,7 +149,6 @@ import {
 } from "../orchestrator/skill-forge-agent.js";
 import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
-import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type {
@@ -164,11 +164,12 @@ import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
 import type { InviteStore } from "../ports/invite-store.js";
+import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
 import type { LoopStore } from "../ports/loop-store.js";
+import type { McpTokenStore } from "../ports/mcp-token-store.js";
 import type { MessageStore } from "../ports/message-store.js";
-import type { SkillPackSource } from "../domain/skill-pack.js";
 import type { ModuleConfigStore } from "../ports/module-config-store.js";
 import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
 import type { SessionStore } from "../ports/session-store.js";
@@ -194,10 +195,22 @@ import {
   getGithubAccessToken,
   getGithubUser,
 } from "../util/github-oauth-api.js";
+import {
+  countKbEntries,
+  deleteKbEntry,
+  ensureKbDir,
+  kbRootDir,
+  listKbTree,
+  readKbEntry,
+  sha256Text,
+  writeKbEntry,
+} from "../util/kb-files.js";
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import { ApiRouteGuard } from "./api-route-guard.js";
 import { flattenWorkspaceFiles } from "./local-file-browser.js";
+import { handleMcpMessage } from "./mcp/rpc.js";
+import { buildMcpTools } from "./mcp/tools.js";
 import { MemoryRateLimiter } from "./memory-rate-limiter.js";
 import {
   handleInstall,
@@ -430,6 +443,8 @@ export interface WebChannelDeps {
   kbShareStore?: KbShareStore;
   kbRevisionStore?: KbRevisionStore;
   sessionStore?: SessionStore;
+  /** MCP 接入令牌存储（spec 2026-09-24-mcp-auth-files-design；缺省=/mcp 端点与令牌 API 不可用） */
+  mcpTokenStore?: McpTokenStore;
   /** CLI 前端登录共享密钥（非空时启用 POST /api/auth/exchange） */
   cliToken?: string;
   fileBrowser?: FileBrowser;
@@ -1008,6 +1023,12 @@ export class WebChannel implements Channel {
           res.end(status === 413 ? "payload too large" : "internal error");
         }
       }
+      return;
+    }
+
+    // /mcp —— MCP Streamable HTTP 端点（Bearer = MCP 接入令牌；非 /api 守卫面，鉴权在 handler 内 fail-closed）
+    if (url === "/mcp" || url.startsWith("/mcp?") || url.startsWith("/mcp/")) {
+      await this.handleMcpHttp(req, res);
       return;
     }
 
@@ -1733,6 +1754,67 @@ export class WebChannel implements Channel {
   // 原有 API 路由
   // ---------------------------------------------------------------------------
 
+  /**
+   * POST /mcp —— MCP Streamable HTTP（无状态）：Bearer 令牌 → 用户 viewer，
+   * 工具集与 web 端同源 store/权限口径。GET/DELETE 405（不提供 SSE 与会话管理）。
+   */
+  private async handleMcpHttp(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const tokenStore = this.deps.mcpTokenStore;
+    if (!tokenStore) {
+      this.json(res, { error: "MCP 端点未启用" }, 503);
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405, { Allow: "POST", "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "MCP 端点仅支持 POST（Streamable HTTP，无 SSE）" }));
+      return;
+    }
+    // fail-closed：令牌缺失/失效/属主已不存在一律 401（与 web 401 语义对齐）
+    const auth = req.headers.authorization ?? "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+    const authed = token ? await tokenStore.verify(token) : undefined;
+    const user = authed ? await this.deps.userStore?.get(authed.userId) : undefined;
+    if (!authed || !user) {
+      this.json(res, { error: "invalid or expired MCP token" }, 401);
+      return;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await this.readBody(req));
+    } catch {
+      this.json(res, { error: "invalid json body" }, 400);
+      return;
+    }
+    const tools = buildMcpTools({
+      viewer: { id: user.id, role: user.role === "admin" ? "admin" : "user" },
+      agentStore: this.deps.agentStore,
+      conversationStore: this.deps.conversationStore,
+      messageStore: this.deps.messageStore,
+      kbLibraryStore: this.deps.kbLibraryStore,
+      kbShareStore: this.deps.kbShareStore,
+      skillPackStore: this.deps.skillPackStore,
+      workspaceDir: this.workspaceDir,
+      submitMessage: (msg) => this.handler?.(msg),
+      gitAccess: (uid, conversationId) => this.checkConversationGitAccess(uid, conversationId),
+    });
+    const result = await handleMcpMessage(payload, {
+      tools,
+      serverInfo: { name: "donger", version: "0.1.0" },
+      instructions:
+        "donger 平台 MCP：智能体/会话/消息/技能/知识库工具。权限与令牌属主在 web 端的权限一致。",
+    });
+    if (result.status === 400) {
+      this.json(res, result.body ?? { error: "invalid json-rpc request" }, 400);
+      return;
+    }
+    if (result.status === 202) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+    this.json(res, result.body);
+  }
+
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // 鉴权与授权已由 routeGuard 在 handleHttp 的 /api 入口统一执行（fail-closed）；
     // 本方法只做路由分发。公开性/属主/管理员规则见 web-route-guards.ts。
@@ -1744,6 +1826,63 @@ export class WebChannel implements Channel {
       );
       this.json(res, result ?? { ready: true, requirements: [] });
       return;
+    }
+
+    // === MCP 接入（个人令牌；spec 2026-09-24-mcp-auth-files-design）===
+    if (url === "/api/mcp/endpoint" && req.method === "GET") {
+      this.requireRequestUser(req);
+      return this.json(res, { url: `${this.oauthBaseUrl()}/mcp`, transport: "streamable-http" });
+    }
+    if (url === "/api/mcp/tokens" && req.method === "GET") {
+      const uid = this.requireRequestUser(req);
+      const store = this.deps.mcpTokenStore;
+      if (!store) return this.json(res, { tokens: [], endpoint: null });
+      return this.json(res, {
+        tokens: await store.listByUser(uid),
+        endpoint: `${this.oauthBaseUrl()}/mcp`,
+      });
+    }
+    if (url === "/api/mcp/tokens" && req.method === "POST") {
+      const uid = this.requireRequestUser(req);
+      const store = this.deps.mcpTokenStore;
+      if (!store) return this.json(res, { error: "MCP 端点未启用" }, 503);
+      const body = JSON.parse(await this.readBody(req)) as {
+        name?: string;
+        expiresInDays?: number | null;
+      };
+      const name =
+        typeof body.name === "string" && body.name.trim()
+          ? body.name.trim().slice(0, 50)
+          : "MCP 令牌";
+      let expiresInDays: number | null = null;
+      if (body.expiresInDays !== null && body.expiresInDays !== undefined) {
+        const days = Number(body.expiresInDays);
+        if (!Number.isInteger(days) || days < 1 || days > 3650) {
+          return this.json(
+            res,
+            { error: "expiresInDays 必须是 1-3650 的整数天数，或 null 表示无限期" },
+            400,
+          );
+        }
+        expiresInDays = days;
+      }
+      return this.json(
+        res,
+        {
+          ...(await store.issue(uid, name, expiresInDays)),
+          endpoint: `${this.oauthBaseUrl()}/mcp`,
+        },
+        201,
+      );
+    }
+    const mcpTokenDelete = url.match(/^\/api\/mcp\/tokens\/([\w-]+)$/);
+    if (mcpTokenDelete && req.method === "DELETE") {
+      const uid = this.requireRequestUser(req);
+      const store = this.deps.mcpTokenStore;
+      if (!store) return this.json(res, { error: "MCP 端点未启用" }, 503);
+      const revoked = await store.revoke(uid, mcpTokenDelete[1] ?? "");
+      if (!revoked) return this.json(res, { error: "令牌不存在或已吊销" }, 404);
+      return this.json(res, { ok: true });
     }
 
     // === Auth 路由 ===
@@ -3839,7 +3978,12 @@ export class WebChannel implements Channel {
       if (!ref || !ref.enabled) return this.json(res, { error: "not found" }, 404);
       const lib = await kb.libraries.get(ref.kbId);
       if (!lib) return this.json(res, { error: "not found" }, 404);
-      return this.json(res, { kbId: lib.id, name: lib.name, description: lib.description, requiresLogin: true });
+      return this.json(res, {
+        kbId: lib.id,
+        name: lib.name,
+        description: lib.description,
+        requiresLogin: true,
+      });
     }
     // GET /api/kb/:id/tree —— 目录树（条目上限 2000，spec §7）
     const kbTreeMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/tree$/);
@@ -3893,7 +4037,8 @@ export class WebChannel implements Channel {
       if (!lib) return this.json(res, { error: "not found" }, 404);
       const actor = await this.kbActor(me);
       if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
-      if (!kbShareable(lib)) return this.json(res, { error: "个人知识库与系统默认库不支持分享" }, 403);
+      if (!kbShareable(lib))
+        return this.json(res, { error: "个人知识库与系统默认库不支持分享" }, 403);
       if (req.method === "GET") {
         const share = await kb.shares.getShare(id);
         const grants = share?.enabled ? ((await kb.shares.listGrants(id)) ?? []) : [];
@@ -3946,7 +4091,13 @@ export class WebChannel implements Channel {
       const existing = list.find((c) => c.kbId === id && c.agentId === BUILTIN_KB_ASSISTANT_ID);
       const conv =
         existing ??
-        (await this.deps.conversationStore?.createWithAgent(me, "web", lib.name, BUILTIN_KB_ASSISTANT_ID, { kbId: id }));
+        (await this.deps.conversationStore?.createWithAgent(
+          me,
+          "web",
+          lib.name,
+          BUILTIN_KB_ASSISTANT_ID,
+          { kbId: id },
+        ));
       return this.json(res, conv);
     }
     // POST /api/kb/:id/accept-share —— 凭链接加入名单（幂等）
@@ -3983,7 +4134,12 @@ export class WebChannel implements Channel {
       const existingNames = new Set(
         ((await kb.libraries.listByOwner(me)) ?? []).map((l) => l.name),
       );
-      const name = resolveDuplicateName(src.name, isMine, ownerUser?.name ?? "分享者", existingNames);
+      const name = resolveDuplicateName(
+        src.name,
+        isMine,
+        ownerUser?.name ?? "分享者",
+        existingNames,
+      );
       const copy = await kb.libraries.create({
         ownerId: me,
         name,
@@ -5553,8 +5709,7 @@ export class WebChannel implements Channel {
     const store = this.deps.feedbackStore;
     // 可见性分流：admin 全量 / member 仅本人；userStore 缺失时按 member 收窄（fail-closed）
     const viewer = this.deps.userStore ? await this.deps.userStore.get(userId) : undefined;
-    const list =
-      viewer?.role === "admin" ? await store.listAll() : await store.listByUser(userId);
+    const list = viewer?.role === "admin" ? await store.listAll() : await store.listByUser(userId);
     const matched = filterFeedbacksByScope(list, scope).filter(
       (f) => m.id === FEEDBACK_MENTION_ALL_ID || f.id === m.id,
     );

@@ -408,6 +408,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/skills/skills/enable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/disable", access: { kind: "authenticated" } },
 
+    // ===== MCP 接入（个人令牌；spec 2026-09-24-mcp-auth-files-design）=====
+    // /mcp 协议端点不在 /api 守卫面（自持 Bearer 接入令牌鉴权，fail-closed 在 handleMcpHttp）
+    { method: "GET", pattern: "/api/mcp/endpoint", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/mcp/tokens", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/mcp/tokens", access: { kind: "authenticated" } },
+    { method: "DELETE", pattern: "/api/mcp/tokens/:id", access: { kind: "authenticated" } },
+
     // 用户技能仓库（自建技能 git 镜像；handler 内按 viewer 解析）
     { method: "GET", pattern: "/api/skills/repo", access: { kind: "authenticated" } },
     { method: "PUT", pattern: "/api/skills/repo", access: { kind: "authenticated" } },
