@@ -276,7 +276,6 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/conversations", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/usage", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/llm/debug", access: { kind: "authenticated" } },
-    { method: "GET", pattern: "/api/approvals/stream", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/approvals/:id/respond", access: { kind: "authenticated" } },
     {
       method: "POST",

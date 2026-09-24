@@ -8,7 +8,14 @@ export type SSEEvent =
   | { type: "thinking_delta"; messageId: string; text: string }
   | { type: "tool_use"; toolUseId: string; tool: string; inputPreview: string }
   | { type: "tool_result"; toolUseId: string; outputPreview: string; isError: boolean }
-  | { type: "approval_card"; gateId: string; title: string; summary: string }
+  | {
+      type: "approval_card";
+      /** 一次性审批实例 id（respond 目标）；后端 ≥2026-09-24 必带，老服务端缺省时退回 gateId */
+      approvalId?: string;
+      gateId: string;
+      title: string;
+      summary: string;
+    }
   | {
       type: "credential_missing_card";
       reqId: string;
@@ -89,6 +96,8 @@ export interface ChatMessage {
 }
 
 export interface PendingApproval {
+  /** respond 目标 id = 后端下发的 approvalId（一次性实例），兼容老服务端时退回 gateId */
+  respondId: string;
   gateId: string;
   title: string;
   summary: string;

@@ -62,6 +62,9 @@ export function runGitProcess(
   const finalArgs = [
     "-c",
     "credential.helper=",
+    // ext:: 传输会把 URL 余下内容当本机命令执行（gitremote-helpers）；平台只走 https，直接禁死
+    "-c",
+    "protocol.ext.allow=never",
     ...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []),
     ...args,
   ];

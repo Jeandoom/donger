@@ -312,6 +312,28 @@ export class SqliteUserStore implements UserStore {
     return !!row;
   }
 
+  /** 原子降级：守卫复核 + 写入同事务（better-sqlite3 同步事务，无 await 让出窗口）。
+   * 两步写法在并发互降下可把 admin 清零（2026-09-24 审计），降级路径必须走这里。 */
+  async demoteAdminGuarded(id: string): Promise<"ok" | "last-admin"> {
+    const tx = this.db.transaction((): "ok" | "last-admin" => {
+      const another = this.db
+        .prepare("SELECT 1 FROM users WHERE role = 'admin' AND id != ? LIMIT 1")
+        .get(id);
+      if (!another) return "last-admin";
+      const row = this.db.prepare("SELECT data FROM users WHERE id = ?").get(id) as
+        | { data: string }
+        | undefined;
+      if (!row) throw new Error(`user 不存在: ${id}`);
+      const cur = JSON.parse(row.data) as User;
+      const updated: User = { ...cur, role: "user", updatedAt: new Date().toISOString() };
+      this.db
+        .prepare("UPDATE users SET data = ?, role = ?, updatedAt = ? WHERE id = ?")
+        .run(JSON.stringify(updated), "user", updated.updatedAt, id);
+      return "ok";
+    });
+    return tx.immediate();
+  }
+
   async createBootstrapAdmin(input: {
     email: string;
     passwordHash: string;

@@ -75,6 +75,13 @@ export interface UserStore {
     email: string;
     passwordHash: string;
   }): Promise<"created" | "exists">;
+
+  /**
+   * 原子降级 admin：守卫复核（还有其他 admin）+ 降级写入在单个事务内完成。
+   * 「先 hasAnyAdminExcluding 后 updateRole」的两步写法在并发互降下可把 admin 清零
+   * （2026-09-24 审计），有此方法的 store 必须走它。
+   */
+  demoteAdminGuarded?(id: string): Promise<"ok" | "last-admin">;
 }
 
 /** 邮箱验证状态（verified=1 后 token/expiresAt 清空） */

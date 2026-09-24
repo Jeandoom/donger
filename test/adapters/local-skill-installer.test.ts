@@ -23,6 +23,8 @@ beforeEach(() => {
   installer = new LocalSkillInstaller({
     packStore,
     getHomeDir: (uid) => join(homeDir, uid),
+    // 测试用本地临时仓库作 git 源（生产 HTTP 入口默认拒绝本地路径）
+    allowLocalGitSource: true,
   });
 });
 afterEach(() => {
@@ -379,6 +381,7 @@ describe("LocalSkillInstaller git 凭证鉴权", () => {
     credInstaller = new LocalSkillInstaller({
       packStore,
       getHomeDir: (uid) => join(homeDir, uid),
+      allowLocalGitSource: true,
       credentialSets: makeCredentialSets(),
       gitRunner: (args, credential, timeout) => {
         gitCalls.push({ args, ...(credential ? { credential } : {}) });

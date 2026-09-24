@@ -12,10 +12,14 @@ export function createDefaultGates(): GateRouter {
   // 天然含 D:\...\.deploy\...），cd/python 等普通命令照抄附件绝对路径即被误拦、
   // 审批卡在手机端未处理便无限挂起（2026-09-21 个人财物管家两条会话卡死复盘）。
   // ./deploy.sh 前置是 / 不受负向断言影响，仍照拦。
+  // git push 匹配改为「git + 全局选项串 + push」：git -C dir push / --git-dir 形态此前绕过
+  //（allowShellGit 的 agent 下 shell git 守卫退出，deploy 门是唯一防线）；
+  // commit -m "push ..." 等消息词不误伤（push 须紧跟在选项位之后）。
   gates.add({
     gateId: "deploy",
     toolName: "Bash",
-    commandPattern: /(?<!\.)\b(?:deploy|publish)\b|\bgit\s+push\b|(?<!\.)\brelease(?![-\w])/i,
+    commandPattern:
+      /(?<!\.)\b(?:deploy|publish)\b|\bgit(?:\s+(?:-{1,2}[\w][\w-]*(?:=[^\s"']+)?|"[^"]*"))*\s+push\b|(?<!\.)\brelease(?![-\w])/i,
     force: true,
   });
   // AI 生成子模块：平台工具写操作确认（SDK 中工具全名 = mcp__donger-platform__<tool>）

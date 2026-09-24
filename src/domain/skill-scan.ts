@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 
 export interface ParsedFrontmatter {
@@ -65,18 +65,26 @@ export interface ScannedPack {
 }
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".donger-sdk-plugin"]);
+// 同步递归扫描跑在事件循环上：git 仓库可携带指向 / 的 symlink 或超深/超多目录，
+// 无界遍历 = 全进程冻结 DoS。symlink 一律跳过（对齐 local-file-browser），并设深度/条目上限。
+const MAX_SCAN_DEPTH = 16;
+const MAX_SCAN_ENTRIES = 5000;
 
 /** 递归找 skillRoot 下所有 SKILL.md，解析 frontmatter；元数据仍从 packDir 读取。 */
 export function scanSkillPack(packDir: string, skillRoot = packDir): ScannedPack {
   const skills: ScannedSkill[] = [];
-  const visit = (d: string) => {
+  let visited = 0;
+  const visit = (d: string, depth: number) => {
+    if (depth > MAX_SCAN_DEPTH || visited > MAX_SCAN_ENTRIES) return;
     for (const entry of readdirSync(d)) {
+      if (++visited > MAX_SCAN_ENTRIES) return;
       const abs = join(d, entry);
-      const st = statSync(abs);
-      if (st.isDirectory()) {
+      const lst = lstatSync(abs);
+      if (lst.isSymbolicLink()) continue;
+      if (lst.isDirectory()) {
         if (SKIP_DIRS.has(entry)) continue;
-        visit(abs);
-      } else if (entry === "SKILL.md" && st.isFile()) {
+        visit(abs, depth + 1);
+      } else if (entry === "SKILL.md" && lst.isFile()) {
         const fm = parseFrontmatter(readFileSync(abs, "utf8"));
         skills.push({
           name: fm.name ?? "unnamed",
@@ -87,7 +95,7 @@ export function scanSkillPack(packDir: string, skillRoot = packDir): ScannedPack
       }
     }
   };
-  visit(skillRoot);
+  visit(skillRoot, 0);
 
   let packMeta: ScannedPack["packMeta"] = { name: basename(packDir) };
   const pluginJsonPath = join(packDir, ".claude-plugin", "plugin.json");

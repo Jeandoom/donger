@@ -2085,11 +2085,33 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
   it("/api/loops/:id/runs 列出历史 run", async () => {
     const { port, token } = await startWorkflowChannel();
     const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-    // 直接造一个 loop（不跑）然后查 runs，应为空数组
+    // loop 引用校验（2026-09-24 审计收口）：workflowId 必须指向本人 workflow——
+    // 先建真实 trigger + workflow，再建 loop，查 runs 应为空数组
+    const trigger = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "T",
+        type: "hook",
+        hook: {
+          path: "/hooks/runs-test",
+          responseStatus: 200,
+          responseBody: "",
+          matcher: { kind: "always" },
+        },
+      }),
+    });
+    const triggerJson = (await trigger.json()) as { id: string };
+    const wf = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "W", triggerId: triggerJson.id, agentId: "a1" }),
+    });
+    const wfJson = (await wf.json()) as { id: string };
     const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ name: "L", workflowId: "wf-x" }),
+      body: JSON.stringify({ name: "L", workflowId: wfJson.id }),
     });
     const loopJson = (await loop.json()) as { id: string };
     const runs = await fetch(`http://127.0.0.1:${port}/api/loops/${loopJson.id}/runs`, {

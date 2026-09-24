@@ -67,6 +67,8 @@ export function UserProfilePage() {
   // 绑定弹窗回传：刷新身份列表
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
+      // 只接受同源消息（绑定回执不含敏感值，但同样不可信跨源注入）
+      if (ev.origin !== window.location.origin) return;
       if (ev.data?.type === "bind-success" && ev.data.provider === "github") {
         loadProfile();
       }
