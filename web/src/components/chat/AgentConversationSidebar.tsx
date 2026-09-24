@@ -146,7 +146,7 @@ function AgentGroup(props: { view: GroupView; callbacks: GroupCallbacks }) {
               title={view.starred ? "取消置顶（移回智能体区）" : "星标置顶固定区（收藏）"}
               aria-label={view.starred ? "取消置顶" : "星标置顶"}
               onClick={callbacks.onToggleStar}
-              className="inline-flex min-h-7 min-w-7 items-center justify-center rounded text-muted-foreground hover:bg-warning-soft hover:text-amber-600"
+              className="inline-flex min-h-7 min-w-7 items-center justify-center rounded text-muted-foreground hover:bg-warning-soft hover:text-warning-foreground"
             >
               <Star size={14} fill={view.starred ? "currentColor" : "none"} />
             </button>
@@ -173,7 +173,13 @@ function AgentGroup(props: { view: GroupView; callbacks: GroupCallbacks }) {
                 )}
                 title={conversation.title || "(无标题)"}
               >
-                {conversation.isDraft ? "● " : ""}
+                {conversation.isDraft ? (
+                  <span
+                    role="img"
+                    aria-label="未保存"
+                    className="mr-1 inline-block size-1.5 shrink-0 rounded-full bg-warning align-middle"
+                  />
+                ) : null}
                 {conversation.title || "(无标题)"}
               </button>
               <span className="shrink-0 pr-1 text-[10px] text-muted-foreground group-hover:hidden">

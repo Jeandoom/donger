@@ -1,7 +1,11 @@
+import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { useDirtyGuard } from "../components/ui/dirty-guard";
+import { PageHeader } from "../components/ui/page-header";
 import {
   type AgentMeta,
   createAgent,
@@ -149,6 +153,7 @@ export function AgentEditorPage() {
   }, [readOnly, isNew]);
 
   const dirty = JSON.stringify(form) !== baseline;
+  const { attempt, dialog } = useDirtyGuard(dirty && !saving && !duplicating);
   const issues = useMemo(() => scenarioIssues(form), [form]);
   const issuesBySection = useMemo(() => {
     const map = new Map<string, number>();
@@ -213,6 +218,8 @@ export function AgentEditorPage() {
         setSaving(false);
         return;
       }
+      // 已落库：同步基线消除脏标记后再跳转，避免脏守卫把保存成功后的跳转当离开
+      setBaseline(JSON.stringify(formToSave));
       navigate(`/agents/${saved.id}`);
     } catch (e) {
       setError(String(e));
@@ -238,31 +245,28 @@ export function AgentEditorPage() {
 
   if (readOnly && !isNew && id) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-4 p-6">
-          <div className="flex items-center justify-between gap-3">
-            <h1 className="text-[22px] font-bold leading-7">{form.name}</h1>
-            <Link
-              to={`/agents/${id}/chat`}
-              className="rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:opacity-90"
+      <div className="mx-auto h-full max-w-2xl flex-1 flex-col gap-5 overflow-y-auto p-7">
+        <PageHeader
+          title={form.name || "共享智能体"}
+          description={form.description || undefined}
+          actions={<Button onClick={() => navigate(`/agents/${id}/chat`)}>对话</Button>}
+        />
+        <Card className="flex items-start gap-3 p-4">
+          <Info size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-info-foreground" />
+          <div className="min-w-0">
+            <p className="text-sm text-muted-foreground">
+              这是共享智能体。你可以使用它进行对话，但无权查看或编辑创建者的详细配置。
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-3"
+              onClick={() => navigate("/agents")}
             >
-              对话
-            </Link>
+              返回智能体管理
+            </Button>
           </div>
-          {form.description ? (
-            <p className="text-sm text-muted-foreground">{form.description}</p>
-          ) : null}
-          <p className="rounded border bg-muted/40 p-3 text-sm text-muted-foreground">
-            这是共享智能体。你可以使用它进行对话，但无权查看或编辑创建者的详细配置。
-          </p>
-          <button
-            type="button"
-            className="rounded border px-3 py-1.5 text-sm"
-            onClick={() => navigate("/agents")}
-          >
-            返回智能体管理
-          </button>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -275,7 +279,7 @@ export function AgentEditorPage() {
       <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-card/95 px-5 backdrop-blur">
         <button
           type="button"
-          onClick={() => navigate("/agents")}
+          onClick={() => attempt(() => navigate("/agents"))}
           title="返回智能体管理"
           className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
         >
@@ -295,12 +299,14 @@ export function AgentEditorPage() {
         ) : null}
         <span className="flex-1" />
         {!isNew && id ? (
-          <Link
-            to={`/agents/${id}/chat`}
-            className="hidden rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted sm:inline-flex"
+          <Button
+            variant="secondary"
+            size="sm"
+            className="hidden sm:inline-flex"
+            onClick={() => navigate(`/agents/${id}/chat`)}
           >
             对话
-          </Link>
+          </Button>
         ) : null}
         {!isNew && id ? (
           <Button
@@ -312,7 +318,7 @@ export function AgentEditorPage() {
             {duplicating ? "复制中…" : "复制"}
           </Button>
         ) : null}
-        <Button variant="secondary" size="sm" onClick={() => navigate("/agents")}>
+        <Button variant="secondary" size="sm" onClick={() => attempt(() => navigate("/agents"))}>
           取消
         </Button>
         <Button size="sm" onClick={() => void save()} disabled={saving || !form.name}>
@@ -432,7 +438,7 @@ export function AgentEditorPage() {
           <span className="text-xs text-muted-foreground">所有更改已保存</span>
         )}
         <span className="flex-1" />
-        <Button variant="secondary" size="sm" onClick={() => navigate("/agents")}>
+        <Button variant="secondary" size="sm" onClick={() => attempt(() => navigate("/agents"))}>
           取消
         </Button>
         <Button
@@ -444,6 +450,7 @@ export function AgentEditorPage() {
           {saving ? "保存中…" : "保存"}
         </Button>
       </footer>
+      {dialog}
     </div>
   );
 }

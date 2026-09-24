@@ -17,6 +17,7 @@ import type {
   PendingQuestion,
 } from "../../types";
 import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
+import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
@@ -128,12 +129,12 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       }}
       className={`h-9 shrink-0 rounded-lg border px-2 text-xs font-medium ${
         effectiveMode === "full_access"
-          ? "border-amber-300 bg-warning-soft text-amber-800"
+          ? "border-warning/50 bg-warning-soft text-warning-foreground"
           : "border-border bg-card text-muted-foreground hover:bg-muted"
       }`}
     >
-      <option value="ask_before_change">🛡️ 变更前问询</option>
-      <option value="full_access">⚡ 完全权限</option>
+      <option value="ask_before_change">变更前问询</option>
+      <option value="full_access">完全权限（高危）</option>
     </select>
   ) : null;
 
@@ -168,25 +169,29 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               {sidebarItems.find((i) => i.id === props.activeConversationId)?.title}
             </span>
             {props.activeConversationIsDraft ? (
-              <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-amber-800">
-                ● 未保存
-              </span>
+              <Badge tone="warning">
+                <span
+                  className="mr-1 inline-block size-1.5 rounded-full bg-warning"
+                  aria-hidden="true"
+                />
+                未保存
+              </Badge>
             ) : (
-              <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              <Badge
+                tone={
                   props.connection === "open"
-                    ? "bg-success-soft text-success"
+                    ? "success"
                     : props.connection === "closed"
-                      ? "bg-destructive-soft text-destructive"
-                      : "bg-muted text-muted-foreground"
-                }`}
+                      ? "danger"
+                      : "neutral"
+                }
               >
                 {props.connection === "open"
                   ? "已连接"
                   : props.connection === "closed"
                     ? "未连接"
                     : "连接中"}
-              </span>
+              </Badge>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -212,7 +217,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           onCancel={() => setConfirmFullAccess(false)}
         />
         {props.errors.stream ? (
-          <div role="status" className="bg-warning-soft px-3 py-2 text-sm text-amber-800">
+          <div role="status" className="bg-warning-soft px-3 py-2 text-sm text-warning-foreground">
             {props.errors.stream}
           </div>
         ) : null}

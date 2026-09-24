@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
+import { ConfirmDialog } from "../../components/ui/confirm-dialog";
 import { FormField, FormSection } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
@@ -20,6 +21,13 @@ import { inferProviderFromUrl, inferRepoNameFromUrl, PROVIDER_LABELS } from "./m
 
 type GitRepo = AgentEditorForm["gitRepositories"][number];
 
+/** 待确认删除项：仓库/工作目录均配置成本不低，单击 X 先确认（审计 P2） */
+interface PendingDelete {
+  kind: "repo" | "dir";
+  id: string;
+  label: string;
+}
+
 export function ResourcesSection({
   form,
   patch,
@@ -30,11 +38,9 @@ export function ResourcesSection({
   /** git 用途凭证模板（kind=git）：仓库凭证下拉选项 */
   gitCredentialOptions: Array<{ code: string; name: string; repoUrl?: string }>;
 }) {
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const patchRepo = (id: string, p: Partial<GitRepo>) => {
     patch({ gitRepositories: form.gitRepositories.map((r) => (r.id === id ? { ...r, ...p } : r)) });
-  };
-  const removeRepo = (id: string) => {
-    patch({ gitRepositories: form.gitRepositories.filter((r) => r.id !== id) });
   };
   const addRepo = () => {
     patch({
@@ -59,6 +65,18 @@ export function ResourcesSection({
         d.id === id ? { ...d, ...p } : d,
       ),
     });
+  };
+
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    if (pendingDelete.kind === "repo") {
+      patch({ gitRepositories: form.gitRepositories.filter((r) => r.id !== pendingDelete.id) });
+    } else {
+      patch({
+        extensionDirectories: form.extensionDirectories.filter((d) => d.id !== pendingDelete.id),
+      });
+    }
+    setPendingDelete(null);
   };
 
   return (
@@ -101,7 +119,13 @@ export function ResourcesSection({
               repo={repo}
               gitCredentialOptions={gitCredentialOptions}
               onPatch={(p) => patchRepo(repo.id, p)}
-              onRemove={() => removeRepo(repo.id)}
+              onRemove={() =>
+                setPendingDelete({
+                  kind: "repo",
+                  id: repo.id,
+                  label: repo.name || repo.url || "未命名仓库",
+                })
+              }
             />
           ))}
           <div>
@@ -164,8 +188,10 @@ export function ResourcesSection({
                 className="shrink-0 self-end text-muted-foreground hover:text-destructive sm:self-auto"
                 title="删除目录"
                 onClick={() =>
-                  patch({
-                    extensionDirectories: form.extensionDirectories.filter((d) => d.id !== dir.id),
+                  setPendingDelete({
+                    kind: "dir",
+                    id: dir.id,
+                    label: dir.name || dir.path || "未命名目录",
                   })
                 }
               >
@@ -192,6 +218,16 @@ export function ResourcesSection({
           </div>
         </div>
       </FormField>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={pendingDelete?.kind === "repo" ? "删除 Git 仓库？" : "删除扩展工作目录？"}
+        description={`「${pendingDelete?.label ?? ""}」将从本智能体移除；保存后生效，取消编辑可撤销。`}
+        confirmText="删除"
+        destructive
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </FormSection>
   );
 }
@@ -263,12 +299,15 @@ function GitRepoCard({
               ? "Gitee"
               : "GitLab 兼容"}
         </Badge>
-        <input
-          className="h-8 min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 font-mono text-xs focus:border-primary focus:outline-none"
-          placeholder="https://github.com|gitee.com|jihulab.com|自建host/org/repo.git（仅 HTTPS）"
-          value={repo.url}
-          onChange={(e) => onUrlChange(e.target.value)}
-        />
+        <div className="min-w-0 flex-1">
+          <Input
+            mono
+            className="h-8 text-xs"
+            placeholder="https://github.com|gitee.com|jihulab.com|自建host/org/repo.git（仅 HTTPS）"
+            value={repo.url}
+            onChange={(e) => onUrlChange(e.target.value)}
+          />
+        </div>
         {!expanded && repo.name ? (
           <span className="hidden shrink-0 font-mono text-[11px] text-muted-foreground sm:inline">
             → {repo.name}/
