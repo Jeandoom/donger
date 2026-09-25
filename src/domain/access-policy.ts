@@ -34,7 +34,8 @@ export type OwnedResourceKind =
   | "invite"
   | "user-memory"
   | "callback"
-  | "credential";
+  | "credential"
+  | "app";
 
 /**
  * 统一授权判定（纯函数，全量单测）。

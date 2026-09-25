@@ -1,3 +1,4 @@
+import type { AppStore } from "../ports/app-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { TaskStore } from "../ports/task-store.js";
 import type { UserStore } from "../ports/user-store.js";
@@ -8,6 +9,7 @@ export interface WebRouteGuardDeps {
   conversationStore?: ConversationStore;
   taskStore?: TaskStore;
   userStore?: UserStore;
+  appStore?: AppStore;
 }
 
 /**
@@ -28,6 +30,18 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
   const conv = deps.conversationStore;
   const task = deps.taskStore;
   const users = deps.userStore;
+  const apps = deps.appStore;
+
+  const ownerApp = apps
+    ? {
+        loadOwner: async (id: string) => {
+          const a = await apps.get(id);
+          return a ? { ownerId: a.userId } : undefined;
+        },
+      }
+    : {
+        loadOwner: async () => undefined,
+      };
 
   const ownerConversation = conv
     ? {
@@ -440,5 +454,69 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "PUT", pattern: "/api/skills/repo", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/repo/verify", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/repo/sync", access: { kind: "authenticated" } },
+
+    // ===== 平台应用（spec 2026-09-25-app-platform-architecture M1 应用内核）=====
+    // 属主面：owner=appStore.get；运行时面 /api/app-data/*：app-token 自鉴权（public 登记，
+    // handler 内 AppTokenService 校验 aud=appId，主 JWT 不被接受）。
+    { method: "GET", pattern: "/api/apps", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/apps", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/apps/:id",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    {
+      method: "PATCH",
+      pattern: "/api/apps/:id",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    {
+      method: "DELETE",
+      pattern: "/api/apps/:id",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    {
+      method: "GET",
+      pattern: "/api/apps/:id/versions",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    {
+      method: "POST",
+      pattern: "/api/apps/:id/versions",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    // 双参数路由：owner 规则约束恰好一个 :id，属主复核收敛在 handler（requireOwnedApp）
+    {
+      method: "POST",
+      pattern: "/api/apps/:id/versions/:num/publish",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "POST",
+      pattern: "/api/apps/:id/token",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    {
+      method: "GET",
+      pattern: "/api/apps/:id/data",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    {
+      method: "DELETE",
+      pattern: "/api/apps/:id/data/:key",
+      access: { kind: "authenticated" },
+    },
+    { method: "GET", pattern: "/api/app-data/:appId/:key", access: { kind: "public" } },
+    { method: "PUT", pattern: "/api/app-data/:appId/:key", access: { kind: "public" } },
+    { method: "DELETE", pattern: "/api/app-data/:appId/:key", access: { kind: "public" } },
+    // 跨源预检（应用 bundle 在 CSP sandbox 不透明源内 fetch，浏览器先发 OPTIONS）
+    { method: "OPTIONS", pattern: "/api/app-data/:appId/:key", access: { kind: "public" } },
   ];
 }

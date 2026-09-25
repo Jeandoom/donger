@@ -4,6 +4,8 @@ import { Shell } from "./components/layout/Shell";
 import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
 import { AgentsPage } from "./pages/AgentsPage";
+import { AppDetailPage } from "./pages/AppDetailPage";
+import { AppsPage } from "./pages/AppsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { AuthorizationPage } from "./pages/AuthorizationPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -51,6 +53,9 @@ export function App() {
           <Route element={<Shell />}>
             <Route path="/" element={<ChatPage />} />
             <Route path="/agents" element={<AgentsPage />} />
+            {/* 应用模块（spec 2026-09-25-app-platform-architecture）：列表 + 详情（概览/版本/数据/运行） */}
+            <Route path="/apps" element={<AppsPage />} />
+            <Route path="/apps/:appId" element={<AppDetailPage />} />
             <Route path="/kb" element={<KnowledgeBasePage />} />
             <Route path="/kb/:id" element={<KbDetailPage />} />
             <Route path="/agents/new" element={<AgentEditorPage />} />

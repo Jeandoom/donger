@@ -8,7 +8,6 @@ import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
 import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
-import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
@@ -16,10 +15,12 @@ import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
+import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
+import { SqliteAppStore } from "./adapters/sqlite-app-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
@@ -63,12 +64,12 @@ import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
 import { configureGithubProxy } from "./util/github-oauth-api.js";
+import { createKbFts, migrateKbFts } from "./util/kb-fts.js";
 import { migrateKnowledgeBases } from "./util/kb-migrate.js";
 import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
-import { createKbFts, migrateKbFts } from "./util/kb-fts.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -179,6 +180,12 @@ async function main(): Promise<void> {
   kbShareStore.migrate();
   const kbRevisionStore = new SqliteKbRevisionStore(db);
   kbRevisionStore.migrate();
+
+  // 平台应用三表（spec 2026-09-25-app-platform-architecture M1）：产物落 <dataDir>/apps
+  //（deploy.ps1 重建目录不触及 data/，应用资产不会被清空）
+  const appStore = new SqliteAppStore(db);
+  appStore.migrate();
+  const appsDir = join(dirname(cfg.dbPath), "apps");
   // FTS 三列式影子索引（R-A：seg=CJK 逐字切分，查询短语化；中文 0 命中修复）
   migrateKbFts(db);
   const kbFts = createKbFts(db);
@@ -470,6 +477,9 @@ async function main(): Promise<void> {
     installer: skillInstaller,
     userSkillRepoStore,
     skillRepoSync,
+    appStore,
+    appsDir,
+    appTokenSecret: jwtSecret,
     credentialSets,
     connectorStore,
     llmProviderStore,

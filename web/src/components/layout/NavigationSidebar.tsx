@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   Blocks,
   Bot,
   KeyRound,
@@ -42,6 +43,8 @@ const mainEntries: LeafItem[] = [
   { to: "/", label: "对话", icon: MessageSquare, end: true },
   // 智能体会话已并入对话模块（/），智能体入口收敛为管理页叶节点
   { to: "/agents", label: "智能体", icon: Bot },
+  // 应用模块：平台内开发/托管/运行的个人应用（app runtime）
+  { to: "/apps", label: "应用", icon: AppWindow },
   { to: "/kb", label: "知识库", icon: KbIcon },
   { to: "/workflows", label: "工作流", icon: Workflow },
   { to: "/triggers", label: "触发器", icon: Zap },

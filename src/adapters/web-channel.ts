@@ -158,6 +158,7 @@ import {
 import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
+import type { AppStore } from "../ports/app-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type {
   Channel,
@@ -216,6 +217,28 @@ import {
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import { ApiRouteGuard } from "./api-route-guard.js";
+import {
+  type AppApiDeps,
+  type AppHttpCtx,
+  type AppRuntimeHandlers,
+  type AppStaticTarget,
+  appContentType,
+  appVersionDir,
+  createAppRuntimeHandlers,
+  handleCreateApp,
+  handleDeleteApp,
+  handleDeleteAppDataByOwner,
+  handleGetApp,
+  handleIssueAppToken,
+  handleListAppData,
+  handleListApps,
+  handleListVersions,
+  handlePatchApp,
+  handlePublishVersion,
+  handleUploadVersion,
+  resolveAppStaticTarget,
+} from "./app-api.js";
+import { AppTokenService } from "./app-token-service.js";
 import { flattenWorkspaceFiles } from "./local-file-browser.js";
 import { handleMcpMessage } from "./mcp/rpc.js";
 import { buildMcpTools } from "./mcp/tools.js";
@@ -468,6 +491,10 @@ export interface WebChannelDeps {
   /** 用户技能仓库配置存储 + 同步服务（缺省=技能仓库端点 404） */
   userSkillRepoStore?: UserSkillRepoStore;
   skillRepoSync?: SkillRepoSyncService;
+  /** 平台应用存储 + 产物根目录 + app-token 密钥（spec 2026-09-25-app-platform-architecture；缺省=应用端点 503） */
+  appStore?: AppStore;
+  appsDir?: string;
+  appTokenSecret?: string;
   credentialSets?: CredentialSetStore;
   /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
   connectorStore?: ConnectorStore;
@@ -563,6 +590,9 @@ export class WebChannel implements Channel {
   private readonly connectorStore?: ConnectorStore;
   private readonly agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   private readonly inviteStore?: InviteStore;
+  private readonly appApi?: AppApiDeps;
+  /** 运行时面 app-data handler（app-token 消费端） */
+  private readonly appRuntime?: AppRuntimeHandlers;
   private readonly oauthStateMap = new Map<string, number>();
   /** 限流（注册/登录 IP、登录失败锁定、llm-debug 配额）；缺省内存实现 */
   private readonly rateLimiter: RateLimiter;
@@ -588,12 +618,21 @@ export class WebChannel implements Channel {
     this.connectorStore = deps.connectorStore;
     this.agentMeta = deps.agentMeta;
     this.inviteStore = deps.inviteStore;
+    if (deps.appStore && deps.appsDir && deps.appTokenSecret) {
+      this.appApi = {
+        appStore: deps.appStore,
+        appsDir: deps.appsDir,
+        appToken: new AppTokenService(deps.appTokenSecret),
+      };
+      this.appRuntime = createAppRuntimeHandlers(this.appApi);
+    }
     this.rateLimiter = deps.rateLimiter ?? new MemoryRateLimiter();
     this.routeGuard = new ApiRouteGuard(
       buildWebRouteGuardSpecs({
         conversationStore: deps.conversationStore,
         taskStore: deps.taskStore,
         userStore: deps.userStore,
+        appStore: deps.appStore,
       }),
     );
   }
@@ -1242,6 +1281,13 @@ export class WebChannel implements Channel {
       }
       res.writeHead(404);
       res.end("Not found");
+      return;
+    }
+
+    // /apps/app_<id>/* —— 应用静态挂载（App Gateway RT-A；spec 2026-09-25-app-platform-architecture §5）。
+    // 仅 app_ 前缀 id 进网关：/apps 本身是主站「应用中心」SPA 路由，走下方静态兜底。
+    if (/^\/apps\/app_[\w-]+(\/|$)/.test(url)) {
+      await this.handleAppStatic(req, res);
       return;
     }
 
@@ -1908,6 +1954,110 @@ export class WebChannel implements Channel {
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // 鉴权与授权已由 routeGuard 在 handleHttp 的 /api 入口统一执行（fail-closed）；
     // 本方法只做路由分发。公开性/属主/管理员规则见 web-route-guards.ts。
+
+    // === 平台应用（spec 2026-09-25-app-platform-architecture M1 应用内核）===
+    // 运行时面（/api/app-data/*）鉴权 = app-token（Bearer，aud=appId），handler 内校验；
+    // 属主面（/api/apps/*）鉴权 = 守卫表 owner 规则（loadOwner=appStore.get）。
+    const appPath = url.split("?")[0] ?? url;
+    if (
+      appPath === "/api/apps" ||
+      appPath.startsWith("/api/apps/") ||
+      appPath.startsWith("/api/app-data/")
+    ) {
+      if (!this.appApi || !this.appRuntime) {
+        return this.json(res, { error: "应用模块未启用" }, 503);
+      }
+      const ctx: AppHttpCtx = {
+        userIdOf: (r) => (r as HttpRequest & { userId?: string }).userId,
+        roleOf: (r) => this.currentViewer(r).role,
+        readBody: (r, maxBytes) => this.readBody(r, maxBytes),
+      };
+      const api = this.appApi;
+
+      // 应用数据（运行时面）：统一放行 CORS（Bearer 鉴权不依赖 cookie，* 安全）
+      if (appPath.startsWith("/api/app-data/")) {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, PUT, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+        const runtimeMatch = appPath.match(/^\/api\/app-data\/([\w-]+)\/([^/]+)$/);
+        if (req.method === "OPTIONS" && runtimeMatch) {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        if (runtimeMatch) {
+          const appId = runtimeMatch[1] ?? "";
+          const key = decodeURIComponent(runtimeMatch[2] ?? "");
+          if (req.method === "GET") {
+            return this.sendApi(res, await this.appRuntime.get(req, appId, key));
+          }
+          if (req.method === "PUT") {
+            return this.sendApi(res, await this.appRuntime.put(req, appId, key));
+          }
+          if (req.method === "DELETE") {
+            return this.sendApi(res, await this.appRuntime.del(req, appId, key));
+          }
+        }
+        return this.json(res, { error: "not found" }, 404);
+      }
+
+      if (appPath === "/api/apps" && req.method === "GET") {
+        return this.sendApi(res, await handleListApps(ctx, api, req));
+      }
+      if (appPath === "/api/apps" && req.method === "POST") {
+        return this.sendApi(res, await handleCreateApp(ctx, api, req));
+      }
+      const appMatch = appPath.match(/^\/api\/apps\/([\w-]+)$/);
+      if (appMatch) {
+        const appId = appMatch[1] ?? "";
+        if (req.method === "GET") {
+          return this.sendApi(res, await handleGetApp(ctx, api, req, appId));
+        }
+        if (req.method === "PATCH") {
+          return this.sendApi(res, await handlePatchApp(ctx, api, req, appId));
+        }
+        if (req.method === "DELETE") {
+          return this.sendApi(res, await handleDeleteApp(ctx, api, req, appId));
+        }
+      }
+      const tokenMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/token$/);
+      if (tokenMatch && req.method === "POST") {
+        return this.sendApi(res, await handleIssueAppToken(ctx, api, req, tokenMatch[1] ?? ""));
+      }
+      const versionsMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/versions$/);
+      if (versionsMatch && req.method === "GET") {
+        return this.sendApi(res, await handleListVersions(ctx, api, req, versionsMatch[1] ?? ""));
+      }
+      if (versionsMatch && req.method === "POST") {
+        return this.sendApi(res, await handleUploadVersion(ctx, api, req, versionsMatch[1] ?? ""));
+      }
+      const publishMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/versions\/(\d+)\/publish$/);
+      if (publishMatch && req.method === "POST") {
+        return this.sendApi(
+          res,
+          await handlePublishVersion(ctx, api, req, publishMatch[1] ?? "", Number(publishMatch[2])),
+        );
+      }
+      const dataListMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/data$/);
+      if (dataListMatch && req.method === "GET") {
+        return this.sendApi(res, await handleListAppData(ctx, api, req, dataListMatch[1] ?? ""));
+      }
+      const dataDeleteMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/data\/([^/]+)$/);
+      if (dataDeleteMatch && req.method === "DELETE") {
+        return this.sendApi(
+          res,
+          await handleDeleteAppDataByOwner(
+            ctx,
+            api,
+            req,
+            dataDeleteMatch[1] ?? "",
+            decodeURIComponent(dataDeleteMatch[2] ?? ""),
+          ),
+        );
+      }
+      return this.json(res, { error: "not found" }, 404);
+    }
+
     const preflightMatch = url.match(/^\/api\/conversations\/([\w-]+)\/preflight$/);
     if (preflightMatch && req.method === "GET") {
       const result = await this.checkConversationGitAccess(
@@ -3128,9 +3278,9 @@ export class WebChannel implements Channel {
     // 不回 homeDir/原始记录；CLI users 命令与页面消费的 id/role/name 字段保持不变）
     if (url === "/api/users" && req.method === "GET") {
       const users = (await this.deps.userStore?.list()) ?? [];
-      const rows = (
-        await Promise.all(users.map(async (u) => this.adminUserDto(u.id)))
-      ).filter((u) => u !== null);
+      const rows = (await Promise.all(users.map(async (u) => this.adminUserDto(u.id)))).filter(
+        (u) => u !== null,
+      );
       res.writeHead(200);
       res.end(JSON.stringify(rows));
       return;
@@ -4703,6 +4853,77 @@ export class WebChannel implements Channel {
   }
 
   /** AppError 子类 → HTTP 状态码映射（缺省 500）。 */
+  // ---------------------------------------------------------------------------
+  // 应用静态挂载（App Gateway RT-A）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * /apps/:appId/* 托管已发布应用的静态 bundle。安全要点：
+   *  - HTML 响应带 CSP sandbox（不透明源）+ frame-ancestors 'self'：应用 JS 与主站
+   *    隔离，读不到 localStorage 里的主 JWT——这是 app-token 体系的前提；
+   *  - 覆盖全局 X-Frame-Options: DENY（同源 iframe 嵌运行视图）；
+   *  - Referrer 收紧 no-referrer：?appToken= 形态的引导参数不随外跳泄漏；
+   *  - 防穿越/目录判定在 resolveAppStaticTarget（resolve 包含性 + isFile）。
+   * 访问模型：静态资源按「不可猜测 appId 持有即读」——能力型访问；数据面由
+   * app-token 收口，应用内数据永不随静态面泄漏。
+   */
+  private async handleAppStatic(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const api = this.appApi;
+    if (!api) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
+    const rawPath = (req.url ?? "/").split("?")[0] ?? "/";
+    const rest = rawPath.replace(/^\/apps\/?/, "");
+    const [appId = "", ...segments] = rest.split("/");
+    if (!/^app_[\w-]+$/.test(appId) || segments.some((s) => s === "." || s === "..")) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("bad request");
+      return;
+    }
+    const app = await api.appStore.get(appId);
+    if (!app || app.currentVersion === null) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("app not found or not published");
+      return;
+    }
+    const versionDir = appVersionDir(api.appsDir, appId, app.currentVersion);
+    const urlPath = `/${segments.join("/")}`;
+    const target: AppStaticTarget = resolveAppStaticTarget(
+      versionDir,
+      app.manifest.ui.spa,
+      urlPath,
+    );
+    if (!target) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
+    const absPath = target.absPath;
+    try {
+      if (target.kind === "spa" || target.html) {
+        res.removeHeader("X-Frame-Options");
+        res.setHeader("Referrer-Policy", "no-referrer");
+        res.setHeader("Cache-Control", "no-store");
+        // CSP sandbox：文档进不透明源（即使用户直接开新标签页也隔离）；
+        // frame-ancestors 限定同源嵌入（替代被移除的 XFO）。
+        res.setHeader(
+          "Content-Security-Policy",
+          "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads; frame-ancestors 'self'",
+        );
+      }
+      res.writeHead(200, { "Content-Type": appContentType(absPath) });
+      res.end(readFileSync(absPath));
+    } catch (err) {
+      console.warn("[web] 应用静态文件读取失败，降级 404:", urlPath, err);
+      if (!res.headersSent) {
+        res.writeHead(404);
+        res.end("Not found");
+      }
+    }
+  }
+
   private writeApiError(res: ServerResponse, e: unknown): void {
     let status = 500;
     if (e instanceof ForbiddenError) status = 403;
@@ -6223,6 +6444,11 @@ export class WebChannel implements Channel {
   private json(res: ServerResponse, body: unknown, status = 200): void {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(body));
+  }
+
+  /** app-api handler 的 ApiResult 落响应 */
+  private sendApi(res: ServerResponse, result: { status: number; json: unknown }): void {
+    this.json(res, result.json, result.status);
   }
 
   /** Agent → DTO；detailed=false 时隐藏配置明细，env/headers 永远掩码 */
