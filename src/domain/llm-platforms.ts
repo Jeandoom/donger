@@ -2,8 +2,10 @@
 // sdkType="anthropic"：端点均为 Anthropic 协议兼容（SDK 经 ANTHROPIC_BASE_URL 消费）；
 // sdkType="openai"：OpenAI 协议端点（chat/completions 形态），经 Codex Agent SDK +
 // 内置 Responses↔Chat 桥原生接入（specs/2026-09-21-codex-openai-runner-design.md）；
+// sdkType="zcode"：ZCode 引擎（GLM 官方 harness，spawn zcode app-server 以个人
+// provider 配置消费 Anthropic 协议端点，specs/2026-09-25-zcode-engine-integration.md）；
 // custom 平台二者可选（按 baseUrl 实际协议形态选择）。
-export const LLM_SDK_TYPES = ["anthropic", "openai"] as const;
+export const LLM_SDK_TYPES = ["anthropic", "openai", "zcode"] as const;
 export type LlmSdkType = (typeof LLM_SDK_TYPES)[number];
 
 export interface LlmPlatform {
@@ -104,6 +106,26 @@ export const LLM_PLATFORMS: readonly LlmPlatform[] = [
     models: ["glm-5.3-flash", "glm-4.6", "glm-4.5"],
     custom: false,
     sdkType: "openai",
+  },
+  // —— ZCode 引擎平台（sdkType="zcode"：GLM 官方 harness，specs/2026-09-25-zcode-engine-integration.md）——
+  // 端点为 Anthropic 协议形态（ZCode 个人 provider 以 anthropic-messages 消费）；
+  // 引擎独立于 claude/openai 通路，GLM 模型在官方 harness 下完成率更优。
+  {
+    id: "zhipu-zcode",
+    name: "智谱 GLM（ZCode 引擎）",
+    baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    models: ["glm-4.6", "glm-4.5"],
+    custom: false,
+    sdkType: "zcode",
+    note: "经 ZCode CLI（GLM 官方 harness）驱动；服务端需可执行 ZCode CLI（DONGER_ZCODE_CLI_PATH）",
+  },
+  {
+    id: "zai-zcode",
+    name: "智谱 GLM 国际版（ZCode 引擎）",
+    baseUrl: "https://api.z.ai/api/anthropic",
+    models: ["glm-4.6", "glm-4.5"],
+    custom: false,
+    sdkType: "zcode",
   },
   {
     id: "custom",

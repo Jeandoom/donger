@@ -9,6 +9,7 @@ import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
 import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
 import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
+import { ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
@@ -314,11 +315,14 @@ async function main(): Promise<void> {
       auditStore,
       commentStore,
       gates: createDefaultGates(),
-      // 双引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6）：
-      // anthropic（缺省）→ ClaudeAgentRunner；openai → CodexAgentRunner（恒经内置桥）
+      // 三引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6、
+      // specs/2026-09-25-zcode-engine-integration.md §4.1）：
+      // anthropic（缺省）→ ClaudeAgentRunner；openai → CodexAgentRunner（恒经内置桥）；
+      // zcode → ZcodeAgentRunner（GLM 官方 harness，spawn app-server）
       runner: new RoutingAgentRunner(
         new ClaudeAgentRunner(createDefaultGates()),
         new CodexAgentRunner(createDefaultGates(), new CodexChatBridge()),
+        new ZcodeAgentRunner(createDefaultGates()),
       ),
       channel,
       runtimeMgr,
