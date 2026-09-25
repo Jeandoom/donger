@@ -350,6 +350,8 @@ async function main(): Promise<void> {
       selfImproveGitRepository,
       agentChain: cfg.agentChain,
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
+      appStore,
+      appsDir,
     });
   }
 

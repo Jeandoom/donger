@@ -22,8 +22,8 @@ import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../d
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
-import type { User } from "../domain/user.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
+import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type {
   AgentRunner,
@@ -33,13 +33,14 @@ import type {
 } from "../ports/agent-runner.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
+import type { AppStore } from "../ports/app-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
-import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
+import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
@@ -48,12 +49,13 @@ import type { TaskStore } from "../ports/task-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
-import { type KbFtsIndex } from "../util/kb-fts.js";
 import { kbRootDir, sha256Text } from "../util/kb-files.js";
+import type { KbFtsIndex } from "../util/kb-fts.js";
 import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
+import { createAppToolsServer } from "./app-tools.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { createAuditToolsServer } from "./audit-tools.js";
@@ -63,9 +65,9 @@ import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
-import { createKbToolsServer, type KbMount } from "./kb-tools.js";
-import { enqueueAutoLearn } from "./kb-auto-learn.js";
 import { BUILTIN_KB_ASSISTANT_AGENT, BUILTIN_KB_ASSISTANT_ID } from "./kb-assistant-agent.js";
+import { enqueueAutoLearn } from "./kb-auto-learn.js";
+import { createKbToolsServer, type KbMount } from "./kb-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
@@ -118,6 +120,9 @@ export interface OrchestratorDeps {
   agentChain?: AgentChainConfig;
   /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
   turnStallTimeoutMs?: number;
+  /** 平台应用存储 + 产物根目录（spec 2026-09-25-app-platform-architecture M2）；缺省=app 工具不挂载 */
+  appStore?: AppStore;
+  appsDir?: string;
 }
 
 /** 活跃任务明细：并发额度按条目记账，满载时从中挑「最早进入挂起」的淘汰 */
@@ -514,7 +519,8 @@ export class Orchestrator {
           onChange: async (e) => {
             const revisions = this.deps.kbRevisionStore;
             if (!revisions) return;
-            const diff = e.action === "delete" ? undefined : lineDiff(e.before ?? "", e.after ?? "");
+            const diff =
+              e.action === "delete" ? undefined : lineDiff(e.before ?? "", e.after ?? "");
             // FTS 影子索引同步（R-A）：写即 upsert、删即 delete（与账本同事务语义：先记后同步均可）
             if (this.deps.kbFts) {
               if (e.action === "delete" && e.before !== undefined) {
@@ -544,7 +550,21 @@ export class Orchestrator {
       if (kbPrompt) {
         base = {
           ...base,
-          systemPromptAppend: [base.systemPromptAppend, kbPrompt].filter((s) => s && s.length > 0).join("\n\n"),
+          systemPromptAppend: [base.systemPromptAppend, kbPrompt]
+            .filter((s) => s && s.length > 0)
+            .join("\n\n"),
+        };
+      }
+      // 平台应用工具（donger-apps）：会话用户闭包绑定所有权；产物目录相对运行时目录解析
+      if (this.deps.appStore && this.deps.appsDir) {
+        base = {
+          ...base,
+          appTools: createAppToolsServer({
+            appStore: this.deps.appStore,
+            appsDir: this.deps.appsDir,
+            runtimeDir: context.runtimeDir,
+            userId: p.user.id,
+          }),
         };
       }
       // 审计读取工具（donger-audit）：内置审计智能体、技能工坊、平台进化官挂载。
@@ -1015,9 +1035,7 @@ export class Orchestrator {
     // 登记表「业务知识库」列：知识库 id → 名称（绑定库列名，spec §10.2）
     let kbNames: Map<string, string> | undefined;
     if (this.deps.kbLibraryStore) {
-      kbNames = new Map(
-        (await this.deps.kbLibraryStore.listAll()).map((l) => [l.id, l.name]),
-      );
+      kbNames = new Map((await this.deps.kbLibraryStore.listAll()).map((l) => [l.id, l.name]));
     }
     const dispatcher = buildDispatcherAgent(await this.listDispatchableAgents(p.user), kbNames);
     const r = await this.runTurn({

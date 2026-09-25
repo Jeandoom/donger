@@ -71,6 +71,8 @@ export interface RunOptions {
   sensitiveReadPolicy?: SensitiveReadPolicy;
   /** in-process 审计读取 MCP server（内置审计/技能工坊智能体注入；viewer 在构造时闭包绑定） */
   auditTools?: McpSdkServerConfigWithInstance;
+  /** in-process 平台应用 MCP server（app_deploy 等；会话用户闭包绑定，spec 2026-09-25-app-platform-architecture M2） */
+  appTools?: McpSdkServerConfigWithInstance;
   /**
    * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
    * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按

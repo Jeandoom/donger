@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "../../src/util/errors.js";
-import { extractZipToDir } from "../../src/util/zip.js";
+import { extractZipToDir, zipDirToBuffer } from "../../src/util/zip.js";
 
 /**
  * 测试专用最小 zip 构造器（STORE 无压缩形态）：
@@ -148,5 +148,18 @@ describe("zip 解包器（应用 bundle 上传链路）", () => {
       { name: "bomb.bin", data: Buffer.alloc(4), claimedUncompSize: 0xfffffff0 },
     ]);
     expect(() => extractZipToDir(zip, dir)).toThrow(ValidationError);
+  });
+
+  it("writer→reader 回环：zipDirToBuffer 产物可被 extractZipToDir 还原", () => {
+    const src = tmpDir();
+    const dest = tmpDir();
+    writeFileSync(join(src, "index.html"), "<html>roundtrip</html>");
+    mkdirSync(join(src, "assets"));
+    writeFileSync(join(src, "assets", "a.js"), "export const x = 1;");
+    const buf = zipDirToBuffer(src);
+    const r = extractZipToDir(buf, dest);
+    expect(r.fileCount).toBe(2);
+    expect(readFileSync(join(dest, "index.html"), "utf8")).toBe("<html>roundtrip</html>");
+    expect(readFileSync(join(dest, "assets", "a.js"), "utf8")).toBe("export const x = 1;");
   });
 });

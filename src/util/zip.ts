@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { inflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { APP_BUNDLE_MAX_ENTRIES, APP_BUNDLE_TOTAL_UNCOMPRESSED_MAX } from "../domain/app.js";
 import { ValidationError } from "./errors.js";
 
@@ -166,6 +166,134 @@ function readEntryContent(zip: Buffer, entry: ZipEntryInfo): Buffer {
   if (entry.method === 0) return Buffer.from(data);
   if (entry.method === 8) return inflateRawSync(data);
   throw new ValidationError("INVALID_BUNDLE", `不支持的压缩方法 ${entry.method}: ${entry.name}`);
+}
+
+// ---------------------------------------------------------------------------
+// ZIP 写入（app_deploy 工具的 bundle 打包；DEFLATE 形态，与上方读取器互逆）
+// ---------------------------------------------------------------------------
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    const byte = buf[i] ?? 0;
+    const idx = (c ^ byte) & 0xff;
+    c = (CRC_TABLE[idx] ?? 0) ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function u16le(v: number): Buffer {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(v);
+  return b;
+}
+
+function u32le(v: number): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(v);
+  return b;
+}
+
+/** 递归收集目录下普通文件（相对路径正斜杠形态）；symlink 跳过（防打包逃逸内容） */
+function walkFiles(root: string, dir = "", out: Array<{ rel: string; abs: string }> = []) {
+  const base = join(root, dir);
+  for (const entry of readdirSync(base)) {
+    const rel = dir ? `${dir}/${entry}` : entry;
+    const abs = join(base, entry);
+    const st = statSync(abs);
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) walkFiles(root, rel, out);
+    else if (st.isFile()) out.push({ rel, abs });
+  }
+  return out;
+}
+
+/**
+ * 把目录打包为 zip Buffer（DEFLATE）。条目数与解压总量受 APP_BUNDLE_* 上限约束；
+ * 空目录不表达（zip 目录条目省略，解包端逐级 mkdir）。
+ */
+export function zipDirToBuffer(dir: string): Buffer {
+  const root = resolve(dir);
+  const files = walkFiles(root);
+  if (files.length > APP_BUNDLE_MAX_ENTRIES) {
+    throw new ValidationError("BUNDLE_TOO_LARGE", `条目数超过上限 ${APP_BUNDLE_MAX_ENTRIES}`);
+  }
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  let total = 0;
+  for (const f of files) {
+    const content = readFileSync(f.abs);
+    total += content.length;
+    if (total > APP_BUNDLE_TOTAL_UNCOMPRESSED_MAX) {
+      throw new ValidationError("BUNDLE_TOO_LARGE", "解压总量超过上限");
+    }
+    const nameBuf = Buffer.from(f.rel.replaceAll("\\", "/"), "utf8");
+    const compressed = deflateRawSync(content);
+    const crc = crc32(content);
+    const local = Buffer.concat([
+      u32le(0x04034b50),
+      u16le(20),
+      u16le(0x0800), // UTF-8 文件名
+      u16le(8), // DEFLATE
+      u16le(0),
+      u16le(0),
+      u32le(crc),
+      u32le(compressed.length),
+      u32le(content.length),
+      u16le(nameBuf.length),
+      u16le(0),
+      nameBuf,
+      compressed,
+    ]);
+    locals.push(local);
+    centrals.push(
+      Buffer.concat([
+        u32le(0x02014b50),
+        u16le((3 << 8) | 20), // unix
+        u16le(20),
+        u16le(0x0800),
+        u16le(8),
+        u16le(0),
+        u16le(0),
+        u32le(crc),
+        u32le(compressed.length),
+        u32le(content.length),
+        u16le(nameBuf.length),
+        u16le(0),
+        u16le(0),
+        u16le(0),
+        u16le(0),
+        u32le(0o100644 * 0x10000),
+        u32le(offset),
+        nameBuf,
+      ]),
+    );
+    offset += local.length;
+  }
+  const cdStart = offset;
+  const cd = Buffer.concat(centrals);
+  const eocd = Buffer.concat([
+    u32le(0x06054b50),
+    u16le(0),
+    u16le(0),
+    u16le(files.length),
+    u16le(files.length),
+    u32le(cd.length),
+    u32le(cdStart),
+    u16le(0),
+  ]);
+  return Buffer.concat([...locals, cd, eocd]);
 }
 
 /** 供测试断言产物落盘形态（普通文件判定） */
