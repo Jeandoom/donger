@@ -342,6 +342,8 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
   });
   const conversationAdapter = unstable_useMentionAdapter({
     items: useMemo(() => {
+      // 功能未开启时候选恒空——「功能未开启」emptyText 才能渲染（否则哨兵恒在误导可选）
+      if (!props.candidates.conversationRefEnabled) return [];
       const all: Unstable_TriggerItem = {
         id: CONVERSATION_MENTION_ALL_ID,
         type: "conversation",
@@ -358,7 +360,7 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
         }),
       );
       return [all, ...list];
-    }, [props.candidates.conversations]),
+    }, [props.candidates.conversationRefEnabled, props.candidates.conversations]),
     formatter: markerFormatter("%"),
     onInserted: (item) => {
       props.onMentionInserted({ kind: "conversation", id: item.id, label: item.label });
@@ -367,6 +369,8 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
   });
   const feedbackAdapter = unstable_useMentionAdapter({
     items: useMemo(() => {
+      // 同上：未开启时恒空，让「反馈引用功能未开启」提示可渲染
+      if (!props.candidates.feedbackRefEnabled) return [];
       const all: Unstable_TriggerItem = {
         id: FEEDBACK_MENTION_ALL_ID,
         type: "feedback",
@@ -383,7 +387,7 @@ export function ComposerMentionTriggers(props: ComposerMentionTriggersProps) {
         }),
       );
       return [all, ...list];
-    }, [props.candidates.feedbacks]),
+    }, [props.candidates.feedbackRefEnabled, props.candidates.feedbacks]),
     formatter: markerFormatter("#"),
     onInserted: (item) => {
       props.onMentionInserted({ kind: "feedback", id: item.id, label: item.label });
