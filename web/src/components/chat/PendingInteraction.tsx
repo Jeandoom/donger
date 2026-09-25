@@ -25,8 +25,8 @@ export function PendingInteraction({
           aria-label="审批请求"
           className="rounded-xl border border-warning/50 bg-warning-soft p-4"
         >
-          <div className="text-sm font-semibold text-amber-800">{approval.title}</div>
-          <div className="mt-1 text-sm text-amber-700">{approval.summary}</div>
+          <div className="text-sm font-semibold text-warning-foreground">{approval.title}</div>
+          <div className="mt-1 text-sm text-warning-foreground">{approval.summary}</div>
           <div className="mt-2 flex gap-2">
             <Button size="sm" onClick={() => onResolveApproval(true)}>
               通过

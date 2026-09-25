@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Checkbox } from "../components/ui/checkbox";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
@@ -57,23 +58,28 @@ export function ModelsPage() {
   const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState<LlmProvider | null>(null);
   const [testResults, setTestResults] = useState<Record<string, LlmTestResult | "testing">>({});
+  /** 首屏加载失败（区别于操作错误：带重试按钮） */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingTick, setLoadingTick] = useState(0);
 
   const reload = useCallback(async (): Promise<void> => {
     const loaded = await fetchLlmProviders();
     setData(loaded);
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadingTick 仅用于手动重试时触发重新加载
   useEffect(() => {
+    setLoadError(null);
     void (async () => {
       try {
         const [p, d] = await Promise.all([fetchLlmPlatforms(), fetchLlmProviders()]);
         setPlatforms(p);
         setData(d);
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setLoadError(reason instanceof Error ? reason.message : String(reason));
       }
     })();
-  }, []);
+  }, [loadingTick]);
 
   const selectedPlatform = platforms.find((p) => p.id === form.platform);
   const models = form.modelsText
@@ -214,11 +220,19 @@ export function ModelsPage() {
         description="配置对话使用的 Anthropic 兼容模型服务。可维护多条配置，选择一条作为默认；配置只对当前用户生效。"
       />
 
+      {loadError ? (
+        <div className="flex items-center justify-between gap-3 rounded bg-destructive-soft p-3 text-sm text-destructive">
+          <span>模型配置加载失败：{loadError}</span>
+          <Button variant="secondary" size="sm" onClick={() => setLoadingTick((t) => t + 1)}>
+            重试
+          </Button>
+        </div>
+      ) : null}
       {error ? (
         <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{error}</div>
       ) : null}
       {saved ? (
-        <div className="rounded bg-green-50 p-3 text-sm text-green-700">已保存。</div>
+        <div className="rounded bg-success-soft p-3 text-sm text-success">已保存。</div>
       ) : null}
 
       <section className="space-y-2 rounded-xl border border-border bg-card p-5">
@@ -293,7 +307,9 @@ export function ModelsPage() {
                 <option value="zcode">ZCode 引擎（GLM 官方 harness）</option>
               </Select>
               <span className="text-xs text-muted-foreground">
-                OpenAI 协议经内置 Responses↔Chat 桥接入（无交互审批门、AskUserQuestion 不可用）；ZCode 引擎经 ZCode CLI 驱动，服务端需安装 ZCode CLI（DONGER_ZCODE_CLI_PATH）
+                OpenAI 协议经内置 Responses↔Chat 桥接入（无交互审批门、AskUserQuestion
+                不可用）；ZCode 引擎经 ZCode CLI 驱动，服务端需安装 ZCode
+                CLI（DONGER_ZCODE_CLI_PATH）
               </span>
             </label>
           ) : null}
@@ -339,14 +355,11 @@ export function ModelsPage() {
             />
           </label>
 
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.isDefault}
-              onChange={(e) => setForm({ ...form, isDefault: e.target.checked })}
-            />
-            设为我的默认配置
-          </label>
+          <Checkbox
+            checked={form.isDefault}
+            onChange={(e) => setForm({ ...form, isDefault: e.target.checked })}
+            label="设为我的默认配置"
+          />
 
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={busy} onClick={() => setForm(EMPTY_FORM)}>
@@ -359,7 +372,15 @@ export function ModelsPage() {
         </section>
       ) : null}
 
-      {(data?.providers ?? []).length === 0 && form.editing === null ? (
+      {!data && !loadError ? (
+        <div className="space-y-3">
+          {[0, 1].map((i) => (
+            <div key={i} className="h-24 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
+      ) : null}
+
+      {(data?.providers ?? []).length === 0 && form.editing === null && !loadError ? (
         <p className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
           还没有模型配置。点击「新增配置」开始。
         </p>
@@ -400,7 +421,7 @@ export function ModelsPage() {
                     test === "testing"
                       ? "bg-muted text-muted-foreground"
                       : test.ok
-                        ? "bg-green-50 text-green-700"
+                        ? "bg-success-soft text-success"
                         : "bg-destructive-soft text-destructive",
                   )}
                 >

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
@@ -7,9 +8,6 @@ import { apiFetch } from "../lib/auth";
  * 代理模块（admin，spec 2026-09-21-auth-module-design §3.6）：
  * 当前托管 GitHub OAuth 请求代理；「应用」即通过 configureGithubProxy 幂等重配，新请求立即生效。
  */
-
-const inputClass =
-  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary";
 
 export function ProxyPage() {
   const [proxyUrl, setProxyUrl] = useState("");
@@ -69,23 +67,29 @@ export function ProxyPage() {
         description="出站请求代理配置。修改后点击「应用」立即生效，无需重启服务"
       />
       {loadError ? (
-        <div className="rounded bg-destructive-soft p-3 text-sm text-destructive">{loadError}</div>
+        <div className="flex items-center justify-between gap-3 rounded bg-destructive-soft p-3 text-sm text-destructive">
+          <span>{loadError}</span>
+          <Button variant="secondary" size="sm" onClick={load}>
+            重试
+          </Button>
+        </div>
       ) : null}
 
-      <section className="space-y-3 rounded-lg border bg-background p-5">
+      <section className="space-y-3 rounded-xl border border-border bg-card p-5">
         <h2 className="font-medium">GitHub OAuth 代理</h2>
         <p className="text-xs text-muted-foreground">
           仅作用于 GitHub 登录/绑定请求（大陆网络直连 github.com 间歇超时时配置）；留空 = 直连
         </p>
-        <label className="block space-y-1 text-sm">
+        <label className="block space-y-1 text-sm" htmlFor="proxy-url">
           <span>代理地址</span>
-          <input
+          <Input
+            id="proxy-url"
             type="text"
+            mono
             value={proxyUrl}
             onChange={(e) => setProxyUrl(e.target.value)}
             placeholder={loaded ? "http://127.0.0.1:7897" : "加载中…"}
             disabled={!loaded}
-            className={inputClass}
           />
         </label>
         {msg ? (

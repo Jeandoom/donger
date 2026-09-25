@@ -496,7 +496,7 @@ function CredentialRowCard(props: {
                   <span
                     className={cn(
                       "shrink-0",
-                      partial ? "font-medium text-amber-700" : "text-muted-foreground",
+                      partial ? "font-medium text-warning-foreground" : "text-muted-foreground",
                     )}
                   >
                     {row.filledKeys.length}/{row.keySpecs.length} 键

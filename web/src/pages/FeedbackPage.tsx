@@ -1,9 +1,10 @@
 import { ImagePlus, Loader2, Plus, X } from "lucide-react";
-import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
+import { Segmented } from "../components/ui/segmented";
 import { Select } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { type CurrentUser, fetchMe } from "../lib/auth";
@@ -37,48 +38,69 @@ import { cn } from "../lib/utils";
 export function FeedbackPage() {
   const [me, setMe] = useState<CurrentUser | null>(null);
   const [list, setList] = useState<FeedbackItem[]>([]);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedReplies, setExpandedReplies] = useState<FeedbackReplyDTO[]>([]);
+  const [repliesError, setRepliesError] = useState<string | null>(null);
   const [view, setView] = useState<"form" | "detail" | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<FeedbackItem | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   const isAdmin = me?.role === "admin";
+
+  const reloadList = useCallback(() => {
+    setListLoading(true);
+    setListError(null);
+    void fetchFeedbackList()
+      .then((items) => {
+        setList(items);
+        setListLoading(false);
+      })
+      .catch((err: unknown) => {
+        setListError(err instanceof Error ? err.message : String(err));
+        setListLoading(false);
+      });
+  }, []);
 
   // 初始加载：当前用户（判 admin 视角）+ 反馈列表
   useEffect(() => {
     void fetchMe().then(setMe);
-    void fetchFeedbackList()
-      .then(setList)
-      .catch(() => setList([]));
-  }, []);
+    reloadList();
+  }, [reloadList]);
 
   // 展开记录时懒加载该反馈的回复时间线
   useEffect(() => {
     if (!expandedId) {
       setExpandedReplies([]);
+      setRepliesError(null);
       return;
     }
+    setRepliesError(null);
     void fetchFeedbackReplies(expandedId)
       .then(setExpandedReplies)
-      .catch(() => setExpandedReplies([]));
+      .catch((err: unknown) => {
+        setExpandedReplies([]);
+        setRepliesError(err instanceof Error ? err.message : String(err));
+      });
   }, [expandedId]);
 
   const openDetail = async (id: string) => {
     setView("detail");
+    setDetailId(id);
+    setDetailError(null);
     try {
       setDetail(await fetchFeedbackDetail(id));
-    } catch {
+    } catch (err) {
       setDetail(null);
+      setDetailError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleCreated = async (fb: FeedbackItem) => {
     setView(null);
-    try {
-      setList(await fetchFeedbackList());
-    } catch {
-      // 保持旧列表
-    }
+    reloadList();
     setExpandedId(fb.id);
   };
 
@@ -102,7 +124,22 @@ export function FeedbackPage() {
             </Button>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {list.length === 0 && (
+            {listLoading && (
+              <div className="space-y-2 px-1 py-1">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="h-14 animate-pulse rounded-lg bg-muted" />
+                ))}
+              </div>
+            )}
+            {listError && (
+              <div className="mx-1 my-2 flex flex-col gap-2 rounded-lg bg-destructive-soft px-3 py-2.5 text-xs text-destructive">
+                <span>反馈列表加载失败：{listError}</span>
+                <Button variant="secondary" size="sm" onClick={reloadList}>
+                  重试
+                </Button>
+              </div>
+            )}
+            {!listLoading && !listError && list.length === 0 && (
               <div className="px-3 py-8 text-center text-xs text-muted-foreground">
                 暂无反馈记录，点击「新增反馈」提交第一条
               </div>
@@ -114,6 +151,7 @@ export function FeedbackPage() {
                 showUser={isAdmin}
                 expanded={expandedId === fb.id}
                 replies={expandedId === fb.id ? expandedReplies : null}
+                repliesError={expandedId === fb.id ? repliesError : null}
                 onToggle={() => setExpandedId(expandedId === fb.id ? null : fb.id)}
                 onOpenReply={() => void openDetail(fb.id)}
               />
@@ -125,6 +163,19 @@ export function FeedbackPage() {
         <div className="min-w-0 flex-1 overflow-y-auto">
           {view === "form" ? (
             <FeedbackForm onCreated={(fb) => void handleCreated(fb)} />
+          ) : view === "detail" && detailError ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="flex flex-col items-center gap-3 rounded-xl bg-destructive-soft px-6 py-5 text-sm text-destructive">
+                <span>反馈详情加载失败：{detailError}</span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => detailId && void openDetail(detailId)}
+                >
+                  重试
+                </Button>
+              </div>
+            </div>
           ) : view === "detail" && detail ? (
             <FeedbackDetailPanel
               fb={detail}
@@ -152,6 +203,7 @@ function FeedbackListItem({
   showUser,
   expanded,
   replies,
+  repliesError,
   onToggle,
   onOpenReply,
 }: {
@@ -159,6 +211,8 @@ function FeedbackListItem({
   showUser: boolean;
   expanded: boolean;
   replies: FeedbackReplyDTO[] | null;
+  /** 回复时间线加载失败信息（null = 成功或加载中） */
+  repliesError: string | null;
   onToggle: () => void;
   onOpenReply: () => void;
 }) {
@@ -193,8 +247,13 @@ function FeedbackListItem({
           <div className="rounded-lg bg-muted px-3 py-2 text-xs whitespace-pre-wrap break-words text-foreground/90">
             {fb.content}
           </div>
-          {replies === null && (
+          {replies === null && !repliesError && (
             <div className="px-1 text-[11px] text-muted-foreground">加载中…</div>
+          )}
+          {repliesError && (
+            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-[11px] text-destructive">
+              回复加载失败：{repliesError}
+            </div>
           )}
           {replies?.length === 0 && (
             <div className="px-1 text-[11px] text-muted-foreground">暂无回复</div>
@@ -295,23 +354,12 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
       <h2 className="mb-4 font-semibold">新增反馈</h2>
       <div className="mb-4">
         <div className="mb-2 text-xs font-medium text-muted-foreground">反馈类型</div>
-        <div className="flex flex-wrap gap-2">
-          {FEEDBACK_CATEGORIES.map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setCategory(c)}
-              className={cn(
-                "rounded-full border px-3 py-1.5 text-xs transition-colors",
-                category === c
-                  ? "border-primary bg-primary-soft font-medium text-primary"
-                  : "border-border bg-card text-muted-foreground hover:bg-muted",
-              )}
-            >
-              {CATEGORY_LABELS[c]}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          name="反馈类型"
+          value={category}
+          onChange={setCategory}
+          options={FEEDBACK_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABELS[c] }))}
+        />
       </div>
       <div className="mb-4">
         <div className="mb-2 text-xs font-medium text-muted-foreground">
@@ -393,6 +441,7 @@ function FeedbackDetailPanel({
   onChanged: () => void;
 }) {
   const [replies, setReplies] = useState<FeedbackReplyDTO[]>([]);
+  const [repliesError, setRepliesError] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -401,9 +450,13 @@ function FeedbackDetailPanel({
   const canReply = isAdmin || isOwner;
 
   useEffect(() => {
+    setRepliesError(null);
     void fetchFeedbackReplies(fb.id)
       .then(setReplies)
-      .catch(() => setReplies([]));
+      .catch((err: unknown) => {
+        setReplies([]);
+        setRepliesError(err instanceof Error ? err.message : String(err));
+      });
   }, [fb.id]);
 
   const sendReply = async () => {
@@ -482,7 +535,14 @@ function FeedbackDetailPanel({
           沟通记录（{replies.length}）
         </div>
         <div className="space-y-2">
-          {replies.length === 0 && <div className="text-xs text-muted-foreground">暂无回复</div>}
+          {repliesError ? (
+            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
+              沟通记录加载失败：{repliesError}
+            </div>
+          ) : null}
+          {replies.length === 0 && !repliesError && (
+            <div className="text-xs text-muted-foreground">暂无回复</div>
+          )}
           {replies.map((r) => (
             <div
               key={r.id}
