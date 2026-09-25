@@ -1,3 +1,4 @@
+import { TriangleAlert } from "lucide-react";
 import type { EvictionNotice } from "../../types";
 import { Button } from "../ui/button";
 
@@ -26,32 +27,35 @@ export function EvictionNoticeDialog({ notice, onClose }: EvictionNoticeDialogPr
       aria-modal="true"
       aria-label="任务被自动结束通知"
     >
-      <div className="w-full max-w-md rounded-xl border border-warning/50 bg-background p-5 shadow-lg">
-        <div className="text-base font-semibold text-amber-800">⚠️ 一个等待中的任务已被自动结束</div>
+      <div className="w-full max-w-md rounded-xl border border-warning/50 bg-card p-5 shadow-xl">
+        <div className="flex items-center gap-2 text-base font-semibold text-warning-foreground">
+          <TriangleAlert size={16} aria-hidden="true" />
+          一个等待中的任务已被自动结束
+        </div>
         <p className="mt-2 text-sm text-muted-foreground">
           您的并发对话已达上限（10 条）。为执行新任务，系统结束了最早进入等待状态的任务。
           被结束的任务信息如下：
         </p>
         <dl className="mt-3 space-y-1.5 rounded-lg bg-warning-soft p-3 text-sm">
           <div>
-            <dt className="inline font-medium text-amber-800">任务内容：</dt>
-            <dd className="inline break-all text-amber-700">{notice.taskExcerpt}</dd>
+            <dt className="inline font-medium text-warning-foreground">任务内容：</dt>
+            <dd className="inline break-all text-warning-foreground">{notice.taskExcerpt}</dd>
           </div>
           <div>
-            <dt className="inline font-medium text-amber-800">所属会话：</dt>
-            <dd className="inline break-all text-amber-700">{notice.conversationId}</dd>
+            <dt className="inline font-medium text-warning-foreground">所属会话：</dt>
+            <dd className="inline break-all text-warning-foreground">{notice.conversationId}</dd>
           </div>
           <div>
-            <dt className="inline font-medium text-amber-800">开始时间：</dt>
-            <dd className="inline text-amber-700">{fmt(notice.startedAt)}</dd>
+            <dt className="inline font-medium text-warning-foreground">开始时间：</dt>
+            <dd className="inline text-warning-foreground">{fmt(notice.startedAt)}</dd>
           </div>
           <div>
-            <dt className="inline font-medium text-amber-800">进入等待：</dt>
-            <dd className="inline text-amber-700">{fmt(notice.pendingSince)}</dd>
+            <dt className="inline font-medium text-warning-foreground">进入等待：</dt>
+            <dd className="inline text-warning-foreground">{fmt(notice.pendingSince)}</dd>
           </div>
           <div>
-            <dt className="inline font-medium text-amber-800">结束时间：</dt>
-            <dd className="inline text-amber-700">{fmt(notice.canceledAt)}</dd>
+            <dt className="inline font-medium text-warning-foreground">结束时间：</dt>
+            <dd className="inline text-warning-foreground">{fmt(notice.canceledAt)}</dd>
           </div>
         </dl>
         <div className="mt-4 flex justify-end">

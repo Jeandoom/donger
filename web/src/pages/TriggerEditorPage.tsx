@@ -1,7 +1,13 @@
-import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { useDirtyGuard } from "../components/ui/dirty-guard";
+import { FormField, FormSection } from "../components/ui/form-section";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
+import { Select } from "../components/ui/select";
 import { apiFetch } from "../lib/auth";
 
 type MatcherKind =
@@ -67,48 +73,81 @@ export function TriggerEditorPage() {
   const [matcherKind, setMatcherKind] = useState<MatcherKind>("always");
   const [matcher, setMatcher] = useState<MatcherFields>({});
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [testing, setTesting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(Boolean(id));
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(!id);
+
+  /** 全部受控字段的快照；编辑态加载完成后钉为基线，之后与基线比较得 dirty */
+  const snapshot = JSON.stringify({
+    name,
+    type,
+    cron,
+    sourceType,
+    httpUrl,
+    httpMethod,
+    filePath,
+    hookPath,
+    hookResponse,
+    matcherKind,
+    matcher,
+  });
+  const pristineRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (loaded && pristineRef.current === null) pristineRef.current = snapshot;
+  }, [loaded, snapshot]);
+  const dirty = pristineRef.current !== null && snapshot !== pristineRef.current;
+  const { attempt, dialog } = useDirtyGuard(dirty && !saving);
+
+  const load = useCallback(async () => {
+    if (!id) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const r = await apiFetch(`/api/triggers/${id}`);
+      if (!r.ok) throw new Error(`加载失败（HTTP ${r.status}）`);
+      const t = (await r.json()) as TriggerDTO;
+      setName(t.name);
+      setType(t.type);
+      if (t.scheduler) {
+        setCron(t.scheduler.cron);
+        setSourceType(t.scheduler.source.type);
+        if (t.scheduler.source.type === "http") {
+          setHttpUrl(t.scheduler.source.url);
+          setHttpMethod(t.scheduler.source.method);
+        } else {
+          setFilePath(t.scheduler.source.path);
+        }
+        const { kind, ...rest } = t.scheduler.matcher;
+        setMatcherKind(kind);
+        // number 字段反序列化为 string 以便 input 受控
+        setMatcher(
+          Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)])),
+        );
+      }
+      if (t.hook) {
+        setHookPath(t.hook.path);
+        setHookResponse(t.hook.responseBody);
+        const { kind, ...rest } = t.hook.matcher;
+        setMatcherKind(kind);
+        setMatcher(
+          Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)])),
+        );
+      }
+      setLoaded(true);
+      pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
+    } catch (e) {
+      setLoadError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
 
   useEffect(() => {
-    if (!id) return;
-    apiFetch(`/api/triggers/${id}`)
-      .then((r) => r.json() as Promise<TriggerDTO>)
-      .then((t) => {
-        setName(t.name);
-        setType(t.type);
-        if (t.scheduler) {
-          setCron(t.scheduler.cron);
-          setSourceType(t.scheduler.source.type);
-          if (t.scheduler.source.type === "http") {
-            setHttpUrl(t.scheduler.source.url);
-            setHttpMethod(t.scheduler.source.method);
-          } else {
-            setFilePath(t.scheduler.source.path);
-          }
-          const { kind, ...rest } = t.scheduler.matcher;
-          setMatcherKind(kind);
-          // number 字段反序列化为 string 以便 input 受控
-          setMatcher(
-            Object.fromEntries(
-              Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)]),
-            ),
-          );
-        }
-        if (t.hook) {
-          setHookPath(t.hook.path);
-          setHookResponse(t.hook.responseBody);
-          const { kind, ...rest } = t.hook.matcher;
-          setMatcherKind(kind);
-          setMatcher(
-            Object.fromEntries(
-              Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)]),
-            ),
-          );
-        }
-      })
-      .catch(() => {});
-  }, [id]);
+    void load();
+  }, [load]);
 
   const buildPayload = () => {
     const m = buildMatcher(matcherKind, matcher);
@@ -138,17 +177,48 @@ export function TriggerEditorPage() {
     };
   };
 
+  /** 保存前客户端校验；返回首个错误的提示，null = 通过 */
+  const validate = (): string | null => {
+    if (!name.trim()) return "请填写名称";
+    if (type === "scheduler") {
+      if (!cron.trim()) return "请填写 Cron 表达式";
+      if (sourceType === "http" && !/^https?:\/\/\S+/.test(httpUrl.trim())) {
+        return "数据源为 HTTP 时请填写合法 URL（http/https）";
+      }
+      if (sourceType === "file" && !filePath.trim()) return "请填写文件路径";
+    } else if (!hookPath.trim().startsWith("/")) {
+      return "回调路径需以 / 开头";
+    }
+    return null;
+  };
+
   const save = async () => {
-    setLoading(true);
+    const issue = validate();
+    if (issue) {
+      setSaveError(issue);
+      return;
+    }
+    setSaving(true);
     setSaveError(null);
     try {
       const url = id ? `/api/triggers/${id}` : "/api/triggers";
       const method = id ? "PUT" : "POST";
       const r = await apiFetch(url, { method, body: JSON.stringify(buildPayload()) });
-      if (r.ok) nav("/triggers");
-      else setSaveError(await r.text());
+      if (r.ok) {
+        nav("/triggers");
+        return;
+      }
+      let msg = await r.text();
+      try {
+        msg = (JSON.parse(msg) as { error?: string }).error ?? msg;
+      } catch {
+        // 非 JSON 响应保持原文
+      }
+      setSaveError(`保存失败：${msg}`);
+    } catch (reason) {
+      setSaveError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
@@ -157,231 +227,293 @@ export function TriggerEditorPage() {
       setSaveError("先保存后再测试");
       return;
     }
-    const r = await apiFetch(`/api/triggers/${id}/test`, { method: "POST" });
-    setTestResult((await r.json()) as TestResult);
+    setTesting(true);
+    setSaveError(null);
+    try {
+      const r = await apiFetch(`/api/triggers/${id}/test`, { method: "POST" });
+      if (!r.ok) {
+        setSaveError(`测试失败：HTTP ${r.status}`);
+        setTestResult(null);
+        return;
+      }
+      setTestResult((await r.json()) as TestResult);
+    } catch (reason) {
+      setSaveError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setTesting(false);
+    }
   };
 
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-2xl flex-1 overflow-y-auto p-7">
+        <div className="h-10 w-52 animate-pulse rounded bg-muted" />
+        <div className="mt-5 space-y-4">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="h-32 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="mx-auto max-w-2xl flex-1 overflow-y-auto p-7">
+        <PageHeader className="mb-4" title={id ? "编辑触发器" : "新建触发器"} />
+        <div className="flex items-center justify-between gap-3 rounded-lg bg-destructive-soft px-3 py-2.5 text-sm text-destructive">
+          <span>触发器加载失败：{loadError}</span>
+          <Button variant="secondary" size="sm" onClick={() => void load()}>
+            <RefreshCw aria-hidden="true" size={14} />
+            重试
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-auto max-w-2xl flex-1 overflow-y-auto p-7">
-      <PageHeader className="mb-4" title={id ? "编辑触发器" : "新建触发器"} />
-      {saveError ? (
-        <div className="mb-3 rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">
+    <div className="mx-auto max-w-2xl flex-1 flex-col gap-5 overflow-y-auto p-7">
+      <PageHeader
+        className="mb-5"
+        title={id ? "编辑触发器" : "新建触发器"}
+        description="定时抓取或外部回调，配合工作流驱动智能体任务"
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => attempt(() => nav("/triggers"))}>
+              取消
+            </Button>
+            {id && (
+              <Button variant="secondary" onClick={() => void test()} disabled={testing || saving}>
+                {testing ? "测试中…" : "立即测试"}
+              </Button>
+            )}
+            <Button onClick={() => void save()} disabled={saving}>
+              {saving ? "保存中…" : "保存"}
+            </Button>
+          </>
+        }
+      />
+      {saveError && (
+        <div className="rounded-lg bg-destructive-soft px-3 py-2.5 text-sm text-destructive">
           {saveError}
         </div>
-      ) : null}
-      <label className="mb-2 block">
-        名称
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
-        />
-      </label>
-      <label className="mb-2 block">
-        类型
-        <select
-          value={type}
-          onChange={(e) => setType(e.target.value as "scheduler" | "hook")}
-          className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
-        >
-          <option value="scheduler">定时（scheduler）</option>
-          <option value="hook">回调（hook）</option>
-        </select>
-      </label>
-      {type === "scheduler" && (
-        <div className="mb-3">
-          <label className="mb-2 block">
-            Cron 表达式
-            <input
-              value={cron}
-              onChange={(e) => setCron(e.target.value)}
-              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none font-mono"
-            />
-          </label>
-          <small className="text-muted-foreground">
-            示例：每小时 <code>0 * * * *</code>；每天 9 点 <code>0 9 * * *</code>
-          </small>
-          <label className="mt-2 mb-2 block">
-            数据源
-            <select
-              value={sourceType}
-              onChange={(e) => setSourceType(e.target.value as "http" | "file")}
-              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
-            >
-              <option value="http">HTTP 请求</option>
-              <option value="file">文件读取</option>
-            </select>
-          </label>
-          {sourceType === "http" ? (
-            <>
-              <input
-                value={httpUrl}
-                onChange={(e) => setHttpUrl(e.target.value)}
-                placeholder="https://..."
-                className="mb-2 block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
-              />
-              <select
-                value={httpMethod}
-                onChange={(e) => setHttpMethod(e.target.value)}
-                className="mb-2 rounded border px-2 py-1"
-              >
-                <option>GET</option>
-                <option>POST</option>
-                <option>PUT</option>
-              </select>
-            </>
-          ) : (
-            <input
-              value={filePath}
-              onChange={(e) => setFilePath(e.target.value)}
-              placeholder="/path/to/file"
-              className="mb-2 block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
-            />
-          )}
-        </div>
       )}
-      {type === "hook" && (
-        <div className="mb-3">
-          <label className="mb-2 block">
-            回调路径
-            <input
-              value={hookPath}
-              onChange={(e) => setHookPath(e.target.value)}
-              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none font-mono"
-            />
-          </label>
-          <small className="text-muted-foreground">
-            外部访问：{typeof window !== "undefined" ? window.location.origin : ""}
-            {hookPath}
-          </small>
-          <label className="mt-2 mb-2 block">
-            固定返回内容
-            <input
-              value={hookResponse}
-              onChange={(e) => setHookResponse(e.target.value)}
-              className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus:border-primary focus:outline-none"
-            />
-          </label>
-        </div>
-      )}
-      <fieldset className="mb-3 rounded border p-3">
-        <legend className="px-1 text-sm">触发条件</legend>
-        <select
-          value={matcherKind}
-          onChange={(e) => {
-            setMatcherKind(e.target.value as MatcherKind);
-            setMatcher({});
-          }}
-          className="mb-2 rounded border px-2 py-1"
-        >
-          {MATCHER_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        {matcherKind === "statusEq" && (
-          <input
-            type="number"
-            placeholder="200"
-            value={matcher.value ?? ""}
-            onChange={(e) => setMatcher({ value: e.target.value })}
-            className="rounded border px-2 py-1"
+
+      <FormSection id="trigger-sec-basic" no="1" title="基础信息">
+        <FormField label="名称" required>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="如 每小时抓取 issue 列表"
           />
+        </FormField>
+        <FormField label="类型">
+          <Select value={type} onChange={(e) => setType(e.target.value as "scheduler" | "hook")}>
+            <option value="scheduler">定时（scheduler）</option>
+            <option value="hook">回调（hook）</option>
+          </Select>
+        </FormField>
+      </FormSection>
+
+      <FormSection
+        id="trigger-sec-source"
+        no="2"
+        title="触发源"
+        description={type === "scheduler" ? "定时表达式与数据来源" : "外部系统回调入口"}
+      >
+        {type === "scheduler" ? (
+          <>
+            <FormField
+              label="Cron 表达式"
+              required
+              hint="示例：每小时 0 * * * *；每天 9 点 0 9 * * *"
+            >
+              <Input mono value={cron} onChange={(e) => setCron(e.target.value)} />
+            </FormField>
+            <FormField label="数据源">
+              <Select
+                value={sourceType}
+                onChange={(e) => setSourceType(e.target.value as "http" | "file")}
+              >
+                <option value="http">HTTP 请求</option>
+                <option value="file">文件读取</option>
+              </Select>
+            </FormField>
+            {sourceType === "http" ? (
+              <div className="grid gap-2.5 sm:grid-cols-[1fr_7rem]">
+                <FormField label="URL" required>
+                  <Input
+                    mono
+                    value={httpUrl}
+                    onChange={(e) => setHttpUrl(e.target.value)}
+                    placeholder="https://..."
+                  />
+                </FormField>
+                <FormField label="Method">
+                  <Select value={httpMethod} onChange={(e) => setHttpMethod(e.target.value)}>
+                    <option>GET</option>
+                    <option>POST</option>
+                    <option>PUT</option>
+                  </Select>
+                </FormField>
+              </div>
+            ) : (
+              <FormField label="文件路径" required>
+                <Input
+                  mono
+                  value={filePath}
+                  onChange={(e) => setFilePath(e.target.value)}
+                  placeholder="/path/to/file"
+                />
+              </FormField>
+            )}
+          </>
+        ) : (
+          <>
+            <FormField
+              label="回调路径"
+              required
+              hint={`外部访问：${typeof window !== "undefined" ? window.location.origin : ""}${hookPath}`}
+            >
+              <Input mono value={hookPath} onChange={(e) => setHookPath(e.target.value)} />
+            </FormField>
+            <FormField label="固定返回内容">
+              <Input value={hookResponse} onChange={(e) => setHookResponse(e.target.value)} />
+            </FormField>
+          </>
+        )}
+      </FormSection>
+
+      <FormSection
+        id="trigger-sec-matcher"
+        no="3"
+        title="触发条件"
+        description="对数据源输出做匹配，命中才进入工作流"
+      >
+        <FormField label="匹配方式">
+          <Select
+            value={matcherKind}
+            onChange={(e) => {
+              setMatcherKind(e.target.value as MatcherKind);
+              setMatcher({});
+            }}
+          >
+            {MATCHER_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+        </FormField>
+        {matcherKind === "statusEq" && (
+          <FormField label="状态码">
+            <Input
+              type="number"
+              placeholder="200"
+              value={matcher.value ?? ""}
+              onChange={(e) => setMatcher({ value: e.target.value })}
+            />
+          </FormField>
         )}
         {matcherKind === "bodyContains" && (
-          <input
-            placeholder="keyword"
-            value={matcher.keyword ?? ""}
-            onChange={(e) => setMatcher({ keyword: e.target.value })}
-            className="rounded border px-2 py-1"
-          />
+          <FormField label="关键词">
+            <Input
+              placeholder="keyword"
+              value={matcher.keyword ?? ""}
+              onChange={(e) => setMatcher({ keyword: e.target.value })}
+            />
+          </FormField>
         )}
         {matcherKind === "bodyRegex" && (
-          <input
-            placeholder="v\d+"
-            value={matcher.pattern ?? ""}
-            onChange={(e) => setMatcher({ pattern: e.target.value })}
-            className="rounded border px-2 py-1 font-mono"
-          />
+          <FormField label="正则表达式">
+            <Input
+              mono
+              placeholder="v\d+"
+              value={matcher.pattern ?? ""}
+              onChange={(e) => setMatcher({ pattern: e.target.value })}
+            />
+          </FormField>
         )}
         {(matcherKind === "jsonPathEq" || matcherKind === "jsonPathGt") && (
-          <>
-            <input
-              placeholder="$.count"
-              value={matcher.path ?? ""}
-              onChange={(e) => setMatcher((m) => ({ ...m, path: e.target.value }))}
-              className="mb-2 block rounded border px-2 py-1"
-            />
-            <input
-              type={matcherKind === "jsonPathGt" ? "number" : "text"}
-              placeholder={matcherKind === "jsonPathGt" ? "10" : "value"}
-              value={matcher.value ?? ""}
-              onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
-              className="rounded border px-2 py-1"
-            />
-          </>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <FormField label="JSON Path">
+              <Input
+                mono
+                placeholder="$.count"
+                value={matcher.path ?? ""}
+                onChange={(e) => setMatcher((m) => ({ ...m, path: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="比较值">
+              <Input
+                type={matcherKind === "jsonPathGt" ? "number" : "text"}
+                placeholder={matcherKind === "jsonPathGt" ? "10" : "value"}
+                value={matcher.value ?? ""}
+                onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
+              />
+            </FormField>
+          </div>
         )}
         {matcherKind === "bodyFieldEq" && (
-          <>
-            <input
-              placeholder="type"
-              value={matcher.field ?? ""}
-              onChange={(e) => setMatcher((m) => ({ ...m, field: e.target.value }))}
-              className="mb-2 block rounded border px-2 py-1"
-            />
-            <input
-              placeholder="issue"
-              value={matcher.value ?? ""}
-              onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
-              className="rounded border px-2 py-1"
-            />
-          </>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <FormField label="顶层字段名">
+              <Input
+                placeholder="type"
+                value={matcher.field ?? ""}
+                onChange={(e) => setMatcher((m) => ({ ...m, field: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="等于值">
+              <Input
+                placeholder="issue"
+                value={matcher.value ?? ""}
+                onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
+              />
+            </FormField>
+          </div>
         )}
         {matcherKind === "headerEq" && (
-          <>
-            <input
-              placeholder="x-signature"
-              value={matcher.header ?? ""}
-              onChange={(e) => setMatcher((m) => ({ ...m, header: e.target.value }))}
-              className="mb-2 block rounded border px-2 py-1"
-            />
-            <input
-              placeholder="value"
-              value={matcher.value ?? ""}
-              onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
-              className="rounded border px-2 py-1"
-            />
-          </>
-        )}
-      </fieldset>
-      <div className="flex gap-2">
-        <Button type="button" onClick={save} disabled={loading}>
-          保存
-        </Button>
-        {id && (
-          <Button type="button" variant="outline" onClick={test}>
-            立即测试
-          </Button>
-        )}
-      </div>
-      {testResult && (
-        <div className="mt-4 rounded border p-3">
-          <div>
-            matched:{" "}
-            <span className={testResult.matched ? "text-green-600" : "text-destructive"}>
-              {String(testResult.matched)}
-            </span>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <FormField label="Header 名">
+              <Input
+                mono
+                placeholder="x-signature"
+                value={matcher.header ?? ""}
+                onChange={(e) => setMatcher((m) => ({ ...m, header: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="等于值">
+              <Input
+                placeholder="value"
+                value={matcher.value ?? ""}
+                onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
+              />
+            </FormField>
           </div>
-          {testResult.error && <div className="text-destructive">error: {testResult.error}</div>}
-          <pre className="mt-2 max-h-40 overflow-auto bg-muted p-2 text-xs">
+        )}
+      </FormSection>
+
+      {testResult && (
+        <FormSection id="trigger-sec-test" no="4" title="测试结果">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">匹配结果</span>
+            <Badge tone={testResult.matched ? "success" : "danger"}>
+              {testResult.matched ? "命中" : "未命中"}
+            </Badge>
+            {testResult.error && <span className="text-destructive">错误：{testResult.error}</span>}
+          </div>
+          <pre className="max-h-40 overflow-auto rounded-lg bg-muted p-3 text-xs">
             {testResult.sourceOutput}
           </pre>
           {testResult.debug != null && (
-            <pre className="mt-2 text-xs">{JSON.stringify(testResult.debug, null, 2)}</pre>
+            <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs text-muted-foreground">
+              {JSON.stringify(testResult.debug, null, 2)}
+            </pre>
           )}
-        </div>
+        </FormSection>
       )}
+      {dialog}
     </div>
   );
 }
