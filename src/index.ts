@@ -48,6 +48,7 @@ import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-stor
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { WebChannel } from "./adapters/web-channel.js";
+import { ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
 import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
@@ -321,11 +322,14 @@ async function main(): Promise<void> {
       auditStore,
       commentStore,
       gates: createDefaultGates(),
-      // 双引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6）：
-      // anthropic（缺省）→ ClaudeAgentRunner；openai → CodexAgentRunner（恒经内置桥）
+      // 三引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6、
+      // specs/2026-09-25-zcode-engine-integration.md §4.1）：
+      // anthropic（缺省）→ ClaudeAgentRunner；openai → CodexAgentRunner（恒经内置桥）；
+      // zcode → ZcodeAgentRunner（GLM 官方 harness，spawn app-server）
       runner: new RoutingAgentRunner(
         new ClaudeAgentRunner(createDefaultGates()),
         new CodexAgentRunner(createDefaultGates(), new CodexChatBridge()),
+        new ZcodeAgentRunner(createDefaultGates()),
       ),
       channel,
       runtimeMgr,

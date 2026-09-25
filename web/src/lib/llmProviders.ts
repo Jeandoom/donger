@@ -25,7 +25,7 @@ export interface LlmPlatformInfo {
   baseUrl: string;
   models: string[];
   custom: boolean;
-  sdkType: "anthropic" | "openai";
+  sdkType: "anthropic" | "openai" | "zcode";
   note?: string;
 }
 
@@ -36,7 +36,7 @@ export interface LlmProvider {
   platform: string;
   baseUrl: string;
   models: string[];
-  sdkType: "anthropic" | "openai";
+  sdkType: "anthropic" | "openai" | "zcode";
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
@@ -54,7 +54,7 @@ export interface LlmProviderInput {
   baseUrl?: string;
   key?: string;
   models: string[];
-  sdkType?: "anthropic" | "openai";
+  sdkType?: "anthropic" | "openai" | "zcode";
   isDefault?: boolean;
 }
 

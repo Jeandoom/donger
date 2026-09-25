@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { RoutingAgentRunner } from "../../src/adapters/routing-agent-runner.js";
-import type { AgentRunner, ApprovalResolver, RunOptions } from "../../src/ports/agent-runner.js";
 import type { LLMConfig } from "../../src/domain/llm-config.js";
 import type { RunnerEvent, Task } from "../../src/domain/types.js";
+import type { AgentRunner, ApprovalResolver, RunOptions } from "../../src/ports/agent-runner.js";
 
 const task: Task = {
   id: "t1",
@@ -24,9 +24,7 @@ function fakeRunner(tag: string, awaiting: boolean): AgentRunner {
         yield { type: "text", taskId: "t1", text: tag };
       })();
     },
-    ...(awaiting
-      ? { isAwaitingUserInput: (taskId: string) => taskId === "t1" }
-      : {}),
+    ...(awaiting ? { isAwaitingUserInput: (taskId: string) => taskId === "t1" } : {}),
   };
 }
 
@@ -44,17 +42,36 @@ async function firstText(events: AsyncIterable<RunnerEvent>): Promise<string> {
 describe("RoutingAgentRunner", () => {
   const resolver: ApprovalResolver = async () => ({ approved: true });
 
-  it("anthropic（缺省）路由 claude 引擎，openai 路由 codex 引擎", async () => {
-    const router = new RoutingAgentRunner(fakeRunner("claude", false), fakeRunner("codex", false));
+  it("anthropic（缺省）→ claude、openai → codex、zcode → zcode 三分支路由", async () => {
+    const router = new RoutingAgentRunner(
+      fakeRunner("claude", false),
+      fakeRunner("codex", false),
+      fakeRunner("zcode", false),
+    );
     expect(await firstText(router.run(task, optsFor("anthropic"), resolver))).toBe("claude");
     expect(await firstText(router.run(task, optsFor(undefined), resolver))).toBe("claude");
     expect(await firstText(router.run(task, optsFor("openai"), resolver))).toBe("codex");
+    expect(await firstText(router.run(task, optsFor("zcode"), resolver))).toBe("zcode");
   });
 
-  it("isAwaitingUserInput 仅向 claude 侧透传", () => {
-    const router = new RoutingAgentRunner(fakeRunner("claude", true), fakeRunner("codex", false));
+  it("isAwaitingUserInput 向 claude 与 zcode 侧透传（codex 无问询通道不透传）", () => {
+    const router = new RoutingAgentRunner(
+      fakeRunner("claude", true),
+      fakeRunner("codex", false),
+      fakeRunner("zcode", false),
+    );
     expect(router.isAwaitingUserInput?.("t1")).toBe(true);
-    const router2 = new RoutingAgentRunner(fakeRunner("claude", false), fakeRunner("codex", true));
+    const router2 = new RoutingAgentRunner(
+      fakeRunner("claude", false),
+      fakeRunner("codex", true),
+      fakeRunner("zcode", false),
+    );
     expect(router2.isAwaitingUserInput?.("t1")).toBe(false);
+    const router3 = new RoutingAgentRunner(
+      fakeRunner("claude", false),
+      fakeRunner("codex", false),
+      fakeRunner("zcode", true),
+    );
+    expect(router3.isAwaitingUserInput?.("t1")).toBe(true);
   });
 });

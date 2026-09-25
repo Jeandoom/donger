@@ -30,7 +30,7 @@ interface ProviderForm {
   modelsText: string;
   isDefault: boolean;
   /** 仅 custom 平台可选手册（其余平台由注册表锁定）；决定执行引擎 */
-  sdkType: "anthropic" | "openai";
+  sdkType: "anthropic" | "openai" | "zcode";
 }
 
 const EMPTY_FORM: ProviderForm = {
@@ -285,14 +285,15 @@ export function ModelsPage() {
                 id="llm-provider-sdk-type"
                 value={form.sdkType}
                 onChange={(e) =>
-                  setForm({ ...form, sdkType: e.target.value as "anthropic" | "openai" })
+                  setForm({ ...form, sdkType: e.target.value as "anthropic" | "openai" | "zcode" })
                 }
               >
                 <option value="anthropic">Anthropic 兼容（Claude 引擎）</option>
                 <option value="openai">OpenAI 协议（Codex 引擎）</option>
+                <option value="zcode">ZCode 引擎（GLM 官方 harness）</option>
               </Select>
               <span className="text-xs text-muted-foreground">
-                OpenAI 协议经内置 Responses↔Chat 桥接入；无交互审批门（命中即拒绝）、AskUserQuestion 不可用
+                OpenAI 协议经内置 Responses↔Chat 桥接入（无交互审批门、AskUserQuestion 不可用）；ZCode 引擎经 ZCode CLI 驱动，服务端需安装 ZCode CLI（DONGER_ZCODE_CLI_PATH）
               </span>
             </label>
           ) : null}

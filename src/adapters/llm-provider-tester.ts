@@ -8,8 +8,10 @@ export interface LlmTestTarget {
   baseUrl: string;
   key: string;
   model: string;
-  /** 缺省 anthropic（存量调用方兼容）；openai 走 chat/completions 探测 */
-  sdkType?: "anthropic" | "openai";
+  /** 缺省 anthropic（存量调用方兼容）；openai 走 chat/completions 探测；
+   *  zcode 端点为 Anthropic 协议形态（ZCode 个人 provider 以 anthropic-messages 消费），
+   *  探测与 anthropic 同路 */
+  sdkType?: "anthropic" | "openai" | "zcode";
 }
 
 export interface LlmTester {
