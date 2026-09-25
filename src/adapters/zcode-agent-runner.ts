@@ -34,10 +34,21 @@ import {
 /** 会话内 provider 注册 id（provider_config.json 物化时使用，modelSelection 引用） */
 const DONGER_ZCODE_PROVIDER_ID = "donger-glm";
 
-/** 自定义模型必须显式 reasoningLevel（实测缺失报 invalid_model_request）。
- *  "high"：glm-5.3-flash 实测合法（"enabled" 不在其档位词表，报 not supported）；
- *  GLM 其他模型族若报 not supported，按 ZCode 档位词表调整此值。 */
-const REASONING_LEVEL = "high";
+/** 自定义模型必须显式 reasoningLevel（实测缺失报 invalid_model_request），且档位词表
+ *  按模型而异（glm-5.3-flash 实测 high ✓ / enabled ✗；glm-4.6 实测 enabled ✓ / high ✗）。
+ *  按模型族启发 + DONGER_ZCODE_REASONING_LEVEL 覆盖；不命中回退 enabled（报错可诊断）。 */
+const REASONING_LEVEL_BY_MODEL: Array<[RegExp, string]> = [
+  [/flash|highspeed|mini|lite/i, "high"],
+];
+
+export function resolveReasoningLevel(model: string): string {
+  const override = process.env.DONGER_ZCODE_REASONING_LEVEL?.trim();
+  if (override) return override;
+  for (const [pattern, level] of REASONING_LEVEL_BY_MODEL) {
+    if (pattern.test(model)) return level;
+  }
+  return "enabled";
+}
 
 /** ZCode 内置工具注册词表（apps/zcode-cli/packages/core/src/tool/provider-visible-order.ts）。
  *  白名单补集经 toolDenylist 下发，使「白名单外工具」在 ZCode 内部即不可达。 */
@@ -204,7 +215,7 @@ export class ZcodeAgentRunner implements AgentRunner {
             toolDenylist: denylist,
             resume: opts.resume ?? null,
             providerId: DONGER_ZCODE_PROVIDER_ID,
-            reasoningLevel: REASONING_LEVEL,
+            reasoningLevel: resolveReasoningLevel(opts.llm.model),
             skills: opts.skills,
             agentPermissionMode: opts.permissionMode?.(),
             workspaceRoot: opts.workspaceRoot,
@@ -221,7 +232,7 @@ export class ZcodeAgentRunner implements AgentRunner {
         modelSelection: {
           providerId: DONGER_ZCODE_PROVIDER_ID,
           modelId: opts.llm.model,
-          options: { reasoningLevel: REASONING_LEVEL },
+          options: { reasoningLevel: resolveReasoningLevel(opts.llm.model) },
         },
         ...(denylist ? { toolDenylist: denylist } : {}),
       });
