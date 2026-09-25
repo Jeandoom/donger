@@ -34,9 +34,10 @@ import {
 /** 会话内 provider 注册 id（provider_config.json 物化时使用，modelSelection 引用） */
 const DONGER_ZCODE_PROVIDER_ID = "donger-glm";
 
-/** 自定义模型必须显式 reasoningLevel（实测缺失报 invalid_model_request）；
- *  "enabled" 在 anthropic-messages 端点映射 reasoning_effort=high */
-const REASONING_LEVEL = "enabled";
+/** 自定义模型必须显式 reasoningLevel（实测缺失报 invalid_model_request）。
+ *  "high"：glm-5.3-flash 实测合法（"enabled" 不在其档位词表，报 not supported）；
+ *  GLM 其他模型族若报 not supported，按 ZCode 档位词表调整此值。 */
+const REASONING_LEVEL = "high";
 
 /** ZCode 内置工具注册词表（apps/zcode-cli/packages/core/src/tool/provider-visible-order.ts）。
  *  白名单补集经 toolDenylist 下发，使「白名单外工具」在 ZCode 内部即不可达。 */
