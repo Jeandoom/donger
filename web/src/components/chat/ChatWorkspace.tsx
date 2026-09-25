@@ -127,7 +127,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           void props.onPermissionModeChange?.(mode);
         }
       }}
-      className={`h-9 shrink-0 rounded-lg border px-2 text-xs font-medium ${
+      className={`h-9 min-w-0 max-w-[44vw] rounded-lg border px-2 text-xs font-medium ${
         effectiveMode === "full_access"
           ? "border-warning/50 bg-warning-soft text-warning-foreground"
           : "border-border bg-card text-muted-foreground hover:bg-muted"
@@ -146,7 +146,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         title="对话使用的 LLM（随下一条消息生效）"
         value={props.modelRef ?? ""}
         onChange={(e) => props.onModelRefChange?.(e.target.value)}
-        className="h-9 max-w-[180px] shrink-0 rounded-lg border border-border bg-card px-2 text-xs font-medium text-muted-foreground hover:bg-muted"
+        className="h-9 min-w-0 max-w-[180px] rounded-lg border border-border bg-card px-2 text-xs font-medium text-muted-foreground hover:bg-muted"
       >
         {props.modelOptions.map((option) => (
           <option key={option.ref} value={option.ref}>

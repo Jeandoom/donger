@@ -430,8 +430,9 @@ export function AssistantThread(props: AssistantThreadProps) {
                 />
               ) : null}
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
+            {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-1">
                 <ComposerPlusMenu
                   hasAgent={hasAgent}
                   onInsertTrigger={insertTrigger}
