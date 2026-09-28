@@ -35,8 +35,11 @@ const PROXY_TIMEOUT_MS = 30_000;
 /** token-login JWT 复用窗口（到期前主动重登；401 兜底再登一次） */
 const OPS_TOKEN_TTL_MS = 25 * 60_000;
 
-/** path/query 白名单字符（RFC 3986 pchar 子集）；禁止 ? # 空格与 // .. 穿越 */
-const SAFE_URI_PART = /^[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/;
+/**
+ * path/query 白名单字符（RFC 3986 pchar 子集 + 方括号）；禁止 ? # 空格与 // .. 穿越。
+ * 方括号供 Jenkins tree=jobs[name] 与 GitLab labels[]=x 这类裸查询（上游均原样接受）。
+ */
+const SAFE_URI_PART = /^[A-Za-z0-9._~!$&'()*+,;=:@%/\[\]-]+$/;
 
 export interface AppProxyHandlerDeps extends AppApiDeps {
   connectorStore: ConnectorStore;

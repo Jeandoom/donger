@@ -137,12 +137,19 @@ describe("app-proxy 鉴权与通道解析", () => {
     expect(String((r2.json as { error: string }).error)).toContain("缺键 apiToken");
   });
 
-  it("path 穿越 / 双斜杠 / 非法字符 → ValidationError", async () => {
+  it("path 穿越 / 双斜杠 / 非法字符 → ValidationError；Jenkins tree 裸方括号放行", async () => {
     const app = makeApp({ jihulab: "conn_1" });
     const deps = makeDeps(app, makeConnector(), { jh: { access_token: "t" } });
     for (const path of ["api/v4/x", "/a/../b", "/a//b", "/a?b", "/a b"]) {
       await expect(call(deps, { path }, "jihulab")).rejects.toThrow(ValidationError);
     }
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    await expect(
+      call(deps, { path: "/api/json", query: "tree=jobs[name,color]" }, "jihulab"),
+    ).resolves.toMatchObject({ status: 200 });
   });
 });
 
