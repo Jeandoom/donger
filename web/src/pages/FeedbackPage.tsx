@@ -1,5 +1,6 @@
 import { ImagePlus, Loader2, Plus, X } from "lucide-react";
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -97,6 +98,18 @@ export function FeedbackPage() {
       setDetailError(err instanceof Error ? err.message : String(err));
     }
   };
+
+  // 通知「详情」深链：/feedback?focus=<id> 直接展开该反馈的对话（处理后清参数防刷新重放）
+  const [searchParams, setSearchParams] = useSearchParams();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 仅挂载时消费一次 focus 参数，openDetail 随渲染重建不可作依赖
+  useEffect(() => {
+    const focus = searchParams.get("focus");
+    if (!focus) return;
+    setExpandedId(focus);
+    void openDetail(focus);
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCreated = async (fb: FeedbackItem) => {
     setView(null);
@@ -430,7 +443,7 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
   );
 }
 
-/** 右区：反馈详情（原文 + 图片 + 完整时间线 + 回复/状态管理） */
+/** 右区：反馈详情——对话形式（原始反馈+回复按角色分侧气泡；admin 顶部流转状态） */
 function FeedbackDetailPanel({
   fb,
   me,
@@ -445,6 +458,7 @@ function FeedbackDetailPanel({
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const threadEndRef = useRef<HTMLDivElement>(null);
   const isAdmin = me?.role === "admin";
   const isOwner = me?.id === fb.userId;
   const canReply = isAdmin || isOwner;
@@ -458,6 +472,12 @@ function FeedbackDetailPanel({
         setRepliesError(err instanceof Error ? err.message : String(err));
       });
   }, [fb.id]);
+
+  // 切换反馈/新回复后滚到对话底部
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 以回复条数/反馈 id 为滚动信号，ref 为稳定哨兵
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ block: "end" });
+  }, [replies.length, fb.id]);
 
   const sendReply = async () => {
     if (!replyText.trim() || sending) return;
@@ -485,9 +505,35 @@ function FeedbackDetailPanel({
     }
   };
 
+  // 对话时间线：原始反馈排首（提交人侧），回复按角色分侧（user 右 / admin 左），双方视角一致
+  const thread: Array<{
+    key: string;
+    role: "user" | "admin";
+    name: string;
+    content: string;
+    createdAt: string;
+    images?: string[];
+  }> = [
+    {
+      key: "root",
+      role: "user",
+      name: fb.userName ?? fb.userId,
+      content: fb.content,
+      createdAt: fb.createdAt,
+      images: fb.images,
+    },
+    ...replies.map((r) => ({
+      key: r.id,
+      role: r.authorRole,
+      name: r.authorName ?? r.userId,
+      content: r.content,
+      createdAt: r.createdAt,
+    })),
+  ];
+
   return (
-    <Card className="p-5">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+    <Card className="flex h-full min-h-0 flex-col p-5">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
         <Badge tone="primary">{CATEGORY_LABELS[fb.category]}</Badge>
         <Badge tone={STATUS_TONES[fb.status]}>{STATUS_LABELS[fb.status]}</Badge>
         {isAdmin && (
@@ -497,27 +543,12 @@ function FeedbackDetailPanel({
           {formatRelative(fb.createdAt)}
         </span>
       </div>
-      <div className="mb-4 text-sm whitespace-pre-wrap break-words leading-6">{fb.content}</div>
-
-      {fb.images.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          {fb.images.map((name) => (
-            <a key={name} href={feedbackImageUrl(fb.id, name)} target="_blank" rel="noreferrer">
-              <img
-                src={feedbackImageUrl(fb.id, name)}
-                alt="反馈截图"
-                className="h-28 w-28 rounded-lg border border-border object-cover transition-opacity hover:opacity-85"
-              />
-            </a>
-          ))}
-        </div>
-      )}
 
       {isAdmin && (
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mt-3 flex shrink-0 items-center gap-2">
           <span className="text-xs text-muted-foreground">状态流转</span>
           <Select
-            className="w-36"
+            className="w-32"
             value={fb.status}
             onChange={(e) => void changeStatus(e.target.value as FeedbackStatus)}
           >
@@ -527,63 +558,85 @@ function FeedbackDetailPanel({
               </option>
             ))}
           </Select>
+          <span className="text-[11px] text-muted-foreground">状态标识双方均可见</span>
         </div>
       )}
 
-      <div className="border-t border-border pt-4">
-        <div className="mb-2 text-xs font-semibold text-muted-foreground">
-          沟通记录（{replies.length}）
-        </div>
-        <div className="space-y-2">
-          {repliesError ? (
-            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
-              沟通记录加载失败：{repliesError}
-            </div>
-          ) : null}
-          {replies.length === 0 && !repliesError && (
-            <div className="text-xs text-muted-foreground">暂无回复</div>
-          )}
-          {replies.map((r) => (
-            <div
-              key={r.id}
-              className={cn(
-                "rounded-lg px-3 py-2",
-                r.authorRole === "admin" ? "bg-success-soft" : "bg-muted",
-              )}
-            >
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                <Badge tone={r.authorRole === "admin" ? "success" : "neutral"}>
-                  {r.authorRole === "admin" ? "官方回复" : "补充说明"}
-                </Badge>
-                {formatRelative(r.createdAt)}
-              </div>
-              <div className="text-xs whitespace-pre-wrap break-words">{r.content}</div>
-            </div>
-          ))}
-        </div>
-
-        {canReply && (
-          <div className="mt-3">
-            <Textarea
-              rows={3}
-              maxLength={2000}
-              value={replyText}
-              onChange={(e) => setReplyText(e.target.value)}
-              placeholder={isAdmin ? "回复该反馈…" : "补充说明…"}
-            />
-            <div className="mt-2 flex items-center gap-2">
-              <Button
-                size="sm"
-                disabled={!replyText.trim() || sending}
-                onClick={() => void sendReply()}
-              >
-                {sending ? "发送中…" : "发送"}
-              </Button>
-              {error && <span className="text-xs text-destructive">{error}</span>}
-            </div>
+      <div className="mt-3 flex min-h-40 flex-1 flex-col gap-3 overflow-y-auto rounded-lg bg-muted/40 p-3">
+        {repliesError && (
+          <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
+            沟通记录加载失败：{repliesError}
           </div>
         )}
+        {thread.map((m) => {
+          const fromUser = m.role === "user";
+          return (
+            <div
+              key={m.key}
+              className={cn("flex flex-col", fromUser ? "items-end" : "items-start")}
+            >
+              <div className="mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                {m.role === "admin" && <Badge tone="success">官方回复</Badge>}
+                <span>{m.name}</span>
+                <span>{formatRelative(m.createdAt)}</span>
+              </div>
+              <div
+                className={cn(
+                  "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap break-words leading-6",
+                  fromUser ? "bg-primary-soft" : "bg-success-soft",
+                )}
+              >
+                {m.content}
+              </div>
+              {m.images && m.images.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {m.images.map((name) => (
+                    <a
+                      key={name}
+                      href={feedbackImageUrl(fb.id, name)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <img
+                        src={feedbackImageUrl(fb.id, name)}
+                        alt="反馈截图"
+                        className="h-20 w-20 rounded-lg border border-border object-cover transition-opacity hover:opacity-85"
+                      />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div ref={threadEndRef} />
       </div>
+
+      {canReply ? (
+        <div className="mt-3 shrink-0">
+          <Textarea
+            rows={3}
+            maxLength={2000}
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
+            placeholder={isAdmin ? "回复该反馈…" : "补充说明…"}
+          />
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              size="sm"
+              disabled={!replyText.trim() || sending}
+              onClick={() => void sendReply()}
+            >
+              {sending ? "发送中…" : "发送"}
+            </Button>
+            {error && <span className="text-xs text-destructive">{error}</span>}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 shrink-0 text-xs text-muted-foreground">
+          仅反馈提交人与管理员可参与对话
+        </div>
+      )}
     </Card>
   );
 }

@@ -1,4 +1,4 @@
-import { BellOff } from "lucide-react";
+import { BellOff, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
@@ -148,26 +148,44 @@ export function NotificationPage() {
           <ul className="divide-y">
             {items.map((n) => (
               <li key={n.id}>
-                <button
-                  type="button"
+                {/* 内容区与「详情」为兄弟按钮（不可嵌套）：点内容或点详情都=标已读+跳对应功能位置 */}
+                <div
                   className={cn(
-                    "flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors hover:bg-accent/50",
+                    "flex items-center gap-2 px-4 py-3 transition-colors hover:bg-accent/50",
                     !n.readAt && "bg-primary/[0.04]",
                   )}
-                  onClick={() => openItem(n)}
                 >
-                  <span className="flex items-center gap-2">
-                    {!n.readAt && <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />}
-                    <span className={cn("text-sm", !n.readAt && "font-medium")}>{n.title}</span>
-                    <span className={cn("text-[11px]", SEVERITY_TONES[n.severity])}>
-                      {n.severity === "critical" ? "严重" : n.severity === "warn" ? "警告" : ""}
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 cursor-pointer text-left"
+                    onClick={() => openItem(n)}
+                  >
+                    <span className="flex items-center gap-2">
+                      {!n.readAt && <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />}
+                      <span className={cn("text-sm", !n.readAt && "font-medium")}>{n.title}</span>
+                      <span className={cn("text-[11px]", SEVERITY_TONES[n.severity])}>
+                        {n.severity === "critical" ? "严重" : n.severity === "warn" ? "警告" : ""}
+                      </span>
+                      <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground">
+                        {formatRelativeTime(n.createdAt)}
+                      </span>
                     </span>
-                    <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
-                      {formatRelativeTime(n.createdAt)}
+                    <span className="mt-0.5 line-clamp-2 block pl-4 text-xs text-muted-foreground">
+                      {n.body}
                     </span>
-                  </span>
-                  <span className="line-clamp-2 pl-4 text-xs text-muted-foreground">{n.body}</span>
-                </button>
+                  </button>
+                  {n.link && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => openItem(n)}
+                    >
+                      详情
+                      <ChevronRight size={14} />
+                    </Button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

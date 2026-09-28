@@ -15,7 +15,8 @@ export type NotificationEvent =
   | "eviction.notice"
   | "user.role_changed"
   | "credential.missing"
-  | "feedback.replied";
+  | "feedback.replied"
+  | "system.announcement";
 
 /** 订阅偏好按事件组粒度（用户不感知单事件开关）；M2 站外通道加入后组×通道成矩阵 */
 export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback";
@@ -71,6 +72,12 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     severity: "info",
     mandatoryInapp: false,
     label: "反馈有新回复",
+  },
+  "system.announcement": {
+    group: "system",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "系统公告",
   },
 };
 

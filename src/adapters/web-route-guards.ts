@@ -253,6 +253,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/notifications/read", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/notifications/prefs", access: { kind: "authenticated" } },
     { method: "PUT", pattern: "/api/notifications/prefs", access: { kind: "authenticated" } },
+    // 系统公告群发（system.announcement）；admin 投递日志查询随 M2 站外通道加入时另行登记
+    {
+      method: "POST",
+      pattern: "/api/admin/notifications/announcement",
+      access: { kind: "admin" },
+    },
 
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },

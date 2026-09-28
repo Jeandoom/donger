@@ -81,6 +81,8 @@ export async function promptMissingCredentials(p: {
           recipients: [{ kind: "user", userId: p.user.id }],
           title: "任务已暂停：缺少凭证",
           body: `缺少：${names}。配置凭证后重新发起任务即可；不需要时可取消。`,
+          // 详情直达该任务所在会话
+          link: `/?conv=${p.conversation.id}`,
           dedupeKey: `cred:${task.id}`,
         })
         .catch((e) => console.error("[notification] 凭证缺失通知失败", e));

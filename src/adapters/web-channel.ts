@@ -113,12 +113,9 @@ import {
   parseSignupDomains,
 } from "../domain/module-config.js";
 import {
-  DingTalkVerifyRequestSchema,
   isMandatoryGroup,
   NOTIFICATION_GROUP_LABELS,
   NotificationPrefInputSchema,
-  type OutboundChannelId,
-  WebhookAddressInputSchema,
 } from "../domain/notification.js";
 import {
   type AgentPermissionMode,
@@ -3908,8 +3905,10 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "not found" }));
         return;
       }
+      // 对话视图展示提交人姓名（owner∥admin 已由可见性守卫保证）
+      const userName = (await this.deps.userStore?.get(fb.userId))?.name ?? fb.userId;
       res.writeHead(200);
-      res.end(JSON.stringify(fb));
+      res.end(JSON.stringify({ ...fb, userName }));
       return;
     }
 
@@ -3952,8 +3951,20 @@ export class WebChannel implements Channel {
           return;
         }
         const replies = (await this.deps.feedbackStore?.listReplies(id)) ?? [];
+        // 对话视图展示回复人姓名（同一反馈内人少，Map 缓存避免重复查库）
+        const nameCache = new Map<string, string>();
+        const repliesWithUser = await Promise.all(
+          replies.map(async (r) => {
+            let authorName = nameCache.get(r.userId);
+            if (authorName === undefined) {
+              authorName = (await this.deps.userStore?.get(r.userId))?.name ?? r.userId;
+              nameCache.set(r.userId, authorName);
+            }
+            return { ...r, authorName };
+          }),
+        );
         res.writeHead(200);
-        res.end(JSON.stringify({ replies }));
+        res.end(JSON.stringify({ replies: repliesWithUser }));
         return;
       }
       if (req.method === "POST") {
@@ -3995,7 +4006,8 @@ export class WebChannel implements Channel {
               recipients: [{ kind: "user", userId: fb.userId }],
               title: reply.authorRole === "admin" ? "你的反馈有官方回复" : "你的反馈有新回复",
               body: content.slice(0, 200),
-              link: "/feedback",
+              // 深链到该条反馈的对话详情（FeedbackPage ?focus= 打开右区对话）
+              link: `/feedback?focus=${id}`,
               dedupeKey: `fb:${id}:${reply.id}`,
             })
             .catch((e) => console.error("[web-channel] 反馈回复通知失败", e));
@@ -4087,13 +4099,7 @@ export class WebChannel implements Channel {
         eventGroup: g,
         label: NOTIFICATION_GROUP_LABELS[g],
         mandatory: isMandatoryGroup(g),
-        channels: {
-          inapp: saved.find((p) => p.eventGroup === g && p.channel === "inapp")?.enabled ?? true,
-          dingtalk:
-            saved.find((p) => p.eventGroup === g && p.channel === "dingtalk")?.enabled ?? false,
-          webhook:
-            saved.find((p) => p.eventGroup === g && p.channel === "webhook")?.enabled ?? false,
-        },
+        inapp: saved.find((p) => p.eventGroup === g && p.channel === "inapp")?.enabled ?? true,
       }));
       return this.json(res, { groups });
     }
@@ -4113,144 +4119,6 @@ export class WebChannel implements Channel {
       const ok = await svc.setPref(this.currentViewer(req).id, parsed.data);
       if (!ok) return this.json(res, { error: "该通知不可关闭" }, 409);
       return this.json(res, { ok: true });
-    }
-
-    // GET /api/notifications/addresses —— 地址簿视图（钉钉登录身份优先；webhook 回显 URL+签名
-    // 密钥供第三方校验方配置；自定义头只回键名列表，值永不回显）
-    if (url === "/api/notifications/addresses" && req.method === "GET") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      const viewer = this.currentViewer(req);
-      const identities = (await this.deps.userStore?.getIdentities(viewer.id)) ?? [];
-      const dtIdentity = identities.find((i) => i.provider === "dingtalk");
-      const dtRow = await svc.getAddress(viewer.id, "dingtalk");
-      const hookRow = await svc.getAddress(viewer.id, "webhook");
-      const dingtalkSource = dtIdentity ? "login" : dtRow ? "manual" : null;
-      return this.json(res, {
-        dingtalk: {
-          source: dingtalkSource,
-          staffId: dtIdentity?.externalId ?? dtRow?.address ?? null,
-          verifiedAt: dtIdentity ? "login" : (dtRow?.verifiedAt ?? null),
-          pendingVerify: svc.hasDingTalkVerifyPending(viewer.id),
-        },
-        webhook: hookRow
-          ? {
-              url: hookRow.address,
-              secret:
-                typeof hookRow.extra?.secret === "string" ? (hookRow.extra.secret as string) : null,
-              headerKeys:
-                hookRow.extra?.headers && typeof hookRow.extra.headers === "object"
-                  ? Object.keys(hookRow.extra.headers as Record<string, unknown>)
-                  : [],
-              createdAt: hookRow.createdAt,
-            }
-          : null,
-      });
-    }
-
-    // POST /api/notifications/addresses/dingtalk/verify-request —— 发验证码到 staffId
-    if (url === "/api/notifications/addresses/dingtalk/verify-request" && req.method === "POST") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      let raw: unknown;
-      try {
-        raw = JSON.parse(await this.readBody(req));
-      } catch {
-        return this.json(res, { error: "请求格式无效" }, 400);
-      }
-      const parsed = DingTalkVerifyRequestSchema.safeParse(raw);
-      if (!parsed.success) return this.json(res, { error: "staffId 格式无效" }, 400);
-      const outcome = await svc.requestDingTalkVerify(
-        this.currentViewer(req).id,
-        parsed.data.staffId,
-      );
-      if (!outcome.ok) return this.json(res, { error: outcome.error }, outcome.status);
-      return this.json(res, { ok: true });
-    }
-
-    // POST /api/notifications/addresses/dingtalk/verify —— 回填验证码完成绑定
-    if (url === "/api/notifications/addresses/dingtalk/verify" && req.method === "POST") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      let body: { code?: unknown } = {};
-      try {
-        body = JSON.parse(await this.readBody(req)) as { code?: unknown };
-      } catch {
-        return this.json(res, { error: "请求格式无效" }, 400);
-      }
-      if (typeof body.code !== "string" || !/^\d{6}$/.test(body.code)) {
-        return this.json(res, { error: "验证码须为 6 位数字" }, 400);
-      }
-      const outcome = await svc.confirmDingTalkVerify(this.currentViewer(req).id, body.code);
-      if (!outcome.ok) return this.json(res, { error: outcome.error }, outcome.status);
-      return this.json(res, { ok: true, staffId: outcome.staffId });
-    }
-
-    // PUT /api/notifications/addresses/webhook —— 保存 webhook（SSRF 深校验+存活探测+签名密钥）
-    if (url === "/api/notifications/addresses/webhook" && req.method === "PUT") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      let raw: unknown;
-      try {
-        raw = JSON.parse(await this.readBody(req));
-      } catch {
-        return this.json(res, { error: "请求格式无效" }, 400);
-      }
-      const parsed = WebhookAddressInputSchema.safeParse(raw);
-      if (!parsed.success) return this.json(res, { error: "URL 或 headers 格式无效" }, 400);
-      const outcome = await svc.saveWebhookAddress(this.currentViewer(req).id, parsed.data, {
-        allowPrivateNet: false,
-      });
-      if (!outcome.ok) return this.json(res, { error: outcome.error }, outcome.status);
-      return this.json(res, { ok: true, probe: outcome.probe });
-    }
-
-    // POST /api/notifications/addresses/:channel/test —— 向已配置地址发测试通知
-    const notifTestMatch = url.match(/^\/api\/notifications\/addresses\/([\w-]+)\/test$/);
-    if (notifTestMatch && req.method === "POST") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      const channel = notifTestMatch[1] ?? "";
-      if (channel !== "dingtalk" && channel !== "webhook") {
-        return this.json(res, { error: "未知通道" }, 400);
-      }
-      const outcome = await svc.testSend(this.currentViewer(req).id, channel as OutboundChannelId);
-      return this.json(res, outcome, outcome.ok ? 200 : 400);
-    }
-
-    // DELETE /api/notifications/addresses/:channel —— 解除绑定（dingtalk 手填/webhook）
-    const notifAddrMatch = url.match(/^\/api\/notifications\/addresses\/([\w-]+)$/);
-    if (notifAddrMatch && req.method === "DELETE") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      const channel = notifAddrMatch[1] ?? "";
-      if (channel !== "dingtalk" && channel !== "webhook") {
-        return this.json(res, { error: "未知通道" }, 400);
-      }
-      await svc.deleteAddress(this.currentViewer(req).id, channel as OutboundChannelId);
-      return this.json(res, { ok: true });
-    }
-
-    // GET /api/admin/notifications/status —— 通道可用性（授权页「通知」区）
-    if (url === "/api/admin/notifications/status" && req.method === "GET") {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      return this.json(res, { channels: { inapp: true, ...svc.channelStatus() } });
-    }
-
-    // GET /api/admin/notifications/deliveries —— 投递日志（全用户，最近 N 条）
-    if (
-      (url === "/api/admin/notifications/deliveries" ||
-        url.startsWith("/api/admin/notifications/deliveries?")) &&
-      req.method === "GET"
-    ) {
-      const svc = this.deps.notificationService;
-      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
-      const limit = Math.min(
-        Math.max(Number.parseInt(this.extractQuery(url, "limit") ?? "", 10) || 50, 1),
-        200,
-      );
-      return this.json(res, { deliveries: await svc.listDeliveries(limit) });
     }
 
     // POST /api/admin/notifications/announcement —— 系统公告群发（全用户，站内+各人订阅站外）

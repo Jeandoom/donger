@@ -6,7 +6,7 @@
 export const FEEDBACK_CATEGORIES = ["ui", "ue", "feature", "logic", "other"] as const;
 export type FeedbackCategory = (typeof FEEDBACK_CATEGORIES)[number];
 
-/** open=待处理 accepted=已采纳(纳入规划) resolved=已解决 closed=已关闭 */
+/** open=待处理 accepted=处理中(管理员已接手跟进) resolved=已完成 closed=已关闭（存储值不变，仅展示词） */
 export const FEEDBACK_STATUSES = ["open", "accepted", "resolved", "closed"] as const;
 export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
 
@@ -22,8 +22,8 @@ export const FEEDBACK_CATEGORY_LABELS: Record<FeedbackCategory, string> = {
 /** 状态中文标签（同上共用） */
 export const FEEDBACK_STATUS_LABELS: Record<FeedbackStatus, string> = {
   open: "待处理",
-  accepted: "已采纳",
-  resolved: "已解决",
+  accepted: "处理中",
+  resolved: "已完成",
   closed: "已关闭",
 };
 

@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
+import { SqliteFeedbackStore } from "../../src/adapters/sqlite-feedback-store.js";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteNotificationStore } from "../../src/adapters/sqlite-notification-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
@@ -162,6 +163,8 @@ async function startChannel(): Promise<number> {
   const notificationStore = new SqliteNotificationStore(db);
   notificationStore.migrate();
   notificationService = new NotificationService({ store: notificationStore });
+  const feedbackStore = new SqliteFeedbackStore(db);
+  feedbackStore.migrate();
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
@@ -170,6 +173,7 @@ async function startChannel(): Promise<number> {
     userStore,
     moduleConfigStore: createTestModuleConfigStore(db, { signupAllowedDomains: ["example.com"] }),
     notificationService,
+    feedbackStore,
   });
   web.onMessage(() => {});
   await web.ready();
@@ -341,6 +345,62 @@ describe("通知 Web API", () => {
       groups: Array<{ eventGroup: string; inapp: boolean }>;
     };
     expect(after.groups.find((g) => g.eventGroup === "task")?.inapp).toBe(false);
+  });
+
+  it("反馈回复 → 提交者收站内信带 focus 深链；时间线/详情带姓名；公告群发可用", async () => {
+    const port = await startChannel();
+    const aliceToken = await tokenFor("alice");
+    const adminToken = await tokenFor("rootadmin");
+    await userStore.updateRole(
+      (await userStore.getOrCreateByIdentity("test", "rootadmin", "rootadmin")).id,
+      "admin",
+    );
+
+    const created = await post(port, "/api/feedback", { content: "搜索页报错" }, aliceToken);
+    expect(created.status).toBe(201);
+    const fb = (await created.json()) as { id: string };
+
+    const replied = await post(
+      port,
+      `/api/feedback/${fb.id}/replies`,
+      { content: "已定位，明天修复" },
+      adminToken,
+    );
+    expect(replied.status).toBe(201);
+    // notify 是 fire-and-forget：跨宏任务边界等异步落库完成
+    await new Promise((resolve) => setImmediate(resolve));
+    const list = (await (await get(port, "/api/notifications", aliceToken)).json()) as {
+      items: Array<{ event: string; link?: string }>;
+    };
+    const fbNotice = list.items.find((n) => n.event === "feedback.replied");
+    // 详情深链：通知「详情」按钮直达该反馈的对话（FeedbackPage ?focus=）
+    expect(fbNotice?.link).toBe(`/feedback?focus=${fb.id}`);
+
+    // 对话视图姓名补齐：回复带 authorName、详情带提交人 userName
+    const timeline = (await (
+      await get(port, `/api/feedback/${fb.id}/replies`, aliceToken)
+    ).json()) as {
+      replies: Array<{ authorName?: string }>;
+    };
+    expect(timeline.replies[0]?.authorName).toBe("rootadmin");
+    const detail = (await (await get(port, `/api/feedback/${fb.id}`, adminToken)).json()) as {
+      userName?: string;
+    };
+    expect(detail.userName).toBe("alice");
+
+    // 公告群发：system.announcement 已登记（未登记时 fail-closed 抛错 500）
+    const ann = await post(
+      port,
+      "/api/admin/notifications/announcement",
+      { title: "维护通知", body: "今晚升级" },
+      adminToken,
+    );
+    expect(ann.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    const annList = (await (await get(port, "/api/notifications", aliceToken)).json()) as {
+      items: Array<{ event: string }>;
+    };
+    expect(annList.items.some((n) => n.event === "system.announcement")).toBe(true);
   });
 });
 

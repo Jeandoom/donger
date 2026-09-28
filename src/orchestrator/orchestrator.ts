@@ -673,8 +673,6 @@ export class Orchestrator {
       p.threadId,
       gates,
       this.deps.commentStore,
-      this.deps.notificationService,
-      p.user.id,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
     const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);
@@ -875,6 +873,8 @@ export class Orchestrator {
           recipients: [{ kind: "user", userId: p.user.id }],
           title: ok ? "任务完成" : "任务失败",
           body: (ok ? (last.result ?? "(无结果)") : (last.error ?? "未知错误")).slice(0, 400),
+          // 详情直达该任务所在会话（NotificationPage「详情」按钮跳转）
+          link: `/?conv=${p.conversation.id}`,
           dedupeKey: `task:${p.task.id}:${ok ? "completed" : "failed"}`,
           data: { conversationId: p.conversation.id, taskId: p.task.id },
         })
@@ -1290,6 +1290,8 @@ export class Orchestrator {
           recipients: [{ kind: "user", userId: user.id }],
           title: "并发任务被自动结束",
           body: `${reason}\n${detail}`,
+          // 详情直达被淘汰任务所在会话
+          link: `/?conv=${victim.conversationId}`,
           dedupeKey: `eviction:${victim.taskId}`,
         })
         .catch((e) => console.error("[orchestrator] 淘汰通知失败", e));

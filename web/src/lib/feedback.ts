@@ -19,8 +19,8 @@ export const CATEGORY_LABELS: Record<FeedbackCategory, string> = {
 
 export const STATUS_LABELS: Record<FeedbackStatus, string> = {
   open: "待处理",
-  accepted: "已采纳",
-  resolved: "已解决",
+  accepted: "处理中",
+  resolved: "已完成",
   closed: "已关闭",
 };
 
@@ -47,6 +47,8 @@ export interface FeedbackReplyDTO {
   id: string;
   feedbackId: string;
   userId: string;
+  /** 回复人姓名（服务端按 userId 补齐；取不到时回退 userId） */
+  authorName?: string;
   authorRole: "admin" | "user";
   content: string;
   createdAt: string;
