@@ -1,5 +1,5 @@
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
@@ -55,6 +55,7 @@ import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
+import { BUILTIN_APP_MANAGER_AGENT, BUILTIN_APP_MANAGER_ID } from "./app-manager-agent.js";
 import { createAppToolsServer } from "./app-tools.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
@@ -302,6 +303,7 @@ export class Orchestrator {
     // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
     if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
     if (agentId === BUILTIN_KB_ASSISTANT_ID) return { agent: BUILTIN_KB_ASSISTANT_AGENT };
+    if (agentId === BUILTIN_APP_MANAGER_ID) return { agent: BUILTIN_APP_MANAGER_AGENT };
     if (agentId === BUILTIN_SKILL_FORGE_AGENT_ID) return { agent: BUILTIN_SKILL_FORGE_AGENT };
     if (agentId === BUILTIN_AUDITOR_AGENT_ID) return { agent: BUILTIN_AUDITOR_AGENT };
     if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
@@ -555,7 +557,8 @@ export class Orchestrator {
             .join("\n\n"),
         };
       }
-      // 平台应用工具（donger-apps）：会话用户闭包绑定所有权；产物目录相对运行时目录解析
+      // 平台应用工具（donger-apps）：会话用户闭包绑定所有权；产物目录相对运行时目录解析；
+      // 备份还原仅接受运行时目录与本会话附件目录内的 zip（无独立外部导入通道）
       if (this.deps.appStore && this.deps.appsDir) {
         base = {
           ...base,
@@ -564,6 +567,12 @@ export class Orchestrator {
             appsDir: this.deps.appsDir,
             runtimeDir: context.runtimeDir,
             userId: p.user.id,
+            importRoots: [
+              context.runtimeDir,
+              resolve(
+                join(p.user.homeDir, "sessions", p.conversation.id, "workspace", "attachments"),
+              ),
+            ],
           }),
         };
       }

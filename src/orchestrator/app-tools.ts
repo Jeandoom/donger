@@ -13,6 +13,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -20,15 +21,21 @@ import {
   type McpSdkServerConfigWithInstance,
   type SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
+import { ZodError, z } from "zod";
 import { appVersionDir } from "../adapters/app-api.js";
 import {
   APP_BUNDLE_MAX_ENTRIES,
   APP_BUNDLE_TOTAL_UNCOMPRESSED_MAX,
+  APP_DATA_KEY_PATTERN,
+  APP_DATA_MAX_KEYS,
+  APP_DATA_TOTAL_MAX_BYTES,
+  APP_DATA_VALUE_MAX_BYTES,
   APP_NAME_MAX,
+  AppManifestSchema,
   type AppVersionMeta,
 } from "../domain/app.js";
 import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
+import { extractZipToDir, zipDirToBuffer } from "../util/zip.js";
 
 export type AppToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 const ok = (text: string): AppToolResult => ({ content: [{ type: "text", text }] });
@@ -41,10 +48,15 @@ export interface AppToolsDeps {
   appStore: AppStore;
   /** 产物根目录（<dataDir>/apps）：版本目录与 incoming 暂存在其下 */
   appsDir: string;
-  /** 会话运行时目录：app_deploy 的 dir 相对此解析（防工作区外逃逸） */
+  /** 会话运行时目录：app_deploy 的 dir 相对此解析（防工作区外逃逸）；备份导出落 runtimeDir/app-backups/ */
   runtimeDir: string;
   /** 会话用户：应用所有权的唯一判定依据（工具构造时闭包绑定） */
   userId: string;
+  /**
+   * app_import 允许读取的根清单（运行时目录 ∪ 本会话附件目录）——备份还原的唯一入口
+   * 是用户在会话里上传附件后交由智能体还原，不存在独立的外部导入通道。
+   */
+  importRoots: string[];
 }
 
 /** 路径安全：resolve+realpath 双判（与 kb-tools safeResolveKbPath 同语义） */
@@ -106,7 +118,7 @@ function versionLine(v: AppVersionWithMeta): string {
 }
 
 export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
-  const { appStore, appsDir, runtimeDir, userId } = deps;
+  const { appStore, appsDir, runtimeDir, userId, importRoots } = deps;
 
   const requireOwned = async (appId: string) => {
     const app = await appStore.get(appId);
@@ -320,7 +332,161 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
         );
       },
     },
+    {
+      name: "app_export",
+      description:
+        "导出应用备份（bundle+元信息+运行数据打包为 zip，落到工作区 app-backups/ 下），返回文件路径供用户下载留存。",
+      inputSchema: { appId: z.string().min(1).describe("应用 ID") },
+      handler: async (args): Promise<AppToolResult> => {
+        const a = z.object({ appId: z.string().min(1) }).parse(args);
+        const app = await requireOwned(a.appId);
+        if (!app) return fail(`应用不存在或不属于当前用户：${a.appId}`);
+        if (app.currentVersion === null) return fail("应用尚未发布任何版本，无可备份产物");
+        const versionDir = appVersionDir(appsDir, a.appId, app.currentVersion);
+        const stage = join(
+          runtimeDir,
+          ".tmp",
+          `app-export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        );
+        mkdirSync(join(stage, "bundle"), { recursive: true });
+        try {
+          cpSync(versionDir, join(stage, "bundle"), { recursive: true });
+          const data = await appStore.listData(a.appId);
+          writeFileSync(
+            join(stage, "donger-app-backup.json"),
+            JSON.stringify({
+              kind: "donger-app-backup",
+              version: 1,
+              exportedAt: new Date().toISOString(),
+              sourceAppId: a.appId,
+              app: { name: app.name, description: app.description, manifest: app.manifest },
+              sourceVersion: app.currentVersion,
+            }),
+          );
+          writeFileSync(join(stage, "data.json"), JSON.stringify(data));
+          const zip = zipDirToBuffer(stage);
+          const backupDir = join(runtimeDir, "app-backups");
+          mkdirSync(backupDir, { recursive: true });
+          const safeName = app.name.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "app";
+          const outPath = join(backupDir, `${safeName}-v${app.currentVersion}-${Date.now()}.zip`);
+          writeFileSync(outPath, zip);
+          return ok(
+            `备份完成：${outPath}\n包含 bundle（v${app.currentVersion}，${statsLine(versionDir)}）+ ${data.length} 条运行数据。用户可从工作区文件中下载留存；还原时把该 zip 作为会话附件上传后用 app_import。`,
+          );
+        } finally {
+          rmSync(stage, { recursive: true, force: true });
+        }
+      },
+    },
+    {
+      name: "app_import",
+      description:
+        "从应用备份 zip 还原为新应用（仅接受本平台 app_export 产出的备份；zip 须位于当前工作区或本会话附件目录）。还原 bundle、名称/描述/清单与运行数据。",
+      inputSchema: {
+        path: z.string().min(1).describe("备份 zip 路径（相对当前工作区，或本会话附件目录内路径）"),
+        name: z.string().max(60).optional().describe("覆盖备份中的应用名（缺省用备份内名称）"),
+      },
+      handler: async (args): Promise<AppToolResult> => {
+        const a = z
+          .object({ path: z.string().min(1), name: z.string().max(60).optional() })
+          .parse(args);
+        let zipPath: string | undefined;
+        for (const root of importRoots) {
+          const resolved = safeResolveDir(root, a.path);
+          if (resolved && existsSync(resolved) && statSync(resolved).isFile()) {
+            zipPath = resolved;
+            break;
+          }
+        }
+        if (!zipPath) {
+          return fail(
+            `备份文件不存在或越界：${a.path}（仅接受当前工作区与本会话附件目录内的 zip）`,
+          );
+        }
+        const stage = join(
+          runtimeDir,
+          ".tmp",
+          `app-import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        );
+        mkdirSync(stage, { recursive: true });
+        try {
+          extractZipToDir(readFileSync(zipPath), stage);
+          const metaPath = join(stage, "donger-app-backup.json");
+          if (!existsSync(metaPath)) {
+            return fail("不是本平台导出的应用备份（donger-app-backup.json 缺失或格式不符）");
+          }
+          const metaRaw = readFileSync(metaPath, "utf8");
+          const meta = z
+            .object({
+              kind: z.literal("donger-app-backup"),
+              version: z.literal(1),
+              app: z.object({
+                name: z.string().min(1).max(60),
+                description: z.string().max(300).optional(),
+                manifest: AppManifestSchema,
+              }),
+            })
+            .parse(JSON.parse(metaRaw));
+          const bundleDir = join(stage, "bundle");
+          if (!existsSync(join(bundleDir, "index.html"))) {
+            return fail("备份 bundle 缺少 index.html，无法还原");
+          }
+          const dataEntries = existsSync(join(stage, "data.json"))
+            ? z
+                .array(
+                  z.object({
+                    key: z.string().min(1),
+                    valueJson: z.string(),
+                    sizeBytes: z.number().int().nonnegative(),
+                    updatedAt: z.string(),
+                  }),
+                )
+                .parse(JSON.parse(readFileSync(join(stage, "data.json"), "utf8")))
+            : [];
+          if (dataEntries.length > APP_DATA_MAX_KEYS) {
+            return fail(`备份数据条数超出配额（${dataEntries.length} > ${APP_DATA_MAX_KEYS}）`);
+          }
+          const dataTotal = dataEntries.reduce((s, e) => s + e.sizeBytes, 0);
+          if (dataTotal > APP_DATA_TOTAL_MAX_BYTES) {
+            return fail(`备份数据总量超出配额`);
+          }
+          const app = await appStore.create({
+            id: `app_${crypto.randomUUID()}`,
+            userId,
+            name: a.name?.trim() || meta.app.name,
+            description: meta.app.description ?? "",
+            manifest: meta.app.manifest,
+          });
+          await deployBundle(bundleDir, app.id);
+          for (const e of dataEntries) {
+            if (!APP_DATA_KEY_PATTERN.test(e.key) || e.sizeBytes > APP_DATA_VALUE_MAX_BYTES)
+              continue;
+            await appStore.putData({ appId: app.id, ...e });
+          }
+          return ok(
+            `还原完成：appId=${app.id}「${app.name}」v1\n运行路径 /apps/${app.id}/（用户在「应用」中心打开）\n还原运行数据 ${dataEntries.length} 条。`,
+          );
+        } catch (e) {
+          if (e instanceof ZodError) {
+            return fail("不是本平台导出的应用备份（donger-app-backup.json 缺失或格式不符）");
+          }
+          return fail(`还原失败：${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+          rmSync(stage, { recursive: true, force: true });
+        }
+      },
+    },
   ];
+}
+
+/** 版本目录统计（导出话术用） */
+function statsLine(versionDir: string): string {
+  try {
+    const s = scanBundle(versionDir);
+    return `${s.fileCount} 文件`;
+  } catch {
+    return "?";
+  }
 }
 
 /** 装配 donger-apps SDK MCP server（会话闭包绑定用户与运行时目录） */

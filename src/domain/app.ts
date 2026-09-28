@@ -67,22 +67,13 @@ export const APP_DATA_MAX_KEYS = 2000;
 /** 应用数据 key 约束：与守卫表 URL 段字符集一致（[\w.-]），否则路径参数无法表达 */
 export const APP_DATA_KEY_PATTERN = /^[\w.-]{1,128}$/;
 
-/** 上传 bundle（zip）上限：压缩包 50MB / 解压总 100MB / 条目 2000 */
-export const APP_BUNDLE_MAX_BYTES = 50 * 1024 * 1024;
+/** 产物体积上限：解压总 100MB / 条目 2000（应用备份与发布共用） */
 export const APP_BUNDLE_TOTAL_UNCOMPRESSED_MAX = 100 * 1024 * 1024;
 export const APP_BUNDLE_MAX_ENTRIES = 2000;
 
 /** 应用名/描述长度约束 */
 export const APP_NAME_MAX = 60;
 export const APP_DESC_MAX = 300;
-
-export const AppCreateInputSchema = z.object({
-  name: z.string().trim().min(1).max(APP_NAME_MAX),
-  description: z.string().trim().max(APP_DESC_MAX).default(""),
-  icon: z.string().trim().max(200).optional(),
-  manifest: AppManifestSchema,
-});
-export type AppCreateInput = z.infer<typeof AppCreateInputSchema>;
 
 export const AppPatchInputSchema = z.object({
   name: z.string().trim().min(1).max(APP_NAME_MAX).optional(),
@@ -91,11 +82,6 @@ export const AppPatchInputSchema = z.object({
   manifest: AppManifestSchema.optional(),
 });
 export type AppPatchInput = z.infer<typeof AppPatchInputSchema>;
-
-export function parseAppCreateInput(raw: unknown): AppCreateInput {
-  const r = AppCreateInputSchema.parse(raw);
-  return r;
-}
 
 export function parseAppPatchInput(raw: unknown): AppPatchInput {
   return AppPatchInputSchema.parse(raw);

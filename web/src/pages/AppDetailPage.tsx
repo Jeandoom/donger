@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -82,7 +82,11 @@ export function AppDetailPage() {
   };
 
   if (loading) {
-    return <div className="flex flex-1 items-center justify-center p-7 text-sm text-muted-foreground">加载中…</div>;
+    return (
+      <div className="flex flex-1 items-center justify-center p-7 text-sm text-muted-foreground">
+        加载中…
+      </div>
+    );
   }
   if (!app) {
     return (
@@ -118,10 +122,14 @@ export function AppDetailPage() {
       />
 
       {notice ? (
-        <div className="rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">{notice}</div>
+        <div className="rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">
+          {notice}
+        </div>
       ) : null}
       {error ? (
-        <div className="rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">{error}</div>
+        <div className="rounded-lg bg-destructive-soft px-4 py-2.5 text-sm text-destructive">
+          {error}
+        </div>
       ) : null}
 
       <div className="flex gap-1 rounded-lg bg-muted/60 p-1 text-[13px]">
@@ -159,12 +167,15 @@ export function AppDetailPage() {
           />
           <Row label="创建时间" value={<span>{new Date(app.createdAt).toLocaleString()}</span>} />
           <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
-            在会话中让智能体开发应用，由其调用应用部署工具发布；或到「版本」页手动上传 zip bundle。
+            由「应用管家」或任意 coding
+            智能体在会话中开发并发布（应用唯一发布通道）；更新需求继续在会话中提出。
           </p>
         </Card>
       ) : null}
 
-      {tab === "versions" ? <VersionsTab appId={app.id} versions={versions} onChanged={refresh} /> : null}
+      {tab === "versions" ? (
+        <VersionsTab appId={app.id} versions={versions} onChanged={refresh} />
+      ) : null}
       {tab === "data" ? <DataTab appId={app.id} /> : null}
       {tab === "run" ? <RunTab appId={app.id} published={app.currentVersion !== null} /> : null}
 
@@ -199,27 +210,7 @@ function VersionsTab({
   versions: AppVersionView[];
   onChanged: () => void;
 }) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const upload = async (file: File) => {
-    setUploading(true);
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const r = await apiFetch(`/api/apps/${appId}/versions`, { method: "POST", body: fd });
-      if (!r.ok) {
-        const body = (await r.json().catch(() => null)) as { error?: string } | null;
-        setError(body?.error ?? `上传失败：HTTP ${r.status}`);
-      }
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-      onChanged();
-    }
-  };
 
   const publish = async (num: number) => {
     const r = await apiFetch(`/api/apps/${appId}/versions/${num}/publish`, { method: "POST" });
@@ -229,27 +220,9 @@ function VersionsTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <Card className="flex flex-col items-start gap-3 p-5">
-        <div className="text-sm font-medium">上传 bundle</div>
-        <p className="text-xs text-muted-foreground">
-          zip 包（≤50MB），根目录需含 index.html；上传后立即发布为当前版本。
-        </p>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".zip"
-          disabled={uploading}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void upload(f);
-          }}
-          className="text-xs"
-        />
-        {uploading ? <span className="text-xs text-muted-foreground">上传解析中…</span> : null}
-        {error ? (
-          <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">{error}</div>
-        ) : null}
-      </Card>
+      <p className="text-xs text-muted-foreground">
+        版本由智能体在会话中发布产生（应用唯一发布通道）；在会话里继续迭代即产生新版本，此处可随时切回历史版本。
+      </p>
 
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
@@ -273,7 +246,11 @@ function VersionsTab({
                   {new Date(v.createdAt).toLocaleString()}
                 </td>
                 <td className="px-4 py-3">
-                  {v.isCurrent ? <Badge>当前</Badge> : <span className="text-xs text-muted-foreground">历史</span>}
+                  {v.isCurrent ? (
+                    <Badge>当前</Badge>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">历史</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right">
                   {!v.isCurrent ? (
@@ -291,7 +268,9 @@ function VersionsTab({
           </tbody>
         </table>
         {!versions.length ? (
-          <div className="p-8 text-center text-sm text-muted-foreground">尚无版本，先上传一个 zip bundle</div>
+          <div className="p-8 text-center text-sm text-muted-foreground">
+            尚无版本，先上传一个 zip bundle
+          </div>
         ) : null}
       </Card>
     </div>
@@ -326,8 +305,8 @@ function DataTab({ appId }: { appId: string }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="text-xs text-muted-foreground">
-        应用运行时写入的 KV 数据（共 {items.length} 条 / {formatBytes(totalBytes)}）；应用内通过 app-token
-        经 /api/app-data 读写。
+        应用运行时写入的 KV 数据（共 {items.length} 条 / {formatBytes(totalBytes)}）；应用内通过
+        app-token 经 /api/app-data 读写。
       </div>
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
@@ -406,7 +385,7 @@ function RunTab({ appId, published }: { appId: string; published: boolean }) {
   if (!published) {
     return (
       <Card className="p-8 text-center text-sm text-muted-foreground">
-        应用尚未发布产物。先在「版本」页上传 bundle，或让智能体发布。
+        应用尚未发布产物。到「应用管家」会话中描述需求，由智能体开发并发布。
       </Card>
     );
   }
@@ -416,13 +395,16 @@ function RunTab({ appId, published }: { appId: string; published: boolean }) {
       {!src ? (
         <Card className="flex flex-col items-center gap-3 p-10 text-center">
           <p className="text-sm text-muted-foreground">
-            点击打开将以受限沙箱（隔离于平台登录态）加载应用，有效期 60 分钟，过期后回到本页重新打开。
+            点击打开将以受限沙箱（隔离于平台登录态）加载应用，有效期 60
+            分钟，过期后回到本页重新打开。
           </p>
           <Button onClick={() => void open()} disabled={loading}>
             {loading ? "签发令牌中…" : "打开应用"}
           </Button>
           {error ? (
-            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">{error}</div>
+            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
+              {error}
+            </div>
           ) : null}
         </Card>
       ) : (

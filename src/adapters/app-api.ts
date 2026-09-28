@@ -1,23 +1,17 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import type { IncomingMessage as HttpRequest } from "node:http";
 import { join, resolve, sep } from "node:path";
-import Busboy from "busboy";
 import {
-  APP_BUNDLE_MAX_BYTES,
   APP_DATA_KEY_PATTERN,
   APP_DATA_MAX_KEYS,
   APP_DATA_TOTAL_MAX_BYTES,
   APP_DATA_VALUE_MAX_BYTES,
-  type AppManifest,
   type AppPatchInput,
   type PlatformApp,
-  parseAppCreateInput,
   parseAppPatchInput,
 } from "../domain/app.js";
 import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
 import { NotFoundError, PayloadTooLargeError, ValidationError } from "../util/errors.js";
-import { extractZipToDir } from "../util/zip.js";
 import type { AppTokenService } from "./app-token-service.js";
 
 /**
@@ -59,24 +53,6 @@ export function appVersionDir(appsDir: string, appId: string, num: number): stri
 // ---------------------------------------------------------------------------
 // 应用 CRUD（属主面）
 // ---------------------------------------------------------------------------
-
-export async function handleCreateApp(
-  ctx: AppHttpCtx,
-  deps: AppApiDeps,
-  req: HttpRequest,
-): Promise<ApiResult> {
-  const userId = requireUser(ctx, req);
-  const input = parseAppCreateInput(JSON.parse(await ctx.readBody(req)));
-  const app = await deps.appStore.create({
-    id: `app_${randomUUID()}`,
-    userId,
-    name: input.name,
-    description: input.description,
-    icon: input.icon,
-    manifest: input.manifest,
-  });
-  return { status: 201, json: { app: appView(app) } };
-}
 
 export async function handleListApps(
   ctx: AppHttpCtx,
@@ -148,49 +124,7 @@ export async function handleListVersions(
   return { status: 200, json: { versions: versions.map(versionView) } };
 }
 
-/** multipart 上传 zip bundle → 解压校验 → 记版本并发布为当前版本 */
-export async function handleUploadVersion(
-  ctx: AppHttpCtx,
-  deps: AppApiDeps,
-  req: HttpRequest,
-  appId: string,
-): Promise<ApiResult> {
-  const userId = requireUser(ctx, req);
-  const app = await requireOwnedApp(deps, ctx, req, appId);
-  assertStaticRuntime(app.manifest);
-
-  const contentType = req.headers["content-type"] ?? "";
-  if (!contentType.startsWith("multipart/form-data")) {
-    throw new ValidationError("INVALID_REQUEST", "请求须为 multipart/form-data");
-  }
-
-  const zip = await collectBundle(req);
-  const versionDir = placeholderDir(deps, appId);
-  const result = extractZipToDir(zip, versionDir);
-
-  const version = await deps.appStore.addVersion(appId, {
-    bundleBytes: zip.length,
-    bundleSha256: result.sha256,
-    fileCount: result.fileCount,
-    totalBytes: result.totalBytes,
-    createdAt: new Date().toISOString(),
-    createdBy: userId,
-  });
-  // 版本目录以分配到的 num 重命名（addVersion 前不知道 num；先落临时目录防半传写入正式位）
-  const finalDir = appVersionDir(deps.appsDir, appId, version.num);
-  rmSync(finalDir, { recursive: true, force: true });
-  renameDir(versionDir, finalDir);
-
-  const published = await deps.appStore.publishVersion(appId, version.num);
-  return {
-    status: 201,
-    json: {
-      version: versionView({ ...version, isCurrent: true }),
-      app: published ? appView(published) : undefined,
-    },
-  };
-}
-
+/** multipart 上传通道已移除（应用发布唯一入口=会话智能体 app_deploy；spec 修订 2026-09-26） */
 export async function handlePublishVersion(
   ctx: AppHttpCtx,
   deps: AppApiDeps,
@@ -468,12 +402,6 @@ async function requireOwnedApp(
   return app;
 }
 
-function assertStaticRuntime(manifest: AppManifest): void {
-  if (manifest.runtime !== "static") {
-    throw new ValidationError("INVALID_REQUEST", `运行时 ${manifest.runtime} 暂未开放`);
-  }
-}
-
 function assertDataKey(key: string): void {
   if (!APP_DATA_KEY_PATTERN.test(key)) {
     throw new ValidationError("INVALID_REQUEST", "key 仅允许字母数字与 . _ -，长度 1-128");
@@ -495,72 +423,7 @@ async function readBodyCapped(req: HttpRequest): Promise<string> {
   });
 }
 
-/** busboy 收集单个 zip 文件（全量入内存，≤50MB）；超限/多文件拒绝 */
-function collectBundle(req: HttpRequest): Promise<Buffer> {
-  return new Promise((resolveP, rejectP) => {
-    let settled = false;
-    const done = (err: Error | null, buf?: Buffer) => {
-      if (settled) return;
-      settled = true;
-      if (err) rejectP(err);
-      else resolveP(buf ?? Buffer.alloc(0));
-    };
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let seen = false;
-    const bb = Busboy({
-      headers: req.headers as Record<string, string>,
-      limits: { fileSize: APP_BUNDLE_MAX_BYTES, files: 1 },
-      defParamCharset: "utf8",
-    });
-    bb.on("file", (_field, file) => {
-      if (seen) {
-        file.resume();
-        done(new ValidationError("INVALID_REQUEST", "仅接受单个文件字段"));
-        return;
-      }
-      seen = true;
-      file.on("data", (chunk: Buffer) => {
-        total += chunk.length;
-        if (total > APP_BUNDLE_MAX_BYTES) {
-          file.resume();
-          done(new PayloadTooLargeError("BUNDLE_TOO_LARGE", "bundle 超过 50MB 上限"));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      file.on("limit", () => {
-        file.resume();
-        done(new PayloadTooLargeError("BUNDLE_TOO_LARGE", "bundle 超过 50MB 上限"));
-      });
-      file.on("end", () => {
-        done(null, Buffer.concat(chunks));
-      });
-    });
-    bb.on("error", () => done(new ValidationError("INVALID_REQUEST", "multipart 解析失败")));
-    bb.on("finish", () => {
-      if (!seen) done(new ValidationError("INVALID_REQUEST", "缺少文件字段"));
-    });
-    req.pipe(bb);
-  });
-}
-
-function placeholderDir(deps: AppApiDeps, appId: string): string {
-  const dir = join(deps.appsDir, appId, "incoming", randomUUID());
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function renameDir(from: string, to: string): void {
-  try {
-    mkdirSync(join(to, ".."), { recursive: true });
-    // Windows 上 rename 跨卷会 EXDEV；appsDir 内部同卷，直接 rename
-    renameSync(from, to);
-  } catch (e) {
-    rmSync(from, { recursive: true, force: true });
-    throw e;
-  }
-}
+/** busboy multipart 上传通道已随 zip 上传移除（应用发布唯一入口=会话智能体） */
 
 function appView(app: PlatformApp): Record<string, unknown> {
   return {

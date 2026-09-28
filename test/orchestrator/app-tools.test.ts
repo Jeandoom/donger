@@ -28,7 +28,7 @@ function fixture(): { deps: AppToolsDeps; appsDir: string; runtimeDir: string } 
   const appsDir = tmp();
   const runtimeDir = tmp();
   return {
-    deps: { appStore, appsDir, runtimeDir, userId: "u1" },
+    deps: { appStore, appsDir, runtimeDir, userId: "u1", importRoots: [runtimeDir] },
     appsDir,
     runtimeDir,
   };
@@ -144,5 +144,78 @@ describe("donger-apps 工具（M2 开发链路）", () => {
     expect(
       (await tool(deps, "app_data_get").handler({ appId, key: "prefs" })).content[0]?.text,
     ).toBe('{"theme":"dark"}');
+  });
+
+  it("app_export → app_import 备份还原闭环（bundle+名称+运行数据）", async () => {
+    const { deps, runtimeDir } = fixture();
+    site(join(runtimeDir, "dist"), "备份目标");
+    const created = await tool(deps, "app_deploy").handler({ dir: "dist", name: "备份目标" });
+    const appId = /appId=(app_[\w-]+)/.exec(created.content[0]?.text ?? "")?.[1] ?? "";
+    await deps.appStore.putData({
+      appId,
+      key: "prefs",
+      valueJson: '{"threshold":5}',
+      sizeBytes: 16,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const exp = await tool(deps, "app_export").handler({ appId });
+    const expText = exp.content[0]?.text ?? "";
+    expect(expText).toContain("app-backups");
+    const zipPath = /备份完成：(.+\.zip)/.exec(expText)?.[1] ?? "";
+    expect(existsSync(zipPath)).toBe(true);
+
+    // 备份结构自检：meta kind + bundle 入口 + 数据
+    const stage = join(runtimeDir, ".tmp", "verify");
+    const { extractZipToDir } = await import("../../src/util/zip.js");
+    extractZipToDir(readFileSync(zipPath), stage);
+    const meta = JSON.parse(readFileSync(join(stage, "donger-app-backup.json"), "utf8")) as {
+      kind: string;
+      app: { name: string };
+    };
+    expect(meta.kind).toBe("donger-app-backup");
+    expect(meta.app.name).toBe("备份目标");
+    expect(existsSync(join(stage, "bundle", "index.html"))).toBe(true);
+    rmSync(stage, { recursive: true, force: true });
+
+    // 还原：相对路径引用工作区内 zip → 新应用 + 数据还原
+    const relZip = zipPath.replace(runtimeDir, "").replace(/^[\\/]/, "");
+    const imp = await tool(deps, "app_import").handler({ path: relZip });
+    const impText = imp.content[0]?.text ?? "";
+    expect(imp.isError).toBeFalsy();
+    const newId = /appId=(app_[\w-]+)/.exec(impText)?.[1] ?? "";
+    expect(newId).not.toBe(appId);
+    const restored = await deps.appStore.get(newId);
+    expect(restored?.name).toBe("备份目标");
+    expect(restored?.currentVersion).toBe(1);
+    expect((await deps.appStore.getData(newId, "prefs"))?.valueJson).toBe('{"threshold":5}');
+
+    // 名称覆盖参数
+    const imp2 = await tool(deps, "app_import").handler({ path: relZip, name: "还原改名" });
+    const newId2 = /appId=(app_[\w-]+)/.exec(imp2.content[0]?.text ?? "")?.[1] ?? "";
+    expect((await deps.appStore.get(newId2))?.name).toBe("还原改名");
+  });
+
+  it("app_import 拒绝非本平台备份与越界路径", async () => {
+    const { deps, runtimeDir } = fixture();
+    // 非 app_export 产出的普通 zip（无 donger-app-backup.json）
+    const { zipDirToBuffer } = await import("../../src/util/zip.js");
+    const plain = join(runtimeDir, "plain-src");
+    mkdirSync(plain, { recursive: true });
+    writeFileSync(join(plain, "index.html"), "<html>x</html>");
+    const zipBuf = zipDirToBuffer(plain);
+    const plainZip = join(runtimeDir, "plain.zip");
+    writeFileSync(plainZip, zipBuf);
+    const r1 = await tool(deps, "app_import").handler({ path: "plain.zip" });
+    expect(r1.isError).toBeTruthy();
+    expect(r1.content[0]?.text).toContain("不是本平台导出的应用备份");
+
+    // 越界路径（不在 importRoots 内）
+    const outside = tmp();
+    const outsideZip = join(outside, "backup.zip");
+    writeFileSync(outsideZip, zipBuf);
+    const r2 = await tool(deps, "app_import").handler({ path: outsideZip });
+    expect(r2.isError).toBeTruthy();
+    expect(r2.content[0]?.text).toContain("越界");
   });
 });
