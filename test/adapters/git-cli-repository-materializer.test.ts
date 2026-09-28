@@ -68,7 +68,9 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("changed");
   });
 
-  it("克隆覆盖源仓库全部分支（回归：单分支浅克隆致变更查询误报零变更）", { timeout: 30_000 }, async () => {
+  it("克隆覆盖源仓库全部分支（回归：单分支浅克隆致变更查询误报零变更）", {
+    timeout: 30_000,
+  }, async () => {
     const { root, repository } = sourceRepository();
     execFileSync("git", ["-C", root, "branch", "feature/AI-375"]);
     const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
