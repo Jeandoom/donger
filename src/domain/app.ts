@@ -45,6 +45,12 @@ export interface PlatformApp {
    * 缺省/NULL=内置应用管家兜底；指向已删除或越权 agent 时读时降级为兜底。
    */
   managerAgentId?: string;
+  /**
+   * 出网通道绑定（spec 2026-09-29-app-proxy-credential-binding §2.2）：
+   * 服务名（bundle 里的通道别名）→ type=http 连接器 id。不进 manifest——
+   * 通道是运行时配置，变更不触发重新发布。未绑定服务的代理请求 503。
+   */
+  proxyBindings?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +86,31 @@ export const APP_BUNDLE_MAX_ENTRIES = 2000;
 export const APP_NAME_MAX = 60;
 export const APP_DESC_MAX = 300;
 
+/** 出网通道服务名约束：URL 段安全（小写字母开头，小写字母数字连字符） */
+export const APP_PROXY_SERVICE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** 单应用通道绑定上限（防滥用） */
+export const APP_PROXY_MAX_BINDINGS = 8;
+
+/**
+ * 通道绑定入参校验（spec §2.2）：服务名合法 + 去重 + 数量上限；连接器 id 形态由
+ * 调用方（app-api）连库校验存在性/可见性/启用——域层只做纯结构校验。
+ */
+export const ProxyBindingsSchema = z
+  .record(z.string(), z.string())
+  .refine(
+    (b) => Object.keys(b).length <= APP_PROXY_MAX_BINDINGS,
+    `通道绑定最多 ${APP_PROXY_MAX_BINDINGS} 条`,
+  )
+  .refine(
+    (b) => Object.keys(b).every((s) => APP_PROXY_SERVICE_PATTERN.test(s)),
+    "服务名须为小写字母开头的小写字母/数字/连字符（≤32 字符）",
+  );
+export type ProxyBindings = Record<string, string>;
+
+export function parseProxyBindings(raw: unknown): ProxyBindings {
+  return ProxyBindingsSchema.parse(raw);
+}
+
 export const AppPatchInputSchema = z.object({
   name: z.string().trim().min(1).max(APP_NAME_MAX).optional(),
   description: z.string().trim().max(APP_DESC_MAX).optional(),
@@ -87,6 +118,8 @@ export const AppPatchInputSchema = z.object({
   manifest: AppManifestSchema.optional(),
   /** 管家改派：null=交还内置应用管家兜底；字符串=agent id（owner 闭包由调用方校验） */
   managerAgentId: z.string().min(1).nullable().optional(),
+  /** 出网通道绑定：整体替换语义（传 {} 清空）；连接器合法性由调用方连库校验 */
+  proxyBindings: ProxyBindingsSchema.optional(),
 });
 export type AppPatchInput = z.infer<typeof AppPatchInputSchema>;
 

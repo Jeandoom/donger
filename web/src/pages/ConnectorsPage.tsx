@@ -23,7 +23,7 @@ import {
 } from "../lib/connectors";
 import { fetchCredentialTemplates } from "../lib/skills";
 
-/** 表单状态：类型（MCP 服务 / HTTP 接口）+ 鉴权三档（无 / Bearer 引用凭证 / 自定义 KV） */
+/** 表单状态：类型（MCP 服务 / HTTP 接口）+ 鉴权三档（无 / Bearer 引用凭证 / 自定义 KV）+ 代理认证 */
 interface Draft {
   type: ConnectorType;
   name: string;
@@ -32,6 +32,9 @@ interface Draft {
   authMode: "none" | "bearer" | "custom";
   bearerCode: string;
   rows: Array<{ id: string; key: string; value: string }>;
+  /** 代理认证（仅 type=http 出网通道消费）：none=静态头；另两档需选凭证模板 */
+  proxyAuthStyle: "none" | "basic-crumb" | "token-login";
+  proxyAuthCredential: string;
   enabled: boolean;
 }
 
@@ -43,7 +46,27 @@ const emptyDraft: Draft = {
   authMode: "none",
   bearerCode: "",
   rows: [],
+  proxyAuthStyle: "none",
+  proxyAuthCredential: "",
   enabled: true,
+};
+
+/** 代理认证风格元数据：hint 说明所需凭证键（与后端 AUTH_STYLE_REQUIRED_KEYS 对齐） */
+const PROXY_AUTH_META: Record<
+  Draft["proxyAuthStyle"],
+  { label: string; hint: string; requiredKeys: string[] }
+> = {
+  none: { label: "静态头", hint: "仅用上方鉴权头发请求", requiredKeys: [] },
+  "basic-crumb": {
+    label: "Basic+Crumb",
+    hint: "Basic 认证 + POST 自动带 CRUMB（Jenkins 形态）；凭证需含键 username、apiToken",
+    requiredKeys: ["username", "apiToken"],
+  },
+  "token-login": {
+    label: "登录换令牌",
+    hint: "用凭证登录 <URL>/api/token/ 换 JWT；凭证需含键 username、password",
+    requiredKeys: ["username", "password"],
+  },
 };
 
 const TYPE_META: Record<ConnectorType, { label: string; hint: string; urlPlaceholder: string }> = {
@@ -67,6 +90,8 @@ function draftFromConnector(c: ConnectorDTO): Draft {
     name: c.name,
     description: c.description ?? "",
     url: c.url,
+    proxyAuthStyle: c.auth?.style ?? "none",
+    proxyAuthCredential: c.auth?.credential ?? "",
     enabled: c.enabled,
   };
   const entries = Object.entries(c.headers);
@@ -193,6 +218,17 @@ export function ConnectorsPage() {
         type: draft.type,
         url: draft.url.trim(),
         headers: headersOf(draft),
+        // 代理认证仅 http 型有意义；none 或未选凭证时不携带（全量替换=清除）
+        ...(draft.type === "http" &&
+        draft.proxyAuthStyle !== "none" &&
+        draft.proxyAuthCredential.trim()
+          ? {
+              auth: {
+                style: draft.proxyAuthStyle,
+                credential: draft.proxyAuthCredential.trim(),
+              },
+            }
+          : {}),
         enabled: draft.enabled,
         shareScope: editing?.shareScope ?? "private",
       };
@@ -247,6 +283,7 @@ export function ConnectorsPage() {
         type: c.type,
         url: c.url,
         headers: c.headers,
+        auth: c.auth ?? undefined,
         enabled: !c.enabled,
         shareScope: c.shareScope,
       });
@@ -270,6 +307,7 @@ export function ConnectorsPage() {
         type: c.type,
         url: c.url,
         headers: c.headers,
+        auth: c.auth ?? undefined,
         enabled: c.enabled,
         shareScope: toScope,
       });
@@ -310,6 +348,12 @@ export function ConnectorsPage() {
         <div className="truncate font-mono text-xs text-muted-foreground" title={c.url}>
           {c.url}
         </div>
+        {c.type === "http" && c.auth && c.auth.style !== "none" ? (
+          <div className="text-xs text-muted-foreground">
+            代理认证：
+            {PROXY_AUTH_META[c.auth.style]?.label ?? c.auth.style} · 凭证 {c.auth.credential}
+          </div>
+        ) : null}
         {c.description && <div className="text-xs text-muted-foreground">{c.description}</div>}
         <div className="flex items-center gap-3">
           <span className="flex-1 text-xs text-muted-foreground">
@@ -613,6 +657,41 @@ export function ConnectorsPage() {
                 <Plus className="h-3.5 w-3.5" />
                 添加头部
               </Button>
+            </div>
+          )}
+          {draft.type === "http" && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[13px] font-semibold">代理认证（应用出网通道用）</span>
+              <Segmented
+                name="代理认证"
+                options={[
+                  { value: "none", label: PROXY_AUTH_META.none.label },
+                  { value: "basic-crumb", label: PROXY_AUTH_META["basic-crumb"].label },
+                  { value: "token-login", label: PROXY_AUTH_META["token-login"].label },
+                ]}
+                value={draft.proxyAuthStyle}
+                onChange={(m) => setDraft((d) => ({ ...d, proxyAuthStyle: m }))}
+              />
+              <p className="text-xs text-muted-foreground">
+                {PROXY_AUTH_META[draft.proxyAuthStyle].hint}
+              </p>
+              {draft.proxyAuthStyle !== "none" && (
+                <Field label="凭证模板">
+                  <Select
+                    value={draft.proxyAuthCredential}
+                    onChange={(e) =>
+                      setDraft((d) => ({ ...d, proxyAuthCredential: e.target.value }))
+                    }
+                  >
+                    <option value="">选择凭证模板…</option>
+                    {credentialOptions.map((t) => (
+                      <option key={t.code} value={t.code}>
+                        {t.name}（{t.code}）
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
             </div>
           )}
         </DialogShell>

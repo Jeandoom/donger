@@ -25,6 +25,32 @@ export function isHttpUrl(u: string): boolean {
   }
 }
 
+/**
+ * 连接器认证风格（应用受控代理面消费；spec 2026-09-29-app-proxy-credential-binding §2.1）：
+ * - none（缺省）：headers 静态头 + 凭证引用替换即最终请求头；
+ * - basic-crumb：凭证键 username/apiToken 组 Basic，POST 自动带 CRUMB、403 重取重试一次（Jenkins 形态）；
+ * - token-login：凭证键 username/password POST <baseUrl>/api/token/ 换 JWT，401 重登一次（Ops 形态）。
+ * 凭证键直接从凭证集解密取用，不经 headers 字符串编码。仅代理面消费，MCP 注入面忽略。
+ */
+export const ConnectorAuthStyleSchema = z.enum(["none", "basic-crumb", "token-login"]);
+export type ConnectorAuthStyle = z.infer<typeof ConnectorAuthStyleSchema>;
+
+// 与凭证域 CREDENTIAL_CODE_PATTERN 同形，但避免 domain 间反向依赖，这里独立声明
+const CREDENTIAL_CODE_LIKE = /^[a-z0-9][a-z0-9-_]{0,63}$/;
+
+/** 各认证风格要求的凭证键（适配器缺键时报「凭证 CODE 缺键 KEY」，不静默） */
+export const AUTH_STYLE_REQUIRED_KEYS: Record<ConnectorAuthStyle, string[]> = {
+  none: [],
+  "basic-crumb": ["username", "apiToken"],
+  "token-login": ["username", "password"],
+};
+
+export const ConnectorAuthSchema = z.object({
+  style: ConnectorAuthStyleSchema.default("none"),
+  credential: z.string().regex(CREDENTIAL_CODE_LIKE, "credential 须为凭证 code"),
+});
+export type ConnectorAuth = z.infer<typeof ConnectorAuthSchema>;
+
 export const ConnectorSchema = z.object({
   id: z.string(),
   name: z.string().min(1).max(50),
@@ -37,6 +63,8 @@ export const ConnectorSchema = z.object({
    * （引用语法本身不含密钥、明文可读；运行时按访问者经凭证集解析替换）
    */
   headers: z.record(z.string(), z.string()).default({}),
+  /** 流程性认证声明（缺省/缺失=none 纯静态头）；仅应用受控代理面消费 */
+  auth: ConnectorAuthSchema.optional(),
   /** 停用后运行时跳过该连接器（不炸引用它的 agent） */
   enabled: z.boolean().default(true),
   shareScope: z.enum(["private", "global"]).default("private"),
@@ -74,5 +102,12 @@ export function collectCredentialRefs(headers: Record<string, string>): string[]
       codes.add(m[1] as string);
     }
   }
+  return [...codes];
+}
+
+/** 连接器解析所需的全部凭证 code（headers 引用 + auth.credential，去重） */
+export function collectConnectorCredentialCodes(c: Pick<Connector, "headers" | "auth">): string[] {
+  const codes = new Set(collectCredentialRefs(c.headers));
+  if (c.auth?.credential) codes.add(c.auth.credential);
   return [...codes];
 }

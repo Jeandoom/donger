@@ -7,6 +7,15 @@ import { PageHeader } from "../components/ui/page-header";
 import { apiFetchRetry } from "../lib/auth";
 import { BUILTIN_APP_MANAGER_ID } from "../lib/builtinAgents";
 
+export interface ProxyChannelView {
+  service: string;
+  connectorId: string;
+  connectorName: string | null;
+  authStyle: "none" | "basic-crumb" | "token-login" | null;
+  status: "ready" | "credential-missing" | "unavailable";
+  missingCredentials: string[];
+}
+
 export interface PlatformAppView {
   id: string;
   name: string;
@@ -19,6 +28,7 @@ export interface PlatformAppView {
   runPath: string | null;
   managerAgentId: string | null;
   steward: { agentId: string; name: string } | null;
+  proxyChannels?: ProxyChannelView[];
 }
 
 export function AppsPage() {

@@ -4,6 +4,9 @@ import { apiFetch } from "./auth";
 
 export type ConnectorType = "mcp" | "http";
 
+/** 代理认证风格（应用出网通道消费；none=纯静态头） */
+export type ConnectorAuthStyle = "none" | "basic-crumb" | "token-login";
+
 export interface ConnectorDTO {
   id: string;
   name: string;
@@ -12,6 +15,8 @@ export interface ConnectorDTO {
   transport: "http";
   url: string;
   headers: Record<string, string>;
+  /** 代理认证声明（缺省/null=none）；credential 为凭证模板 code */
+  auth?: { style: ConnectorAuthStyle; credential: string } | null;
   enabled: boolean;
   shareScope: "private" | "global";
   ownerId: string;
@@ -29,6 +34,8 @@ export interface ConnectorInput {
   transport?: "http";
   url: string;
   headers: Record<string, string>;
+  /** 代理认证声明；缺省=清除（全量替换语义） */
+  auth?: { style: ConnectorAuthStyle; credential: string };
   enabled: boolean;
   shareScope: "private" | "global";
 }

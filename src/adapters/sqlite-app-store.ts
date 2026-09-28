@@ -6,6 +6,7 @@ import {
   type AppVersionMeta,
   type PlatformApp,
   parseAppManifest,
+  parseProxyBindings,
 } from "../domain/app.js";
 import type {
   AppDataEntry,
@@ -24,6 +25,7 @@ interface AppRow {
   manifestJson: string;
   currentVersion: number | null;
   managerAgentId: string | null;
+  proxyJson: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -51,6 +53,12 @@ export class SqliteAppStore implements AppStore {
       this.db.exec(`ALTER TABLE apps ADD COLUMN managerAgentId TEXT`);
     } catch {
       // 列已存在（新库/已迁移）——静默跳过
+    }
+    // 出网通道绑定（spec 2026-09-29-app-proxy-credential-binding §2.2）存量库加列
+    try {
+      this.db.exec(`ALTER TABLE apps ADD COLUMN proxyJson TEXT`);
+    } catch {
+      // 列已存在——静默跳过
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS app_versions (
@@ -138,7 +146,10 @@ export class SqliteAppStore implements AppStore {
   async update(
     appId: string,
     patch: Partial<
-      Pick<PlatformApp, "name" | "description" | "icon" | "manifest" | "managerAgentId">
+      Pick<
+        PlatformApp,
+        "name" | "description" | "icon" | "manifest" | "managerAgentId" | "proxyBindings"
+      >
     >,
   ): Promise<PlatformApp | undefined> {
     const app = await this.get(appId);
@@ -149,11 +160,15 @@ export class SqliteAppStore implements AppStore {
       icon: patch.icon === undefined ? app.icon : (patch.icon ?? undefined),
       manifest: patch.manifest ?? app.manifest,
       managerAgentId:
-        patch.managerAgentId === undefined ? app.managerAgentId : (patch.managerAgentId ?? undefined),
+        patch.managerAgentId === undefined
+          ? app.managerAgentId
+          : (patch.managerAgentId ?? undefined),
+      // 整体替换语义：patch 里有 proxyBindings 键即全量覆盖（含 {} 清空）
+      proxyBindings: patch.proxyBindings === undefined ? app.proxyBindings : patch.proxyBindings,
     };
     this.db
       .prepare(
-        `UPDATE apps SET name = ?, description = ?, icon = ?, manifestJson = ?, managerAgentId = ?, updatedAt = ? WHERE id = ?`,
+        `UPDATE apps SET name = ?, description = ?, icon = ?, manifestJson = ?, managerAgentId = ?, proxyJson = ?, updatedAt = ? WHERE id = ?`,
       )
       .run(
         next.name,
@@ -161,6 +176,7 @@ export class SqliteAppStore implements AppStore {
         next.icon ?? null,
         JSON.stringify(next.manifest),
         next.managerAgentId ?? null,
+        next.proxyBindings ? JSON.stringify(next.proxyBindings) : null,
         new Date().toISOString(),
         appId,
       );
@@ -322,6 +338,9 @@ export class SqliteAppStore implements AppStore {
       manifest: parseAppManifest(JSON.parse(row.manifestJson)),
       currentVersion: row.currentVersion ?? null,
       managerAgentId: row.managerAgentId ?? undefined,
+      proxyBindings: row.proxyJson
+        ? (parseProxyBindings(JSON.parse(row.proxyJson)) as Record<string, string>)
+        : undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

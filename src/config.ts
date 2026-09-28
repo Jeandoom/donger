@@ -102,15 +102,8 @@ const EnvSchema = z.object({
     .transform((v) => v === "true"),
   // 触发事件队列单 loop pending 上限（超出落 dropped+告警；防 DoS 显式边界）
   TRIGGER_QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(10_000).default(200),
-  // ==== 外部运维服务凭证（app-proxy 受控代理注入用；某 service 未配置=该面代理返回 503）====
-  JH_BASE_URL: z.string().optional().default("https://jihulab.com"),
-  JH_TOKEN: z.string().optional().default(""),
-  JENKINS_URL: z.string().optional().default(""),
-  JENKINS_USERNAME: z.string().optional().default(""),
-  JENKINS_API_TOKEN: z.string().optional().default(""),
-  OPS_BASE_URL: z.string().optional().default("https://ops.maycur.com"),
-  OPS_USERNAME: z.string().optional().default(""),
-  OPS_PASSWORD: z.string().optional().default(""),
+  // app-proxy 外部服务凭证已迁出 .env（2026-09-29-app-proxy-credential-binding）：
+  // 应用属主在「凭证」页自填、经 type=http 连接器绑定到应用通道；.env 不再承载任何代理凭证。
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */
@@ -207,15 +200,6 @@ export interface AppConfig {
   turnStallTimeoutMs: number;
   /** 会话空闲滚动阈值（小时；0=关闭） */
   sessionIdleRollHours: number;
-  /** 外部运维服务凭证（app-proxy 受控代理用；仅配置齐全的 service 出现） */
-  appProxy: AppProxyServicesConfig;
-}
-
-/** app-proxy 可代理的外部服务（凭证后端持有，前端零凭证） */
-export interface AppProxyServicesConfig {
-  jihulab?: { baseUrl: string; token: string };
-  jenkins?: { baseUrl: string; username: string; apiToken: string };
-  ops?: { baseUrl: string; username: string; password: string };
 }
 
 /**
@@ -272,7 +256,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,
-    appProxy: parseAppProxyConfig(e),
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {
@@ -289,29 +272,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     };
   }
   return cfg;
-}
-
-/** 解析 app-proxy 各 service 凭证：三组字段齐全才启用对应 service（部分缺失=禁用该面） */
-function parseAppProxyConfig(e: z.infer<typeof EnvSchema>): AppProxyServicesConfig {
-  const out: AppProxyServicesConfig = {};
-  if (e.JH_TOKEN.trim()) {
-    out.jihulab = { baseUrl: e.JH_BASE_URL.replace(/\/$/, ""), token: e.JH_TOKEN.trim() };
-  }
-  if (e.JENKINS_URL.trim() && e.JENKINS_USERNAME.trim() && e.JENKINS_API_TOKEN.trim()) {
-    out.jenkins = {
-      baseUrl: e.JENKINS_URL.replace(/\/$/, ""),
-      username: e.JENKINS_USERNAME.trim(),
-      apiToken: e.JENKINS_API_TOKEN.trim(),
-    };
-  }
-  if (e.OPS_USERNAME.trim() && e.OPS_PASSWORD.trim()) {
-    out.ops = {
-      baseUrl: e.OPS_BASE_URL.replace(/\/$/, ""),
-      username: e.OPS_USERNAME.trim(),
-      password: e.OPS_PASSWORD.trim(),
-    };
-  }
-  return out;
 }
 
 function parseHttpsConfig(
