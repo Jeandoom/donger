@@ -312,7 +312,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               }
               composerLeading={
                 permissionModePicker || modelPicker ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  /* min-w-0 允许整簇收缩，select 逐级让宽；shrink-0 会溢出压到发送按钮底下 */
+                  <div className="flex min-w-0 items-center gap-1.5">
                     {permissionModePicker}
                     {modelPicker}
                   </div>

@@ -60,9 +60,13 @@ export function KbDetailPage() {
 
   return (
     <div className="mx-auto flex max-w-6xl flex-1 flex-col gap-4 overflow-y-auto p-7">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex min-w-0 items-center gap-2">
-          <Link to="/kb" className="text-muted-foreground hover:text-foreground" title="返回">
+          <Link
+            to="/kb"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            title="返回"
+          >
             <ArrowLeft size={16} />
           </Link>
           <h1 className="truncate text-lg font-semibold">{lib.name}</h1>
@@ -73,6 +77,7 @@ export function KbDetailPage() {
           ) : null}
         </div>
         <Segmented
+          className="ml-auto shrink-0"
           options={[
             { value: "content", label: "内容" },
             ...(manage ? [{ value: "settings" as const, label: "配置" }] : []),
@@ -128,8 +133,9 @@ function ContentTab({ kbId }: { kbId: string }) {
   if (!tree) return <p className="text-sm text-muted-foreground">加载中…</p>;
 
   return (
-    <div className="flex min-h-0 flex-1 gap-4">
-      <Card className="w-64 shrink-0 overflow-y-auto p-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
+      {/* 移动端纵向堆叠：目录限高内部滚动，预览占主体随页滚动；md 起恢复双栏 */}
+      <Card className="max-h-56 w-full shrink-0 overflow-y-auto p-3 md:max-h-none md:w-64">
         <p className="mb-2 text-xs font-semibold text-muted-foreground">
           目录（{tree.total}
           {tree.truncated ? "，已截断" : ""}）

@@ -28,7 +28,7 @@ export function MobileConversationSheet(props: MobileConversationSheetProps) {
         ref={triggerRef}
         type="button"
         aria-label="打开历史会话"
-        className="inline-flex min-h-11 items-center gap-2 px-2 lg:hidden"
+        className="inline-flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap px-2 lg:hidden"
         onClick={() => setOpen(true)}
       >
         <MessagesSquare size={18} />
@@ -58,7 +58,7 @@ export function MobileConversationSheet(props: MobileConversationSheetProps) {
             </button>
             {props.sidebar ? (
               <AgentConversationSidebar
-                className="h-full w-full border-r-0"
+                className="h-full w-full border-r-0 [&>div:first-child]:pr-12"
                 {...props.sidebar}
                 onItemSelected={() => setOpen(false)}
                 onNewConversation={(agentId) => {

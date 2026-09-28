@@ -110,62 +110,65 @@ export function LoopsPage() {
 
       {!loading ? (
         <Card className="overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
-                <th className="px-4 py-2.5 font-medium">名称</th>
-                <th className="px-4 py-2.5 font-medium">Workflow</th>
-                <th className="px-4 py-2.5 font-medium">启用</th>
-                <th className="px-4 py-2.5 font-medium">上次运行</th>
-                <th className="px-4 py-2.5 font-medium">标签</th>
-                <th className="px-4 py-2.5 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loops.map((l) => (
-                <tr key={l.id} className="border-t border-border">
-                  <td className="px-4 py-3">
-                    <Link to={`/loops/${l.id}`} className="font-medium hover:underline">
-                      {l.name}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {wfMap[l.workflowId] ?? l.workflowId}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Switch checked={l.enabled} onCheckedChange={(v) => void toggle(l, v)} />
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {l.lastRunAt ? new Date(l.lastRunAt).toLocaleString() : "—"}
-                    {l.lastError && (
-                      <Badge tone="danger" className="ml-1.5" title={l.lastError}>
-                        出错
-                      </Badge>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {(l.tags ?? []).map((t) => (
-                        <Badge key={t}>{t}</Badge>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Link to={`/loops/${l.id}`} className="mr-2 text-xs hover:underline">
-                      详情
-                    </Link>
-                    <button
-                      type="button"
-                      onClick={() => setPendingDelete(l)}
-                      className="text-xs text-destructive hover:underline"
-                    >
-                      删除
-                    </button>
-                  </td>
+          {/* 窄屏横向滚动，避免 6 列表格挤压成逐字竖排 */}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+                  <th className="whitespace-nowrap px-4 py-2.5 font-medium">名称</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-medium">Workflow</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-medium">启用</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-medium">上次运行</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-medium">标签</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-medium">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {loops.map((l) => (
+                  <tr key={l.id} className="border-t border-border">
+                    <td className="px-4 py-3">
+                      <Link to={`/loops/${l.id}`} className="font-medium hover:underline">
+                        {l.name}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {wfMap[l.workflowId] ?? l.workflowId}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Switch checked={l.enabled} onCheckedChange={(v) => void toggle(l, v)} />
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                      {l.lastRunAt ? new Date(l.lastRunAt).toLocaleString() : "—"}
+                      {l.lastError && (
+                        <Badge tone="danger" className="ml-1.5" title={l.lastError}>
+                          出错
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {(l.tags ?? []).map((t) => (
+                          <Badge key={t}>{t}</Badge>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Link to={`/loops/${l.id}`} className="mr-2 text-xs hover:underline">
+                        详情
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => setPendingDelete(l)}
+                        className="text-xs text-destructive hover:underline"
+                      >
+                        删除
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {!loading && !loops.length && !loadError ? (
             <div className="p-10 text-center text-sm text-muted-foreground">
               暂无 LOOP，点击右上角「新建 LOOP」

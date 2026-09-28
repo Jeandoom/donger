@@ -320,16 +320,26 @@ export function AgentEditorPage() {
             {duplicating ? "复制中…" : "复制"}
           </Button>
         ) : null}
-        <Button variant="secondary" size="sm" onClick={() => attempt(() => navigate("/agents"))}>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="hidden sm:inline-flex"
+          onClick={() => attempt(() => navigate("/agents"))}
+        >
           取消
         </Button>
-        <Button size="sm" onClick={() => void save()} disabled={saving || !form.name}>
+        <Button
+          size="sm"
+          className="hidden sm:inline-flex"
+          onClick={() => void save()}
+          disabled={saving || !form.name}
+        >
           {saving ? "保存中…" : "保存"}
         </Button>
       </header>
 
       {/* 移动端：横向分区 chips（sticky 于顶栏下） */}
-      <nav className="sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur md:hidden">
+      <nav className="no-scrollbar sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur md:hidden">
         {AGENT_EDITOR_SECTIONS.map((s) => {
           const hidden = s.id === "agent-sec-integration" && isNew;
           if (hidden) return null;

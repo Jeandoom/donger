@@ -708,11 +708,12 @@ export function AuthorizationPage() {
         </div>
       </header>
 
-      <div className="flex flex-1 items-start">
+      {/* 移动端纵向排布：分区 chips 独占一行横向滚动，主内容全宽在下；lg 起恢复横排双栏 */}
+      <div className="flex flex-1 flex-col lg:flex-row lg:items-start">
         {/* 移动端：横向分区 chips（sticky 于顶栏下） */}
         <nav
           aria-label="授权配置分区"
-          className="sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur lg:hidden"
+          className="no-scrollbar sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur lg:hidden"
         >
           {allowed.map((s) => (
             <button

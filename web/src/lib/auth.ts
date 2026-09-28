@@ -44,13 +44,24 @@ export function getUserId(): string | null {
 /** 带 JWT 的 fetch 封装 */
 export async function apiFetch(url: string, opts?: RequestInit): Promise<Response> {
   const token = getToken();
-  return fetch(url, {
+  const res = await fetch(url, {
     ...opts,
     headers: {
       ...opts?.headers,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
+  // 登录态失效（过期/被吊销）：清脏 token 回登录页，避免各页滞留「HTTP 401」裸错误。
+  // 公开页豁免防回环（登录页见存量 token 会重定向回 /，不清 token 会造成死循环）。
+  if (res.status === 401) {
+    const p = window.location.pathname;
+    const onPublicPage = ["/login", "/register", "/setup", "/share/"].some((x) => p.startsWith(x));
+    if (!onPublicPage) {
+      clearToken();
+      window.location.assign("/login");
+    }
+  }
+  return res;
 }
 
 /**
