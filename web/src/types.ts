@@ -46,6 +46,8 @@ export type SSEEvent =
       pendingSince: string;
       canceledAt: string;
     }
+  /** 首条用户消息后后端异步自动改名：侧栏/头部标题实时刷新 */
+  | { type: "conversation_title"; conversationId: string; title: string }
   | { type: "error"; error: string };
 
 /** 并发淘汰通知（eviction_notice 事件的前端形态，弹窗展示用） */

@@ -43,6 +43,7 @@ import {
 } from "../domain/connector.js";
 import { substituteCredentialRefs } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
+import { DEFAULT_CONVERSATION_TITLE } from "../domain/conversation-title.js";
 import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
@@ -405,6 +406,7 @@ type SSEEvent =
       pendingSince: string;
       canceledAt: string;
     }
+  | { type: "conversation_title"; conversationId: string; title: string }
   | { type: "error"; error: string };
 
 /** 向 SSE 客户端写事件的回调 */
@@ -873,6 +875,15 @@ export class WebChannel implements Channel {
   /** 向会话的 SSE 客户端推送完成通知 */
   pushResult(conversationId: string, subtype: "success" | "error", text: string): void {
     this.broadcastToConversation(conversationId, { type: "result", subtype, text });
+  }
+
+  /** 会话标题更新广播：首条用户消息后异步自动改名，打开该会话的客户端侧栏实时刷新 */
+  pushConversationTitle(conversationId: string, title: string): void {
+    this.broadcastToConversation(conversationId, {
+      type: "conversation_title",
+      conversationId,
+      title,
+    });
   }
 
   // （pushApprovalCard 独立推送路径已移除：无 approvalId 的卡片不可决议；
@@ -3601,11 +3612,15 @@ export class WebChannel implements Channel {
         ? await this.deps.conversationStore?.createWithAgent(
             userId,
             channelId ?? "web",
-            "新对话",
+            DEFAULT_CONVERSATION_TITLE,
             agentId,
             kbId ? { kbId } : undefined,
           )
-        : await this.deps.conversationStore?.create(userId, channelId ?? "web", "新对话");
+        : await this.deps.conversationStore?.create(
+            userId,
+            channelId ?? "web",
+            DEFAULT_CONVERSATION_TITLE,
+          );
       res.writeHead(201);
       res.end(JSON.stringify(conv));
       return;
@@ -5098,7 +5113,12 @@ export class WebChannel implements Channel {
       const a = await this.agentStore?.get(sid);
       const conv =
         existing ??
-        (await this.deps.conversationStore?.createWithAgent(me, "web", a?.name ?? "新对话", sid));
+        (await this.deps.conversationStore?.createWithAgent(
+          me,
+          "web",
+          a?.name ?? DEFAULT_CONVERSATION_TITLE,
+          sid,
+        ));
       return this.json(res, { conversation: conv });
     }
 

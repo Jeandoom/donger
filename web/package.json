@@ -19,6 +19,8 @@
     "@dnd-kit/utilities": "^3.2.2",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "docx-preview": "^0.4.1",
+    "jszip": "^3.10.2",
     "lucide-react": "^0.439.0",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.3.1",

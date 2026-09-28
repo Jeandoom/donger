@@ -209,6 +209,18 @@ export function useWebChat() {
       }
     });
 
+    // 首条用户消息后后端异步自动改名：侧栏/头部标题实时刷新
+    eventSource.addEventListener("conversation_title", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "conversation_title") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("result", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;

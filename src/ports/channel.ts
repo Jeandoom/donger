@@ -64,6 +64,8 @@ export interface Channel {
   ): void;
   /** 推送完成通知（SSE 版本） */
   pushResult?(conversationId: string, subtype: "success" | "error", text: string): void;
+  /** 推送会话标题更新（SSE 版本；首条用户消息后异步自动改名，打开该会话的客户端侧栏实时刷新） */
+  pushConversationTitle?(conversationId: string, title: string): void;
   /** 推送审批卡片（SSE 版本） */
   pushApprovalCard?(
     conversationId: string,

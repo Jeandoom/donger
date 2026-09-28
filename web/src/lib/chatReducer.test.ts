@@ -301,4 +301,21 @@ describe("chatReducer 会话权限模式乐观更新", () => {
     expect(state.activeConversationId).toBe("real-1");
     expect(state.conversations[0]?.id).toBe("real-1");
   });
+
+  it("conversation_title SSE 事件实时更新对应会话标题（首条消息异步自动命名）", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "set_conversations",
+      conversations: [
+        { ...baseConversation, id: "c1", title: "新对话" },
+        { ...baseConversation, id: "c2", title: "新对话" },
+      ],
+    });
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "conversation_title", conversationId: "c2", title: "帮我整理物料清单" },
+    });
+    expect(state.conversations.find((c) => c.id === "c1")?.title).toBe("新对话");
+    expect(state.conversations.find((c) => c.id === "c2")?.title).toBe("帮我整理物料清单");
+  });
 });
