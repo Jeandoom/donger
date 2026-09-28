@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { bashKbWriteGuard } from "../domain/bash-kb-guard.js";
 import { matchesShellGit } from "../domain/git-shell-guard.js";
@@ -93,7 +94,8 @@ export function runStaticToolGuards({
     if (probe) {
       const hit = matchSensitiveRead(probe, opts.cwd, opts.sensitiveReadPolicy);
       if (hit) {
-        return { message: sensitiveReadDenyMessage(hit) };
+        // 存在性区分报错语：不存在的路径报「路径不存在」而非「保护路径」（2026-09-28）
+        return { message: sensitiveReadDenyMessage(hit, existsSync(hit.resolved)) };
       }
     }
   }

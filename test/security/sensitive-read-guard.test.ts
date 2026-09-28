@@ -91,10 +91,33 @@ describe("matchSensitiveRead", () => {
     expect(matchSensitiveRead("D:\\srv\\data\\donger.db", undefined, policy(deny))).toBeDefined();
   });
 
+  it("命中结果带 resolved 绝对路径（供调用方判存在性）", () => {
+    const hit = matchSensitiveRead(
+      "cat ..\\..\\..\\srv\\data\\donger.db",
+      "D:\\srv\\data\\users\\u1\\workspace",
+      policy(deny),
+    );
+    expect(hit?.resolved).toBe("D:\\srv\\data\\srv\\data\\donger.db");
+  });
+
   it("拒绝消息含触发 token 与根路径", () => {
     const hit = matchSensitiveRead("cat D:\\srv\\data\\donger.db", "C:\\w", policy(deny));
     expect(hit).toBeDefined();
     const msg = sensitiveReadDenyMessage(hit!);
     expect(msg).toContain("donger.db");
+  });
+
+  it("不存在的路径报「路径不存在」而非「保护路径」（2026-09-28 生产误导修复）", () => {
+    const hit = matchSensitiveRead(
+      "cat D:\\srv\\data\\users\\sessions\\x.png",
+      "C:\\w",
+      policy(deny),
+    );
+    if (!hit) throw new Error("应命中");
+    const missing = sensitiveReadDenyMessage(hit, false);
+    expect(missing).toContain("路径不存在");
+    expect(missing).not.toContain("保护路径");
+    const existing = sensitiveReadDenyMessage(hit, true);
+    expect(existing).toContain("保护路径");
   });
 });

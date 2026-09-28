@@ -63,6 +63,7 @@ import { BUILTIN_APP_MANAGER_AGENT, BUILTIN_APP_MANAGER_ID } from "./app-manager
 import { createAppToolsServer } from "./app-tools.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
+import { materializeMessageFiles } from "./attachment-materializer.js";
 import { createAuditToolsServer } from "./audit-tools.js";
 import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent.js";
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
@@ -1427,6 +1428,12 @@ export class Orchestrator {
         agent ? agent.id : conversation.id,
         "workspace",
       );
+      // 附件物化（2026-09-28 方案A）：agent 会话 cwd 与附件目录分离，`..` 相对路径
+      // 模型照抄曾错层致 Read 失败；先把本轮引用的附件复制进 cwd 下再注入短路径。
+      // 物化失败静默回退原路径，不阻断发消息。
+      const injectedFiles = msg.files?.length
+        ? materializeMessageFiles(msg.files, attachmentCwd, conversation.id)
+        : msg.files;
       task = {
         id: crypto.randomUUID(),
         channelId: msg.channelId,
@@ -1434,7 +1441,7 @@ export class Orchestrator {
         requesterId: msg.requesterId,
         prompt: appendDefaultSkill(
           appendMentions(
-            appendMessageFiles(msg.text, msg.files, attachmentCwd),
+            appendMessageFiles(msg.text, injectedFiles, attachmentCwd),
             msg.mentions,
             attachmentCwd,
           ),
