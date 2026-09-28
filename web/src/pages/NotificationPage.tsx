@@ -128,7 +128,8 @@ export function NotificationPage() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+    // Shell 根是 h-[100dvh] overflow-hidden：页面必须自带滚动容器，否则内容溢出即被裁剪且无法滑动
+    <div className="mx-auto flex h-full w-full max-w-3xl flex-col gap-4 overflow-y-auto p-4">
       <PageHeader
         title="通知"
         description="站内信中心与订阅偏好：任务结果、循环运行、系统提醒、反馈回复统一在此触达"
