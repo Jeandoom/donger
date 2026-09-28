@@ -1,6 +1,8 @@
 // 前端类型定义（SSE+HTTP 版本）
 // 与 src/adapters/web-channel.ts 的 SSEEvent 保持一致
 
+import type { LlmSdkType } from "./lib/llmSdk";
+
 /** SSE 事件类型（与 src/adapters/web-channel.ts 的 SSEEvent 保持一致） */
 export type SSEEvent =
   | { type: "text"; text: string }
@@ -156,6 +158,8 @@ export interface ConversationSummary {
   permissionMode?: AgentPermissionMode;
   /** 生效权限模式（后端按 会话覆盖 ?? 智能体默认 ?? 变更前问询 计算） */
   effectivePermissionMode?: AgentPermissionMode;
+  /** 最近一次运行所用执行引擎（agent sdk 标识）；空=未运行过 */
+  llmSdkType?: LlmSdkType;
   createdAt: string;
   updatedAt: string;
   archived: boolean;

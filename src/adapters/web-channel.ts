@@ -3144,6 +3144,7 @@ export class WebChannel implements Channel {
         providers,
         presets: this.agentMeta?.presets ?? [],
         systemDefaultModel: this.deps.llm?.model ?? "",
+        systemDefaultSdkType: this.deps.llm?.sdkType ?? "anthropic",
       });
       return this.json(res, {
         options,
@@ -3659,6 +3660,7 @@ export class WebChannel implements Channel {
             userId: conv?.userId ?? "",
             channelId: conv?.channelId ?? "",
             createdAt: conv?.createdAt ?? "",
+            llmSdkType: conv?.llmSdkType,
           };
         }),
       );

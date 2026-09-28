@@ -3,9 +3,9 @@ import { resolveLlmOptions } from "../../src/domain/llm-selection.js";
 import { isModelRef, parseModelRef } from "../../src/domain/model-ref.js";
 
 const PROVIDERS = [
-  { id: "p1", name: "我的智谱", models: ["glm-4.6", "glm-4.5"] },
-  { id: "p2", name: "DS", models: ["deepseek-chat"] },
-];
+  { id: "p1", name: "我的智谱", models: ["glm-4.6", "glm-4.5"], sdkType: "anthropic" },
+  { id: "p2", name: "DS", models: ["deepseek-chat"], sdkType: "openai" },
+] as const;
 const PRESETS = [{ id: "0", name: "GLM", model: "glm-4.6" }];
 const BASE = {
   providers: PROVIDERS,
@@ -65,5 +65,19 @@ describe("resolveLlmOptions", () => {
   it("provider 清单为空时仍输出 system + presets", () => {
     const options = resolveLlmOptions({ providers: [], presets: PRESETS, systemDefaultModel: "m" });
     expect(options.map((o) => o.ref)).toEqual(["system", "preset:0"]);
+  });
+
+  it("每项携带执行引擎：system 缺省 anthropic，preset 锁 anthropic，provider 随配置", () => {
+    const options = resolveLlmOptions({
+      ...BASE,
+      systemDefaultSdkType: "zcode",
+    });
+    expect(options.map((o) => [o.ref, o.sdkType])).toEqual([
+      ["system", "zcode"],
+      ["preset:0", "anthropic"],
+      ["provider:p1:glm-4.6", "anthropic"],
+      ["provider:p1:glm-4.5", "anthropic"],
+      ["provider:p2:deepseek-chat", "openai"],
+    ]);
   });
 });

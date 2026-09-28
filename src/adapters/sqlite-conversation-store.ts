@@ -1,5 +1,6 @@
 import type { Database } from "better-sqlite3";
 import type { Conversation } from "../domain/conversation.js";
+import { LLM_SDK_TYPES, type LlmSdkType } from "../domain/llm-platforms.js";
 import { AgentPermissionModeSchema } from "../domain/permission-mode.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 
@@ -184,8 +185,9 @@ export class SqliteConversationStore implements ConversationStore {
       ...(typeof row.kbId === "string" && row.kbId !== "" ? { kbId: row.kbId } : {}),
       permissionMode,
       lastModelRef: (row.lastModelRef as string) || undefined,
-      llmSdkType:
-        row.llmSdkType === "openai" || row.llmSdkType === "anthropic" ? row.llmSdkType : undefined,
+      llmSdkType: LLM_SDK_TYPES.includes(row.llmSdkType as LlmSdkType)
+        ? (row.llmSdkType as LlmSdkType)
+        : undefined,
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,
       archived: row.archived === 1,

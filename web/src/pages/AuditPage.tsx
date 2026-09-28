@@ -33,6 +33,7 @@ import {
   type KbRevisionAuditDTO,
 } from "../lib/audit";
 import { fetchMe } from "../lib/auth";
+import { llmSdkLabel, llmSdkTone } from "../lib/llmSdk";
 import { cn } from "../lib/utils";
 
 /** 系统事件类型 → 展示标签（新事件类型在此登记） */
@@ -344,9 +345,19 @@ export function AuditPage() {
                       >
                         {c.title || "(无标题)"}
                       </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        {c.turnCount} prompts · {formatTokens(c.totalTokens)} tok ·{" "}
-                        {formatDurationMs(c.totalDurationMs)}
+                      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <span className="truncate">
+                          {c.turnCount} prompts · {formatTokens(c.totalTokens)} tok ·{" "}
+                          {formatDurationMs(c.totalDurationMs)}
+                        </span>
+                        {c.llmSdkType ? (
+                          <Badge
+                            tone={llmSdkTone(c.llmSdkType)}
+                            className="ml-auto shrink-0 px-1.5"
+                          >
+                            {llmSdkLabel(c.llmSdkType)}
+                          </Badge>
+                        ) : null}
                       </div>
                     </button>
                   ))
@@ -562,6 +573,20 @@ function HistoryDetail({ detail }: { detail: AuditDetail | null }) {
   }
   return (
     <>
+      {detail.conversation ? (
+        <div className="flex items-center gap-2">
+          <h2 className="truncate text-lg font-bold">{detail.conversation.title || "历史会话"}</h2>
+          {detail.conversation.llmSdkType ? (
+            <Badge
+              tone={llmSdkTone(detail.conversation.llmSdkType)}
+              title="最近一次运行所用 Agent SDK"
+              className="shrink-0"
+            >
+              {llmSdkLabel(detail.conversation.llmSdkType)}
+            </Badge>
+          ) : null}
+        </div>
+      ) : null}
       {detail.turns.map((t) => {
         const tok = t.usage
           ? t.usage.inputTokens +
@@ -612,7 +637,18 @@ function LlmDetail({
   return (
     <>
       <div>
-        <h2 className="text-lg font-bold">{detail.conversation?.title || "LLM 会话"}</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="truncate text-lg font-bold">{detail.conversation?.title || "LLM 会话"}</h2>
+          {detail.conversation?.llmSdkType ? (
+            <Badge
+              tone={llmSdkTone(detail.conversation.llmSdkType)}
+              title="最近一次运行所用 Agent SDK"
+              className="shrink-0"
+            >
+              {llmSdkLabel(detail.conversation.llmSdkType)}
+            </Badge>
+          ) : null}
+        </div>
         <p className="text-xs text-muted-foreground">{llmEventCount} 条 SDK 原始消息</p>
       </div>
       {detail.turns.map((turn) => {

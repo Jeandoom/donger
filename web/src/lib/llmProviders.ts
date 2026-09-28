@@ -1,10 +1,13 @@
 import { apiFetch } from "./auth";
+import type { LlmSdkType } from "./llmSdk";
 
 /** 会话可选模型（GET /api/conversations/:id/llm-options） */
 export interface LlmOptionDTO {
   ref: string;
   label: string;
   group: "system" | "preset" | "provider";
+  /** 该模型对应的执行引擎（对话顶栏 SDK 标识） */
+  sdkType: LlmSdkType;
 }
 
 export interface LlmOptionsDTO {
@@ -25,7 +28,7 @@ export interface LlmPlatformInfo {
   baseUrl: string;
   models: string[];
   custom: boolean;
-  sdkType: "anthropic" | "openai" | "zcode";
+  sdkType: LlmSdkType;
   note?: string;
 }
 
@@ -36,7 +39,7 @@ export interface LlmProvider {
   platform: string;
   baseUrl: string;
   models: string[];
-  sdkType: "anthropic" | "openai" | "zcode";
+  sdkType: LlmSdkType;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
@@ -54,7 +57,7 @@ export interface LlmProviderInput {
   baseUrl?: string;
   key?: string;
   models: string[];
-  sdkType?: "anthropic" | "openai" | "zcode";
+  sdkType?: LlmSdkType;
   isDefault?: boolean;
 }
 

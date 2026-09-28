@@ -2,6 +2,7 @@
 // 后端契约见 docs/superpowers/specs/2026-07-01-conversation-audit-design.md §6。
 
 import { apiFetch } from "./auth";
+import type { LlmSdkType } from "./llmSdk";
 
 export interface AuditEventDTO {
   id: string;
@@ -46,6 +47,8 @@ export interface AuditConversationListItem {
   firstAt: string;
   lastAt: string;
   createdAt: string;
+  /** 最近一次运行所用执行引擎（agent sdk）；空=未运行过 */
+  llmSdkType?: LlmSdkType;
 }
 
 export interface AuditTurn {
@@ -59,7 +62,13 @@ export interface AuditTurn {
 }
 
 export interface AuditDetail {
-  conversation: { id: string; title: string; userId: string; channelId: string } | null;
+  conversation: {
+    id: string;
+    title: string;
+    userId: string;
+    channelId: string;
+    llmSdkType?: LlmSdkType;
+  } | null;
   turns: AuditTurn[];
 }
 

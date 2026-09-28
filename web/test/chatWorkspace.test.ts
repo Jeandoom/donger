@@ -164,4 +164,86 @@ describe("ChatWorkspace", () => {
     expect(onReloadMessages).toHaveBeenCalledTimes(1);
     expect(onReloadConversations).toHaveBeenCalledTimes(1);
   });
+
+  it("顶栏显示 Agent SDK 标识：选中模型的引擎优先，未选模型退回会话上次引擎", () => {
+    const conversation = {
+      id: "c1",
+      userId: "u1",
+      sdkSessionId: "",
+      title: "会话一",
+      channelId: "web",
+      agentId: "",
+      llmSdkType: "openai" as const,
+      createdAt: "",
+      updatedAt: "",
+      archived: false,
+    };
+    const modelOptions = [
+      { ref: "system", label: "系统默认（m）", sdkType: "anthropic" as const },
+      { ref: "provider:p2:deepseek-chat", label: "DS / deepseek-chat", sdkType: "openai" as const },
+    ];
+    // 未显式选模型 → 显示会话上次运行引擎
+    const { rerender } = render(
+      createElement(ChatWorkspace, {
+        conversations: [conversation],
+        activeConversationId: "c1",
+        modelOptions,
+        modelRef: "",
+        onModelRefChange: vi.fn(),
+        onSelectConversation: vi.fn(),
+        onDeleteConversation: vi.fn(),
+        sidebar: sidebarProps(),
+        messages: [],
+        loadingMessages: false,
+        isGenerating: false,
+        pendingApproval: null,
+        pendingCredential: null,
+        connection: "open",
+        onSend: vi.fn().mockResolvedValue(undefined),
+        onCancel: vi.fn().mockResolvedValue(undefined),
+        onResolveApproval: vi.fn(),
+        onSubmitCredential: vi.fn(),
+        errors: {},
+        onReloadConversations: vi.fn(),
+        onReloadMessages: vi.fn(),
+      }),
+    );
+    expect(screen.getByText("Codex Agent SDK")).toBeInTheDocument();
+
+    // 选中 system（Claude Code 引擎）→ 徽标即时切换
+    rerender(
+      createElement(ChatWorkspace, {
+        conversations: [conversation],
+        activeConversationId: "c1",
+        modelOptions,
+        modelRef: "system",
+        onModelRefChange: vi.fn(),
+        onSelectConversation: vi.fn(),
+        onDeleteConversation: vi.fn(),
+        sidebar: sidebarProps(),
+        messages: [],
+        loadingMessages: false,
+        isGenerating: false,
+        pendingApproval: null,
+        pendingCredential: null,
+        connection: "open",
+        onSend: vi.fn().mockResolvedValue(undefined),
+        onCancel: vi.fn().mockResolvedValue(undefined),
+        onResolveApproval: vi.fn(),
+        onSubmitCredential: vi.fn(),
+        errors: {},
+        onReloadConversations: vi.fn(),
+        onReloadMessages: vi.fn(),
+      }),
+    );
+    expect(screen.getByText("Claude Code SDK")).toBeInTheDocument();
+    expect(screen.queryByText("Codex Agent SDK")).not.toBeInTheDocument();
+  });
+
+  it("草稿/未运行过的会话不显示 Agent SDK 标识", () => {
+    renderWorkspace();
+    expect(screen.queryByText("Claude Code SDK")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex Agent SDK")).not.toBeInTheDocument();
+    expect(screen.queryByText("ZCode CLI")).not.toBeInTheDocument();
+  });
 });

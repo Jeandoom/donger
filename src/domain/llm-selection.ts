@@ -1,3 +1,4 @@
+import type { LlmSdkType } from "./llm-platforms.js";
 import type { UserLlmProvider } from "./user-llm-provider.js";
 
 export interface LlmOption {
@@ -5,14 +6,19 @@ export interface LlmOption {
   ref: string;
   label: string;
   group: "system" | "preset" | "provider";
+  /** 该模型对应的执行引擎（对话顶栏 SDK 标识；运行时路由与 resolveModelRef 同源） */
+  sdkType: LlmSdkType;
 }
 
 export interface ResolveLlmOptionsInput {
   /** 当前用户（访问者）的 provider 列表——共享 agent 场景下也按访问者解析 */
-  providers: Pick<UserLlmProvider, "id" | "name" | "models">[];
-  /** 结构兼容 config.LlmPreset（鸭子类型，保持 domain 不依赖顶层 config） */
-  presets: { id: string; name: string; model: string }[];
+  providers: Pick<UserLlmProvider, "id" | "name" | "models" | "sdkType">[];
+  /** 结构兼容 config.LlmPreset（鸭子类型，保持 domain 不依赖顶层 config）；
+   *  .env 预设走基底 Anthropic 通路（runtime-manager resolveModelRef 锁 sdkType=anthropic） */
+  presets: { id: string; name: string; model: string; sdkType?: LlmSdkType }[];
   systemDefaultModel: string;
+  /** 系统默认模型对应的引擎（config.llm.sdkType，缺省 anthropic） */
+  systemDefaultSdkType?: LlmSdkType;
 }
 
 /**
@@ -28,6 +34,7 @@ export function resolveLlmOptions(input: ResolveLlmOptionsInput): LlmOption[] {
       ref: "system",
       label: `系统默认（${input.systemDefaultModel}）`,
       group: "system",
+      sdkType: input.systemDefaultSdkType ?? "anthropic",
     });
   }
   for (const preset of input.presets) {
@@ -35,6 +42,7 @@ export function resolveLlmOptions(input: ResolveLlmOptionsInput): LlmOption[] {
       ref: `preset:${preset.id}`,
       label: `${preset.name}（${preset.model}）`,
       group: "preset",
+      sdkType: preset.sdkType ?? "anthropic",
     });
   }
   for (const provider of input.providers) {
@@ -43,6 +51,7 @@ export function resolveLlmOptions(input: ResolveLlmOptionsInput): LlmOption[] {
         ref: `provider:${provider.id}:${model}`,
         label: `${provider.name} / ${model}`,
         group: "provider",
+        sdkType: provider.sdkType,
       });
     }
   }

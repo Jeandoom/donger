@@ -4,6 +4,7 @@ import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
 import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
+import { type LlmSdkType, llmSdkLabel, llmSdkTone } from "../../lib/llmSdk";
 import type { Mention } from "../../lib/mentions";
 import { reconcileMentions } from "../../lib/mentions";
 import type {
@@ -49,7 +50,7 @@ export interface ChatWorkspaceProps {
   /** 切换会话权限模式（undefined=不支持，隐藏切换器） */
   onPermissionModeChange?: (mode: AgentPermissionMode) => Promise<void>;
   /** 对话可选模型（M2）：空数组/undefined=不支持，隐藏选择器 */
-  modelOptions?: { ref: string; label: string }[];
+  modelOptions?: { ref: string; label: string; sdkType?: LlmSdkType }[];
   modelRef?: string;
   onModelRefChange?: (ref: string) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
@@ -75,6 +76,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     activeConversation?.effectivePermissionMode ??
     activeConversation?.permissionMode ??
     "ask_before_change";
+  // Agent SDK 标识：优先取当前选中模型的引擎（随下拉切换即时反映，下一条消息生效），
+  // 未显式选过则退回会话上次运行的引擎；草稿/未运行过两者皆空 → 不显示
+  const activeSdk =
+    props.modelOptions?.find((o) => o.ref === props.modelRef)?.sdkType ??
+    activeConversation?.llmSdkType;
   const attachmentAdapter = useMemo(
     () =>
       new DongerAttachmentAdapter(
@@ -168,6 +174,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             <span className="truncate text-sm font-semibold">
               {sidebarItems.find((i) => i.id === props.activeConversationId)?.title}
             </span>
+            {activeSdk ? (
+              <Badge tone={llmSdkTone(activeSdk)} title="当前使用的 Agent SDK">
+                {llmSdkLabel(activeSdk)}
+              </Badge>
+            ) : null}
             {props.activeConversationIsDraft ? (
               <Badge tone="warning">
                 <span
