@@ -150,4 +150,20 @@ describe("SqliteLlmProviderStore", () => {
     expect(await store.list("legacy-u1")).toHaveLength(1);
     expect(await store.list("u2")).toHaveLength(1);
   });
+
+  it("toDomain：zcode sdkType 读回保留（引擎路由与徽标同源）；未知值兜底 anthropic", async () => {
+    const { store, db } = newStore();
+    const created = await store.create("u1", {
+      ...BASE_INPUT,
+      platform: "zhipu-zcode",
+      sdkType: "zcode",
+      isDefault: true,
+    });
+    expect((await store.getWithKey("u1", created.id))?.sdkType).toBe("zcode");
+    expect((await store.list("u1"))[0]?.sdkType).toBe("zcode");
+    expect((await store.findDefaultWithKey("u1"))?.sdkType).toBe("zcode");
+
+    db.prepare("UPDATE user_llm_providers SET sdkType = ? WHERE id = ?").run("weird", created.id);
+    expect((await store.getWithKey("u1", created.id))?.sdkType).toBe("anthropic");
+  });
 });

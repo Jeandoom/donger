@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "better-sqlite3";
-import { matchPlatformByBaseUrl } from "../domain/llm-platforms.js";
+import { LLM_SDK_TYPES, type LlmSdkType, matchPlatformByBaseUrl } from "../domain/llm-platforms.js";
 import type { UserLlmProvider } from "../domain/user-llm-provider.js";
 import type {
   LlmProviderCreateInput,
@@ -221,7 +221,10 @@ export class SqliteLlmProviderStore implements LlmProviderStore {
       platform: row.platform,
       baseUrl: row.baseUrl,
       models: safeParseModels(row.models),
-      sdkType: row.sdkType === "openai" ? "openai" : "anthropic",
+      // zcode 等全量引擎按白名单读回；未知值（损坏行/更老存量）兜底 anthropic
+      sdkType: (LLM_SDK_TYPES as readonly string[]).includes(row.sdkType)
+        ? (row.sdkType as LlmSdkType)
+        : "anthropic",
       isDefault: row.isDefault === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
