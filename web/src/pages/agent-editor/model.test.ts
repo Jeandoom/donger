@@ -1,11 +1,76 @@
 import { describe, expect, it } from "vitest";
 import {
+  blockingIssues,
   emptyAgent,
   inferProviderFromUrl,
   inferRepoNameFromUrl,
   REPO_NAME_PATTERN,
   scenarioIssues,
 } from "./model";
+
+function repo(
+  overrides: Partial<{
+    id: string;
+    name: string;
+    url: string;
+    provider: "github" | "gitee" | "jihulab";
+    required: boolean;
+    shallow: boolean;
+    syncMode: "fastForward" | "cloneOnce";
+  }>,
+) {
+  return {
+    id: "r1",
+    name: "",
+    url: "",
+    provider: "github" as const,
+    required: true,
+    shallow: true,
+    syncMode: "fastForward" as const,
+    ...overrides,
+  };
+}
+
+describe("blockingIssues 保存阻断项 live 校验", () => {
+  it("无 MCP 错误且无仓库时无阻断", () => {
+    expect(blockingIssues(emptyAgent, null)).toEqual([]);
+  });
+
+  it("MCP JSON 解析错计入工具区", () => {
+    const issues = blockingIssues(emptyAgent, "Unexpected token }");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.section).toBe("agent-sec-tools");
+  });
+
+  it("全空的新增仓库卡不计错（避免刚添加就见红）", () => {
+    const form = { ...emptyAgent, gitRepositories: [repo({})] };
+    expect(blockingIssues(form, null)).toEqual([]);
+  });
+
+  it("填了 URL 但目录名非法时计入资源区；合法目录名不计", () => {
+    const bad = {
+      ...emptyAgent,
+      gitRepositories: [repo({ url: "https://github.com/a/b", name: "" })],
+    };
+    const issues = blockingIssues(bad, null);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.section).toBe("agent-sec-resources");
+
+    const good = {
+      ...emptyAgent,
+      gitRepositories: [repo({ url: "https://github.com/a/b", name: "b" })],
+    };
+    expect(blockingIssues(good, null)).toEqual([]);
+  });
+
+  it("显式非法目录名（中文/越界长度）计入资源区", () => {
+    const form = { ...emptyAgent, gitRepositories: [repo({ name: "带中文" })] };
+    const issues = blockingIssues(form, null);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.section).toBe("agent-sec-resources");
+    expect(issues[0]?.message).toContain("带中文");
+  });
+});
 
 describe("scenarioIssues 场景装配前置校验", () => {
   it("无场景时不产生任何警示", () => {
