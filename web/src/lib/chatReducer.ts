@@ -432,6 +432,14 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
           canceledAt: msg.canceledAt,
         },
       };
+    case "conversation_title":
+      // 后端首条消息后异步自动命名：侧栏/头部标题实时刷新（草稿会话已持久化，id 必匹配）
+      return {
+        ...state,
+        conversations: state.conversations.map((c) =>
+          c.id === msg.conversationId ? { ...c, title: msg.title } : c,
+        ),
+      };
     case "result": {
       const closed = closeTurn(state.messages, msg.subtype === "error" ? "error" : "done");
       return { ...state, isGenerating: false, messages: closed, pendingQuestion: null };

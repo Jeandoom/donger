@@ -68,12 +68,15 @@ function seqChannel() {
 }
 
 /** 有状态会话存储：sdkSessionId/agentId 经 update 持久化（验证阶段间 resume 链与 builder 绑定）；conv 供断言 */
-function statefulConvStore(agentId: string): ConversationStore & { conv: Conversation } {
+function statefulConvStore(
+  agentId: string,
+  title = "agent 会话",
+): ConversationStore & { conv: Conversation } {
   const conv: Conversation = {
     id: "conv-agent",
     userId: "u-webu",
     sdkSessionId: "",
-    title: "agent 会话",
+    title,
     channelId: "test",
     agentId,
     createdAt: "t",
@@ -371,10 +374,12 @@ describe("agent 任务单执行轮生命周期", () => {
       { result: "已补建" },
     ]);
     const channel = seqChannel();
-    const convStore = statefulConvStore("");
+    // 占位标题的会话：首条消息到达即被 maybeAutoTitle 按内容异步改名（不再等首轮跑完）
+    const convStore = statefulConvStore("", "新对话");
     const { orch, store } = build(runner, channel, convStore);
 
     await orch.handleMessage(MSG);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 自动命名是 fire-and-forget，让微任务落地
 
     // 任务不失败，绑定 agent-builder 正常走完
     expect(await store.listByStatus("failed")).toHaveLength(0);
@@ -384,9 +389,9 @@ describe("agent 任务单执行轮生命周期", () => {
     expect(done[0]?.routingRationale).toBe("缺能力");
     // 任务记录保持用户原文（引导词只注入执行轮，不回写任务）
     expect(done[0]?.prompt).toBe(MSG.text);
-    // 会话绑定持久化（真实 SqliteConversationStore 行为），标题不被引导词污染
+    // 会话绑定持久化（真实 SqliteConversationStore 行为）；标题=首条消息内容（非引导词）
     expect(convStore.conv.agentId).toBe("agent-builder");
-    expect(convStore.conv.title).toBe(MSG.text.slice(0, 30));
+    expect(convStore.conv.title).toBe(MSG.text);
     // 首轮 prompt 含缺口分析 + 原始任务
     expect(runner.prompts[1]).toContain("缺能力");
     expect(runner.prompts[1]).toContain("修复导出乱码");

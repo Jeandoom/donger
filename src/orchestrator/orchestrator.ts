@@ -41,7 +41,6 @@ import type { AppStore } from "../ports/app-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
-import type { NotificationService } from "./notification-service.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
@@ -75,6 +74,7 @@ import { BUILTIN_KB_ASSISTANT_AGENT, BUILTIN_KB_ASSISTANT_ID } from "./kb-assist
 import { enqueueAutoLearn } from "./kb-auto-learn.js";
 import { createKbToolsServer, type KbMount } from "./kb-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
+import type { NotificationService } from "./notification-service.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
@@ -672,6 +672,8 @@ export class Orchestrator {
       p.threadId,
       gates,
       this.deps.commentStore,
+      this.deps.notificationService,
+      p.user.id,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
     const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);
@@ -898,7 +900,7 @@ export class Orchestrator {
     }
 
     // 回写 sdkSessionId（经 RuntimeManager.commit）。内部轮（noResume）不回写。
-    // 会话标题不再在此设置：首条用户消息到达时即由 maybeAutoTitle 异步命名（旧行为是
+    // 会话标题不再在此设置：首条用户消息到达时即由 maybeAutoTitle 异步命名（web-channel 旧行为是
     // 等首轮跑完才截 task.prompt，长任务期间侧栏一直挂占位标题）。
     if (!p.noResume && capturedSessionId && capturedSessionId !== p.conversation.sdkSessionId) {
       const llmSdkType = opts.llm.sdkType;
