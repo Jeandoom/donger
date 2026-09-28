@@ -5,9 +5,10 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
-import { apiFetch, apiFetchRetry } from "../lib/auth";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
-import type { PlatformAppView } from "./AppsPage";
+import { apiFetch, apiFetchRetry } from "../lib/auth";
+import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
+import type { PlatformAppView, ProxyChannelView } from "./AppsPage";
 
 interface AppVersionView {
   num: number;
@@ -26,15 +27,22 @@ interface AppDataItem {
   valueJson?: string;
 }
 
-type Tab = "overview" | "versions" | "data" | "logs" | "run";
+type Tab = "overview" | "versions" | "channels" | "data" | "logs" | "run";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "overview", label: "概览" },
   { key: "versions", label: "版本" },
+  { key: "channels", label: "通道" },
   { key: "data", label: "数据" },
   { key: "logs", label: "日志" },
   { key: "run", label: "运行" },
 ];
+
+const AUTH_STYLE_LABEL: Record<string, string> = {
+  none: "静态头",
+  "basic-crumb": "Basic+Crumb",
+  "token-login": "登录换令牌",
+};
 
 interface AppLogItem {
   id: number;
@@ -64,7 +72,9 @@ export function AppDetailPage() {
   useEffect(() => {
     fetchAgents()
       .then((list) =>
-        setAgents(list.filter((a) => a.id !== "builtin-dispatcher" && a.id !== "builtin-app-manager")),
+        setAgents(
+          list.filter((a) => a.id !== "builtin-dispatcher" && a.id !== "builtin-app-manager"),
+        ),
       )
       .catch(() => {});
   }, []);
@@ -243,6 +253,9 @@ export function AppDetailPage() {
       {tab === "versions" ? (
         <VersionsTab appId={app.id} versions={versions} onChanged={refresh} />
       ) : null}
+      {tab === "channels" ? (
+        <ChannelsTab appId={app.id} channels={app.proxyChannels ?? []} onChanged={refresh} />
+      ) : null}
       {tab === "data" ? <DataTab appId={app.id} /> : null}
       {tab === "logs" ? <LogsTab appId={app.id} /> : null}
       {tab === "run" ? <RunTab appId={app.id} published={app.currentVersion !== null} /> : null}
@@ -265,6 +278,204 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex items-center justify-between gap-4">
       <span className="text-xs text-muted-foreground">{label}</span>
       {value}
+    </div>
+  );
+}
+
+/**
+ * 出网通道（spec 2026-09-29-app-proxy-credential-binding §3）：
+ * 服务名（bundle 里的通道别名）→ type=http 连接器绑定；凭证按应用属主在服务端解析。
+ */
+function ChannelsTab({
+  appId,
+  channels,
+  onChanged,
+}: {
+  appId: string;
+  channels: ProxyChannelView[];
+  onChanged: () => void;
+}) {
+  const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
+  const [service, setService] = useState("");
+  const [connectorId, setConnectorId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetchConnectors()
+      .then((list) =>
+        setConnectors(
+          list.filter(
+            (c) => c.type === "http" && c.enabled && (c.createdByMe || c.shareScope === "global"),
+          ),
+        ),
+      )
+      .catch(() => {});
+  }, []);
+
+  const saveBindings = async (bindings: Record<string, string>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await apiFetch(`/api/apps/${appId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxyBindings: bindings }),
+      });
+      if (r.ok) {
+        setService("");
+        setConnectorId("");
+        onChanged();
+      } else {
+        const d = (await r.json().catch(() => ({}))) as { error?: string };
+        setError(d.error ?? `保存失败：HTTP ${r.status}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const currentBindings = Object.fromEntries(channels.map((c) => [c.service, c.connectorId]));
+  const bind = () => {
+    const svc = service.trim();
+    if (!svc || !connectorId) return;
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(svc)) {
+      setError("服务名须为小写字母开头的小写字母/数字/连字符（≤32 字符）");
+      return;
+    }
+    void saveBindings({ ...currentBindings, [svc]: connectorId });
+  };
+  const unbind = (svc: string) => {
+    const next = { ...currentBindings };
+    delete next[svc];
+    void saveBindings(next);
+  };
+
+  const statusBadge = (c: ProxyChannelView) => {
+    if (c.status === "ready") return <Badge tone="success">就绪</Badge>;
+    if (c.status === "credential-missing") {
+      return (
+        <span className="flex flex-wrap items-center gap-1">
+          <Badge tone="warning">凭证未填</Badge>
+          {c.missingCredentials.map((code) => (
+            <Link
+              key={code}
+              to="/credentials"
+              className="text-xs text-primary hover:underline"
+              title="到凭证页填写该凭证"
+            >
+              {code}
+            </Link>
+          ))}
+        </span>
+      );
+    }
+    return <Badge tone="danger">连接器失效/停用</Badge>;
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-xs text-muted-foreground">
+        应用通过
+        <span className="font-mono"> /api/app-proxy/&lt;appId&gt;/&lt;服务名&gt; </span>
+        出网：服务名是应用代码里的通道别名，绑定到 HTTP
+        连接器后由平台按你名下的凭证在服务端注入鉴权——凭证不进应用前端。 连接器在
+        <Link to="/connectors" className="mx-1 text-primary hover:underline">
+          连接器
+        </Link>
+        页创建；凭证在
+        <Link to="/credentials" className="mx-1 text-primary hover:underline">
+          凭证
+        </Link>
+        页填写。
+      </p>
+
+      {error ? (
+        <div className="rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      ) : null}
+
+      <Card className="overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+              <th className="px-4 py-2.5 font-medium">服务名</th>
+              <th className="px-4 py-2.5 font-medium">连接器</th>
+              <th className="px-4 py-2.5 font-medium">认证</th>
+              <th className="px-4 py-2.5 font-medium">状态</th>
+              <th className="px-4 py-2.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {channels.map((c) => (
+              <tr key={c.service} className="border-t border-border">
+                <td className="px-4 py-3 font-mono text-xs">{c.service}</td>
+                <td className="px-4 py-3">
+                  {c.connectorName ?? (
+                    <span className="font-mono text-xs text-muted-foreground">{c.connectorId}</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">
+                  {c.authStyle ? (AUTH_STYLE_LABEL[c.authStyle] ?? c.authStyle) : "—"}
+                </td>
+                <td className="px-4 py-3">{statusBadge(c)}</td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => unbind(c.service)}
+                    className="text-xs text-destructive hover:underline"
+                  >
+                    解绑
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!channels.length ? (
+          <div className="p-8 text-center text-sm text-muted-foreground">
+            暂无通道。在下方把应用使用的服务名绑定到连接器。
+          </div>
+        ) : null}
+      </Card>
+
+      <Card className="flex flex-wrap items-end gap-3 p-4">
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">服务名</span>
+          <input
+            value={service}
+            onChange={(e) => setService(e.target.value)}
+            placeholder="如 jihulab / jenkins / ops"
+            className="w-44 rounded-md border border-border bg-card px-2.5 py-1.5 font-mono text-xs"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">HTTP 连接器</span>
+          <select
+            value={connectorId}
+            onChange={(e) => setConnectorId(e.target.value)}
+            className="max-w-64 rounded-md border border-border bg-card px-2 py-1.5 text-xs"
+          >
+            <option value="">选择连接器…</option>
+            {connectors.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+                {c.shareScope === "global" ? "（全局）" : ""} · {c.url}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button size="sm" disabled={busy || !service.trim() || !connectorId} onClick={bind}>
+          绑定通道
+        </Button>
+        {!connectors.length ? (
+          <span className="text-xs text-muted-foreground">
+            尚无可用 HTTP 连接器——先到「连接器」页新建。
+          </span>
+        ) : null}
+      </Card>
     </div>
   );
 }

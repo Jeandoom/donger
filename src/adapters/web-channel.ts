@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import { ZodError } from "zod";
 import type { LlmTester } from "../adapters/llm-provider-tester.js";
-import type { AppProxyServicesConfig, LlmPreset } from "../config.js";
+import type { LlmPreset } from "../config.js";
 import type { Viewer } from "../domain/access-policy.js";
 import {
   type Agent,
@@ -513,8 +513,7 @@ export interface WebChannelDeps {
   appStore?: AppStore;
   appsDir?: string;
   appTokenSecret?: string;
-  /** app-proxy 外部服务凭证（缺省=代理端点全部 503） */
-  proxyConfig?: AppProxyServicesConfig;
+  /** app-proxy 代理凭证已迁出 env（spec 2026-09-29-app-proxy-credential-binding）：凭证走用户凭证集 */
   credentialSets?: CredentialSetStore;
   /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
   connectorStore?: ConnectorStore;
@@ -656,13 +655,19 @@ export class WebChannel implements Channel {
         appToken: new AppTokenService(deps.appTokenSecret),
         // 应用管家制（spec §3.1）：改派 owner 闭包校验 + DTO 管家解析
         ...(deps.agentStore ? { agentStore: deps.agentStore } : {}),
+        // 出网通道（spec 2026-09-29-app-proxy-credential-binding）：绑定校验 + DTO 状态
+        ...(deps.connectorStore ? { connectorStore: deps.connectorStore } : {}),
+        ...(deps.credentialSets ? { credentialSets: deps.credentialSets } : {}),
       };
       this.appRuntime = createAppRuntimeHandlers(this.appApi);
       this.appLogIngest = createAppLogIngestHandler(this.appApi);
-      this.appProxy = createAppProxyHandler({
-        ...this.appApi,
-        proxyConfig: deps.proxyConfig ?? {},
-      } satisfies AppProxyHandlerDeps);
+      if (deps.connectorStore && deps.credentialSets) {
+        this.appProxy = createAppProxyHandler({
+          ...this.appApi,
+          connectorStore: deps.connectorStore,
+          credentialSets: deps.credentialSets,
+        } satisfies AppProxyHandlerDeps);
+      }
     }
     this.rateLimiter = deps.rateLimiter ?? new MemoryRateLimiter();
     this.routeGuard = new ApiRouteGuard(
@@ -2032,7 +2037,7 @@ export class WebChannel implements Channel {
       appPath.startsWith("/api/app-data/") ||
       appPath.startsWith("/api/app-proxy/")
     ) {
-      if (!this.appApi || !this.appRuntime || !this.appProxy) {
+      if (!this.appApi || !this.appRuntime) {
         return this.json(res, { error: "应用模块未启用" }, 503);
       }
       const ctx: AppHttpCtx = {
@@ -2075,6 +2080,9 @@ export class WebChannel implements Channel {
 
       // 应用受控代理（运行时面）：app-token 自鉴权；CORS 同 app-data（沙箱不透明源）
       if (appPath.startsWith("/api/app-proxy/")) {
+        if (!this.appProxy) {
+          return this.json(res, { error: "代理未装配（缺连接器/凭证存储）" }, 503);
+        }
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
@@ -5662,6 +5670,8 @@ export class WebChannel implements Channel {
       headers: Object.fromEntries(
         Object.entries(c.headers).map(([k, v]) => [k, v.includes("{{credential:") ? v : "••••"]),
       ),
+      // 代理认证声明（不含密钥）；引用的凭证 code 本身非敏感，回显供编辑
+      auth: c.auth ?? null,
       enabled: c.enabled,
       shareScope: c.shareScope,
       ownerId: c.ownerId,

@@ -13,9 +13,12 @@ import {
   type PlatformApp,
   parseAppPatchInput,
 } from "../domain/app.js";
-import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
-import type { AgentStore } from "../ports/agent-store.js";
+import { type ConnectorAuthStyle, collectConnectorCredentialCodes } from "../domain/connector.js";
 import { BUILTIN_APP_MANAGER_ID } from "../orchestrator/app-manager-agent.js";
+import type { AgentStore } from "../ports/agent-store.js";
+import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
+import type { ConnectorStore } from "../ports/connector-store.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import { NotFoundError, PayloadTooLargeError, ValidationError } from "../util/errors.js";
 import type { AppTokenService } from "./app-token-service.js";
 
@@ -28,8 +31,8 @@ import type { AppTokenService } from "./app-token-service.js";
  *
  * 鉴权分两面：
  *  - 属主面（/api/apps/*）：主 JWT，守卫表 owner 规则；
- *  - 运行时面（/api/app-data/*）：app-token（Bearer），handler 内经 AppTokenService
- *    校验 aud=appId——主 JWT 在此不被接受，应用代码永远拿不到属主会话凭证。
+ *  - 运行时面（/api/app-data/*、/api/app-proxy/*）：app-token（Bearer），handler 内经
+ *    AppTokenService 校验 aud=appId——主 JWT 在此不被接受，应用代码永远拿不到属主会话凭证。
  */
 
 export interface AppApiDeps {
@@ -39,6 +42,12 @@ export interface AppApiDeps {
   appToken: AppTokenService;
   /** 智能体存储（应用管家制 spec §3.1）：改派校验 owner 闭包 + DTO 管家解析；缺省=弱引用直存 */
   agentStore?: AgentStore;
+  /**
+   * 连接器/凭证存储（出网通道 spec 2026-09-29-app-proxy-credential-binding）：
+   * 通道绑定校验 + DTO 通道状态解析 + 代理转发；缺省=通道功能不可用（PATCH 绑定 400）。
+   */
+  connectorStore?: ConnectorStore;
+  credentialSets?: CredentialSetStore;
 }
 
 /** web-channel 注入的 HTTP 原语（保持本模块零 web-channel 依赖） */
@@ -101,15 +110,49 @@ export async function handlePatchApp(
   if (patch.managerAgentId !== undefined) {
     stewardChange = await resolveStewardChange(deps, appId, app, patch.managerAgentId);
   }
+  // 出网通道绑定（spec 2026-09-29 §2.2）：写入口校验连接器合法性；读时代理面再校验
+  if (patch.proxyBindings !== undefined) {
+    await assertProxyBindingsValid(deps, app, patch.proxyBindings);
+  }
   const updated = await deps.appStore.update(appId, {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.description !== undefined ? { description: patch.description } : {}),
     ...(patch.icon !== undefined ? { icon: patch.icon ?? undefined } : {}),
     ...(patch.manifest !== undefined ? { manifest: patch.manifest } : {}),
     ...(stewardChange !== undefined ? { managerAgentId: stewardChange } : {}),
+    ...(patch.proxyBindings !== undefined ? { proxyBindings: patch.proxyBindings } : {}),
   });
   if (!updated) throw new NotFoundError("NOT_FOUND", "app not found");
   return { status: 200, json: { app: await appView(deps, updated) } };
+}
+
+/**
+ * 通道绑定合法性（spec §2.2）：连接器须存在、type=http、启用，且对应用属主可见
+ * （own private 或 global）。服务名结构/去重/上限已由 ProxyBindingsSchema 挡。
+ */
+async function assertProxyBindingsValid(
+  deps: AppApiDeps,
+  app: PlatformApp,
+  bindings: Record<string, string>,
+): Promise<void> {
+  if (!deps.connectorStore) {
+    throw new ValidationError("INVALID_REQUEST", "连接器模块未启用，无法配置出网通道");
+  }
+  for (const [service, connectorId] of Object.entries(bindings)) {
+    const c = await deps.connectorStore.getById(connectorId);
+    if (!c || !(c.ownerId === app.userId || c.shareScope === "global")) {
+      throw new ValidationError(
+        "INVALID_REQUEST",
+        `通道 ${service}：连接器不存在或对应用属主不可见`,
+      );
+    }
+    if (c.type !== "http") {
+      throw new ValidationError("INVALID_REQUEST", `通道 ${service}：仅支持 type=http 连接器`);
+    }
+    if (!c.enabled) {
+      throw new ValidationError("INVALID_REQUEST", `通道 ${service}：连接器已停用`);
+    }
+  }
 }
 
 /**
@@ -486,10 +529,59 @@ async function appView(deps: AppApiDeps, app: PlatformApp): Promise<Record<strin
     currentVersion: app.currentVersion,
     managerAgentId: app.managerAgentId ?? null,
     steward,
+    proxyChannels: await proxyChannelsView(deps, app),
     createdAt: app.createdAt,
     updatedAt: app.updatedAt,
     runPath: app.currentVersion ? `/apps/${app.id}/` : null,
   };
+}
+
+export interface ProxyChannelView {
+  service: string;
+  connectorId: string;
+  connectorName: string | null;
+  authStyle: ConnectorAuthStyle | null;
+  /** ready=就绪；credential-missing=连接器引用的凭证属主未填；unavailable=连接器失效/停用/不可见 */
+  status: "ready" | "credential-missing" | "unavailable";
+  missingCredentials: string[];
+}
+
+/** 通道状态 DTO（spec §3）：读时解析连接器现状 + 凭证填写状态，供「通道」页签渲染 */
+async function proxyChannelsView(deps: AppApiDeps, app: PlatformApp): Promise<ProxyChannelView[]> {
+  const bindings = app.proxyBindings ?? {};
+  const services = Object.keys(bindings);
+  if (!services.length) return [];
+  const filledCodes = deps.credentialSets
+    ? new Set(await deps.credentialSets.listValueCodes(app.userId))
+    : new Set<string>();
+  return Promise.all(
+    services.map(async (service): Promise<ProxyChannelView> => {
+      const connectorId = bindings[service] ?? "";
+      const c = await deps.connectorStore?.getById(connectorId);
+      const visible = !!c && (c.ownerId === app.userId || c.shareScope === "global");
+      if (!c?.enabled || c.type !== "http" || !visible) {
+        return {
+          service,
+          connectorId,
+          connectorName: c?.name ?? null,
+          authStyle: c?.auth?.style ?? null,
+          status: "unavailable",
+          missingCredentials: [],
+        };
+      }
+      const missingCredentials = collectConnectorCredentialCodes(c).filter(
+        (code) => !filledCodes.has(code),
+      );
+      return {
+        service,
+        connectorId,
+        connectorName: c.name,
+        authStyle: c.auth?.style ?? "none",
+        status: missingCredentials.length ? "credential-missing" : "ready",
+        missingCredentials,
+      };
+    }),
+  );
 }
 
 function versionView(v: AppVersionWithMeta): Record<string, unknown> {
