@@ -1,7 +1,7 @@
 # 智能体配置页 UI 重设计（web + 移动端）
 
 - 日期：2026-09-29
-- 状态：待拍板（设计稿，未动码）
+- 状态：已拍板实施上线（5 拍板点全过；master 2af873f 合并推送，部署 PID 74240，bundle index-D121C0rb.js 特征串全中）
 - 范围：`web/src/pages/AgentEditorPage.tsx` + `web/src/pages/agent-editor/*`（6 分区组件与 model.ts），入口列表页 `AgentsPage` 仅作上下文不改
 - 方法：先功能与状态模型梳理（架构优先），再信息架构与布局，场景（code-dev 等）只当验收样板
 
