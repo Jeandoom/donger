@@ -91,3 +91,11 @@ export function parseAppPatchInput(raw: unknown): AppPatchInput {
 export function parseAppManifest(raw: unknown): AppManifest {
   return AppManifestSchema.parse(raw);
 }
+
+/** 应用日志（spec 修订 2026-09-29）：网关面 + 应用前端面统一入 app_logs，运行页签可实时查看 */
+export const APP_LOG_MAX_PER_APP = 500;
+export const APP_LOG_RETENTION_DAYS = 7;
+export const APP_LOG_INGEST_MAX_ENTRIES = 50;
+export const APP_LOG_MESSAGE_MAX = 2000;
+export type AppLogLevel = "info" | "warn" | "error";
+export type AppLogSource = "gateway" | "frontend";

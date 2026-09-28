@@ -222,16 +222,19 @@ import {
   type AppStaticTarget,
   appContentType,
   appVersionDir,
+  createAppLogIngestHandler,
   createAppRuntimeHandlers,
   handleDeleteApp,
   handleDeleteAppDataByOwner,
   handleGetApp,
   handleIssueAppToken,
   handleListAppData,
+  handleListAppLogs,
   handleListApps,
   handleListVersions,
   handlePatchApp,
   handlePublishVersion,
+  injectAppBootstrap,
   resolveAppStaticTarget,
 } from "./app-api.js";
 import { AppTokenService } from "./app-token-service.js";
@@ -589,6 +592,11 @@ export class WebChannel implements Channel {
   private readonly appApi?: AppApiDeps;
   /** 运行时面 app-data handler（app-token 消费端） */
   private readonly appRuntime?: AppRuntimeHandlers;
+  /** 应用前端日志采集（app-token 消费端） */
+  private readonly appLogIngest?: (
+    req: HttpRequest,
+    appId: string,
+  ) => Promise<{ status: number; json: unknown }>;
   private readonly oauthStateMap = new Map<string, number>();
   /** 限流（注册/登录 IP、登录失败锁定、llm-debug 配额）；缺省内存实现 */
   private readonly rateLimiter: RateLimiter;
@@ -621,6 +629,7 @@ export class WebChannel implements Channel {
         appToken: new AppTokenService(deps.appTokenSecret),
       };
       this.appRuntime = createAppRuntimeHandlers(this.appApi);
+      this.appLogIngest = createAppLogIngestHandler(this.appApi);
     }
     this.rateLimiter = deps.rateLimiter ?? new MemoryRateLimiter();
     this.routeGuard = new ApiRouteGuard(
@@ -1951,6 +1960,20 @@ export class WebChannel implements Channel {
     // 鉴权与授权已由 routeGuard 在 handleHttp 的 /api 入口统一执行（fail-closed）；
     // 本方法只做路由分发。公开性/属主/管理员规则见 web-route-guards.ts。
 
+    // 应用前端日志采集（运行时面；sendBeacon 走 ?token=，限流防失控应用刷爆）
+    const appLogMatch = (url.split("?")[0] ?? url).match(/^\/api\/app-logs\/([\w-]+)$/);
+    if (appLogMatch && req.method === "POST") {
+      const appId = appLogMatch[1] ?? "";
+      if (!this.appLogIngest) return this.json(res, { error: "not found" }, 404);
+      if (!this.rateLimiter.hit(`app-log:${appId}`, 60_000, 60)) {
+        return this.json(res, { error: "上报过于频繁" }, 429);
+      }
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      const result = await this.appLogIngest(req, appId);
+      return this.sendApi(res, result);
+    }
+
     // === 平台应用（spec 2026-09-25-app-platform-architecture M1 应用内核）===
     // 运行时面（/api/app-data/*）鉴权 = app-token（Bearer，aud=appId），handler 内校验；
     // 属主面（/api/apps/*）鉴权 = 守卫表 owner 规则（loadOwner=appStore.get）。
@@ -1984,15 +2007,19 @@ export class WebChannel implements Channel {
         if (runtimeMatch) {
           const appId = runtimeMatch[1] ?? "";
           const key = decodeURIComponent(runtimeMatch[2] ?? "");
+          let result: { status: number; json: unknown };
           if (req.method === "GET") {
-            return this.sendApi(res, await this.appRuntime.get(req, appId, key));
+            result = await this.appRuntime.get(req, appId, key);
+          } else if (req.method === "PUT") {
+            result = await this.appRuntime.put(req, appId, key);
+          } else if (req.method === "DELETE") {
+            result = await this.appRuntime.del(req, appId, key);
+          } else {
+            return this.json(res, { error: "not found" }, 404);
           }
-          if (req.method === "PUT") {
-            return this.sendApi(res, await this.appRuntime.put(req, appId, key));
-          }
-          if (req.method === "DELETE") {
-            return this.sendApi(res, await this.appRuntime.del(req, appId, key));
-          }
+          // 网关面日志：数据 API 调用全量记（低频高诊断价值）
+          this.logAppRequest(appId, req.method ?? "GET", appPath, result.status);
+          return this.sendApi(res, result);
         }
         return this.json(res, { error: "not found" }, 404);
       }
@@ -2033,6 +2060,10 @@ export class WebChannel implements Channel {
       const dataListMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/data$/);
       if (dataListMatch && req.method === "GET") {
         return this.sendApi(res, await handleListAppData(ctx, api, req, dataListMatch[1] ?? ""));
+      }
+      const logsMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/logs$/);
+      if (logsMatch && req.method === "GET") {
+        return this.sendApi(res, await handleListAppLogs(ctx, api, req, logsMatch[1] ?? ""));
       }
       const dataDeleteMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/data\/([^/]+)$/);
       if (dataDeleteMatch && req.method === "DELETE") {
@@ -4876,6 +4907,7 @@ export class WebChannel implements Channel {
     }
     const app = await api.appStore.get(appId);
     if (!app || app.currentVersion === null) {
+      this.logAppRequest(appId, "GET", rawPath, 404);
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("app not found or not published");
       return;
@@ -4888,13 +4920,19 @@ export class WebChannel implements Channel {
       urlPath,
     );
     if (!target) {
+      // 资产缺失是黑屏类故障的第一现场（如构建 base 写死 /assets），必须留痕
+      this.logAppRequest(appId, "GET", rawPath, 404);
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Not found");
       return;
     }
     const absPath = target.absPath;
+    const isHtml = target.kind === "spa" || target.html;
     try {
-      if (target.kind === "spa" || target.html) {
+      // ACAO:* 是沙箱化设计的前置条件而非放松：应用运行在不透明源，其 ES module
+      // 以 CORS 模式加载，缺此头会被浏览器整批拒载（黑屏，maycur-ai-copilot 实证）。
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      if (isHtml) {
         res.removeHeader("X-Frame-Options");
         res.setHeader("Referrer-Policy", "no-referrer");
         res.setHeader("Cache-Control", "no-store");
@@ -4906,14 +4944,40 @@ export class WebChannel implements Channel {
         );
       }
       res.writeHead(200, { "Content-Type": appContentType(absPath) });
-      res.end(readFileSync(absPath));
+      if (isHtml) {
+        // 前端日志采集 bootstrap（幂等注入）：错误/资源失败/console.error → app-logs
+        const html = injectAppBootstrap(readFileSync(absPath, "utf8"), appId);
+        res.end(html);
+        this.logAppRequest(appId, "GET", rawPath, 200);
+      } else {
+        res.end(readFileSync(absPath));
+      }
     } catch (err) {
       console.warn("[web] 应用静态文件读取失败，降级 404:", urlPath, err);
+      this.logAppRequest(appId, "GET", rawPath, 404);
       if (!res.headersSent) {
         res.writeHead(404);
         res.end("Not found");
       }
     }
+  }
+
+  /** 网关面应用日志（fire-and-forget；失败不影响服务）。2xx 资产不记，防刷量。 */
+  private logAppRequest(appId: string, method: string, path: string, status: number): void {
+    const api = this.appApi;
+    if (!api) return;
+    void api.appStore
+      .appendLogs(appId, [
+        {
+          source: "gateway",
+          level: status >= 400 ? "error" : "info",
+          method,
+          path,
+          status,
+          ts: new Date().toISOString(),
+        },
+      ])
+      .catch(() => {});
   }
 
   private writeApiError(res: ServerResponse, e: unknown): void {

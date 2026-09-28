@@ -53,4 +53,29 @@ export interface AppStore {
   deleteData(appId: string, key: string): Promise<boolean>;
   /** 该应用已用数据总字节数（配额判定用） */
   dataTotalBytes(appId: string): Promise<number>;
+
+  // ---- 应用日志（网关面 + 前端面；spec 修订 2026-09-29）----
+  appendLogs(appId: string, entries: AppLogEntry[]): Promise<void>;
+  listLogs(appId: string, limit: number): Promise<AppLogRecord[]>;
+}
+
+/** 应用日志条目（写入形态；网关面带 method/path/status，前端面带 message） */
+export interface AppLogEntry {
+  source: "gateway" | "frontend";
+  level: "info" | "warn" | "error";
+  method?: string;
+  path?: string;
+  status?: number;
+  message?: string;
+  ts: string;
+}
+
+export interface AppLogRecord extends AppLogEntry {
+  id: number;
+  appId: string;
+}
+
+export interface AppLogQuery {
+  appId: string;
+  limit: number;
 }
