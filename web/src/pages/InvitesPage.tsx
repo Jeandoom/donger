@@ -17,7 +17,10 @@ interface Invite {
   disabled: boolean;
 }
 
-function inviteStatus(invite: Invite, now: number): { label: string; tone: "success" | "warning" | "neutral" } {
+function inviteStatus(
+  invite: Invite,
+  now: number,
+): { label: string; tone: "success" | "warning" | "neutral" } {
   if (invite.disabled) return { label: "已禁用", tone: "neutral" };
   if (new Date(invite.expiresAt).getTime() <= now) return { label: "已过期", tone: "neutral" };
   if (invite.usedCount >= invite.maxUses) return { label: "已用完", tone: "warning" };

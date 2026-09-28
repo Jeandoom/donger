@@ -21,8 +21,10 @@ export class RoutingAgentRunner implements AgentRunner {
   }
 
   isAwaitingUserInput(taskId: string): boolean {
-    return this.anthropic.isAwaitingUserInput?.(taskId) === true
-      || this.zcode.isAwaitingUserInput?.(taskId) === true;
+    return (
+      this.anthropic.isAwaitingUserInput?.(taskId) === true ||
+      this.zcode.isAwaitingUserInput?.(taskId) === true
+    );
   }
 
   private pick(sdkType: LlmSdkType | undefined): AgentRunner {

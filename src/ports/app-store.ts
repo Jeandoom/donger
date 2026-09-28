@@ -40,10 +40,7 @@ export interface AppStore {
 
   // ---- 版本 ----
   /** 落一条版本元数据；num 由 store 递增分配（同应用单调） */
-  addVersion(
-    appId: string,
-    meta: Omit<AppVersionMeta, "appId" | "num">,
-  ): Promise<AppVersionMeta>;
+  addVersion(appId: string, meta: Omit<AppVersionMeta, "appId" | "num">): Promise<AppVersionMeta>;
   listVersions(appId: string): Promise<AppVersionWithMeta[]>;
   getVersion(appId: string, num: number): Promise<AppVersionMeta | undefined>;
   /** 发布/回滚：把应用 currentVersion 指向指定版本；版本不存在返回 undefined */

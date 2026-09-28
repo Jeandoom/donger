@@ -113,7 +113,7 @@ describe("邮箱验证状态机", () => {
     expect(pending?.verifyPath).toContain("/api/auth/verify?token=");
 
     // 核销 → 302 带 token；登录 200
-    const verify = await get(port, pending!.verifyPath!);
+    const verify = await get(port, pending?.verifyPath ?? "");
     expect(verify.status).toBe(302);
     expect(verify.headers.get("location")).toContain("/login/success?code=");
     const login = await post(port, "/api/auth/login", {
@@ -165,7 +165,7 @@ describe("邮箱验证状态机", () => {
     };
     const pending = verifications.find((v) => v.email === "carol@example.com");
     expect(pending?.verifyPath).toBeTruthy();
-    await get(port, pending!.verifyPath!);
+    await get(port, pending?.verifyPath ?? "");
     expect(
       (await post(port, "/api/auth/login", { email: "carol@example.com", password: "abcd1234" }))
         .status,

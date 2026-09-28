@@ -3,13 +3,17 @@ import {
   conversationWorkspaceRoots,
   diffRows,
   displayPathOf,
-  languageOf,
   parseFileChanges,
   relativeUnderRoot,
 } from "../../src/domain/file-changes.js";
 import type { AuditEvent } from "../../src/domain/types.js";
 
-function toolUse(id: string, toolName: string, input: unknown, recordedAt = "2026-09-24T10:00:00Z"): AuditEvent {
+function toolUse(
+  id: string,
+  toolName: string,
+  input: unknown,
+  recordedAt = "2026-09-24T10:00:00Z",
+): AuditEvent {
   return {
     id,
     conversationId: "c1",
@@ -34,7 +38,10 @@ describe("diffRows（行级 LCS）", () => {
   });
 
   it("修改：上下文保留 + del/add 对", () => {
-    const { rows } = diffRows("const a = 1;\nconst b = 2;\nconst c = 3;", "const a = 1;\nconst b = 20;\nconst c = 3;");
+    const { rows } = diffRows(
+      "const a = 1;\nconst b = 2;\nconst c = 3;",
+      "const a = 1;\nconst b = 20;\nconst c = 3;",
+    );
     const mid = rows.filter((r) => r.type !== "ctx");
     expect(mid).toEqual([
       { type: "del", oldNo: 2, text: "const b = 2;" },
@@ -68,12 +75,20 @@ describe("parseFileChanges（audit 写入类 tool_use 还原）", () => {
 
   it("Write → created；Edit → modified；路径分组与行数聚合", () => {
     const events = [
-      toolUse("e1", "Write", { file_path: "/ws/users/u1/sessions/c1/workspace/src/new.ts", content: "export {};\n" }),
-      toolUse("e2", "Edit", {
+      toolUse("e1", "Write", {
         file_path: "/ws/users/u1/sessions/c1/workspace/src/new.ts",
-        old_string: "export {};",
-        new_string: "export const a = 1;\nexport const b = 2;",
-      }, "2026-09-24T11:00:00Z"),
+        content: "export {};\n",
+      }),
+      toolUse(
+        "e2",
+        "Edit",
+        {
+          file_path: "/ws/users/u1/sessions/c1/workspace/src/new.ts",
+          old_string: "export {};",
+          new_string: "export const a = 1;\nexport const b = 2;",
+        },
+        "2026-09-24T11:00:00Z",
+      ),
     ];
     const { files, segmentsByPath } = parseFileChanges(events, { displayRoots: roots });
     expect(files).toHaveLength(1);
@@ -107,7 +122,7 @@ describe("parseFileChanges（audit 写入类 tool_use 还原）", () => {
   it("截断的 toolInput → truncated 段 + 抢救 file_path", () => {
     const events = [
       {
-        ...(toolUse("e1", "Write", {})),
+        ...toolUse("e1", "Write", {}),
         toolInput: '{"file_path":"/ws/users/u1/big.md","content":"很长的内容被截断了…',
       } as AuditEvent,
     ];
@@ -130,7 +145,9 @@ describe("parseFileChanges（audit 写入类 tool_use 还原）", () => {
 describe("displayPathOf / relativeUnderRoot / conversationWorkspaceRoots", () => {
   it("最长前缀剥离并把反斜杠归一", () => {
     const roots = ["C:\\ws\\users\\u1\\agents\\a1\\workspace", "C:\\ws\\users\\u1"];
-    expect(displayPathOf("C:\\ws\\users\\u1\\agents\\a1\\workspace\\src\\a.ts", roots)).toBe("src/a.ts");
+    expect(displayPathOf("C:\\ws\\users\\u1\\agents\\a1\\workspace\\src\\a.ts", roots)).toBe(
+      "src/a.ts",
+    );
     expect(displayPathOf("C:\\ws\\users\\u1\\other\\b.md", roots)).toBe("other/b.md");
     expect(displayPathOf("D:\\outside\\c.txt", roots)).toBe("D:/outside/c.txt");
   });

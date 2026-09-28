@@ -63,7 +63,11 @@ describe("GET /api/conversations/:id/file-changes*", () => {
       recordedAt: at,
     });
     await auditStore.record(
-      mk({ file_path: join(runtimeRoot, absPath), content: "const a = 1;\nconst b = 2;\n" }, "Write", "2026-09-24T10:00:00Z"),
+      mk(
+        { file_path: join(runtimeRoot, absPath), content: "const a = 1;\nconst b = 2;\n" },
+        "Write",
+        "2026-09-24T10:00:00Z",
+      ),
     );
     await auditStore.record(
       mk(
@@ -76,9 +80,7 @@ describe("GET /api/conversations/:id/file-changes*", () => {
         "2026-09-24T11:00:00Z",
       ),
     );
-    await auditStore.record(
-      mk({ command: "echo hi" }, "Bash", "2026-09-24T12:00:00Z"),
-    );
+    await auditStore.record(mk({ command: "echo hi" }, "Bash", "2026-09-24T12:00:00Z"));
 
     web = new WebChannel({
       port: 0,
@@ -106,7 +108,9 @@ describe("GET /api/conversations/:id/file-changes*", () => {
   });
 
   it("无 token 401；旁人 403（owner 守卫）", async () => {
-    expect((await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/file-changes`)).status).toBe(401);
+    expect(
+      (await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/file-changes`)).status,
+    ).toBe(401);
     const other = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/file-changes`, {
       headers: { Authorization: `Bearer ${otherJwt}` },
     });

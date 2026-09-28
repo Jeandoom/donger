@@ -79,7 +79,7 @@ export function SkillsPage() {
   const [packs, setPacks] = useState<SkillPackDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [reloadSeq, setReloadSeq] = useState(0);
+  const [_reloadSeq, setReloadSeq] = useState(0);
   const [installOpen, setInstallOpen] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [repo, setRepo] = useState<SkillRepoConfigDTO | null>(null);
@@ -104,7 +104,7 @@ export function SkillsPage() {
 
   useEffect(() => {
     void reload();
-  }, [reload, reloadSeq]);
+  }, [reload]);
 
   const wrap = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -358,11 +358,7 @@ function SkillRepoDialog({
       </Field>
       <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
         <Field label="分支">
-          <Input
-            placeholder="main"
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-          />
+          <Input placeholder="main" value={branch} onChange={(e) => setBranch(e.target.value)} />
         </Field>
         <Field label="git PAT 凭证">
           <Select value={credentialCode} onChange={(e) => setCredentialCode(e.target.value)}>
@@ -460,11 +456,7 @@ function PackCard({
         <div className="flex shrink-0 items-center gap-2">
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             启用
-            <Switch
-              checked={pack.enabled}
-              disabled={disabled}
-              onCheckedChange={onTogglePack}
-            />
+            <Switch checked={pack.enabled} disabled={disabled} onCheckedChange={onTogglePack} />
           </label>
           <Button
             variant="ghost"

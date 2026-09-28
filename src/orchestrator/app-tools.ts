@@ -32,7 +32,6 @@ import {
   APP_DATA_VALUE_MAX_BYTES,
   APP_NAME_MAX,
   AppManifestSchema,
-  type AppVersionMeta,
 } from "../domain/app.js";
 import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
 import { extractZipToDir, zipDirToBuffer } from "../util/zip.js";
@@ -328,7 +327,7 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
         return ok(
           entry.valueJson.length <= 8000
             ? entry.valueJson
-            : entry.valueJson.slice(0, 8000) + "…（截断）",
+            : `${entry.valueJson.slice(0, 8000)}…（截断）`,
         );
       },
     },

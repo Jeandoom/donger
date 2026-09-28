@@ -90,14 +90,22 @@ describe("LlmProviderTester openai 分支", () => {
     expect(capturedUrl).toBe("https://api.deepseek.com/v1/chat/completions");
     const headers = (capturedInit?.headers ?? {}) as Record<string, string>;
     expect(headers.authorization).toBe("Bearer sk-openai");
-    expect(JSON.parse(String(capturedInit?.body)).messages).toEqual([{ role: "user", content: "hi" }]);
+    expect(JSON.parse(String(capturedInit?.body)).messages).toEqual([
+      { role: "user", content: "hi" },
+    ]);
   });
 
   it("401/403→auth；200 无 choices→protocol", async () => {
     mockFetchOnce(async () => new Response("{}", { status: 401 }));
-    expect(await new LlmProviderTester().test(OPENAI_TARGET)).toMatchObject({ ok: false, kind: "auth" });
+    expect(await new LlmProviderTester().test(OPENAI_TARGET)).toMatchObject({
+      ok: false,
+      kind: "auth",
+    });
     mockFetchOnce(async () => new Response(JSON.stringify({ content: [] }), { status: 200 }));
-    expect(await new LlmProviderTester().test(OPENAI_TARGET)).toMatchObject({ ok: false, kind: "protocol" });
+    expect(await new LlmProviderTester().test(OPENAI_TARGET)).toMatchObject({
+      ok: false,
+      kind: "protocol",
+    });
   });
 
   it("缺省 sdkType 仍走 anthropic 探测（既有行为不回归）", async () => {

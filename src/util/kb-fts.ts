@@ -65,7 +65,11 @@ export interface KbFtsIndex {
   /** 文件删除后同步 */
   delete(kbId: string, path: string): void;
   /** 短语检索：返回命中文件（kbId+path），行级定位由调用方读取原文完成 */
-  search(kbIds: readonly string[], query: string, limit?: number): Array<{ kbId: string; path: string }>;
+  search(
+    kbIds: readonly string[],
+    query: string,
+    limit?: number,
+  ): Array<{ kbId: string; path: string }>;
 }
 
 export function createKbFts(db: Database): KbFtsIndex {

@@ -87,10 +87,14 @@ describe("ClaudeAgentRunner", () => {
     const allowRoot = "D:\\srv\\donger\\data\\users\\u1";
     const runner = new ClaudeAgentRunner(new GateRouter());
     await collect(
-      runner.run(task, {
-        ...opts,
-        sensitiveReadPolicy: { denyRoots: [denyRoot], allowReadRoots: [allowRoot] },
-      }, async () => ({ approved: true })),
+      runner.run(
+        task,
+        {
+          ...opts,
+          sensitiveReadPolicy: { denyRoots: [denyRoot], allowReadRoots: [allowRoot] },
+        },
+        async () => ({ approved: true }),
+      ),
     );
     expect(captured?.sandbox).toMatchObject({
       filesystem: { denyRead: [denyRoot], allowRead: [allowRoot] },

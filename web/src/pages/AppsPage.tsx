@@ -4,7 +4,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
-import { apiFetch, apiFetchRetry } from "../lib/auth";
+import { apiFetchRetry } from "../lib/auth";
 import { BUILTIN_APP_MANAGER_ID } from "../lib/builtinAgents";
 
 export interface PlatformAppView {

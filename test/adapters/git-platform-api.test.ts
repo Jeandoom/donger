@@ -6,7 +6,6 @@ import {
 import { GiteePlatformApi } from "../../src/adapters/gitee-platform-api.js";
 import { GitHubPlatformApi } from "../../src/adapters/github-platform-api.js";
 import { GitLabPlatformApi } from "../../src/adapters/gitlab-platform-api.js";
-import type { PlatformApiResult } from "../../src/ports/git-platform-api.js";
 
 /** 捕获请求的 fetch 桩：返回预设 status/body */
 function stubFetch(status: number, body: string) {

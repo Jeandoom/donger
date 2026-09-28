@@ -26,9 +26,7 @@ export function KnowledgeSection(props: {
     fetchKnowledgeBases()
       .then((libs) =>
         setCandidates(
-          libs
-            .filter((l) => !l.builtin)
-            .map((l) => ({ id: l.id, name: l.name, role: l._role })),
+          libs.filter((l) => !l.builtin).map((l) => ({ id: l.id, name: l.name, role: l._role })),
         ),
       )
       .catch(() => setCandidates([]));
@@ -72,10 +70,7 @@ export function KnowledgeSection(props: {
           </div>
         )}
       </FormField>
-      <FormField
-        label="独立知识库"
-        hint="保存时自动创建并绑定（可写）；留空则不创建"
-      >
+      <FormField label="独立知识库" hint="保存时自动创建并绑定（可写）；留空则不创建">
         <Input
           value={props.kbNewName}
           onChange={(e) => props.onKbNewNameChange(e.target.value)}

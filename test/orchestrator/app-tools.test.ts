@@ -50,7 +50,7 @@ function tool(deps: AppToolsDeps, name: string) {
 describe("donger-apps 工具（M2 开发链路）", () => {
   it("app_deploy 无 appId：创建应用并发布，产物落版本目录", async () => {
     const { deps, appsDir, runtimeDir } = fixture();
-    const dir = site(join(runtimeDir, "dist"), "监控台");
+    const _dir = site(join(runtimeDir, "dist"), "监控台");
     const r = await tool(deps, "app_deploy").handler({
       dir: "dist",
       name: "监控台",
@@ -99,7 +99,7 @@ describe("donger-apps 工具（M2 开发链路）", () => {
     const outside = tmp();
     site(outside, "外部站点");
     const r1 = await tool(deps, "app_deploy").handler({
-      dir: "../" + outside.split(/[\\/]/).pop(),
+      dir: `../${outside.split(/[\\/]/).pop()}`,
       name: "x",
     });
     expect(r1.isError).toBeTruthy();

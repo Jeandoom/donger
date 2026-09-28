@@ -66,7 +66,10 @@ export class LoopRunner {
     const workflow = loop.workflowId ? await workflowStore.get(loop.workflowId) : undefined;
     // 属主复核（纵深）：workflow 与 loop 必须同人，防历史脏数据借他人 agent 装备运行
     if (workflow && workflow.ownerId !== loop.ownerId) {
-      this.deps.logger.warn({ loopId, workflowId: workflow.id }, "workflow owner mismatch, skip run");
+      this.deps.logger.warn(
+        { loopId, workflowId: workflow.id },
+        "workflow owner mismatch, skip run",
+      );
       return;
     }
     const trigger = workflow?.triggerId ? await triggerStore.get(workflow.triggerId) : undefined;
@@ -175,7 +178,8 @@ export class LoopRunner {
           return {
             sourceOutput: "",
             matched: false,
-            error: "source url 被拒绝：仅支持 http/https 公网目标（内网目标须 TRIGGER_ALLOW_PRIVATE_NET=true）",
+            error:
+              "source url 被拒绝：仅支持 http/https 公网目标（内网目标须 TRIGGER_ALLOW_PRIVATE_NET=true）",
           };
         }
         const ctrl = new AbortController();
@@ -199,8 +203,7 @@ export class LoopRunner {
         const { readFile } = await import("node:fs/promises");
         const root = resolve(this.deps.workspaceRoot);
         const target = resolve(root, sched.source.path);
-        const inside =
-          target === root || target.startsWith(root + sep);
+        const inside = target === root || target.startsWith(root + sep);
         if (!inside) {
           return {
             sourceOutput: "",

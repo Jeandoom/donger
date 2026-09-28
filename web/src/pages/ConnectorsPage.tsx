@@ -111,7 +111,7 @@ export function ConnectorsPage() {
   const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [reloadSeq, setReloadSeq] = useState(0);
+  const [_reloadSeq, setReloadSeq] = useState(0);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ConnectorDTO | null>(null);
@@ -149,7 +149,7 @@ export function ConnectorsPage() {
         setCredentialOptions(templates.map((t) => ({ code: t.code, name: t.name }))),
       )
       .catch(() => {});
-  }, [reload, reloadSeq]);
+  }, [reload]);
 
   const mine = connectors.filter((c) => c.createdByMe);
   const global = connectors.filter((c) => !c.createdByMe && c.shareScope === "global");
@@ -271,9 +271,7 @@ export function ConnectorsPage() {
       </div>
       {c.description && <div className="text-xs text-muted-foreground">{c.description}</div>}
       <div className="flex items-center gap-3">
-        <span className="flex-1 text-xs text-muted-foreground">
-          被 {c.usedBy} 个智能体引用
-        </span>
+        <span className="flex-1 text-xs text-muted-foreground">被 {c.usedBy} 个智能体引用</span>
         <Button variant="secondary" size="sm" onClick={() => openEdit(c)}>
           编辑
         </Button>

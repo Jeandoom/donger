@@ -320,11 +320,9 @@ description: d
 function commitAll(cwd: string): void {
   execFileSync("git", ["init", "-q"], { cwd });
   execFileSync("git", ["-c", "user.email=a@b.c", "-c", "user.name=a", "add", "-A"], { cwd });
-  execFileSync(
-    "git",
-    ["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-qm", "init"],
-    { cwd },
-  );
+  execFileSync("git", ["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-qm", "init"], {
+    cwd,
+  });
 }
 
 describe("LocalSkillInstaller git 凭证鉴权", () => {
@@ -366,10 +364,7 @@ describe("LocalSkillInstaller git 凭证鉴权", () => {
     const src = mkdtempSync(join(tmpdir(), "git-cred-src-"));
     gitRoots.push(src);
     mkdirSync(join(src, "skills", "g"), { recursive: true });
-    writeFileSync(
-      join(src, "skills", "g", "SKILL.md"),
-      '---\nname: g\ndescription: "cred"\n---\n',
-    );
+    writeFileSync(join(src, "skills", "g", "SKILL.md"), '---\nname: g\ndescription: "cred"\n---\n');
     commitAll(src);
     return src;
   }
@@ -390,7 +385,9 @@ describe("LocalSkillInstaller git 凭证鉴权", () => {
     });
   });
 
-  it("勾选凭证安装：AskPass 注入 + credentialCode 落 source + 更新复用", { timeout: 15_000 }, async () => {
+  it("勾选凭证安装：AskPass 注入 + credentialCode 落 source + 更新复用", {
+    timeout: 15_000,
+  }, async () => {
     const src = makeSrcRepo();
     templates.set("gl-pat", { kind: "git" });
     values.set("gl-pat", { access_token: "tok-123" });

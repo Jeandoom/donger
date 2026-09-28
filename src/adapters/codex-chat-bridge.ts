@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 /**
  * 内置 Responses↔Chat 协议桥（specs/2026-09-21-codex-openai-runner-design.md §7.0 修正）。
@@ -176,7 +175,6 @@ export class ChatToResponsesTranslator {
   private messageId: string | null = null;
   private messageText = "";
   private reasoningId: string | null = null;
-  private reasoningText = "";
   /** 上游 tool_calls index → 桥内 function_call item 状态 */
   private readonly calls = new Map<
     number,
@@ -214,7 +212,6 @@ export class ChatToResponsesTranslator {
           });
           this.outputIndex += 1;
         }
-        this.reasoningText += delta.reasoning_content;
         events.push({
           type: "response.reasoning_summary_text.delta",
           item_id: this.reasoningId,
@@ -531,7 +528,8 @@ export class CodexChatBridge {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "not found" } }));
       return;
-    }    const token = req.headers[BRIDGE_AUTH_HEADER];
+    }
+    const token = req.headers[BRIDGE_AUTH_HEADER];
     const upstream = typeof token === "string" ? this.upstreams.get(token) : undefined;
     if (!upstream) {
       res.writeHead(401, { "content-type": "application/json" });
@@ -553,7 +551,9 @@ export class CodexChatBridge {
     if (process.env.DONGER_BRIDGE_DEBUG) {
       console.error(
         "[codex-bridge] responses→chat tools:",
-        JSON.stringify(chatRequest.tools?.map((t) => (t as { function?: { name?: string } }).function?.name)),
+        JSON.stringify(
+          chatRequest.tools?.map((t) => (t as { function?: { name?: string } }).function?.name),
+        ),
         "upstream stream requested:",
         (parsed as { stream?: unknown }).stream,
       );
@@ -628,11 +628,7 @@ export class CodexChatBridge {
   }
 
   /** MCP 挂载请求处理：审批门拦截 tools/call，其余透传 StreamableHTTP transport */
-  private async handleMcp(
-    req: IncomingMessage,
-    res: ServerResponse,
-    url: string,
-  ): Promise<void> {
+  private async handleMcp(req: IncomingMessage, res: ServerResponse, url: string): Promise<void> {
     // /mcp/<runToken>/<serverName>
     const rest = url.slice("/mcp/".length);
     const slash = rest.indexOf("/");

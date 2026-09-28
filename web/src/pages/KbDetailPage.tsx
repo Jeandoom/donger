@@ -407,9 +407,7 @@ function RevisionsTab({ kbId }: { kbId: string }) {
         <Card key={r.id} className="flex flex-col gap-1.5 p-3">
           <div className="flex items-center gap-2">
             <Badge
-              tone={
-                r.action === "delete" || r.action === "library-deleted" ? "danger" : "info"
-              }
+              tone={r.action === "delete" || r.action === "library-deleted" ? "danger" : "info"}
             >
               {ACTION_LABELS[r.action]}
             </Badge>

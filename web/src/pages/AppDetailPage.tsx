@@ -210,7 +210,7 @@ function VersionsTab({
   versions: AppVersionView[];
   onChanged: () => void;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const [_error, setError] = useState<string | null>(null);
 
   const publish = async (num: number) => {
     const r = await apiFetch(`/api/apps/${appId}/versions/${num}/publish`, { method: "POST" });

@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { KbLibrary } from "../domain/kb.js";
 import type { KbLibraryStore } from "../ports/kb-store.js";
@@ -100,7 +108,7 @@ function ftsBackfill(
     if (name.startsWith(".") || name === "assets") continue;
     const full = join(root, name);
     const rel = relPrefix === "" ? name : `${relPrefix}/${name}`;
-    let stat;
+    let stat: ReturnType<typeof statSync>;
     try {
       stat = statSync(full);
     } catch {

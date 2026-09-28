@@ -20,7 +20,7 @@ export function kbRootPathVariants(root: string): string[] {
   const slash = root.replace(/\\/g, "/");
   const variants = new Set<string>([root.toLowerCase(), slash.toLowerCase()]);
   const m = slash.match(/^([A-Za-z]):(\/.*)$/);
-  if (m && m[1] && m[2]) {
+  if (m?.[1] && m[2]) {
     const drive = m[1].toLowerCase();
     const rest = m[2].replace(/\/+$/, "");
     variants.add(`${drive}:/${rest}`.toLowerCase());

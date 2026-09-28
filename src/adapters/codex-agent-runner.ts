@@ -1,17 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { Codex } from "@openai/codex-sdk";
+import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import type { McpServerConfig } from "../domain/agent.js";
 import { scanSkillPack } from "../domain/skill-scan.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
-import {
-  CodexChatBridge,
-  type ChatUpstreamConfig,
-} from "./codex-chat-bridge.js";
+import type { ChatUpstreamConfig, CodexChatBridge } from "./codex-chat-bridge.js";
 
 /**
  * OpenAI 引擎 runner：用 Codex Agent SDK（codex exec 通道）驱动。
@@ -111,7 +108,11 @@ export class CodexAgentRunner implements AgentRunner {
     return false;
   }
 
-  async *run(task: Task, opts: RunOptions, _resolver: ApprovalResolver): AsyncIterable<RunnerEvent> {
+  async *run(
+    task: Task,
+    opts: RunOptions,
+    _resolver: ApprovalResolver,
+  ): AsyncIterable<RunnerEvent> {
     const ac = new AbortController();
     opts.abortSignal?.addEventListener("abort", () => ac.abort(), { once: true });
 
@@ -122,7 +123,10 @@ export class CodexAgentRunner implements AgentRunner {
     mkdirSync(cwd, { recursive: true });
 
     // 沙箱模式：白名单启发 + admin 逃生门（见 resolveSandboxMode 注释）
-    const sandboxMode = resolveSandboxMode(opts.allowedTools, process.env.DONGER_CODEX_SANDBOX_MODE);
+    const sandboxMode = resolveSandboxMode(
+      opts.allowedTools,
+      process.env.DONGER_CODEX_SANDBOX_MODE,
+    );
 
     // CODEX_HOME 按用户隔离（workspaceRoot=user.homeDir）：sessions/rollout、skills 物化、规则
     const codexHome = join(resolve(opts.workspaceRoot ?? cwd), ".codex-home");
@@ -233,9 +237,7 @@ export class CodexAgentRunner implements AgentRunner {
           },
           approval_policy: "never",
           sandbox_mode: sandboxMode,
-          ...(Object.keys(mcpServerConfigs).length > 0
-            ? { mcp_servers: mcpServerConfigs }
-            : {}),
+          ...(Object.keys(mcpServerConfigs).length > 0 ? { mcp_servers: mcpServerConfigs } : {}),
         },
       });
       const threadOptions: Record<string, unknown> = {
@@ -371,11 +373,7 @@ export class CodexAgentRunner implements AgentRunner {
 }
 
 /** 累计文本 → 追加增量（非前缀扩展时跳过，防乱序重复） */
-function incrementalSuffix(
-  itemId: string,
-  fullText: string,
-  emitted: Map<string, string>,
-): string {
+function incrementalSuffix(itemId: string, fullText: string, emitted: Map<string, string>): string {
   const prev = emitted.get(itemId) ?? "";
   if (fullText.length <= prev.length || !fullText.startsWith(prev)) return "";
   emitted.set(itemId, fullText);
@@ -401,21 +399,32 @@ function itemToToolUse(
         toolUseId: item.id,
       };
     case "web_search":
-      return { tool: "WebSearch", input: { query: (item as { query?: string }).query ?? "" }, toolUseId: item.id };
+      return {
+        tool: "WebSearch",
+        input: { query: (item as { query?: string }).query ?? "" },
+        toolUseId: item.id,
+      };
     default:
       return undefined;
   }
 }
 
 /** item.completed → tool_result 事件载荷（file_change 在 completed 一次性成对补发） */
-function itemToToolOutcome(
-  item: CodexItemLike,
-): { toolUseId: string; content: string; isError: boolean; tool?: string; input?: Record<string, unknown> } | undefined {
+function itemToToolOutcome(item: CodexItemLike):
+  | {
+      toolUseId: string;
+      content: string;
+      isError: boolean;
+      tool?: string;
+      input?: Record<string, unknown>;
+    }
+  | undefined {
   switch (item.type) {
     case "command_execution":
       return {
         toolUseId: item.id,
-        content: `${item.aggregated_output ?? ""}${item.exit_code !== undefined ? `\n[exit_code: ${item.exit_code}]` : ""}`.trim(),
+        content:
+          `${item.aggregated_output ?? ""}${item.exit_code !== undefined ? `\n[exit_code: ${item.exit_code}]` : ""}`.trim(),
         isError: item.status === "failed",
       };
     case "file_change": {

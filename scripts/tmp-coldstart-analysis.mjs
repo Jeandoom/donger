@@ -1,9 +1,10 @@
 // 临时分析脚本 v3：分离 dispatcher 路由轮成本与 agent 轮自身冷启动（只读）。
 // 锚点：M=用户消息持久化时刻；播报 bot 消息（如「📨 已分派给…」）= dispatcher 轮结束；
 // B=transcript enqueue（agent 进程收消息）；C=dequeue；D=resume 加载后首条新消息；E=首条 llm_output。
-import Database from "better-sqlite3";
-import { join } from "node:path";
+
 import { homedir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 
 const db = new Database(join(homedir(), ".donger", "donger.db"), { readonly: true });
 const T = (s) => new Date(s).getTime();
@@ -50,8 +51,12 @@ for (const [, evs] of byTask) {
     skipped++;
     continue;
   }
-  const enq = [...ents].reverse().find((e) => e.t <= firstMsg.t && e.p.includes('"operation":"enqueue"'));
-  const deq = [...ents].reverse().find((e) => e.t <= firstMsg.t && e.p.includes('"operation":"dequeue"'));
+  const enq = [...ents]
+    .reverse()
+    .find((e) => e.t <= firstMsg.t && e.p.includes('"operation":"enqueue"'));
+  const deq = [...ents]
+    .reverse()
+    .find((e) => e.t <= firstMsg.t && e.p.includes('"operation":"dequeue"'));
   if (!enq || !deq) {
     skipped++;
     continue;
@@ -62,7 +67,9 @@ for (const [, evs] of byTask) {
     continue;
   }
   const M = T(m.createdAt);
-  const priorResult = evs.find((e) => e.type === "result" && T(e.recordedAt) < enq.t && T(e.recordedAt) > M);
+  const priorResult = evs.find(
+    (e) => e.type === "result" && T(e.recordedAt) < enq.t && T(e.recordedAt) > M,
+  );
   if (priorResult) {
     skipped++; // 重试轮剔除
     continue;

@@ -86,7 +86,7 @@ import {
   passwordPolicyError,
 } from "../domain/invite.js";
 import type { KbLibrary } from "../domain/kb.js";
-import { KbLibraryInputSchema, parseKbLibrary } from "../domain/kb.js";
+import { KbLibraryInputSchema } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
 import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-policy.js";
 import type { LLMConfig } from "../domain/llm-config.js";
@@ -205,8 +205,6 @@ import {
   getGithubUser,
 } from "../util/github-oauth-api.js";
 import {
-  countKbEntries,
-  deleteKbEntry,
   ensureKbDir,
   kbRootDir,
   listKbTree,
@@ -1218,7 +1216,7 @@ export class WebChannel implements Channel {
       // 抛 URIError 会成为未处理 rejection 打死进程）
       let relPath: string;
       try {
-        relPath = decodeURIComponent(url.split("?")[0]!.replace("/uploads/", ""));
+        relPath = decodeURIComponent(url.split("?")[0]?.replace("/uploads/", "") ?? "");
       } catch {
         res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("bad request");
@@ -2576,7 +2574,7 @@ export class WebChannel implements Channel {
         res.end();
         return;
       }
-      const user = await this.deps.userStore.get(userId);
+      const _user = await this.deps.userStore.get(userId);
       const { token: jwt } = await this.sessionStore.create(userId);
       res.writeHead(302, {
         Location: `/login/success?code=${this.issueOneTimeCode(jwt)}&mode=verified`,
@@ -4351,7 +4349,7 @@ export class WebChannel implements Channel {
       const kb = this.requireKbStores(res);
       if (!kb) return;
       const ref = await kb.shares.findByToken(kbByShareMatch[1] ?? "");
-      if (!ref || !ref.enabled) return this.json(res, { error: "not found" }, 404);
+      if (!ref?.enabled) return this.json(res, { error: "not found" }, 404);
       const lib = await kb.libraries.get(ref.kbId);
       if (!lib) return this.json(res, { error: "not found" }, 404);
       return this.json(res, {
@@ -4485,7 +4483,7 @@ export class WebChannel implements Channel {
       const id = kbAcceptMatch[1] ?? "";
       const body = JSON.parse(await this.readBody(req)) as { token?: string };
       const ref = await kb.shares.findByToken(typeof body.token === "string" ? body.token : "");
-      if (!ref || !ref.enabled || ref.kbId !== id) {
+      if (!ref?.enabled || ref.kbId !== id) {
         return this.json(res, { error: "分享链接无效或已关闭" }, 403);
       }
       const lib = await kb.libraries.get(id);
@@ -4628,7 +4626,7 @@ export class WebChannel implements Channel {
       const offset = Number(this.extractQuery(url, "offset") ?? "0");
       const lim = Number.isFinite(limit) ? limit : 100;
       const off = Number.isFinite(offset) ? offset : 0;
-      let revisions;
+      let revisions: Awaited<ReturnType<typeof kb.revisions.listAll>>;
       if (viewer.role === "admin") {
         revisions = await kb.revisions.listAll({ limit: lim, offset: off });
       } else {

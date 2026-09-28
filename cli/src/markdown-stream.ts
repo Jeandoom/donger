@@ -40,10 +40,10 @@ export class MarkdownStream {
     let out = "";
     if (this.mode === "code") {
       if (rest) this.block.push(rest);
-      out += renderCodeBlock(this.block, true) + "\n";
+      out += `${renderCodeBlock(this.block, true)}\n`;
     } else if (this.mode === "table") {
       if (rest) this.block.push(rest);
-      out += renderTable(this.block, true) + "\n";
+      out += `${renderTable(this.block, true)}\n`;
     } else if (this.pending !== null) {
       out += `${this.pending}\n${rest}`;
     } else {
@@ -62,7 +62,7 @@ export class MarkdownStream {
         const done = this.block;
         this.block = [];
         this.mode = "text";
-        return renderCodeBlock(done, true) + "\n";
+        return `${renderCodeBlock(done, true)}\n`;
       }
       this.block.push(line);
       return "";

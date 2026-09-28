@@ -4,20 +4,20 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import pino from "pino";
 import { afterAll, describe, expect, it } from "vitest";
-import { createSecretCipher } from "../../src/util/secret-cipher.js";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
+import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
+import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
+import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
 import { toAuditEvent } from "../../src/domain/audit.js";
 import { isPrivateNetHost, validateTriggerHttpUrl } from "../../src/domain/net-target.js";
 import { TriggerMatcherSchema } from "../../src/domain/trigger.js";
 import { LoopRunner } from "../../src/orchestrator/loop-runner.js";
-import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
-import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
-import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
-import pino from "pino";
+import { createSecretCipher } from "../../src/util/secret-cipher.js";
 
 const logger = pino({ level: "silent" });
 const dbs: Database.Database[] = [];
@@ -52,7 +52,9 @@ describe("审计 llm_input 密钥打码（H6：连接器明文凭证不落审计
     const ev = toAuditEvent({ type: "llm_input", input }, ctx);
     if (ev.type !== "llm_input") throw new Error("unexpected type");
     const parsed = JSON.parse(ev.llmInput) as {
-      options: { mcpServers: Array<{ headers: Record<string, string>; env: Record<string, string> }> };
+      options: {
+        mcpServers: Array<{ headers: Record<string, string>; env: Record<string, string> }>;
+      };
     };
     expect(parsed.options.mcpServers[0]?.headers.Authorization).toBe("••••");
     expect(parsed.options.mcpServers[0]?.headers["X-Api-Key"]).toBe("••••");
@@ -170,7 +172,7 @@ describe("trigger source 收口（H10/H11）", () => {
 
   it("file source 工作区外路径 → 拒绝（任意文件读收口）", async () => {
     const { runner } = makeRunner();
-    const t = await runner["deps"].triggerStore.create({
+    const t = await runner.deps.triggerStore.create({
       ownerId: "u1",
       name: "T",
       type: "scheduler",
@@ -188,7 +190,7 @@ describe("trigger source 收口（H10/H11）", () => {
 
   it("http source 内网目标默认拒绝，公网形态校验通过", async () => {
     const { runner } = makeRunner(false);
-    const t = await runner["deps"].triggerStore.create({
+    const t = await runner.deps.triggerStore.create({
       ownerId: "u1",
       name: "T2",
       type: "scheduler",
@@ -225,14 +227,11 @@ describe("trigger source 收口（H10/H11）", () => {
     }
     expect(validateTriggerHttpUrl("file:///etc/passwd", false)).toBeNull();
     expect(validateTriggerHttpUrl("http://127.0.0.1:3330/", false)).toBeNull();
-    expect(
-      validateTriggerHttpUrl("http://127.0.0.1:3330/", true),
-    ).toBe("http://127.0.0.1:3330/");
+    expect(validateTriggerHttpUrl("http://127.0.0.1:3330/", true)).toBe("http://127.0.0.1:3330/");
   });
 
   it("bodyRegex 灾难回溯启发式：嵌套量词/交替重叠拒绝，常用正则放行", () => {
-    const parse = (p: string) =>
-      TriggerMatcherSchema.safeParse({ kind: "bodyRegex", pattern: p });
+    const parse = (p: string) => TriggerMatcherSchema.safeParse({ kind: "bodyRegex", pattern: p });
     for (const evil of [
       "(a+)+",
       "(a|aa)+(b)+$",
@@ -259,7 +258,9 @@ describe("trigger source 收口（H10/H11）", () => {
     const input = JSON.stringify({
       prompt: "run https://mcp.example.com/api?token=supersecret123",
       options: {
-        mcpServers: [{ name: "c", type: "http", url: "https://h/?api_key=abcd1234", headers: { A: "v" } }],
+        mcpServers: [
+          { name: "c", type: "http", url: "https://h/?api_key=abcd1234", headers: { A: "v" } },
+        ],
       },
     });
     const ev = toAuditEvent({ type: "llm_input", input }, ctx);
@@ -279,7 +280,10 @@ describe("trigger source 收口（H10/H11）", () => {
       recordedAt: new Date().toISOString(),
     };
     const ev = toAuditEvent(
-      { type: "llm_input", input: JSON.stringify({ role: "user", content: "access_token:zzsecretxxx99" }) },
+      {
+        type: "llm_input",
+        input: JSON.stringify({ role: "user", content: "access_token:zzsecretxxx99" }),
+      },
       ctx,
     );
     if (ev.type !== "llm_input") throw new Error("unexpected type");

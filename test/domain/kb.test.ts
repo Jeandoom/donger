@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { KbLibrary } from "../../src/domain/kb.js";
 import { lineDiff } from "../../src/domain/kb-diff.js";
 import {
   canManageKb,
@@ -7,7 +8,6 @@ import {
   kbDeletable,
   kbShareable,
 } from "../../src/domain/kb-policy.js";
-import type { KbLibrary } from "../../src/domain/kb.js";
 
 /** 权限口径单点（spec §7）+ 行级 diff（spec §6.2） */
 

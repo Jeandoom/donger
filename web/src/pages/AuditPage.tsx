@@ -45,7 +45,10 @@ function systemEventLabel(type: string): string {
 }
 
 /** 轮次状态 → 中文标签 + 语义色（未知状态回退 neutral） */
-const TURN_STATUS: Record<string, { label: string; tone: "success" | "danger" | "info" | "warning" | "neutral" }> = {
+const TURN_STATUS: Record<
+  string,
+  { label: string; tone: "success" | "danger" | "info" | "warning" | "neutral" }
+> = {
   done: { label: "已完成", tone: "success" },
   success: { label: "成功", tone: "success" },
   error: { label: "失败", tone: "danger" },
@@ -97,12 +100,12 @@ export function AuditPage() {
   const [list, setList] = useState<AuditConversationListItem[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState("");
-  const [listReload, setListReload] = useState(0);
+  const [_listReload, setListReload] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AuditDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
-  const [detailReload, setDetailReload] = useState(0);
+  const [_detailReload, setDetailReload] = useState(0);
 
   // 会话栏折叠 + 系统事件栏（admin 专属，spec 2026-09-21-user-management-design 决策③）
   const [convCollapsed, setConvCollapsed] = useState(false);
@@ -182,7 +185,7 @@ export function AuditPage() {
     return () => {
       stale = true;
     };
-  }, [listReload]);
+  }, []);
 
   useEffect(() => {
     if (!llmMode) return;
@@ -221,7 +224,7 @@ export function AuditPage() {
       .finally(() => {
         if (seq === detailSeq.current) setDetailLoading(false);
       });
-  }, [selected, detailReload]);
+  }, [selected]);
 
   const llmEventCount = useMemo(
     () => detail?.turns.reduce((sum, turn) => sum + selectLlmEvents(turn.events).length, 0) ?? 0,
@@ -260,7 +263,7 @@ export function AuditPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [debugInput]);
+  }, [debugInput, closeDebug]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -316,10 +319,7 @@ export function AuditPage() {
                   </div>
                 ) : listError ? (
                   <div className="p-1">
-                    <ErrorRetry
-                      message={listError}
-                      onRetry={() => setListReload((v) => v + 1)}
-                    />
+                    <ErrorRetry message={listError} onRetry={() => setListReload((v) => v + 1)} />
                   </div>
                 ) : list.length === 0 ? (
                   <p className="px-3 py-6 text-center text-xs text-muted-foreground">
@@ -512,7 +512,9 @@ export function AuditPage() {
                 </Select>
               </div>
               {presetsError ? (
-                <p className="mb-2 text-[11px] text-warning-foreground">模型预设加载失败，可手动改写输入后用默认模型调试</p>
+                <p className="mb-2 text-[11px] text-warning-foreground">
+                  模型预设加载失败，可手动改写输入后用默认模型调试
+                </p>
               ) : null}
               <Textarea
                 mono
@@ -720,10 +722,7 @@ function EventRow({
     return (
       <details className="px-3 text-xs text-muted-foreground">
         <summary className="flex cursor-pointer items-center gap-1 py-1">
-          └
-          {e.isError ? (
-            <XCircle className="h-3 w-3 text-destructive" aria-hidden="true" />
-          ) : null}
+          └{e.isError ? <XCircle className="h-3 w-3 text-destructive" aria-hidden="true" /> : null}
           output · {formatDurationMs(e.durationMs)}
         </summary>
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-2">

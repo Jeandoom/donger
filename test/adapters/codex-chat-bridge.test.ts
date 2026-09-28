@@ -1,10 +1,10 @@
 import { createServer, type Server } from "node:http";
-import { describe, expect, it, afterEach } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   ChatToResponsesTranslator,
   CodexChatBridge,
-  SseDataParser,
   mapChatUsageToResponses,
+  SseDataParser,
   translateResponsesRequestToChat,
 } from "../../src/adapters/codex-chat-bridge.js";
 
@@ -46,7 +46,11 @@ describe("translateResponsesRequestToChat", () => {
         role: "assistant",
         content: null,
         tool_calls: [
-          { id: "call_1", type: "function", function: { name: "shell", arguments: '{"command":["ls"]}' } },
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "shell", arguments: '{"command":["ls"]}' },
+          },
         ],
       },
       { role: "tool", tool_call_id: "call_1", content: "a.txt" },
@@ -79,7 +83,10 @@ describe("ChatToResponsesTranslator", () => {
     expect(t.createdEvent().type).toBe("response.created");
     const e1 = t.handleChunk({ choices: [{ delta: { content: "你" } }] });
     const e2 = t.handleChunk({ choices: [{ delta: { content: "好" } }] });
-    expect(e1.map((e) => e.type)).toEqual(["response.output_item.added", "response.output_text.delta"]);
+    expect(e1.map((e) => e.type)).toEqual([
+      "response.output_item.added",
+      "response.output_text.delta",
+    ]);
     expect(e1[1]).toMatchObject({ delta: "你" });
     expect(e2.map((e) => e.type)).toEqual(["response.output_text.delta"]);
     const end = t.finish();
@@ -102,19 +109,24 @@ describe("ChatToResponsesTranslator", () => {
       choices: [
         {
           delta: {
-            tool_calls: [{ index: 0, id: "call_9", function: { name: "shell", arguments: "{\"a\"" } }],
+            tool_calls: [
+              { index: 0, id: "call_9", function: { name: "shell", arguments: '{"a"' } },
+            ],
           },
         },
       ],
     });
     t.handleChunk({
       choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ":1}" } }] } }],
-      usage: { prompt_tokens: 10, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 3 }, completion_tokens_details: { reasoning_tokens: 2 } },
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        prompt_tokens_details: { cached_tokens: 3 },
+        completion_tokens_details: { reasoning_tokens: 2 },
+      },
     });
     const end = t.finish();
-    const added = [
-      ...added1.filter((e) => e.type === "response.output_item.added"),
-    ];
+    const added = [...added1.filter((e) => e.type === "response.output_item.added")];
     expect(added.map((e) => (e as { item: { type: string } }).item.type)).toEqual([
       "function_call",
     ]);
@@ -147,7 +159,10 @@ describe("ChatToResponsesTranslator", () => {
   it("failedEvent 透传 code+message（codex 侧映射 turn.failed）", () => {
     const t = new ChatToResponsesTranslator();
     const event = t.failedEvent("401", "bad key");
-    expect(event).toMatchObject({ type: "response.failed", response: { error: { code: "401", message: "bad key" } } });
+    expect(event).toMatchObject({
+      type: "response.failed",
+      response: { error: { code: "401", message: "bad key" } },
+    });
   });
 });
 
@@ -203,7 +218,10 @@ describe("CodexChatBridge（端到端：responses 请求 → 假上游 chat SSE 
     bridges.push(bridge);
     const port = await bridge.ensureStarted();
 
-    const noAuth = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", body: "{}" });
+    const noAuth = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST",
+      body: "{}",
+    });
     expect(noAuth.status).toBe(401);
 
     bridge.registerUpstream("tok", {
@@ -227,7 +245,9 @@ describe("CodexChatBridge（端到端：responses 请求 → 假上游 chat SSE 
     expect(events.map((e) => e.type)).toContain("response.output_text.delta");
     expect(events.at(-1)?.type).toBe("response.completed");
 
-    expect((upstream.seen as { current?: { model: string; messages: unknown[] } }).current).toMatchObject({
+    expect(
+      (upstream.seen as { current?: { model: string; messages: unknown[] } }).current,
+    ).toMatchObject({
       model: "glm-x",
     });
     const messages = (upstream.seen as { current?: { messages: Array<{ role: string }> } }).current
@@ -252,7 +272,11 @@ describe("CodexChatBridge（端到端：responses 请求 → 假上游 chat SSE 
     const bridge = new CodexChatBridge();
     bridges.push(bridge);
     const port = await bridge.ensureStarted();
-    bridge.registerUpstream("tok", { baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: "k", model: "m" });
+    bridge.registerUpstream("tok", {
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      apiKey: "k",
+      model: "m",
+    });
 
     const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
       method: "POST",
@@ -285,11 +309,9 @@ describe("CodexChatBridge MCP 挂载（真实 MCP 客户端回环）", () => {
       { inputSchema: { text: z.string() } },
       async ({ text }: { text: string }) => ({ content: [{ type: "text", text }] }),
     );
-    instance.registerTool(
-      "danger_write",
-      { inputSchema: {} },
-      async () => ({ content: [{ type: "text", text: "不应到达" }] }),
-    );
+    instance.registerTool("danger_write", { inputSchema: {} }, async () => ({
+      content: [{ type: "text", text: "不应到达" }],
+    }));
     const url = await bridge.mountMcp(
       "run-tok",
       "donger-test",
@@ -308,7 +330,9 @@ describe("CodexChatBridge MCP 挂载（真实 MCP 客户端回环）", () => {
     const client = new Client({ name: "test-client", version: "1.0.0" });
     await client.connect(new StreamableHTTPClientTransport(new URL(url)));
     const tools = await client.listTools();
-    expect(tools.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["echo", "danger_write"]));
+    expect(tools.tools.map((t) => t.name)).toEqual(
+      expect.arrayContaining(["echo", "danger_write"]),
+    );
     const result = await client.callTool({ name: "echo", arguments: { text: "ping" } });
     expect(result).toMatchObject({ content: [{ type: "text", text: "ping" }] });
     await client.close();
@@ -316,7 +340,10 @@ describe("CodexChatBridge MCP 挂载（真实 MCP 客户端回环）", () => {
 
   it("审批门命中 → isError 拒绝结果，工具实现不执行", async () => {
     const { url } = await mountTestServer({
-      gateCheck: (tool) => (tool === "mcp__donger-test__danger_write" ? { gateId: "authoring", force: true } : undefined),
+      gateCheck: (tool) =>
+        tool === "mcp__donger-test__danger_write"
+          ? { gateId: "authoring", force: true }
+          : undefined,
     });
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { StreamableHTTPClientTransport } = await import(

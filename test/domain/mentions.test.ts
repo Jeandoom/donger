@@ -5,8 +5,8 @@ import {
   conversationMarkerLabel,
   FEEDBACK_MENTION_ALL_ID,
   feedbackMarkerLabel,
-  MentionInputSchema,
   MENTION_INLINE_TOTAL_BUDGET,
+  MentionInputSchema,
   type ResolvedMention,
 } from "../../src/domain/mentions.js";
 

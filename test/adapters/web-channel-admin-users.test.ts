@@ -179,13 +179,9 @@ describe("用户管理：列表与越权", () => {
     const whitelisted = await userStore.getOrCreateByIdentity("dingtalk", "wx999", "老王");
     expect(whitelisted.role).toBe("admin");
     const { token: adminToken } = await makeUser("root2", "admin");
-    const res = await req(
-      port,
-      "PATCH",
-      `/api/admin/users/${whitelisted.id}/role`,
-      adminToken,
-      { role: "user" },
-    );
+    const res = await req(port, "PATCH", `/api/admin/users/${whitelisted.id}/role`, adminToken, {
+      role: "user",
+    });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toContain("ADMIN_EXTERNAL_IDS");
   });
@@ -201,7 +197,13 @@ describe("用户管理：列表与越权", () => {
     await userStore.updateRole(sole.id, "admin");
     systemEventStore = new SqliteSystemEventStore(db);
     systemEventStore.migrate();
-    web = new WebChannel({ port: 0, host: "127.0.0.1", workspaceDir: tmpDir, userStore, systemEventStore });
+    web = new WebChannel({
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: tmpDir,
+      userStore,
+      systemEventStore,
+    });
     web.onMessage(() => {});
     await web.ready();
     const port = web.boundPort;

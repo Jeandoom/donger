@@ -1,10 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type {
-  KbLibrary,
-  KbLibraryInput,
-  KbRevision,
-  KbRevisionInput,
-} from "../domain/kb.js";
+import type { KbLibrary, KbLibraryInput, KbRevision, KbRevisionInput } from "../domain/kb.js";
 import { parseKbLibrary } from "../domain/kb.js";
 import type {
   KbLibraryStore,
@@ -140,7 +135,12 @@ export class SqliteKbLibraryStore implements KbLibraryStore {
   async update(id: string, patch: Partial<KbLibrary>): Promise<KbLibrary> {
     const cur = await this.get(id);
     if (!cur) throw new Error(`知识库不存在: ${id}`);
-    const next = parseKbLibrary({ ...cur, ...patch, id: cur.id, updatedAt: new Date().toISOString() });
+    const next = parseKbLibrary({
+      ...cur,
+      ...patch,
+      id: cur.id,
+      updatedAt: new Date().toISOString(),
+    });
     this.db
       .prepare(
         `UPDATE kb_libraries SET name = ?, description = ?, systemPrompt = ?, sourceAgentId = ?, updatedAt = ? WHERE id = ?`,
@@ -256,9 +256,7 @@ export class SqliteKbShareStore implements KbShareStore {
     this.db.prepare("DELETE FROM kb_share_grants WHERE kbId = ? AND userId = ?").run(kbId, userId);
     // 驱离语义（同 agent 分享，2026-09-24 审计）：被移除者凭旧链接 accept-share 重入的
     // 路径随旧 token 失效；属主重新分发新链接。
-    this.db
-      .prepare("UPDATE kb_shares SET token = ? WHERE kbId = ?")
-      .run(crypto.randomUUID(), kbId);
+    this.db.prepare("UPDATE kb_shares SET token = ? WHERE kbId = ?").run(crypto.randomUUID(), kbId);
   }
 
   async isGranted(kbId: string, userId: string): Promise<boolean> {
@@ -310,9 +308,7 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
         createdAt TEXT NOT NULL
       )
     `);
-    this.db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_kb_rev_kb ON kb_revisions(kbId, createdAt DESC)",
-    );
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_kb_rev_kb ON kb_revisions(kbId, createdAt DESC)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_kb_rev_time ON kb_revisions(createdAt DESC)");
   }
 
@@ -389,7 +385,11 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
     return rows.map(rowToRevision);
   }
 
-  async listByKbIds(kbIds: readonly string[], limit: number, offset: number): Promise<KbRevision[]> {
+  async listByKbIds(
+    kbIds: readonly string[],
+    limit: number,
+    offset: number,
+  ): Promise<KbRevision[]> {
     if (kbIds.length === 0) return [];
     const capped = Math.min(limit, 500);
     // 库数量小（个人 1 + 自建 + 被授予），逐库取后内存归一排序（SQLite 变参 IN 的 bind 复杂度不值当）
@@ -455,9 +455,7 @@ function rowToRevision(row: Record<string, unknown>): KbRevision {
     ...(typeof row.afterHash === "string" && row.afterHash !== ""
       ? { afterHash: row.afterHash }
       : {}),
-    ...(typeof row.diffText === "string" && row.diffText !== ""
-      ? { diffText: row.diffText }
-      : {}),
+    ...(typeof row.diffText === "string" && row.diffText !== "" ? { diffText: row.diffText } : {}),
     createdAt: row.createdAt as string,
   };
 }

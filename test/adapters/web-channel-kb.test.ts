@@ -148,7 +148,9 @@ describe("GET/POST /api/kb", () => {
       entries: Array<{ path: string }>;
     };
     expect(tree.entries.some((e) => e.path === "index.md")).toBe(true);
-    const revs = (await (await req(port, "GET", `/api/kb/${kb.id}/revisions`, alice.token)).json()) as {
+    const revs = (await (
+      await req(port, "GET", `/api/kb/${kb.id}/revisions`, alice.token)
+    ).json()) as {
       revisions: Array<{ action: string; path: string }>;
     };
     expect(revs.revisions[0]?.action).toBe("create");
@@ -174,7 +176,9 @@ describe("GET/PATCH/DELETE /api/kb/:id", () => {
       systemPrompt: "按主题分目录组织",
     });
     expect(pr.status).toBe(200);
-    const revs = (await (await req(port, "GET", `/api/kb/${kb.id}/revisions`, alice.token)).json()) as {
+    const revs = (await (
+      await req(port, "GET", `/api/kb/${kb.id}/revisions`, alice.token)
+    ).json()) as {
       revisions: Array<{ action: string; diffText?: string }>;
     };
     expect(revs.revisions[0]?.action).toBe("config");
@@ -183,7 +187,9 @@ describe("GET/PATCH/DELETE /api/kb/:id", () => {
 
   it("IDOR：非属主/非授予者 PATCH 403、DELETE 403；被授予者可读不可管理", async () => {
     const kb = await createKb(alice.token, "保密库");
-    expect((await req(port, "PATCH", `/api/kb/${kb.id}`, bob.token, { name: "抢" })).status).toBe(403);
+    expect((await req(port, "PATCH", `/api/kb/${kb.id}`, bob.token, { name: "抢" })).status).toBe(
+      403,
+    );
     expect((await req(port, "DELETE", `/api/kb/${kb.id}`, bob.token)).status).toBe(403);
     expect((await req(port, "GET", `/api/kb/${kb.id}`, bob.token)).status).toBe(403);
     // admin 直通（canManageKb）
@@ -204,7 +210,9 @@ describe("GET/PATCH/DELETE /api/kb/:id", () => {
     const kb = await createKb(alice.token, "待删除");
     const dr = await req(port, "DELETE", `/api/kb/${kb.id}`, alice.token);
     expect(dr.status).toBe(200);
-    expect(((await dr.json()) as { revisionsKept: number }).revisionsKept).toBeGreaterThanOrEqual(2);
+    expect(((await dr.json()) as { revisionsKept: number }).revisionsKept).toBeGreaterThanOrEqual(
+      2,
+    );
     expect((await req(port, "GET", `/api/kb/${kb.id}`, alice.token)).status).toBe(404);
     // 账本独立可查（审计：删库不断链）
     expect(revisions.listByKb(kb.id)).resolves.toHaveLength(2);
@@ -261,7 +269,9 @@ describe("分享链路", () => {
     const read = await req(port, "GET", `/api/kb/${kb.id}`, bob.token);
     expect(((await read.json()) as { _role: string })._role).toBe("use");
     // 写 403（D1）
-    expect((await req(port, "PATCH", `/api/kb/${kb.id}`, bob.token, { name: "改" })).status).toBe(403);
+    expect((await req(port, "PATCH", `/api/kb/${kb.id}`, bob.token, { name: "改" })).status).toBe(
+      403,
+    );
     // 关闭分享后授权失效
     await req(port, "POST", `/api/kb/${kb.id}/share`, alice.token, { enabled: false });
     expect((await req(port, "GET", `/api/kb/${kb.id}`, bob.token)).status).toBe(403);
@@ -275,14 +285,14 @@ describe("duplicate", () => {
     expect(dup.status).toBe(201);
     const copy = (await dup.json()) as { id: string; name: string };
     expect(copy.name).toBe("原库-副本");
-    const content = (
-      await (await req(port, "GET", `/api/kb/${copy.id}/entry?path=index.md`, alice.token)).json()
-    ) as { content: string };
+    const content = (await (
+      await req(port, "GET", `/api/kb/${copy.id}/entry?path=index.md`, alice.token)
+    ).json()) as { content: string };
     expect(content.content).toContain("原库");
     // 副本账本只有一条 create（不含原库修订）
-    const revs = (
-      await (await req(port, "GET", `/api/kb/${copy.id}/revisions`, alice.token)).json()
-    ) as { revisions: unknown[] };
+    const revs = (await (
+      await req(port, "GET", `/api/kb/${copy.id}/revisions`, alice.token)
+    ).json()) as { revisions: unknown[] };
     expect(revs.revisions).toHaveLength(1);
     // bob 未授权不能复制
     expect((await req(port, "POST", `/api/kb/${kb.id}/duplicate`, bob.token)).status).toBe(403);
@@ -301,11 +311,22 @@ describe("builtin 库权限", () => {
     });
     const read = await req(port, "GET", `/api/kb/${builtin.id}`, bob.token);
     expect(read.status).toBe(200);
-    expect((await req(port, "PATCH", `/api/kb/${builtin.id}`, bob.token, { name: "x" })).status).toBe(403);
+    expect(
+      (await req(port, "PATCH", `/api/kb/${builtin.id}`, bob.token, { name: "x" })).status,
+    ).toBe(403);
     expect((await req(port, "DELETE", `/api/kb/${builtin.id}`, admin.token)).status).toBe(403);
-    expect((await req(port, "POST", `/api/kb/${builtin.id}/share`, admin.token, { enabled: true })).status).toBe(403);
+    expect(
+      (await req(port, "POST", `/api/kb/${builtin.id}/share`, admin.token, { enabled: true }))
+        .status,
+    ).toBe(403);
     // admin 可维护
-    expect((await req(port, "PATCH", `/api/kb/${builtin.id}`, admin.token, { description: "admin 维护" })).status).toBe(200);
+    expect(
+      (
+        await req(port, "PATCH", `/api/kb/${builtin.id}`, admin.token, {
+          description: "admin 维护",
+        })
+      ).status,
+    ).toBe(200);
   });
 });
 
