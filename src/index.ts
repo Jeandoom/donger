@@ -332,6 +332,8 @@ async function main(): Promise<void> {
       usageStore,
       auditStore,
       commentStore,
+      // zcode 会话指针条目落 transcript（sdkSessionId 丢失时反查自愈，spec 2026-09-29 M3）
+      transcriptStore,
       notificationService,
       gates: createDefaultGates(),
       // 三引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6、
@@ -646,8 +648,15 @@ async function main(): Promise<void> {
     );
   }
 
-  // 启动清扫：遗留 running/awaiting_approval 任务无续跑依据，统一标失败并补提示
-  const swept = await sweepInterruptedTasks({ taskStore: store, messageStore, auditStore });
+  // 启动清扫：遗留 running/awaiting_approval 任务无续跑依据，统一标失败并补提示；
+  // zcode 被杀轮顺带从 .zcode-home 补录已流出记录（spec 2026-09-29 M4a）
+  const swept = await sweepInterruptedTasks({
+    taskStore: store,
+    messageStore,
+    auditStore,
+    conversationStore,
+    userStore,
+  });
   if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
   if (swept.awaitingApproval > 0)
     log.warn({ count: swept.awaitingApproval }, "已将遗留审批挂起任务标记为中断");

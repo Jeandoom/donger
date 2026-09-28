@@ -1,6 +1,10 @@
+import { join, resolve } from "node:path";
 import type { AuditStore } from "../ports/audit-store.js";
+import type { ConversationStore } from "../ports/conversation-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { UserStore } from "../ports/user-store.js";
+import { reconcileZcodeRound } from "./zcode-record-reconciler.js";
 
 export const RESTART_INTERRUPTED_REASON = "服务重启中断";
 export const RESTART_AWAITING_REASON = "服务重启中断（审批挂起态随进程丢失）";
@@ -14,6 +18,10 @@ export interface RestartSweepDeps {
   taskStore: TaskStore;
   messageStore?: MessageStore;
   auditStore?: AuditStore;
+  /** zcode 被杀轮补录（specs/2026-09-29-zcode-record-fidelity-design.md M4a）：
+   *  缺省=不补录（单测/最小组装） */
+  conversationStore?: ConversationStore;
+  userStore?: UserStore;
 }
 
 /**
@@ -37,6 +45,34 @@ export async function sweepInterruptedTasks(deps: RestartSweepDeps): Promise<Res
   }
 
   for (const task of runningTasks) {
+    // zcode 被杀轮补录：轮被重启杀掉时协议流中断，但 zcode 自有库已实时落了已流出的
+    // parts——对账一次，把中间叙述/工具入参/未收尾工具结果留在记录里（尽力而为）
+    if (deps.conversationStore && deps.userStore) {
+      try {
+        const conversation = await deps.conversationStore.get(task.threadId);
+        if (conversation?.llmSdkType === "zcode" && conversation.sdkSessionId) {
+          const user = await deps.userStore.get(task.requesterId);
+          if (user?.homeDir) {
+            const stats = await reconcileZcodeRound(deps, {
+              zcodeDbPath: join(resolve(user.homeDir), ".zcode-home", "db.sqlite"),
+              sessionId: conversation.sdkSessionId,
+              conversationId: task.threadId,
+              userId: task.requesterId,
+              taskId: task.id,
+              windowStartMs: Date.parse(task.createdAt) || 0,
+            });
+            if (stats.textsAdded || stats.inputsBackfilled || stats.resultsSynthesized) {
+              console.log(
+                `[restart-sweep] zcode 被杀轮补录 ${task.id.slice(0, 8)}` +
+                  `：叙述+${stats.textsAdded} 入参+${stats.inputsBackfilled} result+${stats.resultsSynthesized}`,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[restart-sweep] zcode 被杀轮补录失败（不影响清扫）", err);
+      }
+    }
     await notifySweep(
       deps,
       task.threadId,

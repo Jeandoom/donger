@@ -21,6 +21,16 @@ export interface AuditStore {
   listByTask(taskId: string): Promise<AuditEvent[]>;
   listConversationSummaries(): Promise<AuditConversationSummary[]>;
 
+  // ---- zcode 轮末对账（specs/2026-09-29-zcode-record-fidelity-design.md M1）----
+  /** 回填 tool_use 行真实入参：仅命中 toolInput 为 '{}' 或 NULL 的行（幂等，不覆盖已有值）。
+   *  返回实际更新行数。 */
+  backfillToolUseInputs(
+    conversationId: string,
+    entries: Array<{ toolUseId: string; toolInput: string }>,
+  ): Promise<number>;
+  /** 会话审计事件当前最大 seq（对账合成缺失行时取序） */
+  maxSeq(conversationId: string): Promise<number>;
+
   // ---- 纵深防御 L2（设计规格 §4）：用户面查询强制 viewer 过滤 ----
   /** 仅当会话属于 viewer 时返回其审计事件（否则空数组，含不存在） */
   listByConversationVisible(viewerId: string, conversationId: string): Promise<AuditEvent[]>;

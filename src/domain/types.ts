@@ -132,7 +132,10 @@ export interface AuditEvent {
     /** 会话权限模式切换（text=人读描述；toolInput=JSON {from,to}） */
     | "permission_mode_change"
     /** 知识库自动学习失败（seq=-1 执行外事件；text=失败原因，静默不扰用户） */
-    | "kb_auto_learn_error";
+    | "kb_auto_learn_error"
+    /** zcode 轮末对账标记（specs/2026-09-29-zcode-record-fidelity-design.md M1；
+     *  text=补录统计 JSON。幂等键：同 taskId 再对账时发现此行即整体跳过） */
+    | "zcode_reconcile";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;

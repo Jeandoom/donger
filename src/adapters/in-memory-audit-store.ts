@@ -43,6 +43,35 @@ export class InMemoryAuditStore implements AuditStore {
     return this.listByTask(taskId);
   }
 
+  async backfillToolUseInputs(
+    conversationId: string,
+    entries: Array<{ toolUseId: string; toolInput: string }>,
+  ): Promise<number> {
+    const byKey = new Map(entries.map((e) => [e.toolUseId, e.toolInput]));
+    let updated = 0;
+    for (const e of this.byId.values()) {
+      if (
+        e.conversationId === conversationId &&
+        e.type === "tool_use" &&
+        e.toolUseId &&
+        byKey.has(e.toolUseId) &&
+        (e.toolInput === undefined || e.toolInput === "{}")
+      ) {
+        e.toolInput = byKey.get(e.toolUseId);
+        updated += 1;
+      }
+    }
+    return updated;
+  }
+
+  async maxSeq(conversationId: string): Promise<number> {
+    let max = -1;
+    for (const e of this.byId.values()) {
+      if (e.conversationId === conversationId && e.seq > max) max = e.seq;
+    }
+    return max;
+  }
+
   async listConversationSummaries(): Promise<AuditConversationSummary[]> {
     const byConv = new Map<string, AuditEvent[]>();
     for (const e of this.byId.values()) {

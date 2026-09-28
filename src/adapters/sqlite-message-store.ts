@@ -32,7 +32,9 @@ export class SqliteMessageStore implements MessageStore {
     text: string,
     files: string = "[]",
     taskId?: string,
+    opts?: { createdAt?: string },
   ): Promise<StoredMessage> {
+    const now = new Date().toISOString();
     const msg: StoredMessage = {
       id: crypto.randomUUID(),
       conversationId,
@@ -40,7 +42,9 @@ export class SqliteMessageStore implements MessageStore {
       text,
       files,
       ...(taskId ? { taskId } : {}),
-      createdAt: new Date().toISOString(),
+      // createdAt 可回填历史时间戳（zcode 轮末对账，specs/2026-09-29-zcode-record-fidelity-design.md
+      // M2）：消息序按回填值；会话活跃度按墙钟 now——用回填旧时间刷 updatedAt 会把活跃会话沉底
+      createdAt: opts?.createdAt ?? now,
     };
     this.db
       .prepare(
@@ -65,7 +69,7 @@ export class SqliteMessageStore implements MessageStore {
     if (hasConversations) {
       this.db
         .prepare("UPDATE conversations SET updatedAt = ? WHERE id = ?")
-        .run(msg.createdAt, conversationId);
+        .run(now, conversationId);
     }
     return msg;
   }

@@ -64,4 +64,28 @@ describe("SqliteMessageStore", () => {
     };
     expect(row.updatedAt > "2026-09-01T00:00:00.000Z").toBe(true);
   });
+
+  it("add 带 createdAt 回填消息时间戳，会话 updatedAt 仍刷为墙钟（zcode 对账补录，spec 2026-09-29 M2）", async () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY, userId TEXT NOT NULL, sdkSessionId TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '', channelId TEXT NOT NULL DEFAULT '',
+        agentId TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    db.prepare(
+      "INSERT INTO conversations (id, userId, createdAt, updatedAt) VALUES (?, ?, ?, ?)",
+    ).run("c1", "u1", "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z");
+
+    const old = "2026-09-28T07:28:46.000Z";
+    await store.add("c1", "bot", "补录叙述", "[]", "task-1", { createdAt: old });
+    const list = await store.listByConversation("c1");
+    expect(list[0]?.createdAt).toBe(old);
+    const conv = db.prepare("SELECT updatedAt FROM conversations WHERE id = 'c1'").get() as {
+      updatedAt: string;
+    };
+    expect(conv.updatedAt).not.toBe(old);
+    expect(conv.updatedAt >= old).toBe(true);
+  });
 });

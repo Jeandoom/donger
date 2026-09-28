@@ -14,7 +14,9 @@ export interface AuditEventDTO {
     | "text"
     | "tool_use"
     | "tool_result"
-    | "result";
+    | "result"
+    /** zcode 轮末对账标记（specs/2026-09-29-zcode-record-fidelity-design.md）；UI 按普通事件兜底渲染 */
+    | "zcode_reconcile";
   text?: string;
   llmInput?: string;
   llmOutput?: string;

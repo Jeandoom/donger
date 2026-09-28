@@ -50,6 +50,7 @@ import type { RepositoryMaterializeItem } from "../ports/repository-materializer
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { TranscriptStore } from "../ports/transcript-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import { ForbiddenError, NotFoundError, RunnerError } from "../util/errors.js";
@@ -81,6 +82,7 @@ import type { RuntimeManager } from "./runtime-manager.js";
 import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
 import { BUILTIN_SKILL_FORGE_AGENT, BUILTIN_SKILL_FORGE_AGENT_ID } from "./skill-forge-agent.js";
 import { guardStreamStall } from "./stream-stall-guard.js";
+import { reconcileZcodeRound } from "./zcode-record-reconciler.js";
 
 export interface OrchestratorDeps {
   store: TaskStore;
@@ -94,6 +96,9 @@ export interface OrchestratorDeps {
   channel: Channel;
   /** 会话运行态总管：组装 RunOptions（cwd/skills/plugins/sessionStore/resume）+ 回写 sdkSessionId */
   runtimeMgr: RuntimeManager;
+  /** transcript 存储（zcode 会话指针条目落这里，供 sdkSessionId 丢失时反查自愈；
+   *  specs/2026-09-29-zcode-record-fidelity-design.md M3。缺省=不做 zcode 反查兜底） */
+  transcriptStore?: TranscriptStore;
   /** 凭证集存储：agent 勾选 code → 当前用户已配置值（注入 env） */
   credentialSets: CredentialSetStore;
   /** 智能体存储（M13；缺省=不支持显式 agent，会话 agentId 必须为空） */
@@ -842,6 +847,21 @@ export class Orchestrator {
               } catch (err) {
                 console.error("[orchestrator] session 指针即时回写失败", err);
               }
+              // zcode 指针条目（specs/2026-09-29-zcode-record-fidelity-design.md M3）：
+              // claude 的 transcript 条目由 SDK 经 sessionStore 实时 append，zcode 没有——
+              // 补一条最小指针条目，sdkSessionId 行丢失时 latestSessionForConversation 反查
+              // 才有据可依（codex 的 resume 语义不同，暂不覆盖）
+              if (llmSdkType === "zcode" && this.deps.transcriptStore) {
+                try {
+                  await this.deps.transcriptStore.append(
+                    { projectKey: p.user.id, sessionId: capturedSessionId, subpath: "" },
+                    p.conversation.id,
+                    [{ type: "zcode_session", timestamp: new Date().toISOString() }],
+                  );
+                } catch (err) {
+                  console.error("[orchestrator] zcode transcript 指针条目写入失败", err);
+                }
+              }
             }
           }
           // 实时执行状态（SDK 事件推导，观测态）
@@ -894,12 +914,53 @@ export class Orchestrator {
       p.silent === true,
     );
 
+    const ok = last?.type === "result" && last.subtype === "success";
+    const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
+
+    // zcode 轮末对账（specs/2026-09-29-zcode-record-fidelity-design.md M1）：协议事件层
+    // 只透出最终 response 与无入参的 tool.updated，中间叙述/工具入参/丢失的 error result
+    // 从 zcode 自有库补齐。放在 aborted 早退之前——被取消的轮也留已流出部分。
+    // 静默轮（dispatcher 路由等）无对话记录语义，跳过；对账失败只打日志不影响回合。
+    if (
+      opts.llm.sdkType === "zcode" &&
+      !p.silent &&
+      process.env.DONGER_ZCODE_RECORD_RECONCILE !== "off" &&
+      p.conversation.sdkSessionId
+    ) {
+      try {
+        const stats = await reconcileZcodeRound(
+          { messageStore: this.deps.messageStore, auditStore: this.deps.auditStore },
+          {
+            zcodeDbPath: join(resolve(opts.workspaceRoot ?? opts.cwd), ".zcode-home", "db.sqlite"),
+            sessionId: p.conversation.sdkSessionId,
+            conversationId: p.conversation.id,
+            userId: p.user.id,
+            taskId,
+            windowStartMs: turnStartMs,
+            finalResponse: ok ? last?.result : undefined,
+          },
+        );
+        if (
+          stats.textsAdded ||
+          stats.inputsBackfilled ||
+          stats.resultsSynthesized ||
+          stats.stepOutputsAudited
+        ) {
+          console.log(
+            `[orchestrator] zcode 轮末对账 ${p.conversation.id.slice(0, 8)}` +
+              `：叙述+${stats.textsAdded} 入参+${stats.inputsBackfilled}` +
+              ` result+${stats.resultsSynthesized} 逐步llm+${stats.stepOutputsAudited}` +
+              (stats.skipped ? `（${stats.skipped}）` : ""),
+          );
+        }
+      } catch (err) {
+        console.error("[orchestrator] zcode 轮末对账失败（不影响回合）", err);
+      }
+    }
+
     if (p.runController.signal.aborted) {
       return { aborted: true, ok: false, resultText: "" };
     }
-
-    const ok = last?.type === "result" && last.subtype === "success";
-    const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
 
     // 通知收编（spec §6）：任务完成/失败 → 站内信（决策②：交互式会话同样发）。
     // 内部轮/非末轮静默；无人值守轮由 loop-runner 发 loop 事件，此处跳过防双发

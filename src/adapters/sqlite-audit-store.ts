@@ -82,6 +82,30 @@ export class SqliteAuditStore implements AuditStore {
     return rec;
   }
 
+  async backfillToolUseInputs(
+    conversationId: string,
+    entries: Array<{ toolUseId: string; toolInput: string }>,
+  ): Promise<number> {
+    // 仅补空壳（'{}'/NULL）：幂等——已有真实入参（如重放重跑）绝不覆盖
+    const stmt = this.db.prepare(
+      `UPDATE audit_events SET toolInput = ?
+       WHERE conversationId = ? AND type = 'tool_use' AND toolUseId = ?
+         AND (toolInput = '{}' OR toolInput IS NULL)`,
+    );
+    let updated = 0;
+    for (const e of entries) {
+      updated += stmt.run(e.toolInput, conversationId, e.toolUseId).changes;
+    }
+    return updated;
+  }
+
+  async maxSeq(conversationId: string): Promise<number> {
+    const row = this.db
+      .prepare("SELECT COALESCE(MAX(seq), -1) AS m FROM audit_events WHERE conversationId = ?")
+      .get(conversationId) as { m: number };
+    return row.m;
+  }
+
   async listByConversationVisible(viewerId: string, conversationId: string): Promise<AuditEvent[]> {
     const rows = this.db
       .prepare(
