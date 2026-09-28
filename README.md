@@ -1,6 +1,20 @@
 # donger
 
+[![CI](https://github.com/Jeandoom/donger/actions/workflows/ci.yml/badge.svg)](https://github.com/Jeandoom/donger/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)
+
+<!-- 首屏截图位：docs/images/hero.png（见下方「界面预览」） -->
+
 技能驱动的通用自动化 Agent 服务。**本地运行**，可插拔 LLM（默认智谱 GLM），通过 **钉钉 / Web / CLI** 三端远程管理与对话。核心能力 = 具名智能体（Agent）加载各类专业 Skill 完成自动化任务（写代码、文档、运维等），关键节点（部署 / 发布 / 推送等高危操作）经审批门确认。
+
+## 界面预览
+
+![对话界面：SSE 流式回复、审批模式与模型切换](docs/images/chat.png)
+
+| 智能体可视化编辑器 | LLM 观测（原始输入输出可回放调试） |
+| --- | --- |
+| ![智能体编辑器](docs/images/agent-editor.png) | ![LLM 观测](docs/images/audit.png) |
 
 ## 功能总览
 
@@ -15,6 +29,8 @@
 - **连接器与凭证集**：外部系统集成，凭证集中管理（加密存储、按仓库 / 连接器绑定、共享访问解析）。
 - **多用户与账号**：邮箱邀请注册、钉钉扫码 / GitHub OAuth / 邮箱登录，登录方式按 `.env` 实配动态返回；admin / member 角色。
 - **可观测**：审计事件、LLM 观测、用量统计、任务历史与文件浏览器。
+- **知识库（KB）**：多库管理、内置 FTS5 检索、会话内按需挂载。
+- **MCP 接入**：系统能力以 Streamable HTTP MCP 端点暴露，令牌接入、AI 审核可插拔。
 
 ## 架构
 
@@ -107,3 +123,5 @@ CI（`.github/workflows/ci.yml`）在 push / PR 时跑 `lint → test → build`
 ## 许可证
 
 [MIT](./LICENSE) © 2026 Jeandoom
+
+如果 donger 对你有用，欢迎点一个 **Star ⭐**，让更多人看到它。
