@@ -9,15 +9,15 @@ import { FormField, FormSection } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { Switch } from "../../components/ui/switch";
-import {
-  type AgentConversationScopeDTO,
-  type AgentFeedbackScopeDTO,
-  fetchAgents,
-} from "../../lib/agents";
 import { fetchCredentialTemplates, fetchMyCredentials } from "../../lib/skills";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm } from "./model";
-import { inferProviderFromUrl, inferRepoNameFromUrl, PROVIDER_LABELS } from "./model";
+import {
+  inferProviderFromUrl,
+  inferRepoNameFromUrl,
+  PROVIDER_LABELS,
+  REPO_NAME_PATTERN,
+} from "./model";
 
 type GitRepo = AgentEditorForm["gitRepositories"][number];
 
@@ -96,16 +96,6 @@ export function ResourcesSection({
               .filter((c): c is string => Boolean(c)),
           ),
         ]}
-      />
-
-      <ConversationScopePicker
-        value={form.conversationScope ?? { enabled: false, agentIds: [] }}
-        onChange={(conversationScope) => patch({ conversationScope })}
-      />
-
-      <FeedbackScopePicker
-        value={form.feedbackScope ?? { enabled: false }}
-        onChange={(feedbackScope) => patch({ feedbackScope })}
       />
 
       <FormField
@@ -246,6 +236,9 @@ function GitRepoCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [mismatch, setMismatch] = useState(false);
+  // live 校验：与保存阻断同源规则，此处就地提示（导航徽标计数在 blockingIssues）；
+  // 全空的新增卡不算错，避免刚添加就见红
+  const nameInvalid = Boolean((repo.name || repo.url) && !REPO_NAME_PATTERN.test(repo.name));
 
   const onUrlChange = (url: string) => {
     const detected = inferProviderFromUrl(url);
@@ -339,6 +332,11 @@ function GitRepoCard({
       {mismatch ? (
         <p className="px-3.5 pb-2 text-[11px] text-destructive">
           地址域名与所选协议方言不匹配（github.com / gitee.com / jihulab.com 会自动识别方言）
+        </p>
+      ) : null}
+      {nameInvalid ? (
+        <p className="px-3.5 pb-2 text-[11px] text-destructive">
+          目录名「{repo.name || "（空）"}」不合法：需以字母/数字开头，仅含字母数字 . _ -，长度 1-64
         </p>
       ) : null}
       {expanded ? (
@@ -505,263 +503,54 @@ function CredentialPicker({
               <div
                 key={o.code}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-[10px] border px-3 py-2",
+                  "flex flex-col gap-1 rounded-[10px] border px-3 py-2 sm:flex-row sm:items-center sm:gap-2.5",
                   checked ? "border-primary/40 bg-primary-soft/40" : "border-border bg-card",
                   locked && "opacity-80",
                 )}
               >
-                {locked ? (
-                  <Badge>锁定</Badge>
-                ) : (
-                  <Checkbox checked={checked} onChange={() => toggle(o.code)} />
-                )}
-                <span className="shrink-0 font-mono text-xs font-medium">{o.code}</span>
-                <span
-                  className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
-                  title={o.name}
-                >
-                  {o.name}
-                </span>
-                <Badge tone={locked ? "neutral" : o.configured ? "success" : "warning"}>
-                  {locked ? "仓库绑定" : o.configured ? "已配置" : "未配置"}
-                </Badge>
-                {!locked && !o.configured ? (
-                  <Link
-                    to="/credentials"
-                    className="shrink-0 text-[11px] font-semibold text-primary hover:underline"
+                {/* 移动端两行：首行 勾选+code+配置徽标；sm 起并回单行 */}
+                <div className="flex items-center gap-2.5">
+                  {locked ? (
+                    <Badge>锁定</Badge>
+                  ) : (
+                    <Checkbox checked={checked} onChange={() => toggle(o.code)} />
+                  )}
+                  <span className="shrink-0 font-mono text-xs font-medium">{o.code}</span>
+                  <Badge tone={locked ? "neutral" : o.configured ? "success" : "warning"}>
+                    {locked ? "仓库绑定" : o.configured ? "已配置" : "未配置"}
+                  </Badge>
+                </div>
+                <div className="flex min-w-0 items-center gap-2 pl-[26px] sm:flex-1 sm:pl-0">
+                  <span
+                    className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
+                    title={o.name}
                   >
-                    去配置 →
-                  </Link>
-                ) : null}
-                <span
-                  className="shrink-0 cursor-help text-[10px] text-muted-foreground/70"
-                  title={
-                    locked
-                      ? "由 git 仓库绑定的凭证引用强制勾选；如需移除请在其绑定的仓库中改选"
-                      : `keys=[${o.keys.join(",")}]`
-                  }
-                >
-                  keys
-                </span>
+                    {o.name}
+                  </span>
+                  {!locked && !o.configured ? (
+                    <Link
+                      to="/credentials"
+                      className="shrink-0 text-[11px] font-semibold text-primary hover:underline"
+                    >
+                      去配置 →
+                    </Link>
+                  ) : null}
+                  <span
+                    className="shrink-0 cursor-help text-[10px] text-muted-foreground/70"
+                    title={
+                      locked
+                        ? "由 git 仓库绑定的凭证引用强制勾选；如需移除请在其绑定的仓库中改选"
+                        : `keys=[${o.keys.join(",")}]`
+                    }
+                  >
+                    keys
+                  </span>
+                </div>
               </div>
             );
           })}
         </div>
       )}
-    </FormField>
-  );
-}
-
-/** 输入的窗口数字归一：空串=不限（undefined），非法/越界收敛到 1-99 */
-function toScopeInt(raw: string): number | undefined {
-  if (raw === "") return undefined;
-  const n = Math.floor(Number(raw));
-  if (!Number.isFinite(n) || n < 1) return undefined;
-  return Math.min(n, 99);
-}
-
-/**
- * 反馈资源范围（# 反馈引用）：启用开关（默认关）+ 时间窗口。
- * 反馈不绑智能体，无范围多选；可见性固定为 member 本人 / admin 全量（与反馈页一致）。
- * 关闭时配置项置灰但仍展示，暗示开启后可配。
- */
-function FeedbackScopePicker({
-  value,
-  onChange,
-}: {
-  value: AgentFeedbackScopeDTO;
-  onChange: (scope: AgentFeedbackScopeDTO) => void;
-}) {
-  return (
-    <FormField
-      label="反馈"
-      hint="开启后可在对话中用 # 引用反馈记录（含正文、回复与截图）；引用范围与「全部反馈」都受以下配置限制"
-    >
-      <div className="flex flex-col gap-2.5">
-        <div className="flex items-center gap-2.5 rounded-[10px] border border-border bg-card px-3 py-2">
-          <Switch
-            checked={value.enabled}
-            onCheckedChange={(v) => onChange({ ...value, enabled: v })}
-          />
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-[13px] font-semibold">启用反馈引用</span>
-            <span className="text-[11px] leading-snug text-muted-foreground">
-              默认关闭；开启后可引用自己提交的反馈（管理员可引用全部用户的反馈）
-            </span>
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            "grid gap-2.5 sm:grid-cols-2",
-            !value.enabled && "pointer-events-none opacity-50",
-          )}
-          aria-disabled={!value.enabled}
-        >
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">最近天数（1-99，留空不限）</span>
-            <Input
-              type="number"
-              min={1}
-              max={99}
-              aria-label="引用反馈的最近天数"
-              placeholder="如 7"
-              value={value.days ?? ""}
-              onChange={(e) => onChange({ ...value, days: toScopeInt(e.target.value) })}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">最近条数（1-99，留空默认 10）</span>
-            <Input
-              type="number"
-              min={1}
-              max={99}
-              aria-label="引用反馈的最近条数"
-              placeholder="如 20"
-              value={value.limit ?? ""}
-              onChange={(e) => onChange({ ...value, limit: toScopeInt(e.target.value) })}
-            />
-          </div>
-        </div>
-      </div>
-    </FormField>
-  );
-}
-
-/**
- * 会话资源范围（% 会话引用）：启用开关（默认关）+ 智能体多选（空=仅本智能体）+ 时间窗口。
- * 关闭时配置项置灰但仍展示，暗示开启后可配。
- */
-function ConversationScopePicker({
-  value,
-  onChange,
-}: {
-  value: AgentConversationScopeDTO;
-  onChange: (scope: AgentConversationScopeDTO) => void;
-}) {
-  const [options, setOptions] = useState<Array<{ id: string; name: string; mine: boolean }>>([]);
-  const [loadError, setLoadError] = useState(false);
-  const [reloadTick, setReloadTick] = useState(0);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 仅用于手动重试时触发重新加载
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const list = await fetchAgents();
-        if (cancelled) return;
-        setLoadError(false);
-        setOptions(list.map((a) => ({ id: a.id, name: a.name, mine: a._mine })));
-      } catch {
-        if (!cancelled) setLoadError(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadTick]);
-
-  const toggleAgent = (id: string) => {
-    const next = value.agentIds.includes(id)
-      ? value.agentIds.filter((a) => a !== id)
-      : [...value.agentIds, id];
-    onChange({ ...value, agentIds: next });
-  };
-
-  return (
-    <FormField
-      label="会话"
-      hint="开启后可在对话中用 % 引用历史会话内容；引用范围与「全部会话」都受以下配置限制"
-    >
-      <div className="flex flex-col gap-2.5">
-        <div className="flex items-center gap-2.5 rounded-[10px] border border-border bg-card px-3 py-2">
-          <Switch
-            checked={value.enabled}
-            onCheckedChange={(v) => onChange({ ...value, enabled: v })}
-          />
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-[13px] font-semibold">启用会话引用</span>
-            <span className="text-[11px] leading-snug text-muted-foreground">
-              默认关闭；开启后对话输入框可用 % 引用历史会话
-            </span>
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            "flex flex-col gap-2.5",
-            !value.enabled && "pointer-events-none opacity-50",
-          )}
-          aria-disabled={!value.enabled}
-        >
-          <div className="flex flex-col gap-2">
-            <span className="text-xs text-muted-foreground">
-              智能体范围（不勾选 = 仅引用绑定本智能体的会话）
-            </span>
-            {loadError ? (
-              <button
-                type="button"
-                className="w-fit rounded-lg border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive-soft"
-                onClick={() => setReloadTick((t) => t + 1)}
-              >
-                智能体列表加载失败，点击重试
-              </button>
-            ) : options.length === 0 ? (
-              <p className="text-xs text-muted-foreground">暂无可选智能体</p>
-            ) : (
-              <div className="flex max-h-44 flex-col gap-1.5 overflow-y-auto rounded-[10px] border border-border bg-card p-2">
-                {options.map((o) => {
-                  const checked = value.agentIds.includes(o.id);
-                  return (
-                    <button
-                      key={o.id}
-                      type="button"
-                      onClick={() => toggleAgent(o.id)}
-                      className={cn(
-                        "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] outline-none",
-                        checked ? "bg-primary-soft/40" : "hover:bg-muted",
-                      )}
-                    >
-                      <Checkbox checked={checked} onChange={() => toggleAgent(o.id)} />
-                      <span className="min-w-0 flex-1 truncate">{o.name}</span>
-                      <Badge tone={o.mine ? "neutral" : "success"}>
-                        {o.mine ? "我的" : "共享"}
-                      </Badge>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">最近天数（1-99，留空不限）</span>
-              <Input
-                type="number"
-                min={1}
-                max={99}
-                aria-label="引用会话的最近天数"
-                placeholder="如 7"
-                value={value.days ?? ""}
-                onChange={(e) => onChange({ ...value, days: toScopeInt(e.target.value) })}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">最近条数（1-99，留空默认 10）</span>
-              <Input
-                type="number"
-                min={1}
-                max={99}
-                aria-label="引用会话的最近条数"
-                placeholder="如 20"
-                value={value.limit ?? ""}
-                onChange={(e) => onChange({ ...value, limit: toScopeInt(e.target.value) })}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
     </FormField>
   );
 }

@@ -24,14 +24,18 @@ export const emptyAgent: AgentEditorForm = {
   feedbackScope: { enabled: false },
 };
 
-/** 分区定义（锚点导航 + scrollspy 共用；integration 仅编辑态挂载） */
+/**
+ * 分区定义（锚点导航 + scrollspy 共用）。
+ * agent-sec-runtime（运行管理）为即时态面板（回调/分享/管家，点按即生效、不走保存），
+ * 仅编辑态挂载；新建态导航需跳过它（与表单分区区分，spec §4）。
+ */
 export const AGENT_EDITOR_SECTIONS = [
   { id: "agent-sec-basic", no: "1", label: "基本" },
   { id: "agent-sec-prompt", no: "2", label: "提示词与技能" },
   { id: "agent-sec-tools", no: "3", label: "工具与权限" },
   { id: "agent-sec-resources", no: "4", label: "资源" },
-  { id: "agent-sec-kb", no: "5", label: "知识库" },
-  { id: "agent-sec-integration", no: "6", label: "集成与分享" },
+  { id: "agent-sec-kb", no: "5", label: "知识库与上下文" },
+  { id: "agent-sec-runtime", no: "6", label: "运行管理" },
 ] as const;
 
 export type SectionId = (typeof AGENT_EDITOR_SECTIONS)[number]["id"];
@@ -75,6 +79,36 @@ export function scenarioIssues(form: AgentEditorForm): ScenarioIssue[] {
 
 /** 仓库目录名约束（与后端 src/domain/git.ts AgentGitRepositorySchema 同源） */
 export const REPO_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+
+/**
+ * 保存阻断项 live 校验（spec §5 要点3）：内联 MCP JSON 解析错 + 仓库目录名非法。
+ * 与 scenarioIssues 同构（分区定位），但语义是「不修就存不了」——导航徽标红色计数，
+ * 编辑中即时更新；保存时的阻断校验仍以 AgentEditorPage.save 为准。
+ * 全空的新增仓库卡（未填 name/url）不算错，避免刚点「添加仓库」就见红。
+ */
+export function blockingIssues(
+  form: AgentEditorForm,
+  mcpJsonError: string | null,
+): ScenarioIssue[] {
+  const issues: ScenarioIssue[] = [];
+  if (mcpJsonError) {
+    issues.push({
+      section: "agent-sec-tools",
+      message: `内联 MCP JSON 解析失败：${mcpJsonError}`,
+    });
+  }
+  for (const r of form.gitRepositories) {
+    if (r.name || r.url) {
+      if (!REPO_NAME_PATTERN.test(r.name)) {
+        issues.push({
+          section: "agent-sec-resources",
+          message: `仓库目录名「${r.name || "（空）"}」不合法：需以字母/数字开头，仅含字母数字 . _ -，长度 1-64`,
+        });
+      }
+    }
+  }
+  return issues;
+}
 
 /** 从 URL 推断平台（host 精确匹配三平台；非 HTTPS/未知域名返回 undefined） */
 export function inferProviderFromUrl(url: string): "github" | "gitee" | "jihulab" | undefined {

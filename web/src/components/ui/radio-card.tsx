@@ -26,7 +26,7 @@ export function RadioCard({
     <label
       htmlFor={id}
       className={cn(
-        "flex cursor-pointer select-none items-center gap-2.5 rounded-[10px] border p-3 text-left transition-colors",
+        "flex cursor-pointer select-none items-center gap-2.5 rounded-[10px] border p-2.5 text-left transition-colors sm:p-3",
         checked ? cn(checkedBorder, checkedBg) : "border-border bg-card hover:bg-muted/50",
         props.disabled && "cursor-not-allowed opacity-60",
         className,
