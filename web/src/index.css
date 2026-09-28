@@ -115,6 +115,18 @@ body {
   padding: 0.2em 0.5em;
 }
 
+/* prose（KB 预览等 ReactMarkdown 直渲染）表格：窄屏横滚防挤压 */
+.prose table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.prose th,
+.prose td {
+  min-width: 3.5rem;
+}
+
 @layer utilities {
   .pb-safe {
     padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
@@ -122,5 +134,13 @@ body {
 
   .pt-safe {
     padding-top: env(safe-area-inset-top);
+  }
+
+  /* 横向滚动但不显示滚动条（分区 chips/页签行等窄屏横滑场景） */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 }

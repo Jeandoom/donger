@@ -60,43 +60,50 @@ export function TriggersPage() {
       {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
 
       <Card className="overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
-              <th className="px-4 py-2.5 font-medium">名称</th>
-              <th className="px-4 py-2.5 font-medium">类型</th>
-              <th className="px-4 py-2.5 font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((t) => (
-              <tr key={t.id} className="border-t border-border">
-                <td className="px-4 py-3">
-                  <Link to={`/triggers/${t.id}`} className="font-medium hover:underline">
-                    {t.name}
-                  </Link>
-                </td>
-                <td className="px-4 py-3">
-                  <Badge tone={t.type === "scheduler" ? "info" : t.type === "event" ? "warning" : "primary"}>
-                    {t.type === "scheduler" ? "定时" : t.type === "event" ? "事件" : "Webhook"}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <Link to={`/triggers/${t.id}`} className="mr-2 text-xs hover:underline">
-                    编辑
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={() => setPendingDelete(t)}
-                    className="text-xs text-destructive hover:underline"
-                  >
-                    删除
-                  </button>
-                </td>
+        {/* 窄屏横向滚动，防止列挤压折行 */}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[420px] text-sm">
+            <thead>
+              <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+                <th className="whitespace-nowrap px-4 py-2.5 font-medium">名称</th>
+                <th className="whitespace-nowrap px-4 py-2.5 font-medium">类型</th>
+                <th className="whitespace-nowrap px-4 py-2.5 font-medium">操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {items.map((t) => (
+                <tr key={t.id} className="border-t border-border">
+                  <td className="px-4 py-3">
+                    <Link to={`/triggers/${t.id}`} className="font-medium hover:underline">
+                      {t.name}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge
+                      tone={
+                        t.type === "scheduler" ? "info" : t.type === "event" ? "warning" : "primary"
+                      }
+                    >
+                      {t.type === "scheduler" ? "定时" : t.type === "event" ? "事件" : "Webhook"}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Link to={`/triggers/${t.id}`} className="mr-2 text-xs hover:underline">
+                      编辑
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => setPendingDelete(t)}
+                      className="text-xs text-destructive hover:underline"
+                    >
+                      删除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {!loading && !items.length ? (
           <div className="p-10 text-center text-sm text-muted-foreground">
             暂无触发器，点击右上角「新建触发器」

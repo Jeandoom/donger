@@ -257,7 +257,7 @@ function AssistantText() {
           <div className="my-3 w-full overflow-x-auto">
             <table
               {...props}
-              className="w-full border-collapse text-[13px] [&_td]:border-b [&_td]:border-border/60 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_th]:border-b-2 [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-medium"
+              className="w-full border-collapse text-[13px] [&_td]:min-w-20 [&_td]:border-b [&_td]:border-border/60 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_th]:min-w-20 [&_th]:border-b-2 [&_th]:border-border [&_th]:bg-muted/40 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-medium"
             >
               {children}
             </table>
@@ -534,7 +534,7 @@ export function AssistantThread(props: AssistantThreadProps) {
                       type="submit"
                       size="icon"
                       aria-label="发送消息"
-                      className="min-h-11 min-w-11 rounded-full"
+                      className="min-h-11 min-w-11 shrink-0 rounded-full"
                     >
                       <ArrowUp aria-hidden="true" size={18} />
                     </Button>

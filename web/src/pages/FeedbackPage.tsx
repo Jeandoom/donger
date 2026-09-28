@@ -205,7 +205,7 @@ export function FeedbackPage() {
             />
           ) : (
             <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">
-              点击左侧记录展开回复，或新增一条反馈
+              点击列表中的记录展开回复，或新增一条反馈
             </div>
           )}
         </div>

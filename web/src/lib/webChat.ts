@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AgentPermissionMode, ConversationSummary, PendingQuestion, SSEEvent } from "../types";
-import { getToken } from "./auth";
+import { apiFetch, getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
 import { setConversationPermissionMode } from "./conversations";
@@ -73,7 +73,7 @@ export function useWebChat() {
     dispatch({ type: "clear_error", key: "conversations" });
     try {
       const token = getToken();
-      const res = await fetch(`/api/conversations?userId=${encodeURIComponent(getUserId())}`, {
+      const res = await apiFetch(`/api/conversations?userId=${encodeURIComponent(getUserId())}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -305,7 +305,7 @@ export function useWebChat() {
       setLlmOptions({ options: [], current: "" });
       setModelRef("");
       Promise.all([
-        fetch(`/api/conversations/${conversationId}/messages`, {
+        apiFetch(`/api/conversations/${conversationId}/messages`, {
           headers: authHeaders,
           signal: controller.signal,
         }).then((response) => {
@@ -313,7 +313,7 @@ export function useWebChat() {
           return response.json() as Promise<HistoryMessage[]>;
         }),
         // 工具事件装饰：加载失败（如权限/网络）降级为仅合并不装饰
-        fetch(`/api/conversations/${conversationId}/events?light=1`, {
+        apiFetch(`/api/conversations/${conversationId}/events?light=1`, {
           headers: authHeaders,
           signal: controller.signal,
         })
@@ -322,7 +322,7 @@ export function useWebChat() {
           )
           .catch(() => ({ events: [] })),
         // 待作答问题：刷新/切换后恢复锚定卡片（agent 仍在等待作答时）
-        fetch(`/api/conversations/${conversationId}/pending-question`, {
+        apiFetch(`/api/conversations/${conversationId}/pending-question`, {
           headers: authHeaders,
           signal: controller.signal,
         })
@@ -333,7 +333,7 @@ export function useWebChat() {
           )
           .catch(() => ({ question: null })),
         // 可选模型集（agent 范围/用户配置决定）；失败降级为空（隐藏选择器即可，不打断会话）
-        fetch(`/api/conversations/${conversationId}/llm-options`, {
+        apiFetch(`/api/conversations/${conversationId}/llm-options`, {
           headers: authHeaders,
           signal: controller.signal,
         })
@@ -383,7 +383,7 @@ export function useWebChat() {
       const promise = (async () => {
         try {
           const token = getToken();
-          const response = await fetch("/api/conversations", {
+          const response = await apiFetch("/api/conversations", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -436,7 +436,7 @@ export function useWebChat() {
       const token = getToken();
       dispatch({ type: "user_message", id, text, files });
       try {
-        const response = await fetch(`/api/conversations/${conversationId}/messages`, {
+        const response = await apiFetch(`/api/conversations/${conversationId}/messages`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -469,7 +469,7 @@ export function useWebChat() {
     const active = state.conversations.find((item) => item.id === conversationId);
     if (!conversationId || isDraftConversation(active)) return;
     const token = getToken();
-    const response = await fetch(`/api/conversations/${conversationId}/cancel`, {
+    const response = await apiFetch(`/api/conversations/${conversationId}/cancel`, {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
@@ -486,7 +486,7 @@ export function useWebChat() {
       const token = getToken();
       dispatch({ type: "clear_error", key: "approval" });
       try {
-        const response = await fetch(`/api/approvals/${pending.respondId}/respond`, {
+        const response = await apiFetch(`/api/approvals/${pending.respondId}/respond`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -514,7 +514,7 @@ export function useWebChat() {
       const token = getToken();
       dispatch({ type: "clear_error", key: "credential" });
       try {
-        const response = await fetch(`/api/credential-missing/${pending.reqId}/decide`, {
+        const response = await apiFetch(`/api/credential-missing/${pending.reqId}/decide`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -543,7 +543,7 @@ export function useWebChat() {
       const token = getToken();
       dispatch({ type: "clear_error", key: "question" });
       try {
-        const res = await fetch(`/api/user-inputs/${pending.reqId}/respond`, {
+        const res = await apiFetch(`/api/user-inputs/${pending.reqId}/respond`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -571,7 +571,7 @@ export function useWebChat() {
         const conversation = state.conversations.find((item) => item.id === id);
         if (!isDraftConversation(conversation)) {
           const token = getToken();
-          await fetch(`/api/conversations/${id}`, {
+          await apiFetch(`/api/conversations/${id}`, {
             method: "DELETE",
             headers: token ? { Authorization: `Bearer ${token}` } : {},
           });

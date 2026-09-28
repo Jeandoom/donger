@@ -17,7 +17,9 @@ export function Shell() {
             <img src="/pwa-icon.svg" alt="donger logo" className="ml-2 h-5 w-5 rounded" />
             <span className="ml-1.5 text-sm font-bold">donger</span>
           </header>
-          <main className="flex min-h-0 min-w-0 flex-1">
+          {/* [&>*]:min-w-0 —— 页面根作为行向 flex 子项，min-width:auto 会让长 URL/nowrap
+              内容的 min-content 撑破视口且被 overflow-hidden 裁死（右侧永远够不到） */}
+          <main className="flex min-h-0 min-w-0 flex-1 [&>*]:min-w-0">
             <PageErrorBoundary>
               <Outlet />
             </PageErrorBoundary>
