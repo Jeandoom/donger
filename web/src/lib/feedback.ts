@@ -38,8 +38,25 @@ export interface FeedbackItem {
   category: FeedbackCategory;
   content: string;
   images: string[];
+  /** 关联对话记录（指针元数据；agent # 引用该反馈时按需注入转录） */
+  conversations?: FeedbackConversationRef[];
   status: FeedbackStatus;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeedbackConversationRef {
+  id: string;
+  title?: string;
+  updatedAt?: string;
+  /** 关联会话已被删除（详情页置灰占位） */
+  missing?: boolean;
+}
+
+/** 反馈素材选择器候选项（本人会话，updatedAt 降序，服务端分页） */
+export interface ConversationCandidate {
+  id: string;
+  title: string;
   updatedAt: string;
 }
 
@@ -65,6 +82,8 @@ export async function createFeedback(input: {
   category?: FeedbackCategory;
   content: string;
   images: string[];
+  /** 关联对话记录 id（≤1 条，须为本人会话） */
+  conversationIds?: string[];
   key?: string;
 }): Promise<FeedbackItem> {
   const r = await apiFetch("/api/feedback", {
@@ -77,6 +96,22 @@ export async function createFeedback(input: {
     throw new Error(data.error ?? `HTTP ${r.status}`);
   }
   return (await r.json()) as FeedbackItem;
+}
+
+/** 反馈素材选择器数据源：本人会话分页（默认最近 10 条） */
+export async function fetchConversationCandidates(opts: {
+  limit?: number;
+  offset?: number;
+  q?: string;
+}): Promise<{ items: ConversationCandidate[]; total: number }> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+  if (opts.q) params.set("q", opts.q);
+  const qs = params.toString();
+  const r = await apiFetch(`/api/feedback/conversation-candidates${qs ? `?${qs}` : ""}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()) as { items: ConversationCandidate[]; total: number };
 }
 
 export async function fetchFeedbackDetail(id: string): Promise<FeedbackItem> {

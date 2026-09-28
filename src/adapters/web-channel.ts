@@ -98,6 +98,8 @@ import { type Loop, parseLoopInput } from "../domain/loop.js";
 import {
   CONVERSATION_MENTION_ALL_ID,
   conversationMarkerLabel,
+  FEEDBACK_CONV_MAX_CHARS,
+  FEEDBACK_CONV_MAX_MESSAGES,
   FEEDBACK_IMAGE_TOTAL_BUDGET,
   FEEDBACK_MENTION_ALL_ID,
   feedbackMarkerLabel,
@@ -3835,6 +3837,7 @@ export class WebChannel implements Channel {
         category?: unknown;
         content?: unknown;
         images?: unknown;
+        conversationIds?: unknown;
         key?: unknown;
       };
       const content = typeof body.content === "string" ? body.content.trim() : "";
@@ -3858,6 +3861,14 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "images 无效（须为文件名数组，≤3 项）" }));
         return;
       }
+      // 关联对话记录（spec 2026-09-28-feedback-conversation-attachment-design）：≤1 条且须为本人会话，
+      // fail-closed 防 IDOR——只存指针，转录在 # 引用注入时才读取
+      const conversationIds = await this.sanitizeFeedbackConversations(uid, body.conversationIds);
+      if (conversationIds === undefined) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "conversationIds 无效（最多 1 条且须为本人会话）" }));
+        return;
+      }
       const now = new Date().toISOString();
       const feedback: Feedback = {
         id: crypto.randomUUID(),
@@ -3865,6 +3876,7 @@ export class WebChannel implements Channel {
         category,
         content,
         images,
+        conversationIds,
         status: "open",
         createdAt: now,
         updatedAt: now,
@@ -3891,7 +3903,12 @@ export class WebChannel implements Channel {
           .catch((e) => console.error("[web-channel] 反馈事件触发分发失败", e));
       }
       res.writeHead(201);
-      res.end(JSON.stringify(feedback));
+      res.end(
+        JSON.stringify({
+          ...feedback,
+          conversations: await this.feedbackConversationDtos(feedback),
+        }),
+      );
       return;
     }
 
@@ -3903,6 +3920,10 @@ export class WebChannel implements Channel {
           ? ((await this.deps.feedbackStore?.listAll()) ?? [])
           : ((await this.deps.feedbackStore?.listByUser(viewer.id)) ?? []);
       const nameCache = new Map<string, string>();
+      const convCache = new Map<
+        string,
+        Awaited<ReturnType<typeof this.feedbackConversationDtos>>
+      >();
       const itemsWithUser = await Promise.all(
         items.map(async (fb) => {
           let userName = nameCache.get(fb.userId);
@@ -3910,11 +3931,40 @@ export class WebChannel implements Channel {
             userName = (await this.deps.userStore?.get(fb.userId))?.name ?? fb.userId;
             nameCache.set(fb.userId, userName);
           }
-          return { ...fb, userName };
+          let conversations = convCache.get(fb.id);
+          if (conversations === undefined) {
+            conversations = await this.feedbackConversationDtos(fb);
+            convCache.set(fb.id, conversations);
+          }
+          return { ...fb, userName, conversations };
         }),
       );
       res.writeHead(200);
       res.end(JSON.stringify({ items: itemsWithUser }));
+      return;
+    }
+
+    // GET /api/feedback/conversation-candidates —— 反馈素材选择器：本人会话分页
+    // （updatedAt 降序，store 已排序且排除归档；须在 /api/feedback/:id 正则前命中）
+    if (
+      (url === "/api/feedback/conversation-candidates" ||
+        url.startsWith("/api/feedback/conversation-candidates?")) &&
+      req.method === "GET"
+    ) {
+      const uid = this.requireRequestUser(req);
+      const limit = Math.min(
+        Math.max(Number.parseInt(this.extractQuery(url, "limit") ?? "", 10) || 10, 1),
+        50,
+      );
+      const offset = Math.max(Number.parseInt(this.extractQuery(url, "offset") ?? "", 10) || 0, 0);
+      const q = (this.extractQuery(url, "q") ?? "").trim().toLowerCase();
+      const all = (await this.deps.conversationStore?.listByUser(uid)) ?? [];
+      const filtered = q ? all.filter((c) => c.title.toLowerCase().includes(q)) : all;
+      const page = filtered
+        .slice(offset, offset + limit)
+        .map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt }));
+      res.writeHead(200);
+      res.end(JSON.stringify({ items: page, total: filtered.length }));
       return;
     }
 
@@ -3936,7 +3986,13 @@ export class WebChannel implements Channel {
       // 对话视图展示提交人姓名（owner∥admin 已由可见性守卫保证）
       const userName = (await this.deps.userStore?.get(fb.userId))?.name ?? fb.userId;
       res.writeHead(200);
-      res.end(JSON.stringify({ ...fb, userName }));
+      res.end(
+        JSON.stringify({
+          ...fb,
+          userName,
+          conversations: await this.feedbackConversationDtos(fb),
+        }),
+      );
       return;
     }
 
@@ -6442,6 +6498,39 @@ export class WebChannel implements Channel {
   }
 
   /**
+   * 反馈关联对话记录校验（spec 2026-09-28-feedback-conversation-attachment-design §3.2）：
+   * ≤1 条（D1 拍板）、UUID 形态、须存在且属主=提交人——fail-closed 返 undefined 由调用方 400，防 IDOR。
+   * 只存指针不快照（D2）：转录在 # 引用注入时按需读取。
+   */
+  private async sanitizeFeedbackConversations(
+    userId: string,
+    raw: unknown,
+  ): Promise<string[] | undefined> {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw) || raw.length > 1) return undefined;
+    const out: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== "string" || !/^[\w-]{10,64}$/.test(item)) return undefined;
+      const conv = await this.deps.conversationStore?.get(item);
+      if (!conv || conv.userId !== userId) return undefined;
+      if (!out.includes(item)) out.push(item);
+    }
+    return out;
+  }
+
+  /** 反馈 DTO 的关联会话摘要（指针元数据，不内联转录）；会话已删给 missing 占位，详情页置灰展示 */
+  private async feedbackConversationDtos(
+    feedback: Feedback,
+  ): Promise<Array<{ id: string; title?: string; updatedAt?: string; missing?: boolean }>> {
+    const out: Array<{ id: string; title?: string; updatedAt?: string; missing?: boolean }> = [];
+    for (const id of feedback.conversationIds) {
+      const conv = await this.deps.conversationStore?.get(id);
+      out.push(conv ? { id, title: conv.title, updatedAt: conv.updatedAt } : { id, missing: true });
+    }
+    return out;
+  }
+
+  /**
    * POST /api/feedback/attachments?key=<draftKey> —— 反馈截图上传。
    * 单文件 ≤2MB、扩展名+MIME 双白名单；落盘名 ASCII 安全化（守卫段校验/路径穿越双约束）。
    * 文件先落草稿目录 feedback/<key>/，POST /api/feedback 时整体更名为 feedback/<id>/。
@@ -6745,10 +6834,40 @@ export class WebChannel implements Channel {
         (r) =>
           `${r.authorRole === "admin" ? "【官方回复】" : "【用户补充】"}${r.createdAt} ${r.content}`,
       );
+      // 关联对话记录（D2 指针语义）：引用时点现读最新转录，不预存快照。
+      // 纵深防御：注入时复验会话仍属反馈提交人（不信任存量指针）；缺失降级声明不抛错
+      const transcriptBlocks: string[] = [];
+      for (const convId of fb.conversationIds) {
+        const conv = await this.deps.conversationStore?.get(convId);
+        if (!conv || conv.userId !== fb.userId || !this.messageStore) {
+          transcriptBlocks.push("【关联对话记录】（会话已删除或不可见）");
+          continue;
+        }
+        const all = await this.messageStore.listByConversation(convId);
+        const picked = all.slice(-FEEDBACK_CONV_MAX_MESSAGES);
+        let body = picked
+          .map((msg) => `${msg.role === "user" ? "【用户】" : "【助手】"}${msg.text}`)
+          .join("\n\n");
+        const notes: string[] = [];
+        if (picked.length === 0) {
+          notes.push("会话暂无消息");
+        } else if (all.length > picked.length) {
+          notes.push(`仅含最近 ${picked.length} 条`);
+        }
+        if (body.length > FEEDBACK_CONV_MAX_CHARS) {
+          // 保尾部：最近上下文与反馈问题最相关；头行声明防「已看全文」幻觉
+          body = `（前文已截断）\n${body.slice(-FEEDBACK_CONV_MAX_CHARS)}`;
+          notes.push("超长已截断");
+        }
+        transcriptBlocks.push(
+          `【关联对话记录】${conv.title}${notes.length > 0 ? `（${notes.join("，")}）` : ""}：\n${body}`,
+        );
+      }
       const text = [
         `【反馈】类别：${FEEDBACK_CATEGORY_LABELS[fb.category]}  状态：${FEEDBACK_STATUS_LABELS[fb.status]}  提交：${fb.createdAt}  最近活动：${fb.updatedAt}`,
         fb.content,
         ...replyLines,
+        ...transcriptBlocks,
       ].join("\n");
       const { wrapped } = wrapUntrusted(text, `feedback:${fb.id}`);
 

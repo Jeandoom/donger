@@ -8,6 +8,7 @@ interface FeedbackRow {
   category: string;
   content: string;
   images: string;
+  conversationIds: string;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -30,12 +31,22 @@ function rowToFeedback(r: FeedbackRow): Feedback {
   } catch {
     // 毒数据兜底：坏 JSON 视为无图
   }
+  let conversationIds: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(r.conversationIds ?? "[]");
+    if (Array.isArray(parsed)) {
+      conversationIds = parsed.filter((x): x is string => typeof x === "string");
+    }
+  } catch {
+    // 毒数据兜底：坏 JSON 视为无关联会话
+  }
   return {
     id: r.id,
     userId: r.userId,
     category: r.category as Feedback["category"],
     content: r.content,
     images,
+    conversationIds,
     status: r.status as Feedback["status"],
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -73,6 +84,15 @@ export class SqliteFeedbackStore implements FeedbackStore {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_feedback_items_createdAt ON feedback_items(createdAt)",
     );
+    // 关联对话记录列（spec 2026-09-28-feedback-conversation-attachment-design）；存量表守卫加列
+    const cols = this.db.prepare("PRAGMA table_info(feedback_items)").all() as Array<{
+      name: string;
+    }>;
+    if (!cols.some((c) => c.name === "conversationIds")) {
+      this.db.exec(
+        "ALTER TABLE feedback_items ADD COLUMN conversationIds TEXT NOT NULL DEFAULT '[]'",
+      );
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS feedback_replies (
         id         TEXT PRIMARY KEY,
@@ -91,8 +111,8 @@ export class SqliteFeedbackStore implements FeedbackStore {
   async create(feedback: Feedback): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO feedback_items (id, userId, category, content, images, status, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO feedback_items (id, userId, category, content, images, conversationIds, status, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         feedback.id,
@@ -100,6 +120,7 @@ export class SqliteFeedbackStore implements FeedbackStore {
         feedback.category,
         feedback.content,
         JSON.stringify(feedback.images),
+        JSON.stringify(feedback.conversationIds ?? []),
         feedback.status,
         feedback.createdAt,
         feedback.updatedAt,

@@ -7,6 +7,7 @@ import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import { SqliteFeedbackStore } from "../../src/adapters/sqlite-feedback-store.js";
+import { SqliteMessageStore } from "../../src/adapters/sqlite-message-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
@@ -25,6 +26,7 @@ let tmpDir: string;
 let userStore: SqliteUserStore;
 let sessionStore: JwtSessionStore;
 let feedbackStore: SqliteFeedbackStore;
+let messageStore: SqliteMessageStore;
 let agentStore: SqliteAgentStore;
 let convStore: SqliteConversationStore;
 const realFetch = globalThis.fetch;
@@ -38,6 +40,8 @@ async function startChannel(): Promise<number> {
   userStore.migrateCredentials();
   feedbackStore = new SqliteFeedbackStore(db);
   feedbackStore.migrate();
+  messageStore = new SqliteMessageStore(db);
+  messageStore.migrate();
   agentStore = new SqliteAgentStore(db, createSecretCipher("pw"));
   agentStore.migrate();
   convStore = new SqliteConversationStore(db);
@@ -51,6 +55,7 @@ async function startChannel(): Promise<number> {
     feedbackStore,
     agentStore,
     conversationStore: convStore,
+    messageStore,
   });
   web.onMessage(() => {});
   await web.ready();
@@ -362,6 +367,7 @@ async function seedFeedback(input: {
   userId: string;
   content: string;
   images?: string[];
+  conversationIds?: string[];
   createdAt?: string;
   updatedAt?: string;
 }): Promise<string> {
@@ -373,6 +379,7 @@ async function seedFeedback(input: {
     category: "ui",
     content: input.content,
     images: input.images ?? [],
+    conversationIds: input.conversationIds ?? [],
     status: "open",
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? input.createdAt ?? now,
@@ -405,6 +412,18 @@ async function mkAgentWithScope(
     feedbackScope: scope,
   });
   return agent.id;
+}
+
+/** 模块级发送助手（带 mentions 的消息；反馈引用注入测试共用） */
+async function send(port: number, token: string, convId: string, mentions: unknown) {
+  return realFetch(`http://127.0.0.1:${port}/api/conversations/${convId}/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ text: "看反馈", mentions }),
+  });
 }
 
 describe("反馈引用：发送解析（fail-closed + 可见性）", () => {
@@ -637,5 +656,218 @@ describe("反馈引用：候选下发（mention-candidates）", () => {
       feedbacks: Array<{ label: string }>;
     };
     expect(all.feedbacks).toHaveLength(2);
+  });
+});
+
+describe("反馈关联对话记录：创建校验与候选分页", () => {
+  it("附加本人会话 201 且 DTO 带 conversations；他人会话/不存在/多条/形态非法 → 400（IDOR）", async () => {
+    const port = await startChannel();
+    const alice = await makeUser("alice");
+    const bob = await makeUser("bob");
+    const conv = await convStore.createWithAgent(alice.id, "web", "出错的会话", "");
+    const bobConv = await convStore.createWithAgent(bob.id, "web", "bob 的会话", "");
+
+    const ok = await req(port, "POST", "/api/feedback", alice.token, {
+      content: "这个会话里助手答错了",
+      conversationIds: [conv.id],
+    });
+    expect(ok.status).toBe(201);
+    const fb = (await ok.json()) as {
+      id: string;
+      conversations: Array<{ id: string; title?: string }>;
+    };
+    expect(fb.conversations).toHaveLength(1);
+    expect(fb.conversations[0]?.title).toBe("出错的会话");
+
+    // 列表与详情 DTO 均带关联会话摘要
+    const list = await req(port, "GET", "/api/feedback", alice.token);
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as {
+      items: Array<{ id: string; conversations?: Array<{ title?: string }> }>;
+    };
+    expect(listBody.items[0]?.conversations).toHaveLength(1);
+    const detail = await req(port, "GET", `/api/feedback/${fb.id}`, alice.token);
+    expect(detail.status).toBe(200);
+    const d = (await detail.json()) as { conversations?: Array<{ title?: string }> };
+    expect(d.conversations?.[0]?.title).toBe("出错的会话");
+
+    // IDOR：他人会话 → 400
+    expect(
+      (
+        await req(port, "POST", "/api/feedback", alice.token, {
+          content: "x",
+          conversationIds: [bobConv.id],
+        })
+      ).status,
+    ).toBe(400);
+    // 不存在的会话 → 400
+    expect(
+      (
+        await req(port, "POST", "/api/feedback", alice.token, {
+          content: "x",
+          conversationIds: ["does-not-exist-0001"],
+        })
+      ).status,
+    ).toBe(400);
+    // 多条 → 400（D1 拍板：M1 单条）
+    expect(
+      (
+        await req(port, "POST", "/api/feedback", alice.token, {
+          content: "x",
+          conversationIds: [conv.id, bobConv.id],
+        })
+      ).status,
+    ).toBe(400);
+    // 形态非法 → 400
+    expect(
+      (
+        await req(port, "POST", "/api/feedback", alice.token, {
+          content: "x",
+          conversationIds: ["short"],
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("candidates：仅本人会话、updatedAt 降序、分页与关键词过滤；未登录 401", async () => {
+    const port = await startChannel();
+    const anon = await req(port, "GET", "/api/feedback/conversation-candidates");
+    expect(anon.status).toBe(401);
+
+    const alice = await makeUser("alice");
+    const bob = await makeUser("bob");
+    for (let i = 0; i < 12; i++) {
+      await convStore.createWithAgent(alice.id, "web", `会话-${String(i).padStart(2, "0")}`, "");
+      // 错开 updatedAt 保证降序断言稳定（同毫秒创建会打乱排序）
+      await new Promise((r) => setTimeout(r, 3));
+    }
+    await convStore.createWithAgent(bob.id, "web", "bob 专属", "");
+
+    const p1 = (await (
+      await req(port, "GET", "/api/feedback/conversation-candidates", alice.token)
+    ).json()) as { items: Array<{ title: string }>; total: number };
+    expect(p1.total).toBe(12);
+    expect(p1.items).toHaveLength(10);
+    expect(p1.items[0]?.title).toBe("会话-11");
+
+    const p2 = (await (
+      await req(port, "GET", "/api/feedback/conversation-candidates?offset=10", alice.token)
+    ).json()) as { items: Array<{ title: string }>; total: number };
+    expect(p2.items).toHaveLength(2);
+    expect(p2.items[0]?.title).toBe("会话-01");
+
+    const q = (await (
+      await req(
+        port,
+        "GET",
+        `/api/feedback/conversation-candidates?q=${encodeURIComponent("会话-0")}`,
+        alice.token,
+      )
+    ).json()) as { total: number };
+    expect(q.total).toBe(10);
+
+    // member 只看本人会话
+    const b = (await (
+      await req(port, "GET", "/api/feedback/conversation-candidates", bob.token)
+    ).json()) as { total: number };
+    expect(b.total).toBe(1);
+  });
+});
+
+describe("反馈关联对话记录：# 引用按需注入转录（D2 指针/D3 反馈开关总闸）", () => {
+  it("引用带关联会话的反馈 → 同一 wrap 块内含转录（用户/助手行）", async () => {
+    const port = await startChannel();
+    const alice = await makeUser("alice");
+    const agentId = await mkAgentWithScope(alice.id, { enabled: true });
+    const conv = await convStore.createWithAgent(alice.id, "web", "t", agentId);
+    const target = await convStore.createWithAgent(alice.id, "web", "出问题的会话", agentId);
+    await messageStore.add(target.id, "user", "你好，帮我算下 1+1");
+    await messageStore.add(target.id, "bot", "1+1 等于 3");
+    const fbId = await seedFeedback({
+      userId: alice.id,
+      content: "助手算错了",
+      conversationIds: [target.id],
+    });
+
+    const captured: CapturedMentions[] = [];
+    web.onMessage((m) => captured.push(m as CapturedMentions));
+    await send(port, alice.token, conv.id, [{ kind: "feedback", id: fbId, label: "x" }]);
+    const mentions = captured[0]?.mentions ?? [];
+    expect(mentions).toHaveLength(1);
+    const m = mentions[0]!;
+    expect(m.kind).toBe("feedback");
+    // 转录与反馈正文同处一个 wrapUntrusted 块
+    expect(m.content).toContain("【反馈】");
+    expect(m.content).toContain("助手算错了");
+    expect(m.content).toContain("【关联对话记录】出问题的会话：");
+    expect(m.content).toContain("【用户】你好，帮我算下 1+1");
+    expect(m.content).toContain("【助手】1+1 等于 3");
+    expect(m.content).toContain('source="feedback:');
+    expect(m.imagesOmitted).toBe(0);
+  });
+
+  it("关联会话已删除 → 注入块声明缺失不抛错；超长转录保尾部并声明截断", async () => {
+    const port = await startChannel();
+    const alice = await makeUser("alice");
+    const agentId = await mkAgentWithScope(alice.id, { enabled: true });
+    const conv = await convStore.createWithAgent(alice.id, "web", "t", agentId);
+
+    // 缺失会话：指针指向已不存在的 id
+    const fbMissing = await seedFeedback({
+      userId: alice.id,
+      content: "缺失场景",
+      conversationIds: ["ghost-conversation-0001"],
+    });
+
+    // 超长转录：两条 25k 消息（合计 >20k），保尾 20k 为纯 B 段且头行声明
+    const target = await convStore.createWithAgent(alice.id, "web", "超长会话", agentId);
+    await messageStore.add(target.id, "user", "A".repeat(25_000));
+    await messageStore.add(target.id, "bot", "B".repeat(25_000));
+    const fbLong = await seedFeedback({
+      userId: alice.id,
+      content: "超长场景",
+      conversationIds: [target.id],
+    });
+
+    const captured: CapturedMentions[] = [];
+    web.onMessage((m) => captured.push(m as CapturedMentions));
+    await send(port, alice.token, conv.id, [
+      { kind: "feedback", id: fbMissing, label: "m" },
+      { kind: "feedback", id: fbLong, label: "l" },
+    ]);
+    const mentions = captured[0]?.mentions ?? [];
+    expect(mentions).toHaveLength(2);
+    const missing = mentions.find((x) => x.feedbackId === fbMissing);
+    expect(missing?.content).toContain("【关联对话记录】（会话已删除或不可见）");
+
+    const long = mentions.find((x) => x.feedbackId === fbLong)!;
+    expect(long.content).toContain("【关联对话记录】超长会话（超长已截断）：");
+    expect(long.content).toContain("（前文已截断）");
+    // 保尾部：末尾的 B 串在、开头的 A 串不在
+    expect(long.content).toContain("BBBB");
+    expect(long.content).not.toContain("AAAA");
+    expect(long.content.length).toBeLessThan(25_000);
+  });
+
+  it("admin 引用 member 反馈（带关联会话）→ 转录注入（可见性同反馈口径）", async () => {
+    const port = await startChannel();
+    const alice = await makeUser("alice");
+    const admin = await makeUser("root2", "admin");
+    const agentId = await mkAgentWithScope(admin.id, { enabled: true });
+    const conv = await convStore.createWithAgent(admin.id, "web", "t", agentId);
+    const target = await convStore.createWithAgent(alice.id, "web", "alice 的会话", "");
+    await messageStore.add(target.id, "user", "alice 的原始问题");
+    const fbId = await seedFeedback({
+      userId: alice.id,
+      content: "alice 的反馈",
+      conversationIds: [target.id],
+    });
+
+    const captured: CapturedMentions[] = [];
+    web.onMessage((m) => captured.push(m as CapturedMentions));
+    await send(port, admin.token, conv.id, [{ kind: "feedback", id: fbId, label: "x" }]);
+    const m = (captured[0]?.mentions ?? [])[0]!;
+    expect(m.content).toContain("【关联对话记录】alice 的会话：");
+    expect(m.content).toContain("【用户】alice 的原始问题");
   });
 });

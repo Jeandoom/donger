@@ -15,6 +15,7 @@ function makeFeedback(
     category: "ui",
     content: `content-${id}`,
     images: [],
+    conversationIds: [],
     status: "open",
     createdAt,
     updatedAt: createdAt,
@@ -30,16 +31,30 @@ describe("SqliteFeedbackStore", () => {
     store.migrate();
   });
 
-  it("create/get 往返：images JSON 序列化无感", async () => {
+  it("create/get 往返：images/conversationIds JSON 序列化无感", async () => {
     await store.create(
-      makeFeedback("fb-1", "u-1", "2026-09-20T10:00:00Z", { images: ["a.png", "b.jpg"] }),
+      makeFeedback("fb-1", "u-1", "2026-09-20T10:00:00Z", {
+        images: ["a.png", "b.jpg"],
+        conversationIds: ["conv-1"],
+      }),
     );
     const fb = await store.get("fb-1");
     expect(fb?.userId).toBe("u-1");
     expect(fb?.category).toBe("ui");
     expect(fb?.status).toBe("open");
     expect(fb?.images).toEqual(["a.png", "b.jpg"]);
+    expect(fb?.conversationIds).toEqual(["conv-1"]);
     expect(await store.get("ghost")).toBeUndefined();
+  });
+
+  it("毒 conversationIds JSON 兜底为空数组不抛错", async () => {
+    const db = new Database(":memory:");
+    const s = new SqliteFeedbackStore(db);
+    s.migrate();
+    db.prepare(
+      "INSERT INTO feedback_items (id, userId, category, content, images, conversationIds, status, createdAt, updatedAt) VALUES ('fb-y','u','ui','c','[]','not-json','open','t','t')",
+    ).run();
+    expect((await s.get("fb-y"))?.conversationIds).toEqual([]);
   });
 
   it("毒 images JSON 兜底为空数组不抛错", async () => {

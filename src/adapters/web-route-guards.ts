@@ -231,6 +231,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/feedback", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/feedback", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/feedback/attachments", access: { kind: "authenticated" } },
+    // 反馈素材选择器（本人会话分页）；字面段须先于 :id 参数规则登记
+    {
+      method: "GET",
+      pattern: "/api/feedback/conversation-candidates",
+      access: { kind: "authenticated" },
+    },
     { method: "GET", pattern: "/api/feedback/:id", access: { kind: "authenticated" } },
     { method: "PATCH", pattern: "/api/feedback/:id/status", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/feedback/:id/replies", access: { kind: "authenticated" } },

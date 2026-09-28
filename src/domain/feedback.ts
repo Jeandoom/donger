@@ -35,6 +35,9 @@ export interface Feedback {
   content: string;
   /** 附件文件名数组（仅文件名，不含路径；实际文件在该反馈的附件目录下） */
   images: string[];
+  /** 关联对话记录（本人会话 id；spec 2026-09-28-feedback-conversation-attachment-design）。
+   * 指针语义：引用注入时现读转录，不落快照。M1 服务端按 ≤1 条收口，数组为多条预留。 */
+  conversationIds: string[];
   status: FeedbackStatus;
   createdAt: string;
   updatedAt: string;

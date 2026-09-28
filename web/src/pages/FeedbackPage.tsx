@@ -1,9 +1,11 @@
-import { ImagePlus, Loader2, Plus, X } from "lucide-react";
+import { ImagePlus, Loader2, MessagesSquare, Plus, Search, X } from "lucide-react";
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { DialogShell } from "../components/ui/dialog-shell";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { Segmented } from "../components/ui/segmented";
 import { Select } from "../components/ui/select";
@@ -12,6 +14,7 @@ import { type CurrentUser, fetchMe } from "../lib/auth";
 import {
   addFeedbackReply,
   CATEGORY_LABELS,
+  type ConversationCandidate,
   createFeedback,
   FEEDBACK_CATEGORIES,
   FEEDBACK_STATUSES,
@@ -20,6 +23,7 @@ import {
   type FeedbackReplyDTO,
   type FeedbackStatus,
   feedbackImageUrl,
+  fetchConversationCandidates,
   fetchFeedbackDetail,
   fetchFeedbackList,
   fetchFeedbackReplies,
@@ -242,6 +246,15 @@ function FeedbackListItem({
         <div className="flex items-center gap-1.5">
           <Badge tone="primary">{CATEGORY_LABELS[fb.category]}</Badge>
           <Badge tone={STATUS_TONES[fb.status]}>{STATUS_LABELS[fb.status]}</Badge>
+          {(fb.conversations?.length ?? 0) > 0 && (
+            <span
+              className="flex items-center gap-0.5 text-[10px] text-muted-foreground"
+              title="含关联对话记录"
+            >
+              <MessagesSquare size={11} />
+              会话
+            </span>
+          )}
           <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
             {formatRelative(fb.updatedAt)}
           </span>
@@ -296,11 +309,13 @@ function FeedbackListItem({
   );
 }
 
-/** 右区：新增反馈表单（类别 chips + 多行文本 + 截图上传） */
+/** 右区：新增反馈表单（类别 chips + 多行文本 + 截图上传 + 关联对话记录选择） */
 function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) {
   const [category, setCategory] = useState<FeedbackCategory>("other");
   const [content, setContent] = useState("");
   const [images, setImages] = useState<Array<{ name: string; previewUrl: string }>>([]);
+  const [conversation, setConversation] = useState<ConversationCandidate | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -348,12 +363,14 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
         category,
         content: content.trim(),
         images: images.map((i) => i.name),
+        conversationIds: conversation ? [conversation.id] : undefined,
         key: images.length > 0 ? draftKey.current : undefined,
       });
       for (const img of images) URL.revokeObjectURL(img.previewUrl);
       draftKey.current = crypto.randomUUID();
       setContent("");
       setImages([]);
+      setConversation(null);
       onCreated(fb);
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败");
@@ -429,6 +446,37 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
           />
         </div>
       </div>
+      <div className="mb-4">
+        <div className="mb-2 text-xs font-medium text-muted-foreground">
+          关联对话记录（可选，选一条你的会话作为反馈证据）
+        </div>
+        {conversation ? (
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+            <MessagesSquare size={14} className="shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate text-xs">{conversation.title}</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">
+              {formatRelative(conversation.updatedAt)}
+            </span>
+            <button
+              type="button"
+              aria-label="移除关联会话"
+              onClick={() => setConversation(null)}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <MessagesSquare size={14} />
+            选择对话记录（默认展示最近 10 条，可搜索）
+          </button>
+        )}
+      </div>
       {error && (
         <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
           {error}
@@ -439,7 +487,148 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
           {submitting ? "提交中…" : "提交反馈"}
         </Button>
       </div>
+      {pickerOpen && (
+        <ConversationPickerDialog
+          onClose={() => setPickerOpen(false)}
+          onPick={(c) => {
+            setConversation(c);
+            setPickerOpen(false);
+          }}
+        />
+      )}
     </Card>
+  );
+}
+
+/** 关联对话记录选择弹层：本人会话分页（10 条/页）+ 标题搜索（防抖重置页码），单选回填 */
+function ConversationPickerDialog({
+  onClose,
+  onPick,
+}: {
+  onClose: () => void;
+  onPick: (c: ConversationCandidate) => void;
+}) {
+  const PAGE_SIZE = 10;
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [page, setPage] = useState(0);
+  const [items, setItems] = useState<ConversationCandidate[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // 搜索防抖：输入停稳后重置回第 1 页再查
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQ(q.trim());
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  useEffect(() => {
+    let stale = false;
+    setLoading(true);
+    setError(null);
+    fetchConversationCandidates({
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      q: debouncedQ || undefined,
+    })
+      .then((r) => {
+        if (stale) return;
+        setItems(r.items);
+        setTotal(r.total);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (stale) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [debouncedQ, page]);
+
+  return (
+    <DialogShell
+      title="选择对话记录"
+      subtitle="仅显示你创建的会话；作为反馈证据，agent 引用该反馈时会一并读取"
+      onClose={onClose}
+      ariaLabel="选择对话记录"
+      className="max-w-xl"
+      footer={
+        <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
+          <span>
+            共 {total} 条{pages > 1 ? ` · 第 ${page + 1} / ${pages} 页` : ""}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={page <= 0 || loading}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            上一页
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={page >= pages - 1 || loading}
+            onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
+          >
+            下一页
+          </Button>
+        </div>
+      }
+    >
+      <div className="relative mb-2">
+        <Search
+          size={14}
+          className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="按标题搜索…"
+          className="pl-8"
+          aria-label="搜索会话标题"
+        />
+      </div>
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
+          <Loader2 size={14} className="animate-spin" />
+          加载中…
+        </div>
+      ) : error ? (
+        <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
+          会话列表加载失败：{error}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="py-8 text-center text-xs text-muted-foreground">
+          {debouncedQ ? "没有匹配的会话" : "暂无会话记录"}
+        </div>
+      ) : (
+        <ul className="divide-y rounded-lg border border-border">
+          {items.map((c) => (
+            <li key={c.id}>
+              <button
+                type="button"
+                className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-muted"
+                onClick={() => onPick(c)}
+              >
+                <MessagesSquare size={14} className="shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-[13px]">{c.title}</span>
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {formatRelative(c.updatedAt)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </DialogShell>
   );
 }
 
@@ -559,6 +748,39 @@ function FeedbackDetailPanel({
             ))}
           </Select>
           <span className="text-[11px] text-muted-foreground">状态标识双方均可见</span>
+        </div>
+      )}
+
+      {(fb.conversations?.length ?? 0) > 0 && (
+        <div className="mt-3 shrink-0 space-y-1.5">
+          {fb.conversations?.map((c) =>
+            c.missing ? (
+              <div
+                key={c.id}
+                className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
+              >
+                <MessagesSquare size={14} className="shrink-0" />
+                关联对话记录已删除
+              </div>
+            ) : (
+              <a
+                key={c.id}
+                href={`/?conv=${c.id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs transition-colors hover:bg-muted"
+              >
+                <MessagesSquare size={14} className="shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                {c.updatedAt && (
+                  <span className="shrink-0 text-[10px] text-muted-foreground">
+                    {formatRelative(c.updatedAt)}
+                  </span>
+                )}
+                <span className="shrink-0 text-[10px] text-primary">查看会话 →</span>
+              </a>
+            ),
+          )}
         </div>
       )}
 

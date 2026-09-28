@@ -20,6 +20,11 @@ export const MENTION_INLINE_TOTAL_BUDGET = 100_000;
 /** 反馈截图物化的单条消息总量上限（跨反馈共享计数；超出不复制并尾注声明） */
 export const FEEDBACK_IMAGE_TOTAL_BUDGET = 12;
 
+/** 反馈关联会话转录注入上限（spec 2026-09-28-feedback-conversation-attachment-design §5.2）：
+ * 按需读取（引用时点现读），条数取最近、字符保尾部；总量仍由 MENTION_INLINE_TOTAL_BUDGET 兜底 */
+export const FEEDBACK_CONV_MAX_MESSAGES = 200;
+export const FEEDBACK_CONV_MAX_CHARS = 20_000;
+
 /** 反馈标记 label：去空白 + 仅保留标记体合法字符（字母/数字/下划线/连字符/中文）+ 截 24 字。
  * 反馈无标题，从正文派生；唯一性由 mentions[].id（feedbackId）承担，标记只是短锚点。 */
 export function feedbackMarkerLabel(content: string, createdAt: string): string {
