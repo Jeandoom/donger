@@ -1,5 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /**
@@ -60,7 +60,7 @@ export function listKbTree(root: string, depth = 8): KbTreeResult {
       total++;
       const full = join(dir, name);
       const relPath = relPrefix === "" ? name : `${relPrefix}/${name}`;
-      let stat;
+      let stat: ReturnType<typeof statSync>;
       try {
         stat = statSync(full);
       } catch {
@@ -139,7 +139,7 @@ export function countKbEntries(root: string): number {
     for (const name of names) {
       if (name.startsWith(".") || name === "assets") continue;
       const full = join(dir, name);
-      let stat;
+      let stat: ReturnType<typeof statSync>;
       try {
         stat = statSync(full);
       } catch {

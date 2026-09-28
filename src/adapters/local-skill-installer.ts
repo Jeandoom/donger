@@ -3,18 +3,23 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gitPatFromValues } from "../domain/credential.js";
 import { defaultUsernameForHost, normalizeRepositoryIdentity } from "../domain/git.js";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
-import { cleanHttpsRepoUrl } from "../domain/user-skill-repo.js";
 import { parseFrontmatter, scanSkillPack } from "../domain/skill-scan.js";
+import { cleanHttpsRepoUrl } from "../domain/user-skill-repo.js";
+import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type {
   InstallGitReq,
   InstallPasteReq,
   InstallUploadReq,
   SkillInstaller,
 } from "../ports/skill-installer.js";
-import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import { SkillInstallError } from "../util/errors.js";
-import { type GitProcessCredential, type GitProcessResult, runGit, sanitizeGitError } from "../util/git-process.js";
+import {
+  type GitProcessCredential,
+  type GitProcessResult,
+  runGit,
+  sanitizeGitError,
+} from "../util/git-process.js";
 
 const SLUG_RE = /^[a-z0-9-]+$/;
 const GIT_TIMEOUT_MS = 120_000;
@@ -456,6 +461,7 @@ function validateSkillName(name: string): void {
     !name ||
     name.length > 120 ||
     name.includes("..") ||
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 路径安全校验需要显式拒绝控制字符
     /[\\/:*?"<>|\u0000-\u001f]/.test(name) ||
     /^[\s.]/.test(name) ||
     /[\s.]$/.test(name)

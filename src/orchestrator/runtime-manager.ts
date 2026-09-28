@@ -377,7 +377,12 @@ export class RuntimeManager {
     }
     const provider = await this.deps.llmProviderStore?.getWithKey(user.id, parsed.providerId);
     if (!provider?.models.includes(parsed.model)) return undefined;
-    return { model: parsed.model, baseUrl: provider.baseUrl, authToken: provider.key, sdkType: provider.sdkType };
+    return {
+      model: parsed.model,
+      baseUrl: provider.baseUrl,
+      authToken: provider.key,
+      sdkType: provider.sdkType,
+    };
   }
 
   /**

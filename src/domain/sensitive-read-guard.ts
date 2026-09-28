@@ -56,7 +56,10 @@ export function matchSensitiveRead(
   for (const token of tokenize(raw)) {
     // 只对像路径的 token 做解析（含分隔符、盘符、~、.. 段）；纯命令词（cat/git）跳过
     const looksPath =
-      /[\\/]/.test(token) || /^[a-zA-Z]:/.test(token) || token.startsWith("~") || token.includes("..");
+      /[\\/]/.test(token) ||
+      /^[a-zA-Z]:/.test(token) ||
+      token.startsWith("~") ||
+      token.includes("..");
     if (!looksPath) continue;
     const abs = isAbsolute(token) ? token : cwd ? resolve(cwd, token) : resolve(token);
     for (const root of policy.denyRoots) {

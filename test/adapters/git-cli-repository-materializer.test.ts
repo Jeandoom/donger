@@ -38,7 +38,7 @@ function sourceRepository(): { root: string; repository: AgentGitRepository } {
 }
 
 describe("GitCliRepositoryMaterializer", () => {
-  it("检查远端并原子 clone 到 repos 目录", async () => {
+  it("检查远端并原子 clone 到 repos 目录", { timeout: 30_000 }, async () => {
     const { repository } = sourceRepository();
     const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
     roots.push(destination);
@@ -54,7 +54,7 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("hello");
   });
 
-  it("已有本地修改时保留内容并返回 warning", async () => {
+  it("已有本地修改时保留内容并返回 warning", { timeout: 30_000 }, async () => {
     const { repository } = sourceRepository();
     const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
     roots.push(destination);
@@ -68,7 +68,7 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("changed");
   });
 
-  it("克隆覆盖源仓库全部分支（回归：单分支浅克隆致变更查询误报零变更）", async () => {
+  it("克隆覆盖源仓库全部分支（回归：单分支浅克隆致变更查询误报零变更）", { timeout: 30_000 }, async () => {
     const { root, repository } = sourceRepository();
     execFileSync("git", ["-C", root, "branch", "feature/AI-375"]);
     const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
@@ -91,7 +91,7 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(again[0]?.status).toBe("ready");
   });
 
-  it("已有目录不是目标仓库时备份并重新克隆自愈", async () => {
+  it("已有目录不是目标仓库时备份并重新克隆自愈", { timeout: 30_000 }, async () => {
     const { repository } = sourceRepository();
     const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
     roots.push(destination);

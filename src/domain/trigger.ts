@@ -35,7 +35,7 @@ function isReDoSSuspect(pattern: string): boolean {
   for (const m of quantifiedGroups) {
     const content = (m[1] ?? "").replace(/^\?:/, "");
     if (!content.includes("|")) continue;
-    const branches = content.split("|").map((b) => b.replace(/[+*?{}\[\]]/g, "").trim());
+    const branches = content.split("|").map((b) => b.replace(/[+*?{}[\]]/g, "").trim());
     for (let i = 0; i < branches.length; i++) {
       for (let j = 0; j < branches.length; j++) {
         if (i === j) continue;
@@ -69,9 +69,7 @@ export const TriggerMatcherSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("bodyContains"), keyword: z.string() }),
   z.object({
     kind: z.literal("bodyRegex"),
-    pattern: z
-      .string()
-      .refine((p) => !isReDoSSuspect(p), "正则含嵌套量词（灾难回溯风险），已拒绝"),
+    pattern: z.string().refine((p) => !isReDoSSuspect(p), "正则含嵌套量词（灾难回溯风险），已拒绝"),
   }),
   z.object({ kind: z.literal("bodyFieldEq"), field: z.string(), value: z.string() }),
   z.object({ kind: z.literal("headerEq"), header: z.string(), value: z.string() }),

@@ -2,14 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteInviteStore } from "../../src/adapters/sqlite-invite-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import { buildInvite } from "../../src/domain/invite.js";
 import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
-import { hashPassword } from "../../src/util/password.js";
 
 /**
  * 邮箱注册/登录/邀请契约测试。

@@ -239,7 +239,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     const start = Date.now();
     let i = 0;
     spinnerTimer = setInterval(() => {
-      const frame = FRAMES[i % FRAMES.length]!;
+      const frame = FRAMES[i % FRAMES.length] ?? "";
       write(`\r\x1b[2K${pc.dim(`${frame} 思考中 ${Math.floor((Date.now() - start) / 1000)}s`)}`);
       i += 1;
     }, 120);
@@ -416,7 +416,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       if (ans === "c") return "continue";
       if (ans === "x") return "cancel";
       // g：等用户在另一终端 donger credentials set 配置完成后回车重试；期间输 x 取消
-      const again = (await ask(pc.yellow("配置完成后回车重试（输入 x 取消）: "))).trim().toLowerCase();
+      const again = (await ask(pc.yellow("配置完成后回车重试（输入 x 取消）: ")))
+        .trim()
+        .toLowerCase();
       if (again === "x") return "cancel";
       return "retry";
     },
@@ -491,7 +493,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         ? await api.agentConversation(currentAgent.id)
         : (await api.createConversation(meUser.id, currentAgent?.id)).id;
     await switchTo({ conversationId: cid, agent: currentAgent });
-    await session!.connected();
+    await session?.connected();
   }
 
   /** 回到未创建态（/new、/agent、/chat、/agent-new 切换后） */
@@ -515,7 +517,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       write(pc.dim("尚无 agent，直接使用默认会话（可在 web 或经 AI 生成创建）\n"));
       return null;
     }
-    if (agents.length === 1) return agents[0]!;
+    if (agents.length === 1) return agents[0] ?? null;
     agents.forEach((a, i) => {
       write(
         pc.dim(
@@ -526,7 +528,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     for (;;) {
       const ans = (await ask(`选择 agent [1-${agents.length}]，回车用默认会话: `)).trim();
       const n = Number.parseInt(ans, 10);
-      if (Number.isInteger(n) && n >= 1 && n <= agents.length) return agents[n - 1]!;
+      if (Number.isInteger(n) && n >= 1 && n <= agents.length) return agents[n - 1] ?? null;
       if (!ans) return null;
       if (ans.startsWith("/")) {
         write(pc.dim("先选择编号或直接回车取消，进入会话后再使用斜杠命令\n"));
@@ -647,7 +649,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         emit(pc.dim(`📎 携带附件：${files.map((f) => f.name).join("、")}\n`));
       }
       startSpinner();
-      await session!.send(t, files);
+      await session?.send(t, files);
       pendingFiles.length = 0;
     } catch (e) {
       stopSpinner();

@@ -22,7 +22,9 @@ beforeEach(() => {
     else process.env[key] = savedEnv[key];
   }
   savedEnv.__cleared = undefined;
-  void roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
+  roots.splice(0).forEach((r) => {
+    rmSync(r, { recursive: true, force: true });
+  });
 });
 
 afterEach(() => {
@@ -33,7 +35,9 @@ afterEach(() => {
   for (const key of Object.keys(process.env)) {
     if (/^GIT_CONFIG_(KEY|VALUE)_/.test(key) || key === "GIT_CONFIG_COUNT") delete process.env[key];
   }
-  void roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
+  roots.splice(0).forEach((r) => {
+    rmSync(r, { recursive: true, force: true });
+  });
 });
 
 describe("git 子进程认证通道隔离", () => {

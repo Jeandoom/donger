@@ -185,9 +185,7 @@ export class SqliteConversationStore implements ConversationStore {
       permissionMode,
       lastModelRef: (row.lastModelRef as string) || undefined,
       llmSdkType:
-        row.llmSdkType === "openai" || row.llmSdkType === "anthropic"
-          ? row.llmSdkType
-          : undefined,
+        row.llmSdkType === "openai" || row.llmSdkType === "anthropic" ? row.llmSdkType : undefined,
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,
       archived: row.archived === 1,

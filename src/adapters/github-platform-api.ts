@@ -58,7 +58,6 @@ export class GitHubPlatformApi implements GitPlatformApi {
   }
 
   async createBranch(input: CreateBranchInput, token: string): Promise<PlatformApiResult> {
-    const { owner, repo } = splitRepoPath(input.repositoryPath);
     // 起点 commit sha：显式 fromRef → 直接查 ref；缺省 → 仓库默认分支
     let fromRef = input.fromRef;
     if (!fromRef) {

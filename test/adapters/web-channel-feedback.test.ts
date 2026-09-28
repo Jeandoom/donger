@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
@@ -456,7 +456,7 @@ describe("反馈引用：发送解析（fail-closed + 可见性）", () => {
     expect(m.content).toContain("待处理");
     // 截图物化：复制进会话附件目录，文件真实存在，命名带反馈 id 前缀
     expect(m.imagePaths).toHaveLength(1);
-    const p = m.imagePaths![0]!;
+    const p = m.imagePaths?.[0] ?? "";
     expect(existsSync(p)).toBe(true);
     expect(p).toContain(`feedback-${fbId.slice(0, 8)}-1.png`);
     expect(m.imagesOmitted).toBe(0);

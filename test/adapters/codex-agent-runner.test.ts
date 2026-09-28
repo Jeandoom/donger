@@ -100,9 +100,13 @@ describe("CodexAgentRunner", () => {
       ]),
     );
     const events = await collect(
-      runner.run(task, { cwd: join(workspace, "ws"), skills: [], llm, workspaceRoot: workspace }, async () => ({
-        approved: true,
-      })),
+      runner.run(
+        task,
+        { cwd: join(workspace, "ws"), skills: [], llm, workspaceRoot: workspace },
+        async () => ({
+          approved: true,
+        }),
+      ),
     );
     const types = events.map((e) => e.type);
     expect(types[0]).toBe("llm_input");
@@ -110,7 +114,15 @@ describe("CodexAgentRunner", () => {
     const deltas = events.filter((e) => e.type === "text_delta");
     expect(deltas.map((e) => (e as { text: string }).text)).toEqual(["你", "好"]);
     expect(types).toContain("text");
-    const result = events.at(-1) as { type: string; subtype: string; usage?: { inputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number } };
+    const result = events.at(-1) as {
+      type: string;
+      subtype: string;
+      usage?: {
+        inputTokens: number;
+        cacheReadInputTokens: number;
+        cacheCreationInputTokens: number;
+      };
+    };
     expect(result.subtype).toBe("success");
     expect(result.usage).toMatchObject({
       inputTokens: 10,
@@ -121,10 +133,16 @@ describe("CodexAgentRunner", () => {
 
   it("turn.failed 错误原文透传（自愈链路依赖）", async () => {
     const runner = makeRunner(
-      fakeScript([{ type: "turn.failed", error: { message: "stream disconnected before completion" } }]),
+      fakeScript([
+        { type: "turn.failed", error: { message: "stream disconnected before completion" } },
+      ]),
     );
     const events = await collect(
-      runner.run(task, { cwd: join(workspace, "ws"), skills: [], llm, workspaceRoot: workspace }, async () => ({ approved: true })),
+      runner.run(
+        task,
+        { cwd: join(workspace, "ws"), skills: [], llm, workspaceRoot: workspace },
+        async () => ({ approved: true }),
+      ),
     );
     const result = events.at(-1) as { type: string; subtype: string; error?: string };
     expect(result.subtype).toBe("error");
@@ -137,31 +155,65 @@ describe("CodexAgentRunner", () => {
         { type: "thread.started", thread_id: "thr-2" },
         {
           type: "item.started",
-          item: { id: "c1", type: "command_execution", command: "git push origin main", status: "in_progress" },
+          item: {
+            id: "c1",
+            type: "command_execution",
+            command: "git push origin main",
+            status: "in_progress",
+          },
         },
         {
           type: "item.completed",
-          item: { id: "c1", type: "command_execution", command: "git push", aggregated_output: "rejected", exit_code: 1, status: "failed" },
+          item: {
+            id: "c1",
+            type: "command_execution",
+            command: "git push",
+            aggregated_output: "rejected",
+            exit_code: 1,
+            status: "failed",
+          },
         },
         {
           type: "item.started",
-          item: { id: "mc1", type: "mcp_tool_call", server: "donger-kb", tool: "kb_search", arguments: { q: "x" }, status: "in_progress" },
+          item: {
+            id: "mc1",
+            type: "mcp_tool_call",
+            server: "donger-kb",
+            tool: "kb_search",
+            arguments: { q: "x" },
+            status: "in_progress",
+          },
         },
         {
           type: "item.completed",
-          item: { id: "mc1", type: "mcp_tool_call", server: "donger-kb", tool: "kb_search", arguments: {}, status: "completed", result: { content: [{ type: "text", text: "命中" }] } },
+          item: {
+            id: "mc1",
+            type: "mcp_tool_call",
+            server: "donger-kb",
+            tool: "kb_search",
+            arguments: {},
+            status: "completed",
+            result: { content: [{ type: "text", text: "命中" }] },
+          },
         },
         { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
       ]),
     );
     const events = await collect(
-      runner.run(task, { cwd: join(workspace, "ws"), skills: [], llm, workspaceRoot: workspace }, async () => ({ approved: true })),
+      runner.run(
+        task,
+        { cwd: join(workspace, "ws"), skills: [], llm, workspaceRoot: workspace },
+        async () => ({ approved: true }),
+      ),
     );
     const toolUses = events.filter((e) => e.type === "tool_use");
     expect(toolUses[0]).toMatchObject({ tool: "Bash", input: { command: "git push origin main" } });
     expect(toolUses[1]).toMatchObject({ tool: "mcp__donger-kb__kb_search", input: { q: "x" } });
     const results = events.filter((e) => e.type === "tool_result");
-    expect(results[0]).toMatchObject({ content: expect.stringContaining("exit_code: 1"), isError: true });
+    expect(results[0]).toMatchObject({
+      content: expect.stringContaining("exit_code: 1"),
+      isError: true,
+    });
     expect(results[1]).toMatchObject({ content: "命中", isError: false });
   });
 
@@ -206,11 +258,27 @@ describe("CodexAgentRunner", () => {
       workspaceRoot: workspace,
       resume: "old-thread",
     };
-    await collect(runner.run(task, { ...base, allowedTools: ["Read", "Grep", "Glob"] }, async () => ({ approved: true })));
+    await collect(
+      runner.run(task, { ...base, allowedTools: ["Read", "Grep", "Glob"] }, async () => ({
+        approved: true,
+      })),
+    );
     expect(resumedWith).toBe("old-thread");
-    await collect(runner.run(task, { ...base, resume: undefined, allowedTools: ["Read", "Grep"] }, async () => ({ approved: true })));
+    await collect(
+      runner.run(
+        task,
+        { ...base, resume: undefined, allowedTools: ["Read", "Grep"] },
+        async () => ({ approved: true }),
+      ),
+    );
     expect(captured[0]).toMatchObject({ sandboxMode: "read-only" });
-    await collect(runner.run(task, { ...base, resume: undefined, allowedTools: ["Bash", "Read"] }, async () => ({ approved: true })));
+    await collect(
+      runner.run(
+        task,
+        { ...base, resume: undefined, allowedTools: ["Bash", "Read"] },
+        async () => ({ approved: true }),
+      ),
+    );
     expect(captured[1]).toMatchObject({ sandboxMode: "workspace-write" });
   });
 
@@ -267,12 +335,19 @@ describe("CodexAgentRunner", () => {
     const pluginDir = join(workspace, "pack-root", ".donger-sdk-plugin");
     mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
     mkdirSync(join(pluginDir, "skills", "finder"), { recursive: true });
-    writeFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "my-pack" }));
+    writeFileSync(
+      join(pluginDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "my-pack" }),
+    );
     writeFileSync(join(pluginDir, "skills", "finder", "SKILL.md"), "---\nname: finder\n---\nbody");
 
     const bridge = new CodexChatBridge();
     bridges.push(bridge);
-    const runner = new CodexAgentRunner(new GateRouter(), bridge, fakeScript([{ type: "thread.started", thread_id: "t" }]));
+    const runner = new CodexAgentRunner(
+      new GateRouter(),
+      bridge,
+      fakeScript([{ type: "thread.started", thread_id: "t" }]),
+    );
     const cwd = join(workspace, "ws3");
     mkdirSync(cwd, { recursive: true });
     await collect(
@@ -294,14 +369,20 @@ describe("CodexAgentRunner", () => {
   it("execpolicy 规则：缺省禁全部 git，gitAllowShellGit 时仅禁 push", async () => {
     const bridge = new CodexChatBridge();
     bridges.push(bridge);
-    const runner = new CodexAgentRunner(new GateRouter(), bridge, fakeScript([{ type: "thread.started", thread_id: "t" }]));
+    const runner = new CodexAgentRunner(
+      new GateRouter(),
+      bridge,
+      fakeScript([{ type: "thread.started", thread_id: "t" }]),
+    );
     const cwd = join(workspace, "ws4");
     const runOpts = { cwd, skills: [], llm, workspaceRoot: workspace } as const;
     await collect(runner.run(task, runOpts, async () => ({ approved: true })));
     expect(readFileSync(join(workspace, ".codex-home", "rules", "donger.rules"), "utf8")).toContain(
       'pattern=["git"]',
     );
-    await collect(runner.run(task, { ...runOpts, gitAllowShellGit: true }, async () => ({ approved: true })));
+    await collect(
+      runner.run(task, { ...runOpts, gitAllowShellGit: true }, async () => ({ approved: true })),
+    );
     const rules = readFileSync(join(workspace, ".codex-home", "rules", "donger.rules"), "utf8");
     expect(rules).toContain('pattern=["git", "push"]');
     expect(rules).not.toContain('pattern=["git"]');

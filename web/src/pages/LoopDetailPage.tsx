@@ -55,7 +55,7 @@ export function LoopDetailPage() {
   const [runs, setRuns] = useState<LoopRun[]>([]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [_loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
 

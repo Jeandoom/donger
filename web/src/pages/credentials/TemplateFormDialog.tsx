@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
+import { DialogShell } from "../../components/ui/dialog-shell";
 import { FormField } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { RadioCard } from "../../components/ui/radio-card";
@@ -13,7 +14,6 @@ import {
   deleteCredentialTemplate,
   updateCredentialTemplate,
 } from "../../lib/skills";
-import { DialogShell } from "../../components/ui/dialog-shell";
 import { CREDENTIAL_KEY_PATTERN, validateCredentialCode } from "./model";
 
 /** git PAT 凭证固定键名（与服务端 GIT_PAT_KEY_SPECS 契约对齐，键名不可自定义） */

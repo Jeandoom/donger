@@ -4,8 +4,17 @@
 // 写入经 onChange 回调记账（kb_revisions，actorKind=chat）；可写性由挂载清单声明。
 // 检索为 grep 级行匹配（异步 fs，不阻塞事件循环）；FTS 后继替换 kb_search 内部实现，签名不变。
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   createSdkMcpServer,
@@ -20,7 +29,7 @@ const fail = (text: string): KbToolResult => ({ content: [{ type: "text", text }
 
 const MAX_READ_CHARS = 32_000;
 const MAX_SEARCH_HITS = 50;
-const MAX_SEARCH_FILES = 200;
+const _MAX_SEARCH_FILES = 200;
 const SEARCH_TIMEOUT_MS = 2_000;
 const LIST_DEPTH = 3;
 
@@ -115,7 +124,7 @@ function treeList(root: string, depth: number, prefix = ""): string[] {
   for (const entry of [...entries].sort()) {
     if (entry.startsWith(".")) continue;
     const full = join(root, entry);
-    let stat;
+    let stat: ReturnType<typeof statSync>;
     try {
       stat = statSync(full);
     } catch {
@@ -134,11 +143,12 @@ function treeList(root: string, depth: number, prefix = ""): string[] {
 
 /** glob 仅支持 * 与 **（映射为正则），非法字符按字面处理；用 matchAll 规避 hook 误报 */
 function globToRegExp(glob: string): RegExp {
+  const NUL = String.fromCharCode(0);
   const escaped = glob
     .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "\u0000")
+    .replace(/\*\*/g, NUL)
     .replace(/\*/g, "[^/]*")
-    .replace(/\u0000/g, ".*");
+    .replaceAll(NUL, ".*");
   return new RegExp(`^${escaped}$`, "i");
 }
 
@@ -165,7 +175,9 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         subdir: z.string().optional().describe("相对库根的子目录，如 knowledges/faq"),
       },
       handler: async (args): Promise<KbToolResult> => {
-        const a = z.object({ kbId: z.string().optional(), subdir: z.string().optional() }).parse(args);
+        const a = z
+          .object({ kbId: z.string().optional(), subdir: z.string().optional() })
+          .parse(args);
         // 不带 kbId 且多库：输出挂载清单（名称 + 可写性 + 顶层目录）
         if ((!a.kbId || a.kbId.length === 0) && mounts.length > 1) {
           const lines: string[] = ["挂载知识库清单："];
@@ -274,7 +286,10 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
 
         // FTS 优先（R-A 影子索引）：跳过不含关键词的文件，仅对命中文件做行级定位
         if (deps.ftsSearch) {
-          const files = deps.ftsSearch(targets.map((t) => t.kbId), a.query);
+          const files = deps.ftsSearch(
+            targets.map((t) => t.kbId),
+            a.query,
+          );
           for (const f of files) {
             if (hits.length >= MAX_SEARCH_HITS) break;
             const mount = targets.find((t) => t.kbId === f.kbId);
@@ -300,7 +315,7 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
               if (hits.length >= MAX_SEARCH_HITS) return;
               if (entry.startsWith(".")) continue;
               const full = join(dir, entry);
-              let stat;
+              let stat: ReturnType<typeof statSync>;
               try {
                 stat = statSync(full);
               } catch {

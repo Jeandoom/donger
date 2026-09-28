@@ -169,7 +169,7 @@ describe("donger-git CLI 工作区工具", () => {
     expect(r.isError).toBeFalsy();
     expect(r.content[0]?.text).toContain(join(deps.reposRoot, "demo").slice(0, 20));
     expect(existsSync(join(deps.reposRoot, "demo", "README.md"))).toBe(true);
-    expect(existsSync(join(deps.reposRoot, "demo") + ".clone-")).toBe(false);
+    expect(existsSync(`${join(deps.reposRoot, "demo")}.clone-`)).toBe(false);
   });
 
   it("git_clone：目录已存在时拒绝并引导用 git_pull", async () => {

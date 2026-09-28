@@ -3,9 +3,9 @@ import { useState } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
+import { DialogShell } from "../../components/ui/dialog-shell";
 import { Input } from "../../components/ui/input";
 import { deleteCredentialValue, upsertCredentialValue } from "../../lib/skills";
-import { DialogShell } from "../../components/ui/dialog-shell";
 import type { CredentialRow } from "./model";
 
 /**

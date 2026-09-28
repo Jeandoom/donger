@@ -59,11 +59,7 @@ export function diffRows(
   const newLines = splitLines(newText);
 
   let pre = 0;
-  while (
-    pre < oldLines.length &&
-    pre < newLines.length &&
-    oldLines[pre] === newLines[pre]
-  ) {
+  while (pre < oldLines.length && pre < newLines.length && oldLines[pre] === newLines[pre]) {
     pre++;
   }
   let suf = 0;
@@ -87,12 +83,12 @@ export function diffRows(
     // 内容相同（如重复 Write）
   } else if (oldMid.length > DIFF_LINE_CAP || newMid.length > DIFF_LINE_CAP) {
     truncated = true;
-    oldMid.forEach((text, i) =>
-      rows.push({ type: "del", oldNo: pre + i + 1, text }),
-    );
-    newMid.forEach((text, i) =>
-      rows.push({ type: "add", newNo: pre + i + 1, text }),
-    );
+    oldMid.forEach((text, i) => {
+      rows.push({ type: "del", oldNo: pre + i + 1, text });
+    });
+    newMid.forEach((text, i) => {
+      rows.push({ type: "add", newNo: pre + i + 1, text });
+    });
   } else {
     // 中段 LCS（Int32Array 一维 DP）
     const n = oldMid.length;
@@ -148,12 +144,44 @@ function splitLines(text: string): string[] {
 }
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
-  ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
-  json: "json", md: "markdown", txt: "text", yaml: "yaml", yml: "yaml", html: "markup",
-  htm: "markup", css: "css", scss: "scss", py: "python", rb: "ruby", go: "go", rs: "rust",
-  java: "java", kt: "kotlin", swift: "swift", c: "c", h: "c", cpp: "cpp", hpp: "cpp",
-  cs: "csharp", php: "php", sh: "bash", bash: "bash", sql: "sql", toml: "toml", ini: "ini",
-  xml: "markup", svg: "markup", vue: "markup", csv: "text", ipynb: "json",
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  mjs: "javascript",
+  cjs: "javascript",
+  json: "json",
+  md: "markdown",
+  txt: "text",
+  yaml: "yaml",
+  yml: "yaml",
+  html: "markup",
+  htm: "markup",
+  css: "css",
+  scss: "scss",
+  py: "python",
+  rb: "ruby",
+  go: "go",
+  rs: "rust",
+  java: "java",
+  kt: "kotlin",
+  swift: "swift",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  hpp: "cpp",
+  cs: "csharp",
+  php: "php",
+  sh: "bash",
+  bash: "bash",
+  sql: "sql",
+  toml: "toml",
+  ini: "ini",
+  xml: "markup",
+  svg: "markup",
+  vue: "markup",
+  csv: "text",
+  ipynb: "json",
 };
 
 export function languageOf(path: string): string {

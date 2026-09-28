@@ -102,11 +102,11 @@ describe("donger-kb 工具", () => {
       content: "x",
     });
     expect(rootWrite.isError).toBe(true);
-    const escape = await findTool(tools, "kb_write").handler({
+    const escWrite = await findTool(tools, "kb_write").handler({
       path: "../evil.md",
       content: "x",
     });
-    expect(escape.isError).toBe(true);
+    expect(escWrite.isError).toBe(true);
   });
 });
 
@@ -189,7 +189,7 @@ describe("donger-kb 工具 v2（按库寻址，spec §8）", () => {
     expect(ro.isError).toBe(true);
   });
 
-  it("kb_search \"all\" 跨库检索并带 kbId 溯源", async () => {
+  it('kb_search "all" 跨库检索并带 kbId 溯源', async () => {
     const tools = twoMountTools();
     const r = await findTool(tools, "kb_search").handler({ query: "内容", kbId: "all" });
     const body = JSON.parse(r.content[0]?.text ?? "{}") as {

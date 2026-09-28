@@ -166,7 +166,7 @@ export function buildProgram(): Command {
     );
 
   // ── chat / ask ──
-  const chat = program
+  program
     .command("chat", { isDefault: true })
     .description("交互式对话（默认命令）")
     .option("-a, --agent <id|名称>", "直接选择智能体")
@@ -607,15 +607,21 @@ export function buildProgram(): Command {
       run(async () => {
         const { api } = requireApi(cmd);
         const body = (await api.call("GET", "/api/credential-values")) as {
-          credentials?: Array<{ code: string; name: string; filledKeys: string[]; missingKeys: string[] }>;
+          credentials?: Array<{
+            code: string;
+            name: string;
+            filledKeys: string[];
+            missingKeys: string[];
+          }>;
         };
         const list = asArr(body.credentials);
         if (globals(cmd).json) return printJson(list);
         for (const c of list) {
           const miss = asArr(c.missingKeys);
           console.log(
-            `${s(c.code)}  ${s(c.name)}  keys=[${asArr(c.filledKeys).map((k) => s(k)).join(",")}]` +
-              (miss.length ? pc.yellow(`  缺填: ${miss.join(",")}`) : ""),
+            `${s(c.code)}  ${s(c.name)}  keys=[${asArr(c.filledKeys)
+              .map((k) => s(k))
+              .join(",")}]${miss.length ? pc.yellow(`  缺填: ${miss.join(",")}`) : ""}`,
           );
         }
         console.error(pc.dim(`共 ${list.length} 条`));
@@ -662,8 +668,15 @@ export function buildProgram(): Command {
             const r = (await api.call(
               "GET",
               `/api/credential-templates?q=${encodeURIComponent(code)}`,
-            )) as { templates?: Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }> };
-            return ((r.templates ?? []) as Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }>).find((t) => t.code === code);
+            )) as {
+              templates?: Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }>;
+            };
+            return (
+              (r.templates ?? []) as Array<{
+                code: string;
+                keySpecs: Array<{ key: string; label?: string }>;
+              }>
+            ).find((t) => t.code === code);
           };
           let tpl = await findTpl();
           if (!tpl) {
@@ -679,7 +692,9 @@ export function buildProgram(): Command {
             tpl = await findTpl();
           } else {
             console.error(
-              pc.dim(`模板 ${code} 已存在（keys: ${tpl.keySpecs.map((k) => k.key).join(", ")}），直接填写值`),
+              pc.dim(
+                `模板 ${code} 已存在（keys: ${tpl.keySpecs.map((k) => k.key).join(", ")}），直接填写值`,
+              ),
             );
           }
           const values: Record<string, string> = {};
@@ -701,8 +716,15 @@ export function buildProgram(): Command {
         const r = (await api.call(
           "GET",
           `/api/credential-templates?q=${encodeURIComponent(code)}`,
-        )) as { templates?: Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }> };
-        const t = ((r.templates ?? []) as Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }>).find((x) => x.code === code);
+        )) as {
+          templates?: Array<{ code: string; keySpecs: Array<{ key: string; label?: string }> }>;
+        };
+        const t = (
+          (r.templates ?? []) as Array<{
+            code: string;
+            keySpecs: Array<{ key: string; label?: string }>;
+          }>
+        ).find((x) => x.code === code);
         if (!t) throw new Error(`模板不存在: ${code}（用 credentials create 新建）`);
         const values: Record<string, string> = {};
         for (const ks of t.keySpecs) {

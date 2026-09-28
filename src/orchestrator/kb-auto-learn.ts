@@ -2,8 +2,8 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Conversation } from "../domain/conversation.js";
-import { lineDiff } from "../domain/kb-diff.js";
 import type { KbLibrary } from "../domain/kb.js";
+import { lineDiff } from "../domain/kb-diff.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import { kbRootDir, sha256Text, writeKbEntry } from "../util/kb-files.js";
@@ -19,7 +19,7 @@ const DAILY_LIMIT = 5;
 const MAX_OUTPUT_CHARS = 32_000;
 
 /** conversationId → {date, count}（内存频控；单实例部署语义下够用） */
-const counters = new Map<string, { date: string; count: number }>;
+const counters = new Map<string, { date: string; count: number }>();
 
 export function kbAutoLearnAllowed(conversationId: string): boolean {
   const today = new Date().toISOString().slice(0, 10);
@@ -67,9 +67,7 @@ const queues = new Map<string, Promise<void>>();
 
 export function enqueueAutoLearn(params: AutoLearnParams, conversationText: string): void {
   const prev = queues.get(params.conversation.id) ?? Promise.resolve();
-  const next = prev
-    .then(() => runAutoLearn(params, conversationText))
-    .catch(() => undefined);
+  const next = prev.then(() => runAutoLearn(params, conversationText)).catch(() => undefined);
   queues.set(params.conversation.id, next);
   void next.finally(() => {
     if (queues.get(params.conversation.id) === next) queues.delete(params.conversation.id);
@@ -77,7 +75,10 @@ export function enqueueAutoLearn(params: AutoLearnParams, conversationText: stri
 }
 
 /** 学习主流程：prompt 组装 → LLM → 结构化结果校验 → 落盘+记账；任何失败抛给调用方 */
-export async function runAutoLearn(params: AutoLearnParams, conversationText: string): Promise<void> {
+export async function runAutoLearn(
+  params: AutoLearnParams,
+  conversationText: string,
+): Promise<void> {
   const { user, conversation, taskId, candidateKbs, workspaceDir, llm, revisionStore } = params;
   if (!kbAutoLearnAllowed(conversation.id)) return;
   if (candidateKbs.length === 0 || conversationText.trim().length === 0) return;
@@ -110,7 +111,7 @@ export async function runAutoLearn(params: AutoLearnParams, conversationText: st
     "## 输出契约",
     "只输出一个 JSON 对象（可包 ```json 围栏），不要输出其他文字：",
     '无值得沉淀的内容 → {"skip":true}',
-    "有 → {\"kbId\":\"<候选库 id>\",\"path\":\"<相对路径，.md 结尾>\",\"summary\":\"<一句话变更摘要>\",\"content\":\"<markdown 全文>\"}",
+    '有 → {"kbId":"<候选库 id>","path":"<相对路径，.md 结尾>","summary":"<一句话变更摘要>","content":"<markdown 全文>"}',
   ].join("\n");
 
   consumeQuota(conversation.id);

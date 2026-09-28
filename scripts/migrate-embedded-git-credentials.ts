@@ -77,7 +77,7 @@ function findGitConfigs(dir: string, depth: number): string[] {
   for (const entry of entries) {
     if (entry.startsWith(".")) continue;
     const full = join(dir, entry);
-    let stat;
+    let stat: ReturnType<typeof statSync>;
     try {
       stat = statSync(full);
     } catch {

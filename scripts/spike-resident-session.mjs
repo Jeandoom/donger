@@ -31,7 +31,10 @@ async function runTurn(makeIter, label) {
   let sessionId;
   for await (const m of iter) {
     if (m.type === "system" && m.subtype === "init") sessionId = m.session_id;
-    if (ttft === null && (m.type === "stream_event" || m.type === "assistant" || m.type === "user")) {
+    if (
+      ttft === null &&
+      (m.type === "stream_event" || m.type === "assistant" || m.type === "user")
+    ) {
       ttft = now() - t0;
     }
     if (m.type === "result") {
@@ -52,7 +55,13 @@ console.log(`== A. per-turn 模式（现行架构）model=${model} ==`);
       () =>
         query({
           prompt: text,
-          options: { cwd, model, maxTurns: 4, env: { ...process.env }, ...(sessionId ? { resume: sessionId } : {}) },
+          options: {
+            cwd,
+            model,
+            maxTurns: 4,
+            env: { ...process.env },
+            ...(sessionId ? { resume: sessionId } : {}),
+          },
         }),
       `turn${i + 1}`,
     );
@@ -78,10 +87,17 @@ console.log(`== B. resident 模式（单进程常驻）==`);
     },
   };
   const push = (text) => {
-    queue.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
+    queue.push({
+      type: "user",
+      message: { role: "user", content: text },
+      parent_tool_use_id: null,
+    });
     wake();
   };
-  const q = query({ prompt: stream, options: { cwd, model, maxTurns: 4, env: { ...process.env } } });
+  const q = query({
+    prompt: stream,
+    options: { cwd, model, maxTurns: 4, env: { ...process.env } },
+  });
   const sharedIter = q[Symbol.asyncIterator]();
   // 显式拉取直到本轮 result。不用 for-await+break：break 会触发迭代器 return() 语义，
   // 实测会把常驻输出流提前关掉（turn2 next() 返回 undefined）
@@ -95,7 +111,9 @@ console.log(`== B. resident 模式（单进程常驻）==`);
         ttft = now() - t0;
       }
       if (m.type === "result") {
-        console.log(`  ${label}: ttft=${ttft?.toFixed(0) ?? "?"}ms total=${(now() - t0).toFixed(0)}ms`);
+        console.log(
+          `  ${label}: ttft=${ttft?.toFixed(0) ?? "?"}ms total=${(now() - t0).toFixed(0)}ms`,
+        );
         return;
       }
     }

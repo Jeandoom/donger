@@ -43,7 +43,7 @@ describe("MCP 端点（/mcp + /api/mcp/tokens）", () => {
     convStore.migrate();
     const conv = await convStore.create(owner.id, "web", "属主会话");
     ownerConvId = conv.id;
-    const otherConv = await convStore.create(other.id, "web", "旁人会话");
+    const _otherConv = await convStore.create(other.id, "web", "旁人会话");
 
     const messageStore = new SqliteMessageStore(db);
     messageStore.migrate();
@@ -140,9 +140,9 @@ describe("MCP 端点（/mcp + /api/mcp/tokens）", () => {
 
   it("/mcp：无令牌/坏令牌 401；GET 405", async () => {
     expect((await mcpCall("", { jsonrpc: "2.0", id: 1, method: "initialize" })).status).toBe(401);
-    expect((await mcpCall("dgk_forged", { jsonrpc: "2.0", id: 1, method: "initialize" })).status).toBe(
-      401,
-    );
+    expect(
+      (await mcpCall("dgk_forged", { jsonrpc: "2.0", id: 1, method: "initialize" })).status,
+    ).toBe(401);
     const get = await fetch(`http://127.0.0.1:${port}/mcp`, {
       headers: { Authorization: "Bearer x" },
     });
@@ -159,7 +159,9 @@ describe("MCP 端点（/mcp + /api/mcp/tokens）", () => {
       params: { protocolVersion: "2025-03-26" },
     });
     expect(init.status).toBe(200);
-    const initBody = (await init.json()) as { result: { protocolVersion: string; serverInfo: { name: string } } };
+    const initBody = (await init.json()) as {
+      result: { protocolVersion: string; serverInfo: { name: string } };
+    };
     expect(initBody.result.protocolVersion).toBe("2025-03-26");
     expect(initBody.result.serverInfo.name).toBe("donger");
 

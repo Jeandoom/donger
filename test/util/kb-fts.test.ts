@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createKbFts, cjkSpace, ftsPhrase, migrateKbFts } from "../../src/util/kb-fts.js";
+import { cjkSpace, createKbFts, ftsPhrase, migrateKbFts } from "../../src/util/kb-fts.js";
 
 /**
  * FTS 三列式影子表（R-A）：中文 0 命中回归——默认 unicode61 对中文整串成 token，

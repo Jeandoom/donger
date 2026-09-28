@@ -2,7 +2,11 @@
 // 路由登记在 web-route-guards（/api/skills/repo*），鉴权 authenticated，数据按 userId 隔离。
 
 import { z } from "zod";
-import { cleanHttpsRepoUrl, toUserSkillRepoView, UserSkillRepoInputSchema } from "../domain/user-skill-repo.js";
+import {
+  cleanHttpsRepoUrl,
+  toUserSkillRepoView,
+  UserSkillRepoInputSchema,
+} from "../domain/user-skill-repo.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import type { SkillRepoSyncOutcome } from "./skill-repo-sync.js";

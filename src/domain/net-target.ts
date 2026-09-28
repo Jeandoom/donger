@@ -1,5 +1,5 @@
-import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 /**
  * 出站目标内网判定（触发器 http source 等会把响应体回读给调用者的探活面）。
@@ -32,9 +32,7 @@ export function isPrivateNetHost(hostname: string): boolean {
       const hi = Number.parseInt(groups[0] ?? "", 16);
       const lo = Number.parseInt(groups[1] ?? "", 16);
       if (Number.isNaN(hi) || Number.isNaN(lo)) return true;
-      return isPrivateIpv4(
-        `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`,
-      );
+      return isPrivateIpv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
     }
     return false;
   }

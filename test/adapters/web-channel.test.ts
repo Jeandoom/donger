@@ -918,7 +918,9 @@ describe("WebChannel POST /api/upload", () => {
     const body = new FormData();
     body.append(
       "file",
-      new Blob(["PK"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      new Blob(["PK"], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
       "季度报表.xlsx",
     );
     const res = await fetch(`http://127.0.0.1:${port}/api/upload?threadId=${convId}`, {

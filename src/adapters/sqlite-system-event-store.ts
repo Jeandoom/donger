@@ -17,7 +17,9 @@ export class SqliteSystemEventStore implements SystemEventStore {
         createdAt      TEXT NOT NULL
       )
     `);
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_system_events_created ON system_events(createdAt)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_system_events_created ON system_events(createdAt)",
+    );
   }
 
   async record(

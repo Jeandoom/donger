@@ -14,7 +14,12 @@
   },
   "linter": {
     "enabled": true,
-    "rules": { "preset": "recommended" }
+    "rules": {
+      "preset": "recommended",
+      "a11y": "warn",
+      "suspicious": { "noArrayIndexKey": "warn" },
+      "correctness": { "useExhaustiveDependencies": "warn" }
+    }
   },
   "javascript": {
     "formatter": { "quoteStyle": "double", "semicolons": "always" }

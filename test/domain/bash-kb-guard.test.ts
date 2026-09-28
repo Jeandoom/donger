@@ -22,9 +22,9 @@ describe("bashKbWriteGuard", () => {
   });
 
   it("Windows 路径形态重定向 → blocked", () => {
-    expect(
-      bashKbWriteGuard('echo x >> "D:/code/kbdata/kb/kb-1/notes/a.md"', roots).blocked,
-    ).toBe(true);
+    expect(bashKbWriteGuard('echo x >> "D:/code/kbdata/kb/kb-1/notes/a.md"', roots).blocked).toBe(
+      true,
+    );
   });
 
   it("rm/cp/mv/tee/sed -i 写库目录 → blocked", () => {

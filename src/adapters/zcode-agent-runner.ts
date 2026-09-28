@@ -37,9 +37,7 @@ const DONGER_ZCODE_PROVIDER_ID = "donger-glm";
 /** 自定义模型必须显式 reasoningLevel（实测缺失报 invalid_model_request），且档位词表
  *  按模型而异（glm-5.3-flash 实测 high ✓ / enabled ✗；glm-4.6 实测 enabled ✓ / high ✗）。
  *  按模型族启发 + DONGER_ZCODE_REASONING_LEVEL 覆盖；不命中回退 enabled（报错可诊断）。 */
-const REASONING_LEVEL_BY_MODEL: Array<[RegExp, string]> = [
-  [/flash|highspeed|mini|lite/i, "high"],
-];
+const REASONING_LEVEL_BY_MODEL: Array<[RegExp, string]> = [[/flash|highspeed|mini|lite/i, "high"]];
 
 export function resolveReasoningLevel(model: string): string {
   const override = process.env.DONGER_ZCODE_REASONING_LEVEL?.trim();

@@ -37,7 +37,7 @@ export class JwtSessionStore implements SessionStore {
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setSubject(userId)
       .setIssuedAt()
-      .setExpirationTime(Math.floor(this.ttlMs / 1000) + "s")
+      .setExpirationTime(`${Math.floor(this.ttlMs / 1000)}s`)
       .sign(this.key);
     return { token, jti };
   }

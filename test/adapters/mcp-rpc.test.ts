@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type McpToolDef, handleMcpMessage, textResult } from "../../src/adapters/mcp/rpc.js";
+import { handleMcpMessage, type McpToolDef, textResult } from "../../src/adapters/mcp/rpc.js";
 
 const echoTool: McpToolDef = {
   name: "echo",
@@ -50,12 +50,17 @@ describe("handleMcpMessage（MCP Streamable HTTP JSON-RPC 最小实现）", () =
 
   it("tools/call 正常路径与工具异常路径（isError）", async () => {
     const ok = await handleMcpMessage(
-      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "echo", arguments: { text: "hi" } } },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "echo", arguments: { text: "hi" } },
+      },
       ctx,
     );
-    expect((ok.body as { result: { content: Array<{ text: string }> } }).result.content[0]?.text).toBe(
-      "echo:hi",
-    );
+    expect(
+      (ok.body as { result: { content: Array<{ text: string }> } }).result.content[0]?.text,
+    ).toBe("echo:hi");
 
     const bad = await handleMcpMessage(
       { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "boom" } },
@@ -68,7 +73,10 @@ describe("handleMcpMessage（MCP Streamable HTTP JSON-RPC 最小实现）", () =
   });
 
   it("未知 method 与未知工具 → -32601；畸形请求 → 400", async () => {
-    const unknown = await handleMcpMessage({ jsonrpc: "2.0", id: 5, method: "resources/list" }, ctx);
+    const unknown = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 5, method: "resources/list" },
+      ctx,
+    );
     expect((unknown.body as { error: { code: number } }).error.code).toBe(-32601);
 
     const unknownTool = await handleMcpMessage(

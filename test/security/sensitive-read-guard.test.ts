@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
 import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 import {
   matchSensitiveRead,
-  sensitiveReadDenyMessage,
   type SensitiveReadPolicy,
+  sensitiveReadDenyMessage,
 } from "../../src/domain/sensitive-read-guard.js";
 
 // 2026-09-24 审计 H1/D3 回归锚点：服务端要害路径读守卫。
@@ -41,7 +41,9 @@ describe("matchSensitiveRead", () => {
   });
 
   it("deny 根目录本身（git -C .deploy …）→ 命中", () => {
-    expect(matchSensitiveRead("git -C D:/srv/donger/.deploy status", "C:\\w", policy(deny))).toBeDefined();
+    expect(
+      matchSensitiveRead("git -C D:/srv/donger/.deploy status", "C:\\w", policy(deny)),
+    ).toBeDefined();
   });
 
   it("命令拼接/引号变体仍逐 token 命中", () => {
@@ -56,7 +58,9 @@ describe("matchSensitiveRead", () => {
   it("本人工作区落在 deny 根之下 → allow 优先放行", () => {
     const home = "D:\\code\\donger\\data\\users\\u1";
     const p = policy(["D:\\code\\donger"], [home]);
-    expect(matchSensitiveRead("cat D:\\code\\donger\\data\\users\\u1\\a.txt", "C:\\w", p)).toBeUndefined();
+    expect(
+      matchSensitiveRead("cat D:\\code\\donger\\data\\users\\u1\\a.txt", "C:\\w", p),
+    ).toBeUndefined();
   });
 
   it("allow 只豁免自己：他人工作区仍拦截", () => {
@@ -69,7 +73,11 @@ describe("matchSensitiveRead", () => {
   it("普通工作区命令不误伤", () => {
     const p = policy(deny, ["D:\\code\\donger\\data\\users\\u1"]);
     expect(
-      matchSensitiveRead("node .tmp/run.js && python ../..\\x.py", join("D:\\code\\donger\\data\\users\\u1", "sessions", "c1", "workspace"), p),
+      matchSensitiveRead(
+        "node .tmp/run.js && python ../..\\x.py",
+        join("D:\\code\\donger\\data\\users\\u1", "sessions", "c1", "workspace"),
+        p,
+      ),
     ).toBeUndefined();
     expect(matchSensitiveRead("git log --oneline", "C:\\w", p)).toBeUndefined();
     expect(matchSensitiveRead("echo hello world", "C:\\w", p)).toBeUndefined();

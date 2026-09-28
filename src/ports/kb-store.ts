@@ -54,7 +54,10 @@ export interface KbRevisionListQuery {
 export interface KbRevisionStore {
   /** 写入一条修订；同事务做保留策略裁剪（同 kbId+path 仅最近 50 条留 diff/summary，spec §6.1） */
   record(input: KbRevisionInput): Promise<KbRevision>;
-  listByKb(kbId: string, opts?: { path?: string; limit?: number; offset?: number }): Promise<KbRevision[]>;
+  listByKb(
+    kbId: string,
+    opts?: { path?: string; limit?: number; offset?: number },
+  ): Promise<KbRevision[]>;
   /** 审计页 member 口径：本人相关库集合（可管理∪被授予）的合并时间线（createdAt 降序） */
   listByKbIds(kbIds: readonly string[], limit: number, offset: number): Promise<KbRevision[]>;
   /** 审计页全量时间线（createdAt 降序） */
