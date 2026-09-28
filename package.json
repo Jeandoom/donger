@@ -16,6 +16,7 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "vitest run test/e2e",
     "lint": "biome check src test scripts cli/src cli/test",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:e2e": "tsx scripts/smoke-e2e.ts",
