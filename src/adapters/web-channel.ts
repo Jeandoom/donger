@@ -1669,6 +1669,12 @@ export class WebChannel implements Channel {
       mentions?: MentionInput[];
       modelRef?: unknown;
     };
+    // 入参防御：text 缺失/非字符串曾在 handleMessage 深处 .trim() 崩溃整进程（2026-09-28 冒烟实锤）
+    if (typeof body.text !== "string" || body.text.trim().length === 0) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "text 必填且须为非空字符串" }));
+      return;
+    }
     if (body.modelRef !== undefined && body.modelRef !== "") {
       if (typeof body.modelRef !== "string" || !isModelRef(body.modelRef)) {
         res.writeHead(400);
