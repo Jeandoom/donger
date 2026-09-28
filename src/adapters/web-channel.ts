@@ -5019,7 +5019,9 @@ export class WebChannel implements Channel {
         return true;
       }
       const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      const parsed = ConnectorInputSchema.pick({ url: true, headers: true }).safeParse(b);
+      const parsed = ConnectorInputSchema.pick({ url: true, headers: true, type: true }).safeParse(
+        b,
+      );
       if (!parsed.success) {
         bad(parsed.error.issues[0]?.message ?? "参数非法");
         return true;
@@ -5032,7 +5034,11 @@ export class WebChannel implements Channel {
         send({ status: 200, json: { ok: false, error: `凭证未配置: ${missing.join(", ")}` } });
         return true;
       }
-      send({ status: 200, json: await this.probeMcpHttp(parsed.data.url, resolved) });
+      const result =
+        parsed.data.type === "http"
+          ? await this.probeHttpUrl(parsed.data.url, resolved)
+          : await this.probeMcpHttp(parsed.data.url, resolved);
+      send({ status: 200, json: result });
       return true;
     }
 
@@ -5183,6 +5189,7 @@ export class WebChannel implements Channel {
       id: c.id,
       name: c.name,
       description: c.description,
+      type: c.type,
       transport: c.transport,
       url: c.url,
       // 字面量值掩码；{{credential:*}} 引用本身不含密钥，保持可读以便编辑
@@ -5226,6 +5233,29 @@ export class WebChannel implements Channel {
   }
 
   /** MCP streamable HTTP 探活：initialize → notifications/initialized → tools/list（无状态）。错误信息不回显请求头。 */
+  /** HTTP 类型连接器探活：普通 GET（不带 MCP 握手），2xx/3xx 视为可达；防绕过口径与 probeMcpHttp 一致 */
+  private async probeHttpUrl(
+    url: string,
+    headers: Record<string, string>,
+  ): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+    const started = Date.now();
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers,
+        // 不自动跟随重定向：公网 302 跳内网是探活收口绕过面
+        redirect: "manual",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.status >= 400) {
+        return { ok: false, error: truncate(`HTTP ${res.status}`, 300) };
+      }
+      return { ok: true, latencyMs: Date.now() - started };
+    } catch (e) {
+      return { ok: false, error: truncate(e instanceof Error ? e.message : String(e), 300) };
+    }
+  }
+
   private async probeMcpHttp(
     url: string,
     headers: Record<string, string>,

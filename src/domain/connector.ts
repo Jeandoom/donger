@@ -4,6 +4,15 @@ import { z } from "zod";
 export const ConnectorTransportSchema = z.enum(["http"]);
 export type ConnectorTransport = z.infer<typeof ConnectorTransportSchema>;
 
+/**
+ * 连接器类型（对接外部能力的两类形态）：
+ * - mcp：外部 MCP 服务（当前仅 streamable HTTP 协议），注入 agent 的 mcpServers；
+ * - http：普通 HTTP/HTTPS 接口登记（承载配置/凭证/共享管理，暂不注入 agent 的 MCP 通道）。
+ * 存量数据无 type 字段 → 读容忍缺省 mcp（与历史行为一致）。
+ */
+export const ConnectorTypeSchema = z.enum(["mcp", "http"]);
+export type ConnectorType = z.infer<typeof ConnectorTypeSchema>;
+
 /** headers 值的凭证引用语法：{{credential:CODE}} / {{credential:CODE.KEY}} */
 export const CREDENTIAL_REF_PATTERN = /\{\{credential:([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?\}\}/g;
 
@@ -20,6 +29,7 @@ export const ConnectorSchema = z.object({
   id: z.string(),
   name: z.string().min(1).max(50),
   description: z.string().max(200).optional(),
+  type: ConnectorTypeSchema.default("mcp"),
   transport: ConnectorTransportSchema.default("http"),
   url: z.string().refine(isHttpUrl, "URL 须为 http/https 地址"),
   /**
@@ -36,13 +46,13 @@ export const ConnectorSchema = z.object({
 });
 export type Connector = z.infer<typeof ConnectorSchema>;
 
-/** 入参用：id/owner/时间戳由 store 填充 */
+/** 入参用：id/owner/时间戳由 store 填充；type 缺省 = 沿用存量值（update）或 mcp（create），防 PATCH 误翻类型 */
 export const ConnectorInputSchema = ConnectorSchema.omit({
   id: true,
   ownerId: true,
   createdAt: true,
   updatedAt: true,
-});
+}).extend({ type: ConnectorTypeSchema.optional() });
 export type ConnectorInput = z.input<typeof ConnectorInputSchema>;
 
 export function parseConnector(raw: unknown): Connector {

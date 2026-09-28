@@ -397,7 +397,8 @@ export class RuntimeManager {
     const cstore = this.deps.connectorStore;
     if (!cstore) return { servers: [], missing: [] };
     const connectors = (await cstore.listByIds(connectorIds)).filter(
-      (c) => c.enabled && (c.shareScope === "global" || c.ownerId === userId),
+      // 仅 MCP 类型注入 agent 的 mcpServers；HTTP 类型是接口登记（凭证/共享管理），不进 MCP 通道
+      (c) => c.type !== "http" && c.enabled && (c.shareScope === "global" || c.ownerId === userId),
     );
     const codes = [...new Set(connectors.flatMap((c) => collectCredentialRefs(c.headers)))];
     const valuesByCode = new Map<string, Record<string, string>>();
@@ -427,7 +428,7 @@ export class RuntimeManager {
     const cstore = this.deps.connectorStore;
     if (!cstore || connectorIds.length === 0) return [];
     const connectors = (await cstore.listByIds(connectorIds)).filter(
-      (c) => c.enabled && (c.shareScope === "global" || c.ownerId === userId),
+      (c) => c.type !== "http" && c.enabled && (c.shareScope === "global" || c.ownerId === userId),
     );
     return [...new Set(connectors.flatMap((c) => collectCredentialRefs(c.headers)))];
   }

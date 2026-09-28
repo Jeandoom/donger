@@ -92,8 +92,9 @@ export function AgentEditorPage() {
   }, []);
 
   useEffect(() => {
+    // 智能体只可勾选 MCP 类型连接器（HTTP 类型是接口登记，不注入工具）
     fetchConnectors()
-      .then(setConnectors)
+      .then((list) => setConnectors(list.filter((c) => c.type === "mcp")))
       .catch(() => {});
   }, []);
 

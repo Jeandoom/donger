@@ -1,11 +1,14 @@
-// 连接器（HTTP MCP 注册表）数据获取。headers 中的字面量密钥后端掩码为 ••••，
-// 提交时留掩码即保留原值；{{credential:code}} 引用语法本身不含密钥、保持可读。
+// 连接器（外部能力接入注册表：MCP 服务 / HTTP 接口）数据获取。headers 中的字面量密钥
+// 后端掩码为 ••••，提交时留掩码即保留原值；{{credential:code}} 引用语法本身不含密钥、保持可读。
 import { apiFetch } from "./auth";
+
+export type ConnectorType = "mcp" | "http";
 
 export interface ConnectorDTO {
   id: string;
   name: string;
   description?: string;
+  type: ConnectorType;
   transport: "http";
   url: string;
   headers: Record<string, string>;
@@ -21,6 +24,8 @@ export interface ConnectorDTO {
 export interface ConnectorInput {
   name: string;
   description?: string;
+  /** 缺省 = 服务端沿用存量值（更新）或 mcp（新建） */
+  type?: ConnectorType;
   transport?: "http";
   url: string;
   headers: Record<string, string>;

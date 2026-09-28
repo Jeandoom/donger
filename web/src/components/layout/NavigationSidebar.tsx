@@ -1,6 +1,5 @@
 import {
   AppWindow,
-  Blocks,
   Bot,
   KeyRound,
   LogOut,
@@ -57,19 +56,16 @@ const mainEntries: LeafItem[] = [
 const bottomEntries: LeafItem[] = [
   { to: "/models", label: "模型", icon: ModelIcon },
   { to: "/credentials", label: "凭证", icon: CredentialIcon },
-  // MCP 接入：签发个人令牌把平台能力开放给外部 agent，与凭证同属接入凭证类
-  { to: "/mcp", label: "MCP 接入", icon: Blocks },
   { to: "/invites", label: "邀请", icon: InviteIcon },
   { to: "/feedback", label: "反馈", icon: Megaphone },
   // 审计单页：会话栏内置「只看LLM」开关切换历史会话/LLM 观测两种详情形态
   { to: "/audit", label: "审计", icon: ScrollText },
+  // 授权：平台登录配置（admin 分区）+ MCP 接入令牌签发（全用户分区，自 /mcp 独立模块迁入）
+  { to: "/authorization", label: "授权", icon: KeyRound },
 ];
 
-// 管理员专属沉底项：授权（三方登录配置 Web 化）/ 代理（出站请求代理）
-const adminBottomEntries: LeafItem[] = [
-  { to: "/authorization", label: "授权", icon: KeyRound },
-  { to: "/proxy", label: "代理", icon: Network },
-];
+// 管理员专属沉底项：代理（出站请求代理）
+const adminBottomEntries: LeafItem[] = [{ to: "/proxy", label: "代理", icon: Network }];
 
 interface UserInfo {
   id: string;
@@ -254,7 +250,7 @@ export function NavigationSidebar({
         {mainEntries.map((e) => renderLeaf(e, collapsed))}
       </div>
 
-      {/* 原设置子模块：一级化后沉底；授权/代理仅管理员可见 */}
+      {/* 原设置子模块：一级化后沉底；代理仅管理员可见，授权全用户（内含 admin 分区） */}
       <div className="mt-2 shrink-0 border-t border-white/10 pt-2">
         <div className="flex flex-col gap-0.5">
           {bottomEntries.map((e) => renderLeaf(e, collapsed))}

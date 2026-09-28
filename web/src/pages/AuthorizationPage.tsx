@@ -10,12 +10,14 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { type AdminUser, fetchAdminUsers, updateUserRole } from "../lib/adminUsers";
 import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
+import { McpSection } from "../components/mcp/McpSection";
 import { cn } from "../lib/utils";
 
 /**
- * 授权模块（spec 2026-09-21-auth-module-design §3.3；布局重构 2026-09-24）：
+ * 授权模块（spec 2026-09-21-auth-module-design §3.3；布局重构 2026-09-24；MCP 接入迁入 2026-09-28）：
  * 左侧固定导航 + 右侧详情（布局对齐 AgentEditorPage 的 sticky 模式）。
- * 平台授权配置（钉钉/GitHub/邮箱/用户管理，admin）分区维护；MCP 接入已迁出为独立模块（/mcp）。
+ * 平台授权配置（钉钉/GitHub/邮箱/用户管理，admin）分区维护；
+ * 「MCP 接入」（签发个人接入令牌）全用户可用，自独立 /mcp 模块迁回本页。
  * 「应用」即生效：登录配置每请求读库即时生效，钉钉机器人消息通道保存后运行时换血，无需重启。
  * 加载完成前表单不渲染、应用按钮禁用——防止把空配置 PUT 上去（清空 AppKey = 停用钉钉登录）。
  */
@@ -41,15 +43,19 @@ interface EmailVerification {
   verifyPath: string | null;
 }
 
-type SectionId = "dingtalk" | "github" | "email" | "verifications" | "users";
+type SectionId = "dingtalk" | "github" | "email" | "verifications" | "users" | "mcp";
 
-const SECTIONS: Array<{ id: SectionId; label: string }> = [
+/** admin 专属分区（平台授权配置） */
+const ADMIN_SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "dingtalk", label: "钉钉登录" },
   { id: "github", label: "GitHub 登录" },
   { id: "email", label: "邮箱注册" },
   { id: "verifications", label: "待验证账号" },
   { id: "users", label: "用户管理" },
 ];
+
+/** 全用户分区：MCP 接入（签发个人接入令牌，权限=本人 web 登录口径） */
+const MCP_SECTION: { id: SectionId; label: string } = { id: "mcp", label: "MCP 接入" };
 
 const PROVIDER_LABEL: Record<string, string> = {
   email: "邮箱",
@@ -623,7 +629,23 @@ function UserManagementSection() {
   );
 }
 
-/** 主组件：左侧固定导航 + 右侧详情（分区全为 admin 专属，非 admin 显示无权限空态） */
+/** MCP 接入分区（全用户）：签发/管理个人接入令牌，把平台能力开放给外部 agent（自 /mcp 独立模块迁入） */
+function McpAccessSection() {
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">MCP 接入</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          用 MCP 接入令牌把平台的智能体／会话／技能／知识库开放给 zcode、Codex、Claude Code 等外部
+          agent；令牌权限与你本人登录 web 时完全一致，明文只在创建时展示一次
+        </p>
+      </div>
+      <McpSection />
+    </section>
+  );
+}
+
+/** 主组件：左侧固定导航 + 右侧详情（平台授权分区 admin 专属；MCP 接入分区全用户可用） */
 export function AuthorizationPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [me, setMe] = useState<CurrentUser | null>(null);
@@ -636,13 +658,13 @@ export function AuthorizationPage() {
     void fetchMe().then(setMe);
   }, []);
 
-  const allowed = isAdmin ? SECTIONS : [];
+  const allowed = [...(isAdmin ? ADMIN_SECTIONS : []), MCP_SECTION];
   const requested = searchParams.get("section") as SectionId | null;
   const active: SectionId | null =
     requested && allowed.some((s) => s.id === requested) ? requested : (allowed[0]?.id ?? null);
 
   const select = (id: SectionId) => {
-    if (id === SECTIONS[0]?.id) setSearchParams({}, { replace: true });
+    if (id === allowed[0]?.id) setSearchParams({}, { replace: true });
     else setSearchParams({ section: id }, { replace: true });
   };
 
@@ -671,7 +693,7 @@ export function AuthorizationPage() {
         <div className="min-w-0">
           <h1 className="text-[15px] font-semibold">授权</h1>
           <p className="hidden truncate text-xs text-muted-foreground sm:block">
-            平台授权配置。配置修改即时生效，无需重启服务
+            平台授权配置与 MCP 接入管理；配置修改即时生效，无需重启服务
           </p>
         </div>
       </header>
@@ -723,7 +745,9 @@ export function AuthorizationPage() {
 
         {/* 右侧详情 */}
         <main className="min-w-0 flex-1 space-y-5 p-5 pb-16 lg:p-6">
-          {!isAdmin ? (
+          {active === "mcp" ? (
+            <McpAccessSection />
+          ) : !isAdmin ? (
             <p className="rounded-lg border border-border bg-card p-5 text-sm text-muted-foreground">
               授权配置仅管理员可见
             </p>

@@ -30,11 +30,22 @@ describe("SqliteConnectorStore", () => {
     const c = await store.create(input(), owner);
     expect(c.id.startsWith("conn_")).toBe(true);
     expect(c.transport).toBe("http");
+    expect(c.type).toBe("mcp"); // 缺省类型 = mcp（存量行为）
     expect(c.enabled).toBe(true);
     expect(c.shareScope).toBe("private");
     expect(c.ownerId).toBe(owner);
     expect(c.headers.Authorization).toBe("Bearer {{credential:amap-key}}");
     expect((await store.getById(c.id))?.name).toBe("高德地图 MCP");
+  });
+
+  it("type：显式 http 落库；update 未带 type 沿用存量值（防 PATCH 误翻类型）", async () => {
+    const c = await store.create(input({ name: "rest", type: "http" }), owner);
+    expect((await store.getById(c.id))?.type).toBe("http");
+    const updated = await store.update(c.id, input({ name: "rest-2" }));
+    expect(updated.type).toBe("http");
+    expect(updated.name).toBe("rest-2");
+    const flipped = await store.update(c.id, input({ name: "rest-3", type: "mcp" }));
+    expect(flipped.type).toBe("mcp");
   });
 
   it("owner 私有域内重名拒绝；跨 owner 同名互不干扰", async () => {

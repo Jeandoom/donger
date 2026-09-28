@@ -1,4 +1,4 @@
-import { Play, Plus, X } from "lucide-react";
+import { Play, Plus, Share2, X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -14,6 +14,7 @@ import {
   type ConnectorDTO,
   type ConnectorInput,
   type ConnectorTestResult,
+  type ConnectorType,
   createConnector,
   deleteConnector,
   fetchConnectors,
@@ -22,41 +23,54 @@ import {
 } from "../lib/connectors";
 import { fetchCredentialTemplates } from "../lib/skills";
 
-/** 表单状态：鉴权三档（无 / Bearer 引用凭证 / 自定义 KV）；Bearer 档生成 {{credential:*}} 引用头 */
+/** 表单状态：类型（MCP 服务 / HTTP 接口）+ 鉴权三档（无 / Bearer 引用凭证 / 自定义 KV） */
 interface Draft {
+  type: ConnectorType;
   name: string;
   description: string;
   url: string;
   authMode: "none" | "bearer" | "custom";
   bearerCode: string;
   rows: Array<{ id: string; key: string; value: string }>;
-  shareScope: "private" | "global";
   enabled: boolean;
 }
 
 const emptyDraft: Draft = {
+  type: "mcp",
   name: "",
   description: "",
   url: "",
   authMode: "none",
   bearerCode: "",
   rows: [],
-  shareScope: "private",
   enabled: true,
+};
+
+const TYPE_META: Record<ConnectorType, { label: string; hint: string; urlPlaceholder: string }> = {
+  mcp: {
+    label: "MCP 服务",
+    hint: "注册外部 MCP（当前支持 streamable HTTP），智能体勾选后获得其工具",
+    urlPlaceholder: "https://…/mcp",
+  },
+  http: {
+    label: "HTTP 接口",
+    hint: "登记普通 HTTP/HTTPS 接口（承载配置与凭证；暂不注入智能体工具）",
+    urlPlaceholder: "https://api.example.com/v1/resource",
+  },
 };
 
 /** 从既有 headers 反推表单形态（Bearer 引用 / 空 / 自定义 KV） */
 function draftFromConnector(c: ConnectorDTO): Draft {
+  const base: Draft = {
+    ...emptyDraft,
+    type: c.type,
+    name: c.name,
+    description: c.description ?? "",
+    url: c.url,
+    enabled: c.enabled,
+  };
   const entries = Object.entries(c.headers);
-  if (entries.length === 0)
-    return {
-      ...emptyDraft,
-      name: c.name,
-      description: c.description ?? "",
-      url: c.url,
-      shareScope: c.shareScope,
-      enabled: c.enabled,
-    };
+  if (entries.length === 0) return base;
   const first = entries[0];
   if (
     entries.length === 1 &&
@@ -64,25 +78,15 @@ function draftFromConnector(c: ConnectorDTO): Draft {
     /^Bearer \{\{credential:[A-Za-z0-9_-]+\}\}$/.test(first[1] ?? "")
   ) {
     return {
-      ...emptyDraft,
-      name: c.name,
-      description: c.description ?? "",
-      url: c.url,
+      ...base,
       authMode: "bearer",
       bearerCode: (first[1] ?? "").replace(/^Bearer \{\{credential:|\}\}$/g, ""),
-      shareScope: c.shareScope,
-      enabled: c.enabled,
     };
   }
   return {
-    ...emptyDraft,
-    name: c.name,
-    description: c.description ?? "",
-    url: c.url,
+    ...base,
     authMode: "custom",
     rows: entries.map(([key, value]) => ({ id: crypto.randomUUID(), key, value })),
-    shareScope: c.shareScope,
-    enabled: c.enabled,
   };
 }
 
@@ -125,6 +129,12 @@ export function ConnectorsPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [confirmShare, setConfirmShare] = useState<{
+    c: ConnectorDTO;
+    toScope: "global" | "private";
+  } | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
 
   const [credentialOptions, setCredentialOptions] = useState<Array<{ code: string; name: string }>>(
     [],
@@ -180,10 +190,11 @@ export function ConnectorsPage() {
       const input: ConnectorInput = {
         name: draft.name.trim(),
         description: draft.description.trim() || undefined,
+        type: draft.type,
         url: draft.url.trim(),
         headers: headersOf(draft),
         enabled: draft.enabled,
-        shareScope: draft.shareScope,
+        shareScope: editing?.shareScope ?? "private",
       };
       if (editing) {
         await updateConnector(editing.id, input);
@@ -233,6 +244,7 @@ export function ConnectorsPage() {
       await updateConnector(c.id, {
         name: c.name,
         description: c.description,
+        type: c.type,
         url: c.url,
         headers: c.headers,
         enabled: !c.enabled,
@@ -246,48 +258,110 @@ export function ConnectorsPage() {
     }
   };
 
-  const renderCard = (c: ConnectorDTO) => (
-    <Card key={c.id} className="space-y-2 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge tone="info">HTTP</Badge>
-        <span className="text-sm font-semibold">{c.name}</span>
-        {c.shareScope === "global" ? (
-          <Badge tone="primary">全局</Badge>
-        ) : (
-          <Badge tone="neutral">私有</Badge>
-        )}
-        <span className="flex-1" />
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          启用
-          <Switch
-            checked={c.enabled}
-            disabled={togglingId === c.id}
-            onCheckedChange={() => void toggleEnabled(c)}
-          />
-        </label>
-      </div>
-      <div className="truncate font-mono text-xs text-muted-foreground" title={c.url}>
-        {c.url}
-      </div>
-      {c.description && <div className="text-xs text-muted-foreground">{c.description}</div>}
-      <div className="flex items-center gap-3">
-        <span className="flex-1 text-xs text-muted-foreground">被 {c.usedBy} 个智能体引用</span>
-        <Button variant="secondary" size="sm" onClick={() => openEdit(c)}>
-          编辑
-        </Button>
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={() => {
-            setConfirmDelete(c);
-            setDeleteError(null);
-          }}
-        >
-          删除
-        </Button>
-      </div>
-    </Card>
-  );
+  const applyShare = async () => {
+    if (!confirmShare) return;
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const { c, toScope } = confirmShare;
+      await updateConnector(c.id, {
+        name: c.name,
+        description: c.description,
+        type: c.type,
+        url: c.url,
+        headers: c.headers,
+        enabled: c.enabled,
+        shareScope: toScope,
+      });
+      setConfirmShare(null);
+      await reload();
+    } catch (e) {
+      setShareError((e as Error).message);
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const renderCard = (c: ConnectorDTO) => {
+    const manageable = c.createdByMe;
+    const shareable = manageable && c.type === "mcp";
+    return (
+      <Card key={c.id} className="space-y-2 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {c.type === "mcp" ? <Badge tone="info">MCP</Badge> : <Badge tone="neutral">HTTP</Badge>}
+          <span className="text-sm font-semibold">{c.name}</span>
+          {c.shareScope === "global" ? (
+            <Badge tone="primary">全局</Badge>
+          ) : (
+            <Badge tone="neutral">私有</Badge>
+          )}
+          <span className="flex-1" />
+          {manageable ? (
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              启用
+              <Switch
+                checked={c.enabled}
+                disabled={togglingId === c.id}
+                onCheckedChange={() => void toggleEnabled(c)}
+              />
+            </label>
+          ) : null}
+        </div>
+        <div className="truncate font-mono text-xs text-muted-foreground" title={c.url}>
+          {c.url}
+        </div>
+        {c.description && <div className="text-xs text-muted-foreground">{c.description}</div>}
+        <div className="flex items-center gap-3">
+          <span className="flex-1 text-xs text-muted-foreground">
+            {c.type === "mcp" ? `被 ${c.usedBy} 个智能体引用` : "接口登记（不注入智能体工具）"}
+          </span>
+          {shareable ? (
+            c.shareScope === "global" ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setConfirmShare({ c, toScope: "private" });
+                  setShareError(null);
+                }}
+              >
+                取消共享
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setConfirmShare({ c, toScope: "global" });
+                  setShareError(null);
+                }}
+              >
+                <Share2 className="h-3.5 w-3.5" />
+                共享
+              </Button>
+            )
+          ) : null}
+          {manageable ? (
+            <>
+              <Button variant="secondary" size="sm" onClick={() => openEdit(c)}>
+                编辑
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  setConfirmDelete(c);
+                  setDeleteError(null);
+                }}
+              >
+                删除
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </Card>
+    );
+  };
 
   const renderSection = (title: string, hint: string, list: ConnectorDTO[], empty: string) => (
     <section className="space-y-2">
@@ -310,7 +384,7 @@ export function ConnectorsPage() {
       <PageHeader
         className="mb-5"
         title="连接器"
-        description="HTTP MCP 服务注册：配置一次，多个智能体勾选复用，凭证不进上下文"
+        description="外部能力接入：注册外部 MCP 服务（注入智能体工具）或 HTTP 接口（配置与凭证登记），凭证不进上下文"
         actions={
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4" />
@@ -319,7 +393,9 @@ export function ConnectorsPage() {
         }
       />
       <p className="mb-4 text-xs text-muted-foreground">
-        鉴权头支持引用
+        MCP 类型连接器可
+        <span className="font-medium text-foreground">共享到全局</span>
+        ，其他用户都能在「全局连接器」中查看；鉴权头支持引用
         <span className="font-medium text-foreground">凭证模板</span>（{"{{credential:code}}"}
         ）——共享连接器执行时使用
         <span className="font-medium text-foreground">访问者自己的</span>凭证值。
@@ -377,7 +453,9 @@ export function ConnectorsPage() {
               {testResult ? (
                 testResult.ok ? (
                   <Badge tone="success">
-                    连接成功 · {testResult.latencyMs}ms · {testResult.toolCount} 个工具
+                    {draft.type === "mcp"
+                      ? `连接成功 · ${testResult.latencyMs}ms · ${testResult.toolCount} 个工具`
+                      : `连接成功 · ${testResult.latencyMs}ms`}
                   </Badge>
                 ) : (
                   <Badge tone="danger">{testResult.error}</Badge>
@@ -402,31 +480,37 @@ export function ConnectorsPage() {
               {saveError}
             </div>
           ) : null}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-semibold">类型</span>
+            <Segmented
+              name="连接器类型"
+              options={[
+                { value: "mcp", label: TYPE_META.mcp.label },
+                { value: "http", label: TYPE_META.http.label },
+              ]}
+              value={draft.type}
+              disabled={editing !== null}
+              onChange={(t) => setDraft((d) => ({ ...d, type: t }))}
+            />
+            <p className="text-xs text-muted-foreground">
+              {TYPE_META[draft.type].hint}
+              {editing ? "（已创建的连接器不可更改类型）" : ""}
+            </p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="名称">
               <Input
                 value={draft.name}
                 onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                placeholder="如：企业 CRM 查询"
+                placeholder={draft.type === "mcp" ? "如：企业 CRM 查询" : "如：内部工单 API"}
               />
-            </Field>
-            <Field label="可见范围">
-              <Select
-                value={draft.shareScope}
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, shareScope: e.target.value as "private" | "global" }))
-                }
-              >
-                <option value="private">仅我可见</option>
-                <option value="global">全局共享</option>
-              </Select>
             </Field>
           </div>
           <Field label="说明（可选）">
             <Input
               value={draft.description}
               onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-              placeholder="这个连接器提供什么工具"
+              placeholder={draft.type === "mcp" ? "这个连接器提供什么工具" : "这个接口提供什么能力"}
             />
           </Field>
           <Field label="URL">
@@ -434,7 +518,7 @@ export function ConnectorsPage() {
               mono
               value={draft.url}
               onChange={(e) => setDraft((d) => ({ ...d, url: e.target.value }))}
-              placeholder="https://…/mcp"
+              placeholder={TYPE_META[draft.type].urlPlaceholder}
             />
           </Field>
           <div className="flex flex-col gap-1.5">
@@ -546,6 +630,29 @@ export function ConnectorsPage() {
         onCancel={() => {
           setConfirmDelete(null);
           setDeleteError(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmShare !== null}
+        title={
+          confirmShare?.toScope === "global"
+            ? `共享连接器 ${confirmShare?.c.name ?? ""} 到全局`
+            : `取消共享 ${confirmShare?.c.name ?? ""}`
+        }
+        description={
+          confirmShare?.toScope === "global"
+            ? "共享后所有用户都能在「全局连接器」中查看并勾选给智能体；鉴权头中的凭证引用按访问者自己的凭证值解析。"
+            : "取消共享后其他用户将不能再使用该连接器（已勾选它的智能体也不再注入其工具）。"
+        }
+        confirmText={confirmShare?.toScope === "global" ? "共享" : "取消共享"}
+        destructive={confirmShare?.toScope === "private"}
+        busy={shareBusy}
+        error={shareError}
+        onConfirm={() => void applyShare()}
+        onCancel={() => {
+          setConfirmShare(null);
+          setShareError(null);
         }}
       />
     </div>

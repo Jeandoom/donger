@@ -16,10 +16,10 @@ import { Segmented } from "../ui/segmented";
 import { Select } from "../ui/select";
 
 /**
- * MCP 接入分区（独立配置模块 /mcp，原授权页「个人接入」组迁出，spec 2026-09-24-mcp-auth-files-design）：
+ * MCP 接入分区（授权页内分区 section=mcp；自 /mcp 独立模块迁入，spec 2026-09-24-mcp-auth-files-design）：
  * 签发/管理个人 MCP 接入令牌（明文仅创建时展示一次），生成 zcode / Codex /
  * Claude Code 等外部 agent 的配置 JSON/TOML。令牌权限 = 属主用户在 web 端的权限。
- * 页头（标题/简介）由 McpPage 提供，本组件从「接入状态」卡开始。
+ * 页头（标题/简介）由授权页 McpAccessSection 提供，本组件从「接入状态」卡开始。
  */
 
 const TOOL_SUMMARY = [

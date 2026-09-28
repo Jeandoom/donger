@@ -145,6 +145,17 @@ describe("RuntimeManager 连接器注入", () => {
     expect(server?.headers?.Authorization).toBe("Bearer live-key");
   });
 
+  it("HTTP 类型连接器仅登记，不注入 mcpServers", async () => {
+    const http = await cstore.create(
+      { name: "rest-api", url: "https://api.example.com/v1", type: "http" },
+      "u1",
+    );
+    const { runOptions } = await mgr.prepare(user, conv, {
+      agent: mkAgent({ connectorIds: [http.id] }),
+    });
+    expect(runOptions.mcpServers?.some((s) => s.name === "rest-api")).toBe(false);
+  });
+
   it("停用与他人 private 的连接器被跳过", async () => {
     const disabled = await cstore.create(
       { name: "off", url: "https://off/mcp", enabled: false },

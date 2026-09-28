@@ -315,6 +315,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
             rows.map((c) => ({
               id: c.id,
               name: c.name,
+              type: c.type,
               description: c.description,
               url: c.url,
               enabled: c.enabled,

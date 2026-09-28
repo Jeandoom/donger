@@ -118,6 +118,8 @@ export class SqliteConnectorStore implements ConnectorStore {
     const parsed = ConnectorInputSchema.parse(input);
     const next: Connector = parseConnector({
       ...parsed,
+      // PATCH 未带 type 时沿用存量值（缺省语义在入参层是 optional，这里显式兜底）
+      type: parsed.type ?? cur.type,
       id: cur.id,
       ownerId: cur.ownerId,
       createdAt: cur.createdAt,
