@@ -486,6 +486,7 @@ async function main(): Promise<void> {
     appStore,
     appsDir,
     appTokenSecret: jwtSecret,
+    proxyConfig: cfg.appProxy,
     credentialSets,
     connectorStore,
     llmProviderStore,

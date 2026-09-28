@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import { ZodError } from "zod";
 import type { LlmTester } from "../adapters/llm-provider-tester.js";
-import type { LlmPreset } from "../config.js";
+import type { AppProxyServicesConfig, LlmPreset } from "../config.js";
 import type { Viewer } from "../domain/access-policy.js";
 import {
   type Agent,
@@ -237,6 +237,7 @@ import {
   injectAppBootstrap,
   resolveAppStaticTarget,
 } from "./app-api.js";
+import { type AppProxyHandlerDeps, createAppProxyHandler } from "./app-proxy.js";
 import { AppTokenService } from "./app-token-service.js";
 import { flattenWorkspaceFiles } from "./local-file-browser.js";
 import { handleMcpMessage } from "./mcp/rpc.js";
@@ -494,6 +495,8 @@ export interface WebChannelDeps {
   appStore?: AppStore;
   appsDir?: string;
   appTokenSecret?: string;
+  /** app-proxy 外部服务凭证（缺省=代理端点全部 503） */
+  proxyConfig?: AppProxyServicesConfig;
   credentialSets?: CredentialSetStore;
   /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
   connectorStore?: ConnectorStore;
@@ -592,6 +595,8 @@ export class WebChannel implements Channel {
   private readonly appApi?: AppApiDeps;
   /** 运行时面 app-data handler（app-token 消费端） */
   private readonly appRuntime?: AppRuntimeHandlers;
+  /** 运行时面受控代理（/api/app-proxy/*，app-token 消费端） */
+  private readonly appProxy?: ReturnType<typeof createAppProxyHandler>;
   /** 应用前端日志采集（app-token 消费端） */
   private readonly appLogIngest?: (
     req: HttpRequest,
@@ -630,6 +635,10 @@ export class WebChannel implements Channel {
       };
       this.appRuntime = createAppRuntimeHandlers(this.appApi);
       this.appLogIngest = createAppLogIngestHandler(this.appApi);
+      this.appProxy = createAppProxyHandler({
+        ...this.appApi,
+        proxyConfig: deps.proxyConfig ?? {},
+      } satisfies AppProxyHandlerDeps);
     }
     this.rateLimiter = deps.rateLimiter ?? new MemoryRateLimiter();
     this.routeGuard = new ApiRouteGuard(
@@ -1981,9 +1990,10 @@ export class WebChannel implements Channel {
     if (
       appPath === "/api/apps" ||
       appPath.startsWith("/api/apps/") ||
-      appPath.startsWith("/api/app-data/")
+      appPath.startsWith("/api/app-data/") ||
+      appPath.startsWith("/api/app-proxy/")
     ) {
-      if (!this.appApi || !this.appRuntime) {
+      if (!this.appApi || !this.appRuntime || !this.appProxy) {
         return this.json(res, { error: "应用模块未启用" }, 503);
       }
       const ctx: AppHttpCtx = {
@@ -2020,6 +2030,26 @@ export class WebChannel implements Channel {
           // 网关面日志：数据 API 调用全量记（低频高诊断价值）
           this.logAppRequest(appId, req.method ?? "GET", appPath, result.status);
           return this.sendApi(res, result);
+        }
+        return this.json(res, { error: "not found" }, 404);
+      }
+
+      // 应用受控代理（运行时面）：app-token 自鉴权；CORS 同 app-data（沙箱不透明源）
+      if (appPath.startsWith("/api/app-proxy/")) {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+        const proxyMatch = appPath.match(/^\/api\/app-proxy\/([\w-]+)\/([\w-]+)$/);
+        if (req.method === "OPTIONS" && proxyMatch) {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        if (proxyMatch && req.method === "POST") {
+          return this.sendApi(
+            res,
+            await this.appProxy(ctx, req, proxyMatch[1] ?? "", proxyMatch[2] ?? ""),
+          );
         }
         return this.json(res, { error: "not found" }, 404);
       }

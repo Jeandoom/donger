@@ -521,5 +521,8 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "DELETE", pattern: "/api/app-data/:appId/:key", access: { kind: "public" } },
     // 跨源预检（应用 bundle 在 CSP sandbox 不透明源内 fetch，浏览器先发 OPTIONS）
     { method: "OPTIONS", pattern: "/api/app-data/:appId/:key", access: { kind: "public" } },
+    // 应用受控代理：app-token 自鉴权（public 登记，handler 内校验 aud=appId）
+    { method: "POST", pattern: "/api/app-proxy/:appId/:service", access: { kind: "public" } },
+    { method: "OPTIONS", pattern: "/api/app-proxy/:appId/:service", access: { kind: "public" } },
   ];
 }
