@@ -52,6 +52,7 @@ import {
   parseCredentialCode,
   withGitPatKeySpecs,
 } from "../domain/credential.js";
+import { buildFeedbackCreatedPayload } from "../domain/event-payloads.js";
 import {
   AgentExtensionDirectoriesInputSchema,
   isRelativeExtensionPath,
@@ -150,6 +151,7 @@ import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
 import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "../orchestrator/auditor-agent.js";
+import type { EventTriggerDispatcher } from "../orchestrator/event-trigger-dispatcher.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
@@ -196,6 +198,7 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { SystemEventStore } from "../ports/system-event-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { TriggerQueueStore } from "../ports/trigger-queue-store.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
@@ -537,6 +540,10 @@ export interface WebChannelDeps {
   loopRunner?: LoopRunner;
   scheduler?: SchedulerService;
   hookRegistry?: HookRegistry;
+  /** 进程内事件触发分发（feedback.created）；缺省=事件不触发 */
+  eventTriggers?: EventTriggerDispatcher;
+  /** 触发事件队列（loop 详情 queuedCount/删除级联清理）；缺省=相应能力关闭 */
+  triggerQueue?: TriggerQueueStore;
   /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
   /** 会话权限模式切换回调（PATCH 即时通知 orchestrator 内存 registry）；缺省=仅落库，下轮生效 */
@@ -3865,6 +3872,24 @@ export class WebChannel implements Channel {
       await this.deps.feedbackStore.create(feedback);
       // 上传草稿目录收编为正式附件目录（无图时目录不存在，静默跳过）
       this.adoptFeedbackAttachments(typeof body.key === "string" ? body.key : "", feedback.id);
+      // 事件触发分发（spec 2026-09-28-event-trigger-feedback-design）：fail-open，
+      // 触发器/队列任何异常不影响反馈提交；payload 契约见 domain/event-payloads
+      if (this.deps.eventTriggers) {
+        const submitterName = (await this.deps.userStore?.get(uid))?.name ?? uid;
+        const payload = buildFeedbackCreatedPayload({
+          id: feedback.id,
+          category,
+          status: feedback.status,
+          content,
+          submitterId: uid,
+          submitterName,
+          imageCount: images.length,
+          createdAt: now,
+        });
+        void this.deps.eventTriggers
+          .dispatch("feedback.created", payload)
+          .catch((e) => console.error("[web-channel] 反馈事件触发分发失败", e));
+      }
       res.writeHead(201);
       res.end(JSON.stringify(feedback));
       return;
@@ -5704,6 +5729,13 @@ export class WebChannel implements Channel {
     }
     if (pathname === "/api/triggers" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      // event 触发器 admin-only：事件 payload 含全体用户反馈正文，放开 member 即跨用户泄漏
+      //（spec 2026-09-28-event-trigger-feedback-design §6）
+      if (body.type === "event") {
+        if (this.currentViewer(req).role !== "admin") {
+          throw new ForbiddenError("EVENT_TRIGGER_ADMIN_ONLY", "事件触发器仅管理员可创建");
+        }
+      }
       // hook 触发器缺省 path 时服务端生成不可猜随机 slug（规格 M4）：
       // 未认证触发通道（hook-registry 按 hook.path 匹配）的防扫描收敛；
       // 显式提供 path（任一层）保持向后兼容（存量 webhook 不迁移），另一层继承同值
@@ -5738,8 +5770,14 @@ export class WebChannel implements Channel {
     if (m && req.method === "PUT") {
       // PUT = 全量替换：parseTriggerInput 要求完整对象（name/type/scheduler|hook 等），缺字段返回 400。
       // store.update 签名虽为 Partial<>，但 HTTP 层强制客户端发全量；如需部分更新请新增 PATCH 路由。
-      await this.requireOwnedTrigger(m[1] ?? "", uid);
-      const body = JSON.parse(await this.readBody(req));
+      const existing = await this.requireOwnedTrigger(m[1] ?? "", uid);
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      // event 触发器 admin-only（同 POST）；存量非 event 触发器也不许被改成 event
+      if (body.type === "event" || existing.type === "event") {
+        if (this.currentViewer(req).role !== "admin") {
+          throw new ForbiddenError("EVENT_TRIGGER_ADMIN_ONLY", "事件触发器仅管理员可编辑");
+        }
+      }
       const parsed = parseTriggerInput({ ...body, ownerId: uid });
       // hook path 全局唯一（排除自身）：防改路径撞上他人存量 webhook
       if (parsed.type === "hook" && parsed.hook) {
@@ -5823,7 +5861,12 @@ export class WebChannel implements Channel {
     }
     m = pathname.match(/^\/api\/loops\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      this.json(res, await this.requireOwnedLoop(m[1] ?? "", uid));
+      const loop = await this.requireOwnedLoop(m[1] ?? "", uid);
+      // 详情附队列深度（排队中 N 条；触发队列未装配=不展示）
+      const queuedCount = this.deps.triggerQueue
+        ? await this.deps.triggerQueue.countPending(m[1] ?? "")
+        : undefined;
+      this.json(res, { ...loop, queuedCount });
       return true;
     }
     if (m && req.method === "PUT") {
@@ -5839,6 +5882,8 @@ export class WebChannel implements Channel {
     if (m && req.method === "DELETE") {
       await this.requireOwnedLoop(m[1] ?? "", uid);
       await ls?.delete(m[1] ?? "");
+      // 级联清触发队列：孤儿 pending 行会被重启恢复无主泵取
+      await this.deps.triggerQueue?.deleteByLoop(m[1] ?? "");
       this.json(res, { ok: true });
       return true;
     }
@@ -5853,6 +5898,8 @@ export class WebChannel implements Channel {
         if (enabled) await this.deps.scheduler.register(updated);
         else this.deps.scheduler.unregister(updated.id);
       }
+      // 重新启用时抽触发队列积压（停用期间入队的事件此刻交付）
+      if (enabled) this.deps.loopRunner?.pump(m[1] ?? "");
       this.json(res, updated);
       return true;
     }

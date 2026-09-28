@@ -9,6 +9,7 @@ import { DingTalkNotificationAdapter } from "../../src/adapters/notif-dingtalk.j
 import { WebhookNotificationAdapter } from "../../src/adapters/notif-webhook.js";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteNotificationStore } from "../../src/adapters/sqlite-notification-store.js";
+import { SqliteTriggerQueueStore } from "../../src/adapters/sqlite-trigger-queue-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
@@ -397,6 +398,8 @@ function setupLoopRunner(handleMessage: (msg: unknown) => Promise<string | undef
   notificationStore.migrate();
   const notifications = new NotificationService({ store: notificationStore });
   const workspaceRoot = mkdtempSync(join(tmpdir(), "loop-notify-"));
+  const queue = new SqliteTriggerQueueStore(db);
+  queue.migrate();
   const runner = new LoopRunner({
     loopStore,
     workflowStore,
@@ -405,6 +408,7 @@ function setupLoopRunner(handleMessage: (msg: unknown) => Promise<string | undef
     workspaceRoot,
     channelId: "web",
     logger,
+    queue,
     notifications,
   });
   return { db, triggerStore, workflowStore, loopStore, notifications, runner, workspaceRoot };

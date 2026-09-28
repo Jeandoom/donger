@@ -1897,6 +1897,7 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     const loopRunner = {
       fire: vi.fn().mockResolvedValue(undefined),
       testTrigger: vi.fn().mockResolvedValue({ matched: true, sourceOutput: "x" }),
+      pump: vi.fn(),
     } as unknown as import("../../src/orchestrator/loop-runner.js").LoopRunner;
     web = new WebChannel({
       port: 0,

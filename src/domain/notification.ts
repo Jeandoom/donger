@@ -12,6 +12,7 @@ export type NotificationEvent =
   | "task.failed"
   | "loop.run_succeeded"
   | "loop.run_failed"
+  | "loop.queue_overflow"
   | "eviction.notice"
   | "user.role_changed"
   | "credential.missing"
@@ -53,6 +54,12 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     severity: "critical",
     mandatoryInapp: false,
     label: "循环任务运行失败",
+  },
+  "loop.queue_overflow": {
+    group: "loop",
+    severity: "warn",
+    mandatoryInapp: false,
+    label: "触发队列溢出丢事件",
   },
   "eviction.notice": {
     group: "system",

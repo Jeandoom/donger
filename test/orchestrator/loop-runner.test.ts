@@ -5,8 +5,10 @@ import Database from "better-sqlite3";
 import pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
+import { SqliteTriggerQueueStore } from "../../src/adapters/sqlite-trigger-queue-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
+import { EventTriggerDispatcher } from "../../src/orchestrator/event-trigger-dispatcher.js";
 import { LoopRunner } from "../../src/orchestrator/loop-runner.js";
 
 const logger = pino({ level: "silent" });
@@ -19,6 +21,8 @@ function setup() {
   workflowStore.migrate();
   const loopStore = new SqliteLoopStore(db);
   loopStore.migrate();
+  const queue = new SqliteTriggerQueueStore(db);
+  queue.migrate();
   const orchestrator = { handleMessage: vi.fn().mockResolvedValue(undefined) };
   const workspaceRoot = mkdtempSync(join(tmpdir(), "loop-test-"));
   const runner = new LoopRunner({
@@ -29,8 +33,26 @@ function setup() {
     workspaceRoot,
     channelId: "loop",
     logger,
+    queue,
   });
-  return { db, triggerStore, workflowStore, loopStore, runner, orchestrator, workspaceRoot };
+  const dispatcher = new EventTriggerDispatcher({
+    triggerStore,
+    loopStore,
+    workflowStore,
+    loopRunner: runner,
+    logger,
+  });
+  return {
+    db,
+    triggerStore,
+    workflowStore,
+    loopStore,
+    queue,
+    runner,
+    dispatcher,
+    orchestrator,
+    workspaceRoot,
+  };
 }
 
 describe("LoopRunner", () => {
@@ -97,11 +119,17 @@ describe("LoopRunner", () => {
     expect(runs[0]?.error).toMatch(/workflow/i);
   });
 
-  it("skip-if-running: 并发调用只跑一次", async () => {
+  it("队列不丢：运行中到达的事件排队，run 结束后按序交付", async () => {
     const s = setup();
-    s.orchestrator.handleMessage.mockImplementation(
-      () => new Promise((res) => setTimeout(res, 50)),
-    );
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    s.orchestrator.handleMessage.mockImplementation(async (msg) => {
+      const tag = ["alpha", "beta", "gamma"].find((k) => msg.text.includes(k));
+      order.push(tag ?? "?");
+      if (order.length === 1) await gate; // 第一轮挂起，制造「忙」窗口
+      return undefined;
+    });
     const t = await s.triggerStore.create({
       ownerId: "u1",
       name: "T",
@@ -120,7 +148,58 @@ describe("LoopRunner", () => {
       agentId: "a1",
     });
     const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await Promise.all([s.runner.fire(l.id, "a"), s.runner.fire(l.id, "b")]);
-    expect(s.orchestrator.handleMessage).toHaveBeenCalledTimes(1);
+    // alpha 先入队并占住泵；beta/gamma 在运行中到达（旧语义会被 skip 丢弃）
+    const first = s.runner.fire(l.id, "alpha");
+    await vi.waitFor(() => expect(s.orchestrator.handleMessage).toHaveBeenCalledTimes(1));
+    await Promise.all([s.runner.fire(l.id, "beta"), s.runner.fire(l.id, "gamma")]);
+    expect(await s.queue.countPending(l.id)).toBe(2);
+    release();
+    await first;
+    // FIFO 顺序交付
+    expect(order).toEqual(["alpha", "beta", "gamma"]);
+    expect(await s.queue.countPending(l.id)).toBe(0);
+  });
+
+  it("队列上限：pending 达上限后事件落 dropped 不执行", async () => {
+    const s = setup();
+    s.orchestrator.handleMessage.mockImplementation(() => new Promise(() => {})); // 永不结束，堵住泵
+    const t = await s.triggerStore.create({
+      ownerId: "u1",
+      name: "T",
+      type: "hook",
+      hook: {
+        path: "/hooks/x",
+        responseStatus: 200,
+        responseBody: "",
+        matcher: { kind: "always" },
+      },
+    });
+    const w = await s.workflowStore.create({
+      ownerId: "u1",
+      name: "W",
+      triggerId: t.id,
+      agentId: "a1",
+    });
+    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
+    const small = new LoopRunner({
+      loopStore: s.loopStore,
+      workflowStore: s.workflowStore,
+      triggerStore: s.triggerStore,
+      orchestrator: s.orchestrator,
+      workspaceRoot: s.workspaceRoot,
+      channelId: "loop",
+      logger,
+      queue: s.queue,
+      maxQueuePending: 1,
+    });
+    // first 占住主泵（running 不计 pending）；second 被 small 认领为 running
+    void s.runner.fire(l.id, "first");
+    await vi.waitFor(() => expect(s.orchestrator.handleMessage).toHaveBeenCalledTimes(1));
+    void small.fire(l.id, "second");
+    await vi.waitFor(() => expect(s.orchestrator.handleMessage).toHaveBeenCalledTimes(2));
+    // third：pending=0 < 上限 1 → 入队；fourth：pending=1 ≥ 上限 → dropped
+    await small.fire(l.id, "third");
+    await small.fire(l.id, "fourth");
+    expect(await s.queue.countPending(l.id)).toBe(1);
   });
 });

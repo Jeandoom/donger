@@ -54,9 +54,9 @@ export class HookRegistry {
       (l) => l.enabled && workflowIds.has(l.workflowId),
     );
     for (const l of loops) {
-      // 异步触发，不阻塞 HTTP 响应
+      // 异步触发，不阻塞 HTTP 响应；fire=入队+泵抽（忙时排队不丢）
       void this.deps.loopRunner
-        .fire(l.id, req.body)
+        .fire(l.id, req.body, `hook:${path}`, t.id)
         .catch((e) =>
           this.deps.logger.error({ loopId: l.id, err: (e as Error).message }, "hook fire failed"),
         );

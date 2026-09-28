@@ -10,6 +10,7 @@ import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
+import { SqliteTriggerQueueStore } from "../../src/adapters/sqlite-trigger-queue-store.js";
 import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
@@ -148,6 +149,8 @@ describe("trigger source 收口（H10/H11）", () => {
     dbs.push(db);
     const stores = makeStores(db);
     const workspaceRoot = mkdtempSync(join(tmpdir(), "sec-ws-"));
+    const queue = new SqliteTriggerQueueStore(db);
+    queue.migrate();
     const runner = new LoopRunner({
       loopStore: stores.loops,
       workflowStore: stores.workflows,
@@ -156,6 +159,7 @@ describe("trigger source 收口（H10/H11）", () => {
       workspaceRoot,
       channelId: "sec",
       logger,
+      queue,
       allowPrivateNet,
     });
     return { runner, stores, workspaceRoot };

@@ -45,6 +45,7 @@ import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
+import { SqliteTriggerQueueStore } from "./adapters/sqlite-trigger-queue-store.js";
 import { SqliteTriggerStore } from "./adapters/sqlite-trigger-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-store.js";
@@ -56,7 +57,7 @@ import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
-
+import { EventTriggerDispatcher } from "./orchestrator/event-trigger-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { HookRegistry } from "./orchestrator/hook-registry.js";
 import { LoopRunner } from "./orchestrator/loop-runner.js";
@@ -411,6 +412,8 @@ async function main(): Promise<void> {
   // 工作流模块 stores（trigger / workflow / loop）
   const triggerStore = new SqliteTriggerStore(db);
   triggerStore.migrate();
+  const triggerQueueStore = new SqliteTriggerQueueStore(db);
+  triggerQueueStore.migrate();
   const workflowStore = new SqliteWorkflowStore(db);
   workflowStore.migrate();
   const loopStore = new SqliteLoopStore(db);
@@ -546,6 +549,8 @@ async function main(): Promise<void> {
     workspaceRoot: cfg.workspaceDir,
     channelId: "web",
     logger: log,
+    queue: triggerQueueStore,
+    maxQueuePending: cfg.triggerQueueMaxPending,
     allowPrivateNet: cfg.triggerAllowPrivateNet,
     notifications: notificationService,
   });
@@ -563,10 +568,20 @@ async function main(): Promise<void> {
     loopRunner,
     logger: log,
   });
+  // 进程内事件触发分发（feedback.created 等；发射方=web-channel 反馈创建，fail-open）
+  const eventTriggers = new EventTriggerDispatcher({
+    triggerStore,
+    loopStore,
+    workflowStore,
+    loopRunner,
+    logger: log,
+  });
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
   webChannelDeps.loopRunner = loopRunner;
   webChannelDeps.scheduler = scheduler;
   webChannelDeps.hookRegistry = hookRegistry;
+  webChannelDeps.eventTriggers = eventTriggers;
+  webChannelDeps.triggerQueue = triggerQueueStore;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
   webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
@@ -584,6 +599,8 @@ async function main(): Promise<void> {
     }
   };
   await scheduler.restore();
+  // 触发事件队列恢复：崩溃遗留 running→pending 重投 + 抽积压 + 清理终态行
+  await loopRunner.restoreQueue();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
 
   // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
