@@ -118,6 +118,15 @@ export class ZcodeAgentRunner implements AgentRunner {
     const cwd = resolve(opts.cwd);
     mkdirSync(cwd, { recursive: true });
 
+    // —— 提示链交付（三引擎等价，spec 2026-09-28-agent-app-stewardship-design §4.0）：
+    //    claude=preset append、codex=写 AGENTS.md；ZCode 的 workspace 上下文源原生读取
+    //    AGENTS.md（NodeContextSourceAdapter）——与 codex runner 同款先例，轮轮覆盖写。
+    //    此前本引擎不消费 systemPromptAppend，agent 人设/平台约定/不可信前言/记忆/KB
+    //    全不达模型（排障 2026-09-28：「你是干什么的」自认 ZCode 的直接根因）。
+    if (opts.systemPromptAppend?.trim()) {
+      writeFileSync(join(cwd, "AGENTS.md"), `${opts.systemPromptAppend.trim()}\n`);
+    }
+
     const cliPath = resolveCliPath();
     const runtimeHome = join(resolve(opts.workspaceRoot ?? cwd), ".zcode-home");
     const homeDir = join(runtimeHome, "home");

@@ -160,6 +160,28 @@ const completedEvent = (response: string): ZcodeSessionEventParams => ({
 });
 
 describe("ZcodeAgentRunner", () => {
+  it("提示链交付：systemPromptAppend 写入 workspace AGENTS.md（三引擎等价，spec §4.0）", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    server.eventsAfterSend = [completedEvent("done")];
+    const runner = new ZcodeAgentRunner(makeGates([]), factoryFor(server).factory);
+    await collect(
+      runner.run(task, baseOpts({ systemPromptAppend: "平台提示链正文身份节" }), async () => ({
+        approved: true,
+      })),
+    );
+    expect(readFileSync(join(tmpWork.dir, "AGENTS.md"), "utf8")).toContain("平台提示链正文身份节");
+  });
+
+  it("提示链缺省时不写 AGENTS.md（不在用户工作区留空壳文件）", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    server.eventsAfterSend = [completedEvent("done")];
+    const runner = new ZcodeAgentRunner(makeGates([]), factoryFor(server).factory);
+    await collect(runner.run(task, baseOpts(), async () => ({ approved: true })));
+    expect(existsSync(join(tmpWork.dir, "AGENTS.md"))).toBe(false);
+  });
+
   it("协议握手序列：create(mode/denylist) → subscribe → send(modelSelection)，轮末删凭证配置", async () => {
     const dir = newWorkDir();
     const server = new FakeZcodeServer();

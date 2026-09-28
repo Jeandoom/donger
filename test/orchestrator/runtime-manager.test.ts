@@ -543,6 +543,51 @@ describe("RuntimeManager agent 分支", () => {
     expect(runOptions.systemPromptAppend).toContain("EXTRA");
   });
 
+  it("身份节：agent 轮注入平台身份+元数据（wrapUntrusted 定界），先于用户 systemPrompt", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+    });
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "maycur-ai-coplit-app",
+        description: "maycur AI平台运维助手app管理",
+        systemPrompt: "EXTRA",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    const append = runOptions.systemPromptAppend ?? "";
+    expect(append).toContain("## 身份与自我介绍");
+    expect(append).toContain("donger 平台上的自动化智能体");
+    expect(append).toContain('<untrusted source="agent-identity">');
+    expect(append).toContain("名称：maycur-ai-coplit-app");
+    expect(append).toContain("职责：maycur AI平台运维助手app管理");
+    expect(append.indexOf("身份与自我介绍")).toBeLessThan(append.indexOf("EXTRA"));
+  });
+
+  it("身份节：无 agent 的 plain 会话只注入框架句（平台归属兜底，无元数据块）", async () => {
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([baseConv()]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+    });
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), baseConv(), {});
+    const append = runOptions.systemPromptAppend ?? "";
+    expect(append).toContain("## 身份与自我介绍");
+    expect(append).toContain("donger 平台上的自动化智能体");
+    expect(append).not.toContain("agent-identity");
+  });
+
   it("cwd：agent 任务共享 agents/<agentId>/workspace（产物跨会话延续），无 agent 保持会话级", async () => {
     const user = baseUser(join(ws, "users", "u1"));
     const m = new RuntimeManager({
