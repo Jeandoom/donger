@@ -14,6 +14,8 @@ import {
   parseAppPatchInput,
 } from "../domain/app.js";
 import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
+import type { AgentStore } from "../ports/agent-store.js";
+import { BUILTIN_APP_MANAGER_ID } from "../orchestrator/app-manager-agent.js";
 import { NotFoundError, PayloadTooLargeError, ValidationError } from "../util/errors.js";
 import type { AppTokenService } from "./app-token-service.js";
 
@@ -35,6 +37,8 @@ export interface AppApiDeps {
   /** bundle 产物根目录（= <dataDir>/apps） */
   appsDir: string;
   appToken: AppTokenService;
+  /** 智能体存储（应用管家制 spec §3.1）：改派校验 owner 闭包 + DTO 管家解析；缺省=弱引用直存 */
+  agentStore?: AgentStore;
 }
 
 /** web-channel 注入的 HTTP 原语（保持本模块零 web-channel 依赖） */
@@ -63,8 +67,13 @@ export async function handleListApps(
   req: HttpRequest,
 ): Promise<ApiResult> {
   const userId = requireUser(ctx, req);
-  const apps = await deps.appStore.listByUser(userId);
-  return { status: 200, json: { apps: apps.map(appView) } };
+  // managedBy=<agentId>（应用管家制）：反查该智能体管理的应用（owner 闭包内过滤）
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const managedBy = url.searchParams.get("managedBy");
+  let apps = await deps.appStore.listByUser(userId);
+  if (managedBy) apps = apps.filter((a) => a.managerAgentId === managedBy);
+  const views = await Promise.all(apps.map((a) => appView(deps, a)));
+  return { status: 200, json: { apps: views } };
 }
 
 export async function handleGetApp(
@@ -75,7 +84,7 @@ export async function handleGetApp(
 ): Promise<ApiResult> {
   requireUser(ctx, req);
   const app = await requireOwnedApp(deps, ctx, req, appId);
-  return { status: 200, json: { app: appView(app) } };
+  return { status: 200, json: { app: await appView(deps, app) } };
 }
 
 export async function handlePatchApp(
@@ -85,16 +94,43 @@ export async function handlePatchApp(
   appId: string,
 ): Promise<ApiResult> {
   requireUser(ctx, req);
-  await requireOwnedApp(deps, ctx, req, appId);
+  const app = await requireOwnedApp(deps, ctx, req, appId);
   const patch = parseAppPatchInput(JSON.parse(await ctx.readBody(req))) as AppPatchInput;
+  // 管家改派（应用管家制 spec §3.1）：owner 闭包校验，null=交还内置应用管家兜底
+  let stewardChange: string | null | undefined;
+  if (patch.managerAgentId !== undefined) {
+    stewardChange = await resolveStewardChange(deps, appId, app, patch.managerAgentId);
+  }
   const updated = await deps.appStore.update(appId, {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.description !== undefined ? { description: patch.description } : {}),
     ...(patch.icon !== undefined ? { icon: patch.icon ?? undefined } : {}),
     ...(patch.manifest !== undefined ? { manifest: patch.manifest } : {}),
+    ...(stewardChange !== undefined ? { managerAgentId: stewardChange } : {}),
   });
   if (!updated) throw new NotFoundError("NOT_FOUND", "app not found");
-  return { status: 200, json: { app: appView(updated) } };
+  return { status: 200, json: { app: await appView(deps, updated) } };
+}
+
+/**
+ * 改派合法性（应用管家制 spec §3.1）：null=交还内置兜底；否则 agent 须存在且
+ * 属于应用属主，或为内置应用管家 id。弱引用自愈在 DTO 解析侧兜底，这里挡写入口。
+ */
+async function resolveStewardChange(
+  deps: AppApiDeps,
+  appId: string,
+  app: PlatformApp,
+  next: string | null,
+): Promise<string | null> {
+  if (next === null || next === BUILTIN_APP_MANAGER_ID) return next;
+  const agent = (await deps.agentStore?.get(next)) ?? undefined;
+  if (!agent || agent.ownerId !== app.userId) {
+    throw new ValidationError(
+      "INVALID_REQUEST",
+      `管家智能体不存在或不属于应用属主：${next}（appId=${appId}）`,
+    );
+  }
+  return next;
 }
 
 export async function handleDeleteApp(
@@ -139,7 +175,7 @@ export async function handlePublishVersion(
   await requireOwnedApp(deps, ctx, req, appId);
   const app = await deps.appStore.publishVersion(appId, num);
   if (!app) throw new NotFoundError("NOT_FOUND", "version not found");
-  return { status: 200, json: { app: appView(app) } };
+  return { status: 200, json: { app: await appView(deps, app) } };
 }
 
 /** 数据浏览器（属主面，主 JWT）：列出应用数据 KV */
@@ -428,7 +464,19 @@ async function readBodyCapped(req: HttpRequest): Promise<string> {
 
 /** busboy multipart 上传通道已随 zip 上传移除（应用发布唯一入口=会话智能体） */
 
-function appView(app: PlatformApp): Record<string, unknown> {
+/** DTO（应用管家制 spec §8）：附管家解析结果——弱引用自愈（agent 已删/越权 → steward=null，UI 呈现兜底） */
+async function appView(deps: AppApiDeps, app: PlatformApp): Promise<Record<string, unknown>> {
+  let steward: { agentId: string; name: string } | null = null;
+  if (app.managerAgentId) {
+    if (app.managerAgentId === BUILTIN_APP_MANAGER_ID) {
+      steward = { agentId: app.managerAgentId, name: "应用管家" };
+    } else {
+      const agent = (await deps.agentStore?.get(app.managerAgentId)) ?? undefined;
+      if (agent && agent.ownerId === app.userId) {
+        steward = { agentId: agent.id, name: agent.name };
+      }
+    }
+  }
   return {
     id: app.id,
     name: app.name,
@@ -436,6 +484,8 @@ function appView(app: PlatformApp): Record<string, unknown> {
     icon: app.icon ?? null,
     manifest: app.manifest,
     currentVersion: app.currentVersion,
+    managerAgentId: app.managerAgentId ?? null,
+    steward,
     createdAt: app.createdAt,
     updatedAt: app.updatedAt,
     runPath: app.currentVersion ? `/apps/${app.id}/` : null,

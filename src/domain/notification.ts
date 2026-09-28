@@ -13,6 +13,9 @@ export type NotificationEvent =
   | "loop.run_succeeded"
   | "loop.run_failed"
   | "loop.queue_overflow"
+  | "app.published"
+  | "app.rolled_back"
+  | "app.feedback_created"
   | "eviction.notice"
   | "user.role_changed"
   | "credential.missing"
@@ -21,7 +24,7 @@ export type NotificationEvent =
   | "system.announcement";
 
 /** 订阅偏好按事件组粒度（用户不感知单事件开关）；组×通道成矩阵 */
-export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback";
+export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback" | "app";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
 
@@ -97,6 +100,24 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     mandatoryInapp: false,
     label: "系统公告",
   },
+  "app.published": {
+    group: "app",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "应用发布成功",
+  },
+  "app.rolled_back": {
+    group: "app",
+    severity: "warn",
+    mandatoryInapp: false,
+    label: "应用版本回滚",
+  },
+  "app.feedback_created": {
+    group: "app",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "负责的应用收到反馈",
+  },
 };
 
 export function isNotificationEvent(v: unknown): v is NotificationEvent {
@@ -109,6 +130,7 @@ export const NOTIFICATION_GROUP_LABELS: Record<NotificationEventGroup, string> =
   system: "系统提醒",
   account: "账号安全",
   feedback: "反馈回复",
+  app: "应用管家",
 };
 
 /** account 组整体强制站内信（组内事件 mandatoryInapp=true），订阅矩阵中锁定为开 */
@@ -156,7 +178,7 @@ export interface NotificationPrefsEntry {
 }
 
 export const NotificationPrefInputSchema = z.object({
-  eventGroup: z.enum(["task", "loop", "system", "account", "feedback"]),
+  eventGroup: z.enum(["task", "loop", "system", "account", "feedback", "app"]),
   channel: z.enum(["inapp", "dingtalk", "webhook"]),
   enabled: z.boolean(),
 });

@@ -29,12 +29,17 @@ export interface AppStore {
     description: string;
     icon?: string;
     manifest: AppManifest;
+    /** 责任管家（应用管家制）：创建 agent 自动落绑定；缺省=内置应用管家兜底 */
+    managerAgentId?: string;
   }): Promise<PlatformApp>;
   get(appId: string): Promise<PlatformApp | undefined>;
   listByUser(userId: string): Promise<PlatformApp[]>;
   update(
     appId: string,
-    patch: Partial<Pick<PlatformApp, "name" | "description" | "icon" | "manifest">>,
+    patch: Partial<Pick<PlatformApp, "name" | "description" | "icon" | "manifest">> & {
+      /** 管家绑定：null=清除（交还内置兜底）；undefined=保持不变（应用管家制 spec §3.1） */
+      managerAgentId?: string | null;
+    },
   ): Promise<PlatformApp | undefined>;
   delete(appId: string): Promise<void>;
 

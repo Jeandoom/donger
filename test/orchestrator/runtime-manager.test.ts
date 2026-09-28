@@ -13,6 +13,7 @@ import {
   type RuntimeManagerConfig,
 } from "../../src/orchestrator/runtime-manager.js";
 import type { ConversationStore } from "../../src/ports/conversation-store.js";
+import type { AppStore } from "../../src/ports/app-store.js";
 import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { TranscriptStore } from "../../src/ports/transcript-store.js";
 import { loadOrGenerateAppSecret } from "../../src/util/app-secret.js";
@@ -586,6 +587,66 @@ describe("RuntimeManager agent 分支", () => {
     expect(append).toContain("## 身份与自我介绍");
     expect(append).toContain("donger 平台上的自动化智能体");
     expect(append).not.toContain("agent-identity");
+  });
+
+  it("身份节：绑定 agent 派生「责任应用」清单（appStore 装配时）", async () => {
+    const conv = baseConv({ agentId: "a1" });
+    const manifest = {
+      manifestVersion: 1 as const,
+      runtime: "static" as const,
+      ui: { spa: true },
+      access: "private" as const,
+    };
+    const appStore = {
+      listByUser: async () => [
+        {
+          id: "app_1",
+          userId: "u1",
+          name: "maycur-ai-copilot",
+          description: "maycur 运维应用",
+          manifest,
+          currentVersion: 3,
+          managerAgentId: "a1",
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "app_2",
+          userId: "u1",
+          name: "别人管的应用",
+          description: "",
+          manifest,
+          currentVersion: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+      appStore: appStore as unknown as AppStore,
+    });
+    const { runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "maycur-ai-coplit-app",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    const append = runOptions.systemPromptAppend ?? "";
+    expect(append).toContain("## 责任应用");
+    expect(append).toContain('<untrusted source="managed-apps">');
+    expect(append).toContain("maycur-ai-copilot");
+    expect(append).toContain("/apps/app_1/｜当前 v3");
+    expect(append).not.toContain("app_2");
   });
 
   it("cwd：agent 任务共享 agents/<agentId>/workspace（产物跨会话延续），无 agent 保持会话级", async () => {

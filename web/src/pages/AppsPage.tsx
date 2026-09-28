@@ -17,6 +17,8 @@ export interface PlatformAppView {
   createdAt: string;
   updatedAt: string;
   runPath: string | null;
+  managerAgentId: string | null;
+  steward: { agentId: string; name: string } | null;
 }
 
 export function AppsPage() {

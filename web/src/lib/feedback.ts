@@ -40,6 +40,8 @@ export interface FeedbackItem {
   images: string[];
   /** 关联对话记录（指针元数据；agent # 引用该反馈时按需注入转录） */
   conversations?: FeedbackConversationRef[];
+  /** 关联应用（应用管家制；弱引用，应用已删时不解析） */
+  appId?: string;
   status: FeedbackStatus;
   createdAt: string;
   updatedAt: string;
@@ -84,6 +86,8 @@ export async function createFeedback(input: {
   images: string[];
   /** 关联对话记录 id（≤1 条，须为本人会话） */
   conversationIds?: string[];
+  /** 关联应用 id（应用管家制：应用页反馈入口带入；须为本人应用） */
+  appId?: string;
   key?: string;
 }): Promise<FeedbackItem> {
   const r = await apiFetch("/api/feedback", {

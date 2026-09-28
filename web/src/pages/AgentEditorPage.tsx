@@ -1,11 +1,12 @@
 import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { useDirtyGuard } from "../components/ui/dirty-guard";
 import { PageHeader } from "../components/ui/page-header";
+import { apiFetchRetry } from "../lib/auth";
 import {
   type AgentMeta,
   createAgent,
@@ -425,6 +426,7 @@ export function AgentEditorPage() {
             onKbNewNameChange={setKbNewName}
           />
           {!isNew && id ? <IntegrationSection agentId={id} /> : null}
+          {!isNew && id ? <StewardSection agentId={id} /> : null}
         </main>
       </div>
 
@@ -453,5 +455,46 @@ export function AgentEditorPage() {
       </footer>
       {dialog}
     </div>
+  );
+}
+
+/** 管理的应用（应用管家制 spec §8）：反查视图——绑定关系在应用详情页改派，此处只读呈现 */
+function StewardSection({ agentId }: { agentId: string }) {
+  const [apps, setApps] = useState<
+    Array<{ id: string; name: string; currentVersion: number | null }>
+  >([]);
+  useEffect(() => {
+    apiFetchRetry(`/api/apps?managedBy=${encodeURIComponent(agentId)}`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ apps?: typeof apps }>) : { apps: [] }))
+      .then((d) => setApps(d.apps ?? []))
+      .catch(() => {});
+  }, [agentId]);
+  return (
+    <Card className="flex flex-col gap-2 p-4">
+      <div className="text-[13px] font-medium">管理的应用</div>
+      <p className="text-xs text-muted-foreground">
+        该智能体担任责任管家的应用（会话内创建应用时自动绑定；改派在应用详情页操作）。
+        管家身份会随身份节注入其全部会话，应用发布/回滚事件与反馈也路由到此。
+      </p>
+      {apps.length === 0 ? (
+        <div className="text-xs text-muted-foreground">暂无绑定的应用。</div>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {apps.map((a) => (
+            <li
+              key={a.id}
+              className="flex items-center justify-between gap-3 rounded-lg bg-muted/60 px-3 py-2 text-[13px]"
+            >
+              <Link to={`/apps/${a.id}`} className="text-primary hover:underline">
+                {a.name}
+              </Link>
+              <span className="text-xs text-muted-foreground">
+                {a.currentVersion !== null ? `v${a.currentVersion}` : "未发布"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }

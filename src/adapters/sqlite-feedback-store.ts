@@ -9,6 +9,7 @@ interface FeedbackRow {
   content: string;
   images: string;
   conversationIds: string;
+  appId: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -47,6 +48,7 @@ function rowToFeedback(r: FeedbackRow): Feedback {
     content: r.content,
     images,
     conversationIds,
+    appId: r.appId ?? undefined,
     status: r.status as Feedback["status"],
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -93,6 +95,10 @@ export class SqliteFeedbackStore implements FeedbackStore {
         "ALTER TABLE feedback_items ADD COLUMN conversationIds TEXT NOT NULL DEFAULT '[]'",
       );
     }
+    // 关联应用列（应用管家制 spec §7）；存量表守卫加列
+    if (!cols.some((c) => c.name === "appId")) {
+      this.db.exec("ALTER TABLE feedback_items ADD COLUMN appId TEXT");
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS feedback_replies (
         id         TEXT PRIMARY KEY,
@@ -111,8 +117,8 @@ export class SqliteFeedbackStore implements FeedbackStore {
   async create(feedback: Feedback): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO feedback_items (id, userId, category, content, images, conversationIds, status, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO feedback_items (id, userId, category, content, images, conversationIds, appId, status, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         feedback.id,
@@ -121,6 +127,7 @@ export class SqliteFeedbackStore implements FeedbackStore {
         feedback.content,
         JSON.stringify(feedback.images),
         JSON.stringify(feedback.conversationIds ?? []),
+        feedback.appId ?? null,
         feedback.status,
         feedback.createdAt,
         feedback.updatedAt,

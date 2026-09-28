@@ -6,6 +6,7 @@ import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
 import { apiFetch, apiFetchRetry } from "../lib/auth";
+import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import type { PlatformAppView } from "./AppsPage";
 
 interface AppVersionView {
@@ -56,7 +57,17 @@ export function AppDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [agents, setAgents] = useState<AgentListDTO[]>([]);
+  const [stewardSaving, setStewardSaving] = useState(false);
   const tab = (params.get("tab") as Tab | null) ?? "overview";
+
+  useEffect(() => {
+    fetchAgents()
+      .then((list) =>
+        setAgents(list.filter((a) => a.id !== "builtin-dispatcher" && a.id !== "builtin-app-manager")),
+      )
+      .catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!appId) return;
@@ -93,6 +104,26 @@ export function AppDetailPage() {
     setConfirmDelete(false);
   };
 
+  // 管家改派（应用管家制 spec §8）：空值=交还内置应用管家兜底
+  const reassign = async (agentId: string) => {
+    if (!appId) return;
+    setStewardSaving(true);
+    try {
+      const r = await apiFetch(`/api/apps/${appId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ managerAgentId: agentId || null }),
+      });
+      if (r.ok) await refresh();
+      else {
+        const d = (await r.json().catch(() => ({}))) as { error?: string };
+        setNotice(`改派失败：${d.error ?? `HTTP ${r.status}`}`);
+      }
+    } finally {
+      setStewardSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center p-7 text-sm text-muted-foreground">
@@ -126,6 +157,12 @@ export function AppDetailPage() {
                 打开应用
               </Link>
             ) : null}
+            <Link
+              to={`/feedback?app=${app.id}`}
+              className="rounded-lg border border-border px-4 py-2 text-[13px] hover:bg-muted/60"
+            >
+              反馈
+            </Link>
             <Button variant="secondary" onClick={() => setConfirmDelete(true)}>
               删除
             </Button>
@@ -164,6 +201,24 @@ export function AppDetailPage() {
         <Card className="flex flex-col gap-3 p-5 text-sm">
           <Row label="运行时" value={<Badge>{app.manifest.runtime}</Badge>} />
           <Row label="访问范围" value={<span>私有（仅本人）</span>} />
+          <Row
+            label="责任管家"
+            value={
+              <select
+                value={app.managerAgentId ?? ""}
+                onChange={(e) => void reassign(e.target.value)}
+                disabled={stewardSaving}
+                className="max-w-56 rounded-md border border-border bg-card px-2 py-1 text-xs"
+              >
+                <option value="">内置应用管家（兜底）</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            }
+          />
           <Row
             label="当前版本"
             value={

@@ -38,6 +38,8 @@ export interface Feedback {
   /** 关联对话记录（本人会话 id；spec 2026-09-28-feedback-conversation-attachment-design）。
    * 指针语义：引用注入时现读转录，不落快照。M1 服务端按 ≤1 条收口，数组为多条预留。 */
   conversationIds: string[];
+  /** 关联应用（应用管家制 spec §7；弱引用）：应用页反馈入口带入；平台级反馈缺省 */
+  appId?: string;
   status: FeedbackStatus;
   createdAt: string;
   updatedAt: string;

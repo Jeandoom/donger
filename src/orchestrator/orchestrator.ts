@@ -125,6 +125,12 @@ export interface OrchestratorDeps {
   commentStore?: CommentStore;
   /** 通知内核（spec 2026-09-28-notification-module-design；缺省=不发站内信） */
   notificationService?: NotificationService;
+  /**
+   * 进程内事件发射（应用管家制 spec §6：app.published/app.rolled_back → 触发器管线）。
+   * index 侧晚绑定 EventTriggerDispatcher（它依赖本 orchestrator 构造出的 loopRunner）；
+   * 缺省=不发事件。调用方保证 fire-and-forget。
+   */
+  eventEmit?: (eventName: string, payload: string) => void;
   /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
   agentChain?: AgentChainConfig;
   /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
@@ -582,6 +588,12 @@ export class Orchestrator {
                 join(p.user.homeDir, "sessions", p.conversation.id, "workspace", "attachments"),
               ),
             ],
+            // 应用管家制（spec §5）：创建即自动落责任绑定；发布/回滚发射事件+owner 通知
+            ...(p.agent ? { agentId: p.agent.id } : {}),
+            ...(this.deps.eventEmit ? { emitEvent: this.deps.eventEmit } : {}),
+            ...(this.deps.notificationService
+              ? { notifications: this.deps.notificationService }
+              : {}),
           }),
         };
       }

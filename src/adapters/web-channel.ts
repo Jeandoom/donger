@@ -654,6 +654,8 @@ export class WebChannel implements Channel {
         appStore: deps.appStore,
         appsDir: deps.appsDir,
         appToken: new AppTokenService(deps.appTokenSecret),
+        // 应用管家制（spec §3.1）：改派 owner 闭包校验 + DTO 管家解析
+        ...(deps.agentStore ? { agentStore: deps.agentStore } : {}),
       };
       this.appRuntime = createAppRuntimeHandlers(this.appApi);
       this.appLogIngest = createAppLogIngestHandler(this.appApi);
@@ -3838,6 +3840,7 @@ export class WebChannel implements Channel {
         content?: unknown;
         images?: unknown;
         conversationIds?: unknown;
+        appId?: unknown;
         key?: unknown;
       };
       const content = typeof body.content === "string" ? body.content.trim() : "";
@@ -3869,6 +3872,22 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "conversationIds 无效（最多 1 条且须为本人会话）" }));
         return;
       }
+      // 关联应用（应用管家制 spec §7）：弱引用 + owner 闭包（apps 全私有，非本人应用一律 400）
+      let appId: string | undefined;
+      if (body.appId !== undefined && body.appId !== null && body.appId !== "") {
+        if (typeof body.appId !== "string") {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "appId 无效（须为应用 id 字符串）" }));
+          return;
+        }
+        const app = this.deps.appStore ? await this.deps.appStore.get(body.appId) : undefined;
+        if (!app || app.userId !== uid) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "appId 无效（应用不存在或不属于当前用户）" }));
+          return;
+        }
+        appId = app.id;
+      }
       const now = new Date().toISOString();
       const feedback: Feedback = {
         id: crypto.randomUUID(),
@@ -3877,6 +3896,7 @@ export class WebChannel implements Channel {
         content,
         images,
         conversationIds,
+        appId,
         status: "open",
         createdAt: now,
         updatedAt: now,
@@ -3896,11 +3916,16 @@ export class WebChannel implements Channel {
           submitterId: uid,
           submitterName,
           imageCount: images.length,
+          appId,
           createdAt: now,
         });
         void this.deps.eventTriggers
           .dispatch("feedback.created", payload)
           .catch((e) => console.error("[web-channel] 反馈事件触发分发失败", e));
+      }
+      // 应用反馈通知腿（应用管家制 spec §7 M2a）：有管家且管家属主≠提交人时知会（fire-and-forget）
+      if (appId) {
+        void this.notifyAppSteward(feedback, appId, uid).catch(() => {});
       }
       res.writeHead(201);
       res.end(
@@ -6528,6 +6553,29 @@ export class WebChannel implements Channel {
       out.push(conv ? { id, title: conv.title, updatedAt: conv.updatedAt } : { id, missing: true });
     }
     return out;
+  }
+
+  /**
+   * 应用反馈通知腿（应用管家制 spec §7 M2a）：反馈关联了应用且其责任管家是
+   * 具名 agent（非内置兜底）时，站内信知会管家属主；管家属主=提交人时静默跳过
+   * （自己反馈自己管的应用，列表已可见，通知即噪音）。任何失败不影响反馈提交。
+   */
+  private async notifyAppSteward(feedback: Feedback, appId: string, submitterId: string): Promise<void> {
+    if (!this.deps.notificationService) return;
+    const app = await this.deps.appStore?.get(appId);
+    const stewardId = app?.managerAgentId;
+    if (!stewardId || stewardId === "builtin-app-manager") return;
+    const steward = await this.deps.agentStore?.get(stewardId);
+    if (!steward || steward.ownerId === submitterId) return;
+    const appName = app?.name ?? appId;
+    await this.deps.notificationService.notify({
+      event: "app.feedback_created",
+      recipients: [{ kind: "user", userId: steward.ownerId }],
+      title: `你管理的应用「${appName}」收到反馈`,
+      body: `「${feedback.content.slice(0, 120)}」——来自 ${(await this.deps.userStore?.get(submitterId))?.name ?? submitterId}`,
+      link: `/feedback?focus=${feedback.id}`,
+      dedupeKey: `app:feedback:${feedback.id}`,
+    });
   }
 
   /**

@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
+import { SqliteAppStore } from "../../src/adapters/sqlite-app-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import { SqliteFeedbackStore } from "../../src/adapters/sqlite-feedback-store.js";
 import { SqliteMessageStore } from "../../src/adapters/sqlite-message-store.js";
@@ -29,6 +30,7 @@ let feedbackStore: SqliteFeedbackStore;
 let messageStore: SqliteMessageStore;
 let agentStore: SqliteAgentStore;
 let convStore: SqliteConversationStore;
+let appStore: SqliteAppStore;
 const realFetch = globalThis.fetch;
 
 async function startChannel(): Promise<number> {
@@ -46,6 +48,8 @@ async function startChannel(): Promise<number> {
   agentStore.migrate();
   convStore = new SqliteConversationStore(db);
   convStore.migrate();
+  appStore = new SqliteAppStore(db);
+  appStore.migrate();
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
@@ -56,6 +60,9 @@ async function startChannel(): Promise<number> {
     agentStore,
     conversationStore: convStore,
     messageStore,
+    appStore,
+    appsDir: tmpDir,
+    appTokenSecret: "feedback-app-secret",
   });
   web.onMessage(() => {});
   await web.ready();
@@ -869,5 +876,47 @@ describe("反馈关联对话记录：# 引用按需注入转录（D2 指针/D3 �
     const m = (captured[0]?.mentions ?? [])[0]!;
     expect(m.content).toContain("【关联对话记录】alice 的会话：");
     expect(m.content).toContain("【用户】alice 的原始问题");
+  });
+});
+
+describe("反馈关联应用（应用管家制 spec §7）", () => {
+  it("本人应用可关联并回传 appId；他人应用/幽灵应用 400；缺省不落", async () => {
+    const port = await startChannel();
+    const alice = await makeUser("alice");
+    const bob = await makeUser("bob");
+    const appId = "app_test1";
+    await appStore.create({
+      id: appId,
+      userId: alice.id,
+      name: "测试应用",
+      description: "",
+      manifest: {
+        manifestVersion: 1,
+        runtime: "static",
+        ui: { spa: true },
+        access: "private",
+      },
+    });
+    const ok = await req(port, "POST", "/api/feedback", alice.token, {
+      content: "应用反馈",
+      appId,
+    });
+    expect(ok.status).toBe(201);
+    expect(((await ok.json()) as { appId?: string }).appId).toBe(appId);
+
+    expect(
+      (await req(port, "POST", "/api/feedback", bob.token, { content: "x", appId })).status,
+    ).toBe(400);
+    expect(
+      (await req(port, "POST", "/api/feedback", alice.token, { content: "x", appId: "app_ghost" }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await req(port, "POST", "/api/feedback", alice.token, { content: "x", appId: 42 })).status,
+    ).toBe(400);
+
+    const plain = await req(port, "POST", "/api/feedback", alice.token, { content: "平台反馈" });
+    expect(plain.status).toBe(201);
+    expect(((await plain.json()) as { appId?: string }).appId).toBeUndefined();
   });
 });

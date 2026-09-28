@@ -285,6 +285,10 @@ async function main(): Promise<void> {
     log.info("setup_completed 标记已补写（存量 admin 库，防 setup 引导重开）");
   }
 
+  // 应用管家制（spec §6）：app 工具事件 → 触发器管线的晚绑定槽（dispatcher 依赖 loopRunner，
+  // 而 loopRunner 依赖 orchestrator，只能在本函数外创建后回填）
+  const eventEmitRef: { current?: (eventName: string, payload: string) => void } = {};
+
   function createOrch(
     channel: Channel,
     skillPackStore: SqliteSkillPackStore,
@@ -317,6 +321,8 @@ async function main(): Promise<void> {
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
       extensionDirectoryResolver,
+      // 应用管家制（spec §4.1）：身份节派生「责任应用」清单
+      appStore,
     });
     return new Orchestrator({
       store,
@@ -358,6 +364,11 @@ async function main(): Promise<void> {
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
       appStore,
       appsDir,
+      // 应用管家制（spec §6）：app.published/app.rolled_back → 事件触发器管线（晚绑定见 eventEmitRef）
+      eventEmit: (eventName, payload) => {
+        const dispatch = eventEmitRef.current;
+        if (dispatch) dispatch(eventName, payload);
+      },
     });
   }
 
@@ -576,6 +587,12 @@ async function main(): Promise<void> {
     loopRunner,
     logger: log,
   });
+  // 应用管家制（spec §6）：orchestrator 的 app 工具事件晚绑定到 dispatcher
+  eventEmitRef.current = (eventName, payload) => {
+    void eventTriggers
+      .dispatch(eventName, payload)
+      .catch((e: Error) => log.error({ eventName, err: e.message }, "app event dispatch failed"));
+  };
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
   webChannelDeps.loopRunner = loopRunner;
   webChannelDeps.scheduler = scheduler;

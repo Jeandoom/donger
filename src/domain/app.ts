@@ -40,6 +40,11 @@ export interface PlatformApp {
   manifest: AppManifest;
   /** 当前发布版本号；null=尚未上传产物（不可运行） */
   currentVersion: number | null;
+  /**
+   * 责任管家智能体（应用管家制 spec §3.1；弱引用单管家）。
+   * 缺省/NULL=内置应用管家兜底；指向已删除或越权 agent 时读时降级为兜底。
+   */
+  managerAgentId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +85,8 @@ export const AppPatchInputSchema = z.object({
   description: z.string().trim().max(APP_DESC_MAX).optional(),
   icon: z.string().trim().max(200).nullable().optional(),
   manifest: AppManifestSchema.optional(),
+  /** 管家改派：null=交还内置应用管家兜底；字符串=agent id（owner 闭包由调用方校验） */
+  managerAgentId: z.string().min(1).nullable().optional(),
 });
 export type AppPatchInput = z.infer<typeof AppPatchInputSchema>;
 

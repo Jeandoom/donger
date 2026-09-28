@@ -218,4 +218,91 @@ describe("donger-apps 工具（M2 开发链路）", () => {
     expect(r2.isError).toBeTruthy();
     expect(r2.content[0]?.text).toContain("越界");
   });
+
+  it("应用管家制：app_create/app_deploy 新建自动落责任绑定（agentId 闭包）；plain 会话不落", async () => {
+    const { deps, runtimeDir } = fixture();
+    site(join(runtimeDir, "dist"), "x");
+    const steward: AppToolsDeps = { ...deps, agentId: "agent-maycur" };
+    const created = await tool(steward, "app_create").handler({ name: "maycur应用" });
+    const appId = /appId=(app_[\w-]+)/.exec(created.content[0]?.text ?? "")?.[1] ?? "";
+    expect((await deps.appStore.get(appId))?.managerAgentId).toBe("agent-maycur");
+
+    const dep = await tool(steward, "app_deploy").handler({ dir: "dist", name: "新建应用" });
+    const newId = /appId=(app_[\w-]+)/.exec(dep.content[0]?.text ?? "")?.[1] ?? "";
+    expect((await deps.appStore.get(newId))?.managerAgentId).toBe("agent-maycur");
+
+    const plain = await tool(deps, "app_create").handler({ name: "无主应用" });
+    const plainId = /appId=(app_[\w-]+)/.exec(plain.content[0]?.text ?? "")?.[1] ?? "";
+    expect((await deps.appStore.get(plainId))?.managerAgentId).toBeUndefined();
+  });
+
+  it("应用管家制：发布/回滚发射事件并通知 owner（fire-and-forget）", async () => {
+    const { deps, runtimeDir } = fixture();
+    site(join(runtimeDir, "dist"), "x");
+    const events: Array<{ name: string; payload: string }> = [];
+    const notified: string[] = [];
+    const steward: AppToolsDeps = {
+      ...deps,
+      agentId: "agent-maycur",
+      emitEvent: (name, payload) => {
+        events.push({ name, payload });
+      },
+      notifications: {
+        async notify(intent) {
+          notified.push(`${intent.event}:${intent.title}`);
+        },
+      },
+    };
+    const dep = await tool(steward, "app_deploy").handler({ dir: "dist", name: "事件应用" });
+    const appId = /appId=(app_[\w-]+)/.exec(dep.content[0]?.text ?? "")?.[1] ?? "";
+    expect(events).toHaveLength(1);
+    expect(events[0]?.name).toBe("app.published");
+    const fact = JSON.parse(events[0]?.payload ?? "{}") as {
+      app: { version: number; previousVersion: number | null; managerAgentId: string | null };
+    };
+    expect(fact.app).toMatchObject({
+      version: 1,
+      previousVersion: null,
+      managerAgentId: "agent-maycur",
+    });
+    expect(notified).toEqual(["app.published:应用「事件应用」已发布 v1"]);
+
+    await tool(steward, "app_deploy").handler({ dir: "dist", appId });
+    events.length = 0;
+    notified.length = 0;
+    const back = await tool(steward, "app_publish").handler({ appId, num: 1 });
+    expect(back.isError).toBeFalsy();
+    expect(events.map((e) => e.name)).toEqual(["app.rolled_back"]);
+    const fact2 = JSON.parse(events[0]?.payload ?? "{}") as { app: { from: number; to: number } };
+    expect(fact2.app).toMatchObject({ from: 2, to: 1 });
+    expect(notified).toHaveLength(1);
+    expect(notified[0]?.startsWith("app.rolled_back:")).toBe(true);
+  });
+
+  it("app_logs_tail：默认 error 过滤，level=all 看全部；跨用户拒绝", async () => {
+    const { deps, runtimeDir } = fixture();
+    site(join(runtimeDir, "dist"), "x");
+    const created = await tool(deps, "app_deploy").handler({ dir: "dist", name: "日志应用" });
+    const appId = /appId=(app_[\w-]+)/.exec(created.content[0]?.text ?? "")?.[1] ?? "";
+    await deps.appStore.appendLogs(appId, [
+      { source: "frontend", level: "error", message: "boom", ts: "t1" },
+      {
+        source: "gateway",
+        level: "info",
+        method: "GET",
+        path: "/api/app-data/x",
+        status: 200,
+        ts: "t2",
+      },
+    ]);
+    const errs = (await tool(deps, "app_logs_tail").handler({ appId })).content[0]?.text ?? "";
+    expect(errs).toContain("boom");
+    expect(errs).not.toContain("/api/app-data/x");
+    const all = (
+      await tool(deps, "app_logs_tail").handler({ appId, level: "all" })
+    ).content[0]?.text;
+    expect(all).toContain("/api/app-data/x");
+    const other: AppToolsDeps = { ...deps, userId: "u2" };
+    expect((await tool(other, "app_logs_tail").handler({ appId })).isError).toBeTruthy();
+  });
 });

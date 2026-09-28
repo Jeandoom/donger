@@ -23,6 +23,7 @@ interface AppRow {
   icon: string | null;
   manifestJson: string;
   currentVersion: number | null;
+  managerAgentId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,10 +41,17 @@ export class SqliteAppStore implements AppStore {
         icon TEXT,
         manifestJson TEXT NOT NULL,
         currentVersion INTEGER,
+        managerAgentId TEXT,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL
       )
     `);
+    // 应用管家制（spec §3.1）存量库加列：零破坏迁移（新库由上方 CREATE 直接带列）
+    try {
+      this.db.exec(`ALTER TABLE apps ADD COLUMN managerAgentId TEXT`);
+    } catch {
+      // 列已存在（新库/已迁移）——静默跳过
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS app_versions (
         appId TEXT NOT NULL,
@@ -91,12 +99,13 @@ export class SqliteAppStore implements AppStore {
     description: string;
     icon?: string;
     manifest: AppManifest;
+    managerAgentId?: string;
   }): Promise<PlatformApp> {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO apps (id, userId, name, description, icon, manifestJson, currentVersion, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO apps (id, userId, name, description, icon, manifestJson, currentVersion, managerAgentId, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -105,6 +114,7 @@ export class SqliteAppStore implements AppStore {
         input.description,
         input.icon ?? null,
         JSON.stringify(input.manifest),
+        input.managerAgentId ?? null,
         now,
         now,
       );
@@ -127,7 +137,9 @@ export class SqliteAppStore implements AppStore {
 
   async update(
     appId: string,
-    patch: Partial<Pick<PlatformApp, "name" | "description" | "icon" | "manifest">>,
+    patch: Partial<
+      Pick<PlatformApp, "name" | "description" | "icon" | "manifest" | "managerAgentId">
+    >,
   ): Promise<PlatformApp | undefined> {
     const app = await this.get(appId);
     if (!app) return undefined;
@@ -136,16 +148,19 @@ export class SqliteAppStore implements AppStore {
       description: patch.description ?? app.description,
       icon: patch.icon === undefined ? app.icon : (patch.icon ?? undefined),
       manifest: patch.manifest ?? app.manifest,
+      managerAgentId:
+        patch.managerAgentId === undefined ? app.managerAgentId : (patch.managerAgentId ?? undefined),
     };
     this.db
       .prepare(
-        `UPDATE apps SET name = ?, description = ?, icon = ?, manifestJson = ?, updatedAt = ? WHERE id = ?`,
+        `UPDATE apps SET name = ?, description = ?, icon = ?, manifestJson = ?, managerAgentId = ?, updatedAt = ? WHERE id = ?`,
       )
       .run(
         next.name,
         next.description,
         next.icon ?? null,
         JSON.stringify(next.manifest),
+        next.managerAgentId ?? null,
         new Date().toISOString(),
         appId,
       );
@@ -306,6 +321,7 @@ export class SqliteAppStore implements AppStore {
       icon: row.icon ?? undefined,
       manifest: parseAppManifest(JSON.parse(row.manifestJson)),
       currentVersion: row.currentVersion ?? null,
+      managerAgentId: row.managerAgentId ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

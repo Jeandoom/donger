@@ -47,6 +47,15 @@ describe("SqliteFeedbackStore", () => {
     expect(await store.get("ghost")).toBeUndefined();
   });
 
+  it("appId 关联回环（应用管家制）：带 appId 存取无感，缺省不落列", async () => {
+    await store.create(
+      makeFeedback("fb-app", "u-1", "2026-09-28T10:00:00Z", { appId: "app_1" }),
+    );
+    expect((await store.get("fb-app"))?.appId).toBe("app_1");
+    await store.create(makeFeedback("fb-plain", "u-1", "2026-09-28T10:01:00Z"));
+    expect((await store.get("fb-plain"))?.appId).toBeUndefined();
+  });
+
   it("毒 conversationIds JSON 兜底为空数组不抛错", async () => {
     const db = new Database(":memory:");
     const s = new SqliteFeedbackStore(db);

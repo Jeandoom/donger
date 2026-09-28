@@ -24,6 +24,10 @@ import {
 import { ZodError, z } from "zod";
 import { appVersionDir } from "../adapters/app-api.js";
 import {
+  buildAppPublishedPayload,
+  buildAppRolledBackPayload,
+} from "../domain/event-payloads.js";
+import {
   APP_BUNDLE_MAX_ENTRIES,
   APP_BUNDLE_TOTAL_UNCOMPRESSED_MAX,
   APP_DATA_KEY_PATTERN,
@@ -56,6 +60,24 @@ export interface AppToolsDeps {
    * 是用户在会话里上传附件后交由智能体还原，不存在独立的外部导入通道。
    */
   importRoots: string[];
+  /**
+   * 当前会话智能体（应用管家制 spec §5）：app_create/app_deploy(新建)/app_import
+   * 成功即自动落责任绑定 managerAgentId=该 agent；undefined（plain 会话）=内置应用管家兜底。
+   */
+  agentId?: string;
+  /** 进程内事件发射（app.published/app.rolled_back；fire-and-forget，调用方保证 fail-open） */
+  emitEvent?: (eventName: string, payload: string) => void;
+  /** 通知服务（发布/回滚告知应用 owner；fire-and-forget） */
+  notifications?: {
+    notify(intent: {
+      event: "app.published" | "app.rolled_back";
+      recipients: Array<{ kind: "user"; userId: string }>;
+      title: string;
+      body: string;
+      link?: string;
+      dedupeKey?: string;
+    }): Promise<void>;
+  };
 }
 
 /** 路径安全：resolve+realpath 双判（与 kb-tools safeResolveKbPath 同语义） */
@@ -125,8 +147,8 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
     return app;
   };
 
-  /** 打包-记账-落位：产物目录 → incoming 暂存 → 分配版本号 → 重命名 → 发布 */
-  const deployBundle = async (srcDir: string, appId: string): Promise<string> => {
+  /** 打包-记账-落位：产物目录 → incoming 暂存 → 分配版本号 → 重命名 → 发布（返回版本号） */
+  const deployBundle = async (srcDir: string, appId: string): Promise<number> => {
     const stats = scanBundle(srcDir);
     const incoming = join(
       appsDir,
@@ -150,11 +172,41 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
       mkdirSync(dirname(finalDir), { recursive: true });
       cpSync(incoming, finalDir, { recursive: true });
       await appStore.publishVersion(appId, version.num);
-      return `v${version.num}`;
+      return version.num;
     } finally {
       rmSync(incoming, { recursive: true, force: true });
     }
   };
+
+  // —— 事件/通知发射（应用管家制 spec §6；全部 fire-and-forget，任何异常不影响发布主流程）——
+  const emit = (eventName: string, payload: string): void => {
+    try {
+      deps.emitEvent?.(eventName, payload);
+    } catch {
+      // fail-open：触发器分发异常不阻塞工具返回
+    }
+  };
+  const notifyOwner = (intent: {
+    event: "app.published" | "app.rolled_back";
+    title: string;
+    body: string;
+    appId: string;
+    dedupeKey: string;
+  }): void => {
+    void deps.notifications
+      ?.notify({
+        event: intent.event,
+        recipients: [{ kind: "user", userId }],
+        title: intent.title,
+        body: intent.body,
+        link: `/apps/${intent.appId}`,
+        dedupeKey: intent.dedupeKey,
+      })
+      .catch(() => {
+        // 通知失败不影响发布/回滚结果（站内信通道自有限流与日志）
+      });
+  };
+  const stewardId = deps.agentId ?? null;
 
   return [
     {
@@ -196,6 +248,7 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
           name: a.name,
           description: a.description ?? "",
           manifest: { manifestVersion: 1, runtime: "static", ui: { spa: true }, access: "private" },
+          ...(stewardId ? { managerAgentId: stewardId } : {}),
         });
         return ok(
           `应用已创建：appId=${app.id}「${app.name}」。开发完成后用 app_deploy（带 appId=${app.id}）发布产物。`,
@@ -227,11 +280,15 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
           return fail(`产物目录根缺少 index.html：${a.dir}（静态站点必须以 index.html 入口）`);
         }
         let appId = a.appId;
+        let previousVersion: number | null = null;
+        let appName = "";
         if (appId) {
           const app = await requireOwned(appId);
           if (!app) return fail(`应用不存在或不属于当前用户：${appId}（用 app_list 查看清单）`);
           if (app.manifest.runtime !== "static")
             return fail(`应用 ${appId} 的运行时 ${app.manifest.runtime} 暂不支持该部署方式`);
+          previousVersion = app.currentVersion;
+          appName = app.name;
         } else {
           if (!a.name || a.name.trim().length === 0) {
             return fail("新建应用需要 name（或改用 appId 指定已有应用）");
@@ -247,13 +304,35 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
               ui: { spa: true },
               access: "private",
             },
+            ...(stewardId ? { managerAgentId: stewardId } : {}),
           });
           appId = app.id;
+          appName = app.name;
         }
         try {
-          const version = await deployBundle(srcDir, appId);
+          const num = await deployBundle(srcDir, appId);
+          // 应用管家制（spec §6）：发布事实 → 事件触发器 + owner 通知（fire-and-forget）
+          emit(
+            "app.published",
+            buildAppPublishedPayload({
+              appId,
+              name: appName,
+              version: num,
+              previousVersion,
+              publishedBy: { kind: "agent", ...(stewardId ? { agentId: stewardId } : {}) },
+              managerAgentId: stewardId,
+              at: new Date().toISOString(),
+            }),
+          );
+          notifyOwner({
+            event: "app.published",
+            appId,
+            title: `应用「${appName}」已发布 v${num}`,
+            body: previousVersion === null ? "首次发布。" : `由 v${previousVersion} 更新。`,
+            dedupeKey: `app:${appId}:v${num}:published`,
+          });
           return ok(
-            `发布成功：appId=${appId} 版本 ${version}\n运行路径 /apps/${appId}/（用户在「应用」中心 → 打开）\n应用为私有（仅当前用户可见）；数据读写用 /api/app-data/${appId}/<key>（Bearer 用 web 端「运行」页签发的 app-token）`,
+            `发布成功：appId=${appId} 版本 v${num}\n运行路径 /apps/${appId}/（用户在「应用」中心 → 打开）\n应用为私有（仅当前用户可见）；数据读写用 /api/app-data/${appId}/<key>（Bearer 用 web 端「运行」页签发的 app-token）`,
           );
         } catch (e) {
           return fail(`发布失败：${e instanceof Error ? e.message : String(e)}`);
@@ -286,8 +365,31 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
           .parse(args);
         const app = await requireOwned(a.appId);
         if (!app) return fail(`应用不存在或不属于当前用户：${a.appId}`);
+        const from = app.currentVersion;
         const published = await appStore.publishVersion(a.appId, a.num);
         if (!published) return fail(`版本不存在：v${a.num}（用 app_versions 查看历史）`);
+        // 切到非当前版本=回滚事实（应用管家制 spec §6.1）：事件 + owner 告警通知
+        if (from !== null && from !== a.num) {
+          emit(
+            "app.rolled_back",
+            buildAppRolledBackPayload({
+              appId: a.appId,
+              name: app.name,
+              from,
+              to: a.num,
+              rolledBy: { kind: "agent", ...(stewardId ? { agentId: stewardId } : {}) },
+              managerAgentId: stewardId,
+              at: new Date().toISOString(),
+            }),
+          );
+          notifyOwner({
+            event: "app.rolled_back",
+            appId: a.appId,
+            title: `应用「${app.name}」已回滚到 v${a.num}`,
+            body: `由 v${from} 切换。`,
+            dedupeKey: `app:${a.appId}:rollback:${from}:${a.num}`,
+          });
+        }
         return ok(`已切换到 v${a.num}：/apps/${a.appId}/`);
       },
     },
@@ -329,6 +431,37 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
             ? entry.valueJson
             : `${entry.valueJson.slice(0, 8000)}…（截断）`,
         );
+      },
+    },
+    {
+      name: "app_logs_tail",
+      description:
+        "查看应用运行日志（网关请求 + 前端错误采集）。默认只看 error——发布后验证/排障用；level=all 看全部（含 info）。",
+      inputSchema: {
+        appId: z.string().min(1).describe("应用 ID"),
+        level: z.enum(["error", "all"]).optional().describe("日志级别过滤（缺省 error）"),
+      },
+      handler: async (args): Promise<AppToolResult> => {
+        const a = z
+          .object({ appId: z.string().min(1), level: z.enum(["error", "all"]).optional() })
+          .parse(args);
+        const app = await requireOwned(a.appId);
+        if (!app) return fail(`应用不存在或不属于当前用户：${a.appId}`);
+        const rows = await appStore.listLogs(a.appId, 200);
+        const errorOnly = (a.level ?? "error") === "error";
+        const filtered = errorOnly ? rows.filter((r) => r.level === "error") : rows;
+        const shown = filtered.slice(0, 50);
+        if (shown.length === 0) return ok(errorOnly ? "（最近日志中没有 error）" : "（暂无日志）");
+        const lines = shown.map((r) => {
+          const src =
+            r.source === "gateway"
+              ? `网关 ${[r.method, r.path, r.status].filter((v) => v !== undefined).join(" ")}`
+              : "前端";
+          return `- [${r.ts}] ${src} ${r.level}${r.message ? `：${r.message}` : ""}`;
+        });
+        const more =
+          filtered.length > shown.length ? `\n（另截断 ${filtered.length - shown.length} 条）` : "";
+        return ok(lines.join("\n") + more);
       },
     },
     {
@@ -455,6 +588,7 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
             name: a.name?.trim() || meta.app.name,
             description: meta.app.description ?? "",
             manifest: meta.app.manifest,
+            ...(stewardId ? { managerAgentId: stewardId } : {}),
           });
           await deployBundle(bundleDir, app.id);
           for (const e of dataEntries) {
