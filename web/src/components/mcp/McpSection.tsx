@@ -16,9 +16,10 @@ import { Segmented } from "../ui/segmented";
 import { Select } from "../ui/select";
 
 /**
- * MCP 接入分区（授权模块「个人接入」组，spec 2026-09-24-mcp-auth-files-design）：
+ * MCP 接入分区（独立配置模块 /mcp，原授权页「个人接入」组迁出，spec 2026-09-24-mcp-auth-files-design）：
  * 签发/管理个人 MCP 接入令牌（明文仅创建时展示一次），生成 zcode / Codex /
  * Claude Code 等外部 agent 的配置 JSON/TOML。令牌权限 = 属主用户在 web 端的权限。
+ * 页头（标题/简介）由 McpPage 提供，本组件从「接入状态」卡开始。
  */
 
 const TOOL_SUMMARY = [
@@ -154,16 +155,9 @@ export function McpSection() {
   return (
     <div className="space-y-5">
       <Card className="space-y-3 p-5">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">MCP 接入</h2>
-            <Badge tone={endpoint ? "success" : "neutral"}>{endpoint ? "已开放" : "未启用"}</Badge>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            用 MCP 接入令牌把本平台的智能体 / 会话 / 技能 / 知识库接入 zcode、Codex、Claude Code
-            等外部 agent。令牌权限与你本人登录 web
-            时完全一致；令牌明文只在创建时展示一次，请立即保存。
-          </p>
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold">接入状态</h2>
+          <Badge tone={endpoint ? "success" : "neutral"}>{endpoint ? "已开放" : "未启用"}</Badge>
         </div>
         {loadError ? (
           <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-2.5 text-sm text-destructive">

@@ -1,7 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { useLocation, useSearchParams } from "react-router-dom";
-import { McpSection } from "../components/authorization/McpSection";
+import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -16,10 +15,9 @@ import { cn } from "../lib/utils";
 /**
  * 授权模块（spec 2026-09-21-auth-module-design §3.3；布局重构 2026-09-24）：
  * 左侧固定导航 + 右侧详情（布局对齐 AgentEditorPage 的 sticky 模式）。
- * 平台授权配置（钉钉/GitHub/邮箱/用户管理，admin）与个人接入（MCP）分区维护；
+ * 平台授权配置（钉钉/GitHub/邮箱/用户管理，admin）分区维护；MCP 接入已迁出为独立模块（/mcp）。
  * 「应用」即生效：登录配置每请求读库即时生效，钉钉机器人消息通道保存后运行时换血，无需重启。
  * 加载完成前表单不渲染、应用按钮禁用——防止把空配置 PUT 上去（清空 AppKey = 停用钉钉登录）。
- * 非 admin 打开本页时仅渲染「MCP 接入」（admin 接口由守卫 fail-closed，前端不发起请求）。
  */
 
 interface AuthConfigsView {
@@ -43,22 +41,14 @@ interface EmailVerification {
   verifyPath: string | null;
 }
 
-type SectionId = "dingtalk" | "github" | "email" | "verifications" | "users" | "mcp";
+type SectionId = "dingtalk" | "github" | "email" | "verifications" | "users";
 
-interface SectionDef {
-  id: SectionId;
-  label: string;
-  group: "平台授权" | "个人接入";
-  adminOnly: boolean;
-}
-
-const SECTIONS: SectionDef[] = [
-  { id: "dingtalk", label: "钉钉登录", group: "平台授权", adminOnly: true },
-  { id: "github", label: "GitHub 登录", group: "平台授权", adminOnly: true },
-  { id: "email", label: "邮箱注册", group: "平台授权", adminOnly: true },
-  { id: "verifications", label: "待验证账号", group: "平台授权", adminOnly: true },
-  { id: "users", label: "用户管理", group: "平台授权", adminOnly: true },
-  { id: "mcp", label: "MCP 接入", group: "个人接入", adminOnly: false },
+const SECTIONS: Array<{ id: SectionId; label: string }> = [
+  { id: "dingtalk", label: "钉钉登录" },
+  { id: "github", label: "GitHub 登录" },
+  { id: "email", label: "邮箱注册" },
+  { id: "verifications", label: "待验证账号" },
+  { id: "users", label: "用户管理" },
 ];
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -633,28 +623,25 @@ function UserManagementSection() {
   );
 }
 
-/** 主组件：左侧固定导航 + 右侧详情（/mcp 路由 = MCP 接入单区入口，所有登录用户可用） */
+/** 主组件：左侧固定导航 + 右侧详情（分区全为 admin 专属，非 admin 显示无权限空态） */
 export function AuthorizationPage() {
-  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [me, setMe] = useState<CurrentUser | null>(null);
   const [view, setView] = useState<AuthConfigsView | null>(null);
   const [loadError, setLoadError] = useState("");
 
-  const mcpOnlyRoute = location.pathname === "/mcp";
   const isAdmin = me?.role === "admin";
 
   useEffect(() => {
     void fetchMe().then(setMe);
   }, []);
 
-  const allowed = SECTIONS.filter((s) => mcpOnlyRoute || !s.adminOnly || isAdmin);
-  const requested = mcpOnlyRoute ? "mcp" : (searchParams.get("section") as SectionId | null);
-  const active: SectionId =
-    requested && allowed.some((s) => s.id === requested) ? requested : (allowed[0]?.id ?? "mcp");
+  const allowed = isAdmin ? SECTIONS : [];
+  const requested = searchParams.get("section") as SectionId | null;
+  const active: SectionId | null =
+    requested && allowed.some((s) => s.id === requested) ? requested : (allowed[0]?.id ?? null);
 
   const select = (id: SectionId) => {
-    if (mcpOnlyRoute) return;
     if (id === SECTIONS[0]?.id) setSearchParams({}, { replace: true });
     else setSearchParams({ section: id }, { replace: true });
   };
@@ -677,8 +664,6 @@ export function AuthorizationPage() {
     if (isAdmin) load();
   }, [isAdmin, load]);
 
-  const groups: Array<SectionDef["group"]> = ["平台授权", "个人接入"];
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {/* Sticky 顶栏 */}
@@ -686,7 +671,7 @@ export function AuthorizationPage() {
         <div className="min-w-0">
           <h1 className="text-[15px] font-semibold">授权</h1>
           <p className="hidden truncate text-xs text-muted-foreground sm:block">
-            平台授权配置与个人接入凭证。配置修改即时生效，无需重启服务
+            平台授权配置。配置修改即时生效，无需重启服务
           </p>
         </div>
       </header>
@@ -719,39 +704,30 @@ export function AuthorizationPage() {
           aria-label="授权配置分区"
           className="sticky top-16 hidden w-52 shrink-0 flex-col gap-1 self-start border-r border-border bg-card/60 p-3 lg:flex"
         >
-          {groups.map((group) => {
-            const items = allowed.filter((s) => s.group === group);
-            if (items.length === 0) return null;
-            return (
-              <div key={group} className="mb-1">
-                <p className="px-3 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground/70">
-                  {group}
-                </p>
-                {items.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors",
-                      active === s.id
-                        ? "bg-primary-soft font-semibold text-primary"
-                        : "text-foreground hover:bg-muted",
-                    )}
-                    onClick={() => select(s.id)}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            );
-          })}
+          {allowed.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors",
+                active === s.id
+                  ? "bg-primary-soft font-semibold text-primary"
+                  : "text-foreground hover:bg-muted",
+              )}
+              onClick={() => select(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
         </nav>
 
         {/* 右侧详情 */}
         <main className="min-w-0 flex-1 space-y-5 p-5 pb-16 lg:p-6">
-          {active === "mcp" ? <McpSection /> : null}
-
-          {active !== "mcp" && isAdmin ? (
+          {!isAdmin ? (
+            <p className="rounded-lg border border-border bg-card p-5 text-sm text-muted-foreground">
+              授权配置仅管理员可见
+            </p>
+          ) : (
             <>
               {loadError ? (
                 <div className="flex items-center justify-between gap-2 rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
@@ -774,7 +750,7 @@ export function AuthorizationPage() {
               {active === "verifications" ? <VerificationsSection /> : null}
               {active === "users" ? <UserManagementSection /> : null}
             </>
-          ) : null}
+          )}
         </main>
       </div>
     </div>

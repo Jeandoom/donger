@@ -19,6 +19,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { LoopDetailPage } from "./pages/LoopDetailPage";
 import { LoopsPage } from "./pages/LoopsPage";
+import { McpPage } from "./pages/McpPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { ProxyPage } from "./pages/ProxyPage";
 import { RegisterPage } from "./pages/RegisterPage";
@@ -79,8 +80,8 @@ export function App() {
             <Route path="/invites" element={<InvitesPage />} />
             {/* 授权/代理模块（admin 专属；接口侧由守卫 fail-closed 兜底） */}
             <Route path="/authorization" element={<AuthorizationPage />} />
-            {/* MCP 接入单区入口（所有登录用户；同一页面组件按路由锁定 MCP 分区） */}
-            <Route path="/mcp" element={<AuthorizationPage />} />
+            {/* MCP 接入（独立配置模块，沉底导航；所有登录用户） */}
+            <Route path="/mcp" element={<McpPage />} />
             <Route path="/proxy" element={<ProxyPage />} />
             <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/settings" element={<Navigate to="/profile" replace />} />

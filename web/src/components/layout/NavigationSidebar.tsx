@@ -51,18 +51,18 @@ const mainEntries: LeafItem[] = [
   { to: "/loops", label: "LOOPs", icon: Repeat },
   { to: "/skills", label: "技能", icon: Sparkles },
   { to: "/connectors", label: "连接器", icon: Plug },
-  // 审计单页：会话栏内置「只看LLM」开关切换历史会话/LLM 观测两种详情形态
-  { to: "/audit", label: "审计", icon: ScrollText },
-  // MCP 接入：所有用户；授权页的单区入口（个人令牌与外部 agent 配置）
-  { to: "/mcp", label: "MCP 接入", icon: Blocks },
 ];
 
-// 原设置子模块一级化，沉底展示（个人并入底部用户栏，不再占导航位）
+// 配置类模块沉底展示（个人并入底部用户栏，不再占导航位；审计/MCP 接入自主导航迁入）
 const bottomEntries: LeafItem[] = [
   { to: "/models", label: "模型", icon: ModelIcon },
   { to: "/credentials", label: "凭证", icon: CredentialIcon },
+  // MCP 接入：签发个人令牌把平台能力开放给外部 agent，与凭证同属接入凭证类
+  { to: "/mcp", label: "MCP 接入", icon: Blocks },
   { to: "/invites", label: "邀请", icon: InviteIcon },
   { to: "/feedback", label: "反馈", icon: Megaphone },
+  // 审计单页：会话栏内置「只看LLM」开关切换历史会话/LLM 观测两种详情形态
+  { to: "/audit", label: "审计", icon: ScrollText },
 ];
 
 // 管理员专属沉底项：授权（三方登录配置 Web 化）/ 代理（出站请求代理）
