@@ -21,6 +21,8 @@ export interface SensitiveReadHit {
   root: string;
   /** 触发的路径 token（归一化前） */
   token: string;
+  /** token 按 cwd 解析后的绝对路径（供调用方做存在性判断） */
+  resolved: string;
 }
 
 /** Windows 不区分大小写；统一小写 + 正斜杠归一后比较 */
@@ -65,13 +67,20 @@ export function matchSensitiveRead(
     for (const root of policy.denyRoots) {
       if (!isInsideRoot(abs, root)) continue;
       const allowed = policy.allowReadRoots.some((a) => isInsideRoot(abs, a));
-      if (!allowed) return { root, token };
+      if (!allowed) return { root, token, resolved: abs };
     }
   }
   return undefined;
 }
 
-/** 组装守卫拒绝消息（agent 可读；指引其走允许范围） */
-export function sensitiveReadDenyMessage(hit: SensitiveReadHit): string {
+/**
+ * 组装守卫拒绝消息（agent 可读；指引其走允许范围）。
+ * 路径不存在时优先提示路径本身有误（2026-09-28：生产中模型自行推算层级拼出
+ * 不存在的路径，被误报「位于保护路径内」，误导排障方向）；存在的路径才谈保护。
+ */
+export function sensitiveReadDenyMessage(hit: SensitiveReadHit, exists = true): string {
+  if (!exists) {
+    return `路径不存在：${hit.token}（按当前工作目录解析后无此文件或目录）。请核对路径拼写与层级，优先原样使用系统注入的路径，不要自行推算绝对路径。`;
+  }
   return `读取拒绝：${hit.token} 位于服务端保护路径内（${hit.root}）。该区域含平台运行数据与其他用户数据，agent 无权访问；如需平台运维请由管理员在服务器上直接操作。`;
 }

@@ -16,7 +16,7 @@ describe("appendMessageFiles", () => {
     expect(appendMessageFiles("hi")).toBe("hi");
   });
 
-  it("传入 cwd 时附件路径相对化（避免模型照抄部署目录绝对路径）", () => {
+  it("传入 cwd 时附件路径相对化且转正斜杠（零转义，防模型照抄错层）", () => {
     const prompt = appendMessageFiles(
       "分析账单",
       [
@@ -28,9 +28,11 @@ describe("appendMessageFiles", () => {
       ],
       "D:\\code\\donger\\.deploy\\donger\\data\\workspace\\users\\u1\\sessions\\c1\\workspace",
     );
-    expect(prompt).toContain("attachments\\\\账单.xlsx");
+    expect(prompt).toContain("attachments/账单.xlsx");
     expect(prompt).not.toContain(".deploy");
+    expect(prompt).not.toContain("\\\\");
     expect(prompt).toContain("路径均相对当前工作目录");
+    expect(prompt).toContain("原样照抄");
   });
 
   it("cwd 提供但路径跨盘/无法相对化时回退绝对路径", () => {
