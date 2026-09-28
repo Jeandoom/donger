@@ -210,7 +210,8 @@ export async function getUserIdByUnionid(
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ unionId }),
+      // 老 oapi 接口参数全小写：unionid（非新版 REST 的 unionId 驼峰）
+      body: JSON.stringify({ unionid: unionId }),
     });
     const data = (await res.json()) as {
       errcode?: number;

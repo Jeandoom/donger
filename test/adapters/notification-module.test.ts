@@ -808,7 +808,7 @@ describe("DingTalkNotificationAdapter 地址标识换算", () => {
       globalThis.fetch = realFetch;
     }
     const unionCall = calls.find((c) => c.url.includes("getbyunionid"));
-    expect(unionCall?.body).toEqual({ unionId: "union-abc" });
+    expect(unionCall?.body).toEqual({ unionid: "union-abc" });
     const sendCall = calls.find((c) => c.url.includes("oToMessages"));
     expect((sendCall?.body as { userIds: string[] }).userIds).toEqual(["staff-001"]);
   });
