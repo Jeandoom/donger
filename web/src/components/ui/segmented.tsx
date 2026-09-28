@@ -31,7 +31,9 @@ export function Segmented<T extends string>({
       aria-label={name}
       disabled={disabled}
       className={cn(
-        "inline-flex h-9 items-center gap-0.5 rounded-lg border-0 bg-muted p-1",
+        // 窄屏放不下时整组横向滚动（scrollbar 隐藏），按钮不收缩——
+        // 否则按钮被压到逐字竖排（CJK 无断行点）
+        "no-scrollbar inline-flex h-9 max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border-0 bg-muted p-1",
         disabled && "opacity-50",
         className,
       )}
@@ -46,7 +48,7 @@ export function Segmented<T extends string>({
             disabled={disabled}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "h-7 rounded-md px-3 text-[13px] font-medium transition-colors",
+              "h-7 shrink-0 whitespace-nowrap rounded-md px-3 text-[13px] font-medium transition-colors",
               active
                 ? "bg-card text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground",

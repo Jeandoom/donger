@@ -466,8 +466,10 @@ export function AuditPage() {
           </Card>
         </div>
 
-        {/* 右：详情（形态随页头 Segmented 切换；已选会话保持不变） */}
-        <div className="min-w-0 flex-1 space-y-4 lg:overflow-y-auto">
+        {/* 右：详情（形态随页头 Segmented 切换；已选会话保持不变）。
+            移动端转录内联会撑出数万 px 长页：内容自适应高度、限高 70vh 内部滚动
+            （不能沿用 flex-1——列表卡占满后剩余空间为 0 会把盒子压没）；lg+ 恢复列内滚动 */}
+        <div className="max-h-[70vh] min-w-0 shrink-0 space-y-4 overflow-y-auto lg:max-h-none lg:flex-1 lg:shrink lg:overflow-y-auto">
           {selected && detailError ? (
             <ErrorRetry message={detailError} onRetry={() => setDetailReload((v) => v + 1)} />
           ) : detailLoading ? (
