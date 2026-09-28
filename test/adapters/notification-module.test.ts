@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
+import { DingTalkNotificationAdapter } from "../../src/adapters/notif-dingtalk.js";
 import { WebhookNotificationAdapter } from "../../src/adapters/notif-webhook.js";
 import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteNotificationStore } from "../../src/adapters/sqlite-notification-store.js";
@@ -18,6 +19,7 @@ import type {
   NotificationChannelAdapter,
   OutboundNotification,
 } from "../../src/ports/notification-channel.js";
+import { resetDingTalkTokenCache } from "../../src/util/dingtalk-api.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
 import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
@@ -766,5 +768,105 @@ describe("通知 M2 Web API", () => {
     const statusBody = (await status.json()) as { channels: Record<string, boolean> };
     expect(statusBody.channels.inapp).toBe(true);
     expect(statusBody.channels.dingtalk).toBe(true);
+  });
+});
+
+// ===== M2.1：钉钉地址标识换算（unionId→staffId，生产 staffId.notExisted 修复）=====
+
+function dingtalkFetchMock(handler: (url: string, init?: RequestInit) => Response) {
+  const calls: Array<{ url: string; body?: unknown }> = [];
+  const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : undefined;
+    calls.push({ url, body });
+    return handler(url, init);
+  }) as typeof fetch;
+  return { impl, calls };
+}
+
+describe("DingTalkNotificationAdapter 地址标识换算", () => {
+  it("unionId 地址先经 getbyunionid 换算为 staffId 再投递", async () => {
+    resetDingTalkTokenCache();
+    const cfg = { appKey: "ak", appSecret: "sk", robotCode: "rb" };
+    const adapter = new DingTalkNotificationAdapter(() => cfg);
+    const { impl, calls } = dingtalkFetchMock((url) => {
+      if (url.includes("gettoken")) {
+        return Response.json({ access_token: "corp-token", expires_in: 7200 });
+      }
+      if (url.includes("getbyunionid")) {
+        return Response.json({ errcode: 0, result: { userid: "staff-001" } });
+      }
+      return Response.json({}, { status: 200 });
+    });
+    // 替换模块内 fetch：适配器与 util 同进程共享 globalThis.fetch
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      const outcome = await adapter.sendText("union-abc", "测试");
+      expect(outcome.ok).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const unionCall = calls.find((c) => c.url.includes("getbyunionid"));
+    expect(unionCall?.body).toEqual({ unionId: "union-abc" });
+    const sendCall = calls.find((c) => c.url.includes("oToMessages"));
+    expect((sendCall?.body as { userIds: string[] }).userIds).toEqual(["staff-001"]);
+  });
+
+  it("staffId 地址换算查无时回落原地址直投（负缓存防误判固化）", async () => {
+    resetDingTalkTokenCache();
+    const cfg = { appKey: "ak", appSecret: "sk", robotCode: "rb" };
+    const adapter = new DingTalkNotificationAdapter(() => cfg);
+    const { impl, calls } = dingtalkFetchMock((url) => {
+      if (url.includes("gettoken")) {
+        return Response.json({ access_token: "corp-token", expires_in: 7200 });
+      }
+      if (url.includes("getbyunionid")) {
+        return Response.json({ errcode: 60104, errmsg: "unionId 不存在" });
+      }
+      return Response.json({}, { status: 200 });
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      const outcome = await adapter.sendText("staff-direct-1", "测试");
+      expect(outcome.ok).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const sendCall = calls.find((c) => c.url.includes("oToMessages"));
+    expect((sendCall?.body as { userIds: string[] }).userIds).toEqual(["staff-direct-1"]);
+  });
+
+  it("投递失败错误收敛：保留 code/message，不回显响应原文（requestid 等）", async () => {
+    resetDingTalkTokenCache();
+    const cfg = { appKey: "ak", appSecret: "sk", robotCode: "rb" };
+    const adapter = new DingTalkNotificationAdapter(() => cfg);
+    const { impl } = dingtalkFetchMock((url) => {
+      if (url.includes("gettoken")) {
+        return Response.json({ access_token: "corp-token", expires_in: 7200 });
+      }
+      if (url.includes("getbyunionid")) {
+        return Response.json({ errcode: 0, result: { userid: "staff-001" } });
+      }
+      return Response.json(
+        {
+          requestid: "01A0E7DE-C55E-7A42-99C6-B178C87D1132",
+          code: "staffId.notExisted",
+          message: "staff 不存在",
+        },
+        { status: 400 },
+      );
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      const outcome = await adapter.sendText("union-abc", "测试");
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error).toContain("staffId.notExisted");
+      expect(outcome.error).not.toContain("01A0E7DE");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
