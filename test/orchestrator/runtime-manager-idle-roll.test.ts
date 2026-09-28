@@ -21,7 +21,9 @@ function fakeConvStore(): ConversationStore {
   return { get: async () => undefined, update: async () => {} } as unknown as ConversationStore;
 }
 
-function fakeTranscriptStore(): TranscriptStore {
+function fakeTranscriptStore(
+  latest: { sessionId: string; mtime: number } | null = null,
+): TranscriptStore {
   return {
     async append() {},
     async load() {
@@ -29,6 +31,9 @@ function fakeTranscriptStore(): TranscriptStore {
     },
     async listSessions() {
       return [];
+    },
+    async latestSessionForConversation() {
+      return latest;
     },
     async listSubkeys() {
       return [];
@@ -74,7 +79,10 @@ describe("RuntimeManager 会话空闲滚动", () => {
   let ws: string;
   let mgr: RuntimeManager;
 
-  function mkMgr(idleHours: number): void {
+  function mkMgr(
+    idleHours: number,
+    transcriptStore: TranscriptStore = fakeTranscriptStore(),
+  ): void {
     const db = new Database(":memory:");
     const packStore = new SqliteSkillPackStore(db);
     packStore.migrate();
@@ -88,7 +96,7 @@ describe("RuntimeManager 会话空闲滚动", () => {
       sessionIdleRollHours: idleHours,
     };
     mgr = new RuntimeManager({
-      transcriptStore: fakeTranscriptStore(),
+      transcriptStore,
       conversationStore: fakeConvStore(),
       config,
       skillPackStore: packStore,
@@ -127,6 +135,74 @@ describe("RuntimeManager 会话空闲滚动", () => {
   it("无历史 sessionId：不受滚动影响", async () => {
     mkMgr(168);
     const conv = mkConv({ sdkSessionId: "" });
+    const { runOptions } = await mgr.prepare(user, conv, {});
+    expect(runOptions.resume).toBeUndefined();
+  });
+});
+
+describe("RuntimeManager resume 指针恢复", () => {
+  let ws: string;
+  let mgr: RuntimeManager;
+
+  function mkMgr(
+    idleHours: number,
+    transcriptStore: TranscriptStore = fakeTranscriptStore(),
+  ): void {
+    const db = new Database(":memory:");
+    const packStore = new SqliteSkillPackStore(db);
+    packStore.migrate();
+    const csets = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "k"));
+    csets.migrate();
+    const config: RuntimeManagerConfig = {
+      workspaceDir: ws,
+      llm: { model: "glm", baseUrl: "http://x", authToken: "t" },
+      defaultSystemPromptAppend: "",
+      agentLlmPresets: [],
+      sessionIdleRollHours: idleHours,
+    };
+    mgr = new RuntimeManager({
+      transcriptStore,
+      conversationStore: fakeConvStore(),
+      config,
+      skillPackStore: packStore,
+      credentialSets: csets,
+      installer: fakeInstaller,
+      builtinSkillsDir: "",
+    });
+  }
+
+  beforeEach(() => {
+    ws = mkdtempSync(join(tmpdir(), "rtmgr-resume-"));
+    user.homeDir = ws;
+  });
+
+  it("指针为空但 store 有最近 session：反查接回（被杀轮恢复）", async () => {
+    mkMgr(0, fakeTranscriptStore({ sessionId: "sess-lost", mtime: Date.now() }));
+    const conv = mkConv({ sdkSessionId: "" });
+    const { runOptions } = await mgr.prepare(user, conv, {});
+    expect(runOptions.resume).toBe("sess-lost");
+  });
+
+  it("指针为空且 store 无记录：不 resume（真新会话）", async () => {
+    mkMgr(0);
+    const conv = mkConv({ sdkSessionId: "" });
+    const { runOptions } = await mgr.prepare(user, conv, {});
+    expect(runOptions.resume).toBeUndefined();
+  });
+
+  it("recoverResume=false（session 过期重试路径）：不反查，防回环", async () => {
+    mkMgr(0, fakeTranscriptStore({ sessionId: "sess-expired", mtime: Date.now() }));
+    const conv = mkConv({ sdkSessionId: "" });
+    const { runOptions } = await mgr.prepare(user, conv, { recoverResume: false });
+    expect(runOptions.resume).toBeUndefined();
+  });
+
+  it("闲置超限且指针为空：不恢复（避免复活超长上下文，与空闲滚动同语义）", async () => {
+    mkMgr(168, fakeTranscriptStore({ sessionId: "sess-old", mtime: Date.now() }));
+    const conv = mkConv({
+      sdkSessionId: "",
+      updatedAt: new Date(Date.now() - 9 * DAY_MS).toISOString(),
+    });
     const { runOptions } = await mgr.prepare(user, conv, {});
     expect(runOptions.resume).toBeUndefined();
   });

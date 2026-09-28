@@ -38,6 +38,9 @@ export interface TranscriptStore {
   /** 列出某 projectKey 下的会话（按 mtime 倒序由调用方处理） */
   listSessions(projectKey: string): Promise<TranscriptSessionSummary[]>;
 
+  /** 反查某会话最近一次 SDK session（主 transcript，不含子 agent）。无记录返回 null。 */
+  latestSessionForConversation(conversationId: string): Promise<TranscriptSessionSummary | null>;
+
   /** 列出某 session 的子 agent subpath */
   listSubkeys(key: TranscriptKey): Promise<string[]>;
 

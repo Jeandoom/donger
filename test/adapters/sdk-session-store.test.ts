@@ -27,6 +27,9 @@ function memStore(): TranscriptStore & { dump: (k: TranscriptKey) => TranscriptE
     async listSessions() {
       return [];
     },
+    async latestSessionForConversation() {
+      return null;
+    },
     async listSubkeys() {
       return [];
     },

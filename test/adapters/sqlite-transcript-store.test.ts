@@ -102,6 +102,30 @@ describe("SqliteTranscriptStore", () => {
     expect(subs.sort()).toEqual(["agent-x", "agent-y"]);
   });
 
+  it("latestSessionForConversation 返回最近一次 session", async () => {
+    await store.append({ projectKey: "u1", sessionId: "s1" }, convId, [
+      entry({ type: "user", uuid: "a", timestamp: "2026-07-08T00:00:00.000Z" }),
+    ]);
+    await store.append({ projectKey: "u1", sessionId: "s2" }, convId, [
+      entry({ type: "user", uuid: "b", timestamp: "2026-07-09T00:00:00.000Z" }),
+    ]);
+    const latest = await store.latestSessionForConversation(convId);
+    expect(latest?.sessionId).toBe("s2");
+  });
+
+  it("latestSessionForConversation 只看主 transcript，按会话隔离，无记录返回 null", async () => {
+    await store.append(key, convId, [entry({ type: "user", uuid: "main" })]);
+    await store.append({ ...key, sessionId: "s-sub", subpath: "agent-x" }, convId, [
+      entry({ type: "user", uuid: "sub", timestamp: "2026-07-09T00:00:00.000Z" }),
+    ]);
+    await store.append({ projectKey: "u1", sessionId: "s-other" }, "c2", [
+      entry({ type: "user", uuid: "o", timestamp: "2026-07-10T00:00:00.000Z" }),
+    ]);
+    const latest = await store.latestSessionForConversation(convId);
+    expect(latest?.sessionId).toBe("s1");
+    expect(await store.latestSessionForConversation("c-none")).toBeNull();
+  });
+
   it("delete 清理主 transcript 与子 agent", async () => {
     await store.append(key, convId, [entry({ type: "user", uuid: "m" })]);
     await store.append({ ...key, subpath: "agent-x" }, convId, [

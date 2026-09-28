@@ -62,6 +62,11 @@ export interface PrepareOpts {
   gitMaterializeItems?: RepositoryMaterializeItem[];
   /** 用户显式选择的 LLM（消息级 modelRef；最高优先级，覆盖 agent preset 与基底） */
   modelRef?: string;
+  /**
+   * 指针丢失时是否从 transcript store 反查恢复 resume（默认 true）。
+   * session 过期重试路径必须传 false：过期 session 正是反查会命中的那条，恢复它只会再失败一轮。
+   */
+  recoverResume?: boolean;
 }
 
 interface RuntimeManagerDeps {
@@ -308,16 +313,28 @@ export class RuntimeManager {
     // 轮末照常 commit 回写）。跨天/周低频会话若一直 resume，每轮全量重建超长上下文，
     // 实测闲置 9 天后"回复 OK"也要 32k 输入 token（cacheRead 仅 2k）。
     const idleRollMs = (this.deps.config.sessionIdleRollHours ?? 0) * 3_600_000;
-    const idleTooLong =
-      idleRollMs > 0 &&
-      Boolean(conversation.sdkSessionId) &&
-      Date.now() - Date.parse(conversation.updatedAt) > idleRollMs;
+    const idlePastRoll =
+      idleRollMs > 0 && Date.now() - Date.parse(conversation.updatedAt) > idleRollMs;
+    const idleTooLong = idlePastRoll && Boolean(conversation.sdkSessionId);
     // 会话切型：claude sessionId 与 codex threadId 不同命名空间，引擎换了必须弃 resume
     // 开新线程（历史消息仍在 UI 流里，specs/2026-09-21-codex-openai-runner-design.md §7.4）
     const sdkTypeMismatch =
       Boolean(conversation.sdkSessionId) &&
       conversation.llmSdkType !== undefined &&
       conversation.llmSdkType !== (llm.sdkType ?? "anthropic");
+
+    // resume 指针恢复：会话行 sdkSessionId 丢失（重启清扫/崩溃杀掉的轮等不到轮末 commit，
+    // 生产会话 cf94d5c8 实证「重试」裸起丢整段上下文）。转录条目本就实时 append 在
+    // transcript store（conv_id 列），反查最近一个主 transcript session 把指针接回去即无损。
+    // 守卫：切型/闲置滚动是「刻意新开」，不恢复（闲置超限即使指针丢失也不接回旧转录，
+    // 避免复活超长上下文，与 idleTooLong 同语义）。
+    let resumeSessionId: string | undefined = conversation.sdkSessionId || undefined;
+    if (!resumeSessionId && opts.recoverResume !== false && !idlePastRoll) {
+      const recovered = await this.deps.transcriptStore.latestSessionForConversation(
+        conversation.id,
+      );
+      if (recovered) resumeSessionId = recovered.sessionId;
+    }
 
     const runOptions: RunOptions = {
       cwd: runtimeDir,
@@ -326,7 +343,7 @@ export class RuntimeManager {
       llm,
       systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
       abortSignal: opts.abortSignal,
-      resume: idleTooLong || sdkTypeMismatch ? undefined : conversation.sdkSessionId || undefined,
+      resume: idleTooLong || sdkTypeMismatch ? undefined : resumeSessionId,
       workspaceRoot: user.homeDir,
       additionalDirectories,
       allowedWriteRoots,

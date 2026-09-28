@@ -42,6 +42,9 @@ function fakeTranscriptStore(loadImpl: (key: { sessionId: string }) => unknown):
     async listSessions() {
       return [];
     },
+    async latestSessionForConversation() {
+      return null;
+    },
     async listSubkeys() {
       return [];
     },
