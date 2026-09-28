@@ -4,10 +4,6 @@ import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
 import type { Conversation } from "../domain/conversation.js";
-import {
-  DEFAULT_CONVERSATION_TITLE,
-  deriveConversationTitle,
-} from "../domain/conversation-title.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { AgentGitRepository } from "../domain/git.js";
@@ -41,6 +37,7 @@ import type { AppStore } from "../ports/app-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
+import type { NotificationService } from "./notification-service.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
@@ -74,7 +71,6 @@ import { BUILTIN_KB_ASSISTANT_AGENT, BUILTIN_KB_ASSISTANT_ID } from "./kb-assist
 import { enqueueAutoLearn } from "./kb-auto-learn.js";
 import { createKbToolsServer, type KbMount } from "./kb-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
-import type { NotificationService } from "./notification-service.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
@@ -484,6 +480,8 @@ export class Orchestrator {
     runController: AbortController;
     /** 多阶段任务的非末轮置 true：不向渠道推 result 事件（CLI/web 的回合不提前结束） */
     quietResult?: boolean;
+    /** 会话标题取材文本（缺省=task.prompt）；阶段轮的 task.prompt 是阶段引导词，标题须保持用户原文 */
+    titleText?: string;
     /** 内部轮（dispatcher）：不接续会话 resume、不回写 sdkSessionId（独立决策，防历史污染） */
     noResume?: boolean;
     /** 内部轮（dispatcher）：事件只落审计，不推送渠道、不持久化消息 */
@@ -899,10 +897,9 @@ export class Orchestrator {
       }
     }
 
-    // 回写 sdkSessionId（经 RuntimeManager.commit）。内部轮（noResume）不回写。
-    // 会话标题不再在此设置：首条用户消息到达时即由 maybeAutoTitle 异步命名（web-channel 旧行为是
-    // 等首轮跑完才截 task.prompt，长任务期间侧栏一直挂占位标题）。
+    // 回写 sdkSessionId（经 RuntimeManager.commit）；title 仅首轮设置。内部轮（noResume）不回写
     if (!p.noResume && capturedSessionId && capturedSessionId !== p.conversation.sdkSessionId) {
+      const wasFirstTurn = !p.conversation.sdkSessionId;
       const llmSdkType = opts.llm.sdkType;
       await this.deps.runtimeMgr.commit(p.conversation.id, {
         sdkSessionId: capturedSessionId,
@@ -910,6 +907,11 @@ export class Orchestrator {
       });
       p.conversation.sdkSessionId = capturedSessionId;
       if (llmSdkType) p.conversation.llmSdkType = llmSdkType;
+      if (wasFirstTurn) {
+        await this.deps.conversationStore.update(p.conversation.id, {
+          title: (p.titleText ?? p.task.prompt).slice(0, 30),
+        });
+      }
     }
 
     const resultText =
@@ -1106,7 +1108,7 @@ export class Orchestrator {
     agent: Agent;
     sharedAgentSkillOwner?: User;
     gitMaterializeItems?: RepositoryMaterializeItem[];
-    /** 首轮提示词（如 builder 的缺口引导）；缺省用 task.prompt。不改写 task，保持原始任务入库/审计 */
+    /** 首轮提示词（如 builder 的缺口引导）；缺省用 task.prompt。不改写 task，保持原始任务入库/审计/标题 */
     firstTurnPrompt?: string;
     runController: AbortController;
     /** 用户显式选择的 LLM（消息级 modelRef） */
@@ -1116,7 +1118,7 @@ export class Orchestrator {
     await store.updateStatus(p.task.id, nextStatus("planning", "start"));
     await this.emitStageBanner(channel, p.conversation.id, p.threadId, "🔨 执行阶段");
     const r = await this.runTurn({
-      // firstTurnPrompt 仅作首轮引导词注入；task.prompt 保持原文（入库/审计/记忆不被污染）
+      // firstTurnPrompt 仅作首轮引导词注入；task.prompt 保持原文（入库/审计/标题不被污染）
       task: { ...p.task, prompt: p.firstTurnPrompt ?? p.task.prompt },
       user: p.user,
       conversation: p.conversation,
@@ -1128,6 +1130,7 @@ export class Orchestrator {
       sharedAgentSkillOwner: p.sharedAgentSkillOwner,
       gitMaterializeItems: p.gitMaterializeItems,
       runController: p.runController,
+      titleText: p.task.prompt,
       modelRef: p.modelRef,
     });
 
@@ -1163,7 +1166,7 @@ export class Orchestrator {
 
     // "/new" 命令：创建新会话
     if (msg.text.trim().toLowerCase() === "/new") {
-      await conversationStore.create(user.id, msg.channelId, DEFAULT_CONVERSATION_TITLE);
+      await conversationStore.create(user.id, msg.channelId, "新对话");
       await this.deps.channel.send(msg.threadId, { text: "✨ 已开启新对话" });
       this.deps.channel.pushResult?.(msg.threadId, "success", "已开启新对话");
       return;
@@ -1174,51 +1177,14 @@ export class Orchestrator {
       msg.conversationId ?? this.getLatestConversationId(user.id, msg.channelId);
     const conversation = conversationId
       ? ((await conversationStore.get(conversationId)) ??
-        (await conversationStore.create(
-          user.id,
-          msg.channelId,
-          deriveConversationTitle(msg.text) || DEFAULT_CONVERSATION_TITLE,
-        )))
-      : await conversationStore.create(
-          user.id,
-          msg.channelId,
-          deriveConversationTitle(msg.text) || DEFAULT_CONVERSATION_TITLE,
-        );
-
-    // 占位标题的会话收到首条用户消息：异步并行按内容改名（不阻塞消息流水线，失败静默）
-    this.maybeAutoTitle(conversation, msg);
+        (await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30))))
+      : await conversationStore.create(user.id, msg.channelId, msg.text.slice(0, 30));
 
     // 并发控制（同会话串行）：busy 时入队，当前任务完成后自动依序处理
     if (this.isConversationBusy(conversation.id)) {
       return await this.enqueueMessage(user, msg, conversation);
     }
     return await this.runExclusive(user, msg, conversation);
-  }
-
-  /**
-   * 首条用户消息到达即自动命名会话：仍为占位标题（默认值 / 绑定 agent 名）时，
-   * 取消息首个非空行截断为标题，落库并向打开该会话的客户端广播（侧栏实时刷新）。
-   * fire-and-forget：与任务执行并行，任何失败仅记日志（标题保留占位，不影响主流程）。
-   */
-  private maybeAutoTitle(conversation: Conversation, msg: IncomingMessage): void {
-    void (async () => {
-      try {
-        let isPlaceholderTitle = conversation.title === DEFAULT_CONVERSATION_TITLE;
-        if (!isPlaceholderTitle && conversation.agentId) {
-          // agent 会话建会话时以 agent 名为占位标题，同样按首条消息内容重命名
-          const agent = await this.deps.agentStore?.get(conversation.agentId);
-          isPlaceholderTitle = agent !== undefined && conversation.title === agent.name;
-        }
-        if (!isPlaceholderTitle) return;
-        const title = deriveConversationTitle(msg.text);
-        if (!title || title === conversation.title) return;
-        await this.deps.conversationStore.update(conversation.id, { title });
-        conversation.title = title; // 内存同步：轮内后续读取（审计摘要等）保持一致
-        this.deps.channel.pushConversationTitle?.(conversation.id, title);
-      } catch (e) {
-        console.error("[orchestrator] 会话自动命名失败", e);
-      }
-    })();
   }
 
   /** 会话 busy 时把消息排入队列；超过上限仍拒绝。返回 conversationId。 */
@@ -1496,7 +1462,7 @@ export class Orchestrator {
             text: `🧩 未找到匹配的执行智能体（${routing.rationale}），已转入 Agent Builder，协助你补建该能力：`,
           });
           agent = builder;
-          // 引导词经 firstTurnPrompt 注入；task.prompt 保持用户原文（入库/审计/记忆不被污染）
+          // 引导词经 firstTurnPrompt 注入；task.prompt 保持用户原文（入库/审计/记忆/标题不被污染）
           firstTurnPrompt = builderCreationAsk(task.prompt, routing.rationale);
         } else if (routing.agentId !== "none") {
           let r: Awaited<ReturnType<typeof this.resolveAgentForUse>>;
