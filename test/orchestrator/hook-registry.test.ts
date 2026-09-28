@@ -57,7 +57,7 @@ describe("HookRegistry", () => {
     expect(r.status).toBe(200);
     expect(r.body).toBe("success");
     await new Promise((res) => setImmediate(res));
-    expect(s.loopRunner.fire).toHaveBeenCalledWith(l.id, '{"x":1}');
+    expect(s.loopRunner.fire).toHaveBeenCalledWith(l.id, '{"x":1}', "hook:/hooks/dt", t.id);
   });
 
   it("not matched: still 200 + body, but fire not called", async () => {

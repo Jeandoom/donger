@@ -100,6 +100,8 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  // 触发事件队列单 loop pending 上限（超出落 dropped+告警；防 DoS 显式边界）
+  TRIGGER_QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(10_000).default(200),
   // ==== 外部运维服务凭证（app-proxy 受控代理注入用；某 service 未配置=该面代理返回 503）====
   JH_BASE_URL: z.string().optional().default("https://jihulab.com"),
   JH_TOKEN: z.string().optional().default(""),
@@ -197,6 +199,8 @@ export interface AppConfig {
   gitAllowPrivateHosts: boolean;
   /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
   triggerAllowPrivateNet: boolean;
+  /** 触发事件队列单 loop pending 上限（TRIGGER_QUEUE_MAX_PENDING，默认 200） */
+  triggerQueueMaxPending: number;
   /** 智能体回调链接发起限流（次/分钟/token） */
   callbackRateLimitPerMin: number;
   /** LLM 流停摆看门狗阈值（毫秒；0=关闭） */
@@ -264,6 +268,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
     triggerAllowPrivateNet: e.TRIGGER_ALLOW_PRIVATE_NET,
+    triggerQueueMaxPending: e.TRIGGER_QUEUE_MAX_PENDING,
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,

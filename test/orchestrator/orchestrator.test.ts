@@ -134,6 +134,9 @@ function mockTranscriptStore(): TranscriptStore {
     async listSessions() {
       return [];
     },
+    async latestSessionForConversation() {
+      return null;
+    },
     async listSubkeys() {
       return [];
     },
@@ -179,7 +182,12 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
   return { mgr, credentialSets };
 }
 
-function setup(approve: boolean, script: FakeScript, customRunner?: AgentRunner) {
+function setup(
+  approve: boolean,
+  script: FakeScript,
+  customRunner?: AgentRunner,
+  customConvStore?: ConversationStore,
+) {
   const store = new InMemoryTaskStore();
   const usageStore = new InMemoryUsageStore();
   const auditStore = new InMemoryAuditStore();
@@ -187,7 +195,7 @@ function setup(approve: boolean, script: FakeScript, customRunner?: AgentRunner)
   const runner = customRunner ?? new FakeAgentRunner(script);
   const gates = new GateRouter();
   gates.describe({ id: "design", description: "方案审批" });
-  const conversationStore = mockConversationStore();
+  const conversationStore = customConvStore ?? mockConversationStore();
   const { mgr: runtimeMgr, credentialSets } = makeRuntimeMgr(conversationStore);
   const orch = new Orchestrator({
     store,
@@ -250,6 +258,38 @@ describe("Orchestrator", () => {
 
     expect(capturedPrompt).toContain("请先使用 Read 工具读取");
     expect(capturedPrompt).toContain("D:/sessions/conv-1/readme.md");
+  });
+
+  it("session_init 即时回写指针：流被杀（无 result）指针也已落库", async () => {
+    const updates: Array<Partial<Conversation>> = [];
+    const convStore: ConversationStore = {
+      ...mockConversationStore(),
+      async update(_id, patch) {
+        updates.push(patch);
+      },
+    };
+    const runner: AgentRunner = {
+      async *run() {
+        yield { type: "session_init", taskId: "t1", sessionId: "sess-9" };
+        // 流在此终结、无 result 事件——模拟任务被重启清扫/崩溃杀死
+      },
+    };
+    const { orch } = setup(true, {}, runner, convStore);
+    await orch.handleMessage(msg);
+    expect(updates).toContainEqual({ sdkSessionId: "sess-9" });
+  });
+
+  it("无 session_init 的正常流不触发指针回写", async () => {
+    const updates: Array<Partial<Conversation>> = [];
+    const convStore: ConversationStore = {
+      ...mockConversationStore(),
+      async update(_id, patch) {
+        updates.push(patch);
+      },
+    };
+    const { orch } = setup(true, {}, new FakeAgentRunner({ result: "ok" }), convStore);
+    await orch.handleMessage(msg);
+    expect(updates).toEqual([]);
   });
 
   it("停止会话会触发 AbortSignal 并将任务标记为 canceled", async () => {

@@ -32,12 +32,13 @@ export class SqliteTriggerStore implements TriggerStore {
   }
 
   private marshal(t: Trigger): { type: string; config: string } {
-    return {
-      type: t.type,
-      config: JSON.stringify(
-        t.type === "scheduler" ? { scheduler: t.scheduler } : { hook: t.hook },
-      ),
-    };
+    const cfg =
+      t.type === "scheduler"
+        ? { scheduler: t.scheduler }
+        : t.type === "event"
+          ? { event: t.event }
+          : { hook: t.hook };
+    return { type: t.type, config: JSON.stringify(cfg) };
   }
 
   private unmarshal(row: TriggerRow): Trigger {
@@ -49,6 +50,7 @@ export class SqliteTriggerStore implements TriggerStore {
       type: row.type,
       scheduler: cfg.scheduler,
       hook: cfg.hook,
+      event: cfg.event,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     });

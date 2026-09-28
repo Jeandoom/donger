@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { sampleFeedbackCreatedPayload } from "../domain/event-payloads.js";
 import type { Loop } from "../domain/loop.js";
 import { validateTriggerHttpUrlDeep } from "../domain/net-target.js";
 import type { Trigger } from "../domain/trigger.js";
@@ -8,6 +9,7 @@ import type { IncomingMessage } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import { renderPromptTemplate } from "../domain/workflow.js";
 import type { LoopStore } from "../ports/loop-store.js";
+import type { TriggerQueueStore } from "../ports/trigger-queue-store.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import type { Logger } from "../util/logger.js";
@@ -21,14 +23,21 @@ export interface LoopRunnerDeps {
   workspaceRoot: string;
   channelId: string;
   logger: Logger;
+  /** 触发事件持久化队列（fire=入队+泵抽，spec 2026-09-28-event-trigger-feedback-design §5） */
+  queue: TriggerQueueStore;
   /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
   allowPrivateNet?: boolean;
+  /** 单 loop pending 上限：超出后事件落 dropped+告警（防 DoS 显式边界，默认 200） */
+  maxQueuePending?: number;
   /** 通知内核（spec 2026-09-28-notification-module-design；缺省=不发站内信） */
   notifications?: NotificationService;
 }
 
 /** 触发器 http source 响应体上限：防大响应打爆内存（matcher 只需小样本即可判定） */
 const TRIGGER_HTTP_MAX_BODY_BYTES = 1024 * 1024;
+
+/** 队列终态行保留期：超过后启动时清理 */
+const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface TestTriggerResult {
   sourceOutput: string;
@@ -38,20 +47,84 @@ export interface TestTriggerResult {
 }
 
 export class LoopRunner {
-  private readonly running = new Set<string>();
+  /** 泵守卫：单 loop 至多一个 drain 循环在抽水（并发 fire 由它串行化） */
+  private readonly pumping = new Set<string>();
 
   constructor(private readonly deps: LoopRunnerDeps) {}
 
-  async fire(loopId: string, sourceOutput: string): Promise<void> {
-    if (this.running.has(loopId)) {
-      this.deps.logger.info({ loopId }, "skip: previous run still active");
+  private get maxQueuePending(): number {
+    return this.deps.maxQueuePending ?? 200;
+  }
+
+  /**
+   * 交付=入队+泵抽（spec §5.2）：事件永不跳过或丢失（pending 上限内的显式 dropped 除外）。
+   * 返回时机：若本调用启动了泵，则等到队列抽干（含本事件）才 resolve；
+   * 已有泵在抽则立即返回（它收尾前会抽到本行）。busy 不再 skip——三种触发类型统一排队。
+   */
+  async fire(
+    loopId: string,
+    sourceOutput: string,
+    eventName = "manual",
+    triggerId = "",
+  ): Promise<void> {
+    const row = await this.deps.queue.enqueue(
+      { loopId, triggerId, eventName, payload: sourceOutput },
+      this.maxQueuePending,
+    );
+    if (row.status === "dropped") {
+      await this.notifyQueueOverflow(loopId, eventName);
       return;
     }
-    this.running.add(loopId);
+    if (this.pumping.has(loopId)) return;
+    this.pumping.add(loopId);
     try {
-      await this.runOnce(loopId, sourceOutput);
+      await this.drain(loopId);
     } finally {
-      this.running.delete(loopId);
+      this.pumping.delete(loopId);
+    }
+  }
+
+  /** 泵入口（loop 重新启用、重启恢复时抽积压） */
+  pump(loopId: string): void {
+    if (this.pumping.has(loopId)) return;
+    this.pumping.add(loopId);
+    void this.drain(loopId).finally(() => this.pumping.delete(loopId));
+  }
+
+  /** FIFO 抽干队列；行状态=交付结果，运行成败由 runOnce 内部落 loop_runs（队列不重试） */
+  private async drain(loopId: string): Promise<void> {
+    for (;;) {
+      const row = await this.deps.queue.claimNextPending(loopId);
+      if (!row) return;
+      try {
+        await this.runOnce(loopId, row.payload);
+      } catch (e) {
+        // runOnce 自捕获运行失败；这里兜底交付层异常（如 loop 已被删除）
+        this.deps.logger.error(
+          { loopId, rowId: row.id, err: (e as Error).message },
+          "queued trigger delivery failed",
+        );
+      }
+      await this.deps.queue.markDone(row.id);
+    }
+  }
+
+  /** 队列溢出告警：不静默丢（dropped 行留痕），同 loop 同日只告警一次 */
+  private async notifyQueueOverflow(loopId: string, eventName: string): Promise<void> {
+    this.deps.logger.warn({ loopId, eventName }, "trigger queue overflow, event dropped");
+    try {
+      const loop = await this.deps.loopStore.get(loopId);
+      if (!loop) return;
+      await this.deps.notifications?.notify({
+        event: "loop.queue_overflow",
+        recipients: [{ kind: "user", userId: loop.ownerId }],
+        title: `「${loop.name}」触发队列已满`,
+        body: `事件「${eventName}」被丢弃：待处理事件超过 ${this.maxQueuePending} 条`,
+        link: `/loops/${loopId}`,
+        dedupeKey: `loop:${loopId}:queue_overflow:${new Date().toISOString().slice(0, 10)}`,
+      });
+    } catch (e) {
+      this.deps.logger.error({ loopId, err: (e as Error).message }, "队列溢出通知失败");
     }
   }
 
@@ -187,6 +260,22 @@ export class LoopRunner {
       .catch((e) => this.deps.logger.error({ loopId: loop.id, err: String(e) }, "loop 通知失败"));
   }
 
+  /** 启动恢复：遗留 running→pending 重投（at-least-once）+ 清理 7 天前终态行 + 抽积压 */
+  async restoreQueue(): Promise<void> {
+    const reset = this.deps.queue.resetStaleRunning();
+    if (reset > 0) {
+      this.deps.logger.warn({ reset }, "queue: stale running rows reset to pending");
+    }
+    const cleaned = this.deps.queue.cleanupFinishedBefore(
+      new Date(Date.now() - QUEUE_RETENTION_MS).toISOString(),
+    );
+    if (cleaned > 0) this.deps.logger.info({ cleaned }, "queue: finished rows cleaned");
+    for (const loopId of await this.deps.queue.listLoopIdsWithPending()) {
+      const loop = await this.deps.loopStore.get(loopId);
+      if (loop?.enabled) this.pump(loopId);
+    }
+  }
+
   async testTrigger(triggerId: string): Promise<TestTriggerResult> {
     const { triggerStore } = this.deps;
     const t: Trigger | undefined = await triggerStore.get(triggerId);
@@ -198,6 +287,13 @@ export class LoopRunner {
         debug: { hookUrl: t.hook?.path, method: "POST" },
         error: "hook 类型 trigger 需外部请求测试",
       };
+    }
+    if (t.type === "event") {
+      // 固定样例 payload 跑 matcher：编辑页「测试」按钮对 event 类型可用，无需真实造反馈
+      if (!t.event) return { sourceOutput: "", matched: false, error: "event 配置缺失" };
+      const sourceOutput = sampleFeedbackCreatedPayload();
+      const result = evaluateMatcher(t.event.matcher, { body: sourceOutput });
+      return { sourceOutput, matched: result.matched, debug: result.debug, error: result.error };
     }
     const sched = t.scheduler;
     if (!sched) return { sourceOutput: "", matched: false, error: "scheduler 配置缺失" };

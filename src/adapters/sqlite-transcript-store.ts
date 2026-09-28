@@ -114,6 +114,23 @@ export class SqliteTranscriptStore implements TranscriptStore {
     }));
   }
 
+  async latestSessionForConversation(
+    conversationId: string,
+  ): Promise<TranscriptSessionSummary | null> {
+    const row = this.db
+      .prepare(
+        `SELECT session_id, MAX(created_at) AS mtime_iso
+         FROM transcript_entries
+         WHERE conv_id = ? AND subpath = ''
+         GROUP BY session_id
+         ORDER BY mtime_iso DESC
+         LIMIT 1`,
+      )
+      .get(conversationId) as { session_id: string; mtime_iso: string } | undefined;
+    if (!row) return null;
+    return { sessionId: row.session_id, mtime: Date.parse(row.mtime_iso) };
+  }
+
   async listSubkeys(key: TranscriptKey): Promise<string[]> {
     const rows = this.db
       .prepare("SELECT subkey FROM transcript_subkeys WHERE project_key = ? AND session_id = ?")

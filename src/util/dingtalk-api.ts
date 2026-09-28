@@ -196,6 +196,58 @@ export async function getUserInfoByOAuth(
   };
 }
 
+/**
+ * 企业 unionId → 通讯录 userid（staffId）换算。
+ * OAuth 登录身份存的是个人级 unionId，而 oToMessages batchSend 的 userIds 要企业
+ * 通讯录 userid——两套标识体系，投递前须经此换算。corporateToken=企业应用 access_token。
+ */
+export async function getUserIdByUnionid(
+  unionId: string,
+  corporateToken: string,
+): Promise<string | undefined> {
+  const url = `https://oapi.dingtalk.com/topapi/user/getbyunionid?access_token=${encodeURIComponent(corporateToken)}`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // 老 oapi 接口参数全小写：unionid（非新版 REST 的 unionId 驼峰）
+      body: JSON.stringify({ unionid: unionId }),
+    });
+    const data = (await res.json()) as {
+      errcode?: number;
+      errmsg?: string;
+      result?: { userid?: string };
+    };
+    if (data.errcode === 0 && data.result?.userid) return data.result.userid;
+    console.error(
+      "[dingtalk-api] getbyunionid 失败:",
+      JSON.stringify({ errcode: data.errcode, errmsg: data.errmsg }),
+    );
+    return undefined;
+  } catch (e) {
+    console.error("[dingtalk-api] getbyunionid 请求异常:", String((e as Error).message));
+    return undefined;
+  }
+}
+
+/** 钉钉开放平台错误体收敛：只留 code/message（不回显 requestid 等响应原文） */
+export function parseDingTalkError(text: string): string {
+  try {
+    const data = JSON.parse(text) as {
+      code?: string;
+      message?: string;
+      errcode?: number;
+      errmsg?: string;
+    };
+    if (data.code || data.message) return `${data.code ?? ""} ${data.message ?? ""}`.trim();
+    if (data.errcode !== undefined || data.errmsg)
+      return `${data.errcode ?? ""} ${data.errmsg ?? ""}`.trim();
+  } catch {
+    // 非 JSON 响应体
+  }
+  return text.slice(0, 200);
+}
+
 /** singleSend 请求体（纯函数）。 */
 export function buildSingleSendBody(
   robotCode: string,
@@ -236,7 +288,7 @@ export async function sendSingleMessage(
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`钉钉 singleSend 失败 (${res.status}): ${text}`);
+    throw new Error(`钉钉 singleSend 失败 (${res.status}): ${parseDingTalkError(text)}`);
   }
 }
 

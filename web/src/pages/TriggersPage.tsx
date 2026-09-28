@@ -10,7 +10,7 @@ import { apiFetch } from "../lib/auth";
 interface Trigger {
   id: string;
   name: string;
-  type: "scheduler" | "hook";
+  type: "scheduler" | "hook" | "event";
 }
 
 export function TriggersPage() {
@@ -77,8 +77,8 @@ export function TriggersPage() {
                   </Link>
                 </td>
                 <td className="px-4 py-3">
-                  <Badge tone={t.type === "scheduler" ? "info" : "primary"}>
-                    {t.type === "scheduler" ? "定时" : "Webhook"}
+                  <Badge tone={t.type === "scheduler" ? "info" : t.type === "event" ? "warning" : "primary"}>
+                    {t.type === "scheduler" ? "定时" : t.type === "event" ? "事件" : "Webhook"}
                   </Badge>
                 </td>
                 <td className="px-4 py-3 text-right">

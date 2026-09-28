@@ -126,6 +126,9 @@ function setup(script: FakeScript) {
       async listSessions() {
         return [];
       },
+      async latestSessionForConversation() {
+        return null;
+      },
       async listSubkeys() {
         return [];
       },

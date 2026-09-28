@@ -77,7 +77,7 @@ export class SchedulerService {
       if (!t?.scheduler) return;
       const result = await this.deps.loopRunner.testTrigger(t.id);
       if (result.matched) {
-        await this.deps.loopRunner.fire(loop.id, result.sourceOutput);
+        await this.deps.loopRunner.fire(loop.id, result.sourceOutput, "scheduler", t.id);
       } else {
         this.deps.logger.debug(
           { loopId: loop.id, error: result.error },

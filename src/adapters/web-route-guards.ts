@@ -242,8 +242,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     },
 
     // ===== 通知模块（spec 2026-09-28-notification-module-design）=====
-    // 全部本人维度（viewer 过滤在 store SQL 条件内），无跨用户读取面；
-    // admin 投递日志查询随 M2 站外通道加入时另行登记 admin 规则。
+    // 全部本人维度（viewer 过滤在 store SQL 条件内），无跨用户读取面。
     { method: "GET", pattern: "/api/notifications", access: { kind: "authenticated" } },
     {
       method: "GET",
@@ -253,7 +252,44 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/notifications/read", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/notifications/prefs", access: { kind: "authenticated" } },
     { method: "PUT", pattern: "/api/notifications/prefs", access: { kind: "authenticated" } },
-    // 系统公告群发（system.announcement）；admin 投递日志查询随 M2 站外通道加入时另行登记
+    // 地址簿与验证闭环（M2 站外通道）：channel 段收窄 [\w-]
+    { method: "GET", pattern: "/api/notifications/addresses", access: { kind: "authenticated" } },
+    {
+      method: "DELETE",
+      pattern: "/api/notifications/addresses/:channel",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "POST",
+      pattern: "/api/notifications/addresses/dingtalk/verify-request",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "POST",
+      pattern: "/api/notifications/addresses/dingtalk/verify",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "PUT",
+      pattern: "/api/notifications/addresses/webhook",
+      access: { kind: "authenticated" },
+    },
+    {
+      method: "POST",
+      pattern: "/api/notifications/addresses/:channel/test",
+      access: { kind: "authenticated" },
+    },
+    // 管理端：通道状态 / 投递日志 / 系统公告群发
+    {
+      method: "GET",
+      pattern: "/api/admin/notifications/status",
+      access: { kind: "admin" },
+    },
+    {
+      method: "GET",
+      pattern: "/api/admin/notifications/deliveries",
+      access: { kind: "admin" },
+    },
     {
       method: "POST",
       pattern: "/api/admin/notifications/announcement",

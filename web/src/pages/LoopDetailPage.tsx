@@ -15,6 +15,8 @@ interface Loop {
   tags?: string[];
   lastRunAt?: string | null;
   lastError?: string | null;
+  /** 触发队列 pending 行数（后端详情返回体附带；缺省=队列未装配不展示） */
+  queuedCount?: number;
 }
 
 interface Workflow {
@@ -178,6 +180,12 @@ export function LoopDetailPage() {
       {loop.lastError ? (
         <div className="rounded-lg bg-destructive-soft px-4 py-3 text-sm text-destructive">
           {loop.lastError}
+        </div>
+      ) : null}
+
+      {typeof loop.queuedCount === "number" && loop.queuedCount > 0 ? (
+        <div className="rounded-lg bg-info-soft px-4 py-3 text-sm text-info-foreground">
+          排队中 {loop.queuedCount} 个触发事件（忙时自动排队，按先后顺序依次执行）
         </div>
       ) : null}
 

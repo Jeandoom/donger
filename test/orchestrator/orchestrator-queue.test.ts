@@ -163,6 +163,9 @@ function mockTranscriptStore(): TranscriptStore {
     async listSessions() {
       return [];
     },
+    async latestSessionForConversation() {
+      return null;
+    },
     async listSubkeys() {
       return [];
     },

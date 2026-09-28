@@ -495,7 +495,7 @@ export class Orchestrator {
     modelRef?: string;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
-    const prepareOnce = async (): Promise<RunOptions> => {
+    const prepareOnce = async (recoverResume = true): Promise<RunOptions> => {
       const { context, runOptions } = await this.deps.runtimeMgr.prepare(p.user, p.conversation, {
         systemPromptAppend: p.memoryAppend,
         abortSignal: p.runController.signal,
@@ -503,6 +503,7 @@ export class Orchestrator {
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
         gitMaterializeItems: p.gitMaterializeItems,
         modelRef: p.modelRef,
+        recoverResume,
       });
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
@@ -734,10 +735,11 @@ export class Orchestrator {
         first.value.error &&
         SESSION_EXPIRED_RE.test(first.value.error)
       ) {
-        // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）
+        // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）。
+        // recoverResume=false 防回环：反查恢复命中的正是刚过期的这条 session，接回去只会再失败一轮。
         await this.deps.runtimeMgr.clearResume(p.conversation.id);
         p.conversation.sdkSessionId = "";
-        attemptOpts = await prepareOnce();
+        attemptOpts = await prepareOnce(false);
         continue;
       }
       // 构造包含已读第一项的流
@@ -806,7 +808,30 @@ export class Orchestrator {
               )
             : rawEvents;
         for await (const e of guarded) {
-          if (e.type === "session_init") capturedSessionId = e.sessionId;
+          if (e.type === "session_init") {
+            capturedSessionId = e.sessionId;
+            // 指针即时落库：轮末 commit（下方）只在任务完整跑完时执行，重启清扫/崩溃杀掉的
+            // 轮永远等不到——下一轮 resume 落空即丢整段上下文（生产会话 cf94d5c8「重试」裸起
+            // 实证）。转录条目本就实时 append 进 transcript store，session_init 到达即回写
+            // 指针，被杀轮已跑部分可无损接回。内部轮（noResume）语义同轮末回写：不落库。
+            if (
+              !p.noResume &&
+              capturedSessionId &&
+              capturedSessionId !== p.conversation.sdkSessionId
+            ) {
+              const llmSdkType = opts.llm.sdkType;
+              try {
+                await this.deps.runtimeMgr.commit(p.conversation.id, {
+                  sdkSessionId: capturedSessionId,
+                  ...(llmSdkType ? { llmSdkType } : {}),
+                });
+                p.conversation.sdkSessionId = capturedSessionId;
+                if (llmSdkType) p.conversation.llmSdkType = llmSdkType;
+              } catch (err) {
+                console.error("[orchestrator] session 指针即时回写失败", err);
+              }
+            }
+          }
           // 实时执行状态（SDK 事件推导，观测态）
           this.activityTracker.observe(p.conversation.id, e);
           // 先落审计再推送：历史（audit）永远 ≥ 实时流，按会话回放不缺事件；审计失败不阻塞推送

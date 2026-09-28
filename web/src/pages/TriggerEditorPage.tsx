@@ -26,7 +26,7 @@ type MatcherFields = Record<string, string>;
 interface TriggerDTO {
   id: string;
   name: string;
-  type: "scheduler" | "hook";
+  type: "scheduler" | "hook" | "event";
   scheduler?: {
     cron: string;
     source: { type: "http"; url: string; method: string } | { type: "file"; path: string };
@@ -38,6 +38,10 @@ interface TriggerDTO {
     responseBody: string;
     matcher: { kind: MatcherKind } & MatcherFields;
   };
+  event?: {
+    name: string;
+    matcher: { kind: MatcherKind } & MatcherFields;
+  };
 }
 
 interface TestResult {
@@ -46,6 +50,11 @@ interface TestResult {
   debug?: string;
   error?: string;
 }
+
+/** 与后端 EVENT_TRIGGER_NAMES 注册表两端语义一致（spec 2026-09-28-event-trigger-feedback-design） */
+const EVENT_NAME_OPTIONS: { value: string; label: string }[] = [
+  { value: "feedback.created", label: "新反馈提交" },
+];
 
 const MATCHER_OPTIONS: { value: MatcherKind; label: string }[] = [
   { value: "always", label: "总是触发" },
@@ -62,7 +71,8 @@ export function TriggerEditorPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const [name, setName] = useState("");
-  const [type, setType] = useState<"scheduler" | "hook">("scheduler");
+  const [type, setType] = useState<"scheduler" | "hook" | "event">("scheduler");
+  const [eventName, setEventName] = useState("feedback.created");
   const [cron, setCron] = useState("0 * * * *");
   const [sourceType, setSourceType] = useState<"http" | "file">("http");
   const [httpUrl, setHttpUrl] = useState("");
@@ -84,6 +94,7 @@ export function TriggerEditorPage() {
   const snapshot = JSON.stringify({
     name,
     type,
+    eventName,
     cron,
     sourceType,
     httpUrl,
@@ -136,6 +147,14 @@ export function TriggerEditorPage() {
           Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)])),
         );
       }
+      if (t.event) {
+        setEventName(t.event.name);
+        const { kind, ...rest } = t.event.matcher;
+        setMatcherKind(kind);
+        setMatcher(
+          Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)])),
+        );
+      }
       setLoaded(true);
       pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
     } catch (e) {
@@ -165,6 +184,13 @@ export function TriggerEditorPage() {
         },
       };
     }
+    if (type === "event") {
+      return {
+        name,
+        type,
+        event: { name: eventName, matcher: m },
+      };
+    }
     return {
       name,
       type,
@@ -186,7 +212,7 @@ export function TriggerEditorPage() {
         return "数据源为 HTTP 时请填写合法 URL（http/https）";
       }
       if (sourceType === "file" && !filePath.trim()) return "请填写文件路径";
-    } else if (!hookPath.trim().startsWith("/")) {
+    } else if (type === "hook" && !hookPath.trim().startsWith("/")) {
       return "回调路径需以 / 开头";
     }
     return null;
@@ -277,7 +303,7 @@ export function TriggerEditorPage() {
       <PageHeader
         className="mb-5"
         title={id ? "编辑触发器" : "新建触发器"}
-        description="定时抓取或外部回调，配合工作流驱动智能体任务"
+        description="定时抓取、外部回调或平台事件，配合工作流驱动智能体任务"
         actions={
           <>
             <Button variant="secondary" onClick={() => attempt(() => nav("/triggers"))}>
@@ -309,9 +335,13 @@ export function TriggerEditorPage() {
           />
         </FormField>
         <FormField label="类型">
-          <Select value={type} onChange={(e) => setType(e.target.value as "scheduler" | "hook")}>
+          <Select
+            value={type}
+            onChange={(e) => setType(e.target.value as "scheduler" | "hook" | "event")}
+          >
             <option value="scheduler">定时（scheduler）</option>
             <option value="hook">回调（hook）</option>
+            <option value="event">事件（event）</option>
           </Select>
         </FormField>
       </FormSection>
@@ -320,7 +350,13 @@ export function TriggerEditorPage() {
         id="trigger-sec-source"
         no="2"
         title="触发源"
-        description={type === "scheduler" ? "定时表达式与数据来源" : "外部系统回调入口"}
+        description={
+          type === "scheduler"
+            ? "定时表达式与数据来源"
+            : type === "event"
+              ? "订阅平台内部事件（仅管理员可用）"
+              : "外部系统回调入口"
+        }
       >
         {type === "scheduler" ? (
           <>
@@ -369,7 +405,7 @@ export function TriggerEditorPage() {
               </FormField>
             )}
           </>
-        ) : (
+        ) : type === "hook" ? (
           <>
             <FormField
               label="回调路径"
@@ -382,6 +418,16 @@ export function TriggerEditorPage() {
               <Input value={hookResponse} onChange={(e) => setHookResponse(e.target.value)} />
             </FormField>
           </>
+        ) : (
+          <FormField label="事件" required hint="事件发生时把载荷 JSON 交给触发条件判定；循环忙时自动排队不丢">
+            <Select value={eventName} onChange={(e) => setEventName(e.target.value)}>
+              {EVENT_NAME_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </FormField>
         )}
       </FormSection>
 
