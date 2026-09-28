@@ -7,6 +7,7 @@ import type {
   MissingCredentialItem,
   MissingCredentialsDecision,
 } from "../ports/channel.js";
+import type { NotificationService } from "./notification-service.js";
 
 /**
  * 凭证缺失问询：missing 非空时挂起任务（awaiting_credentials）并经渠道推三选。
@@ -23,6 +24,8 @@ export async function promptMissingCredentials(p: {
   inspect: (userId: string, codes: string[]) => Promise<MissingCredentialItem[]>;
   updateTask: (status: string, patch?: Record<string, unknown>) => Promise<void>;
   recordAudit: (missing: MissingCredentialItem[]) => Promise<void>;
+  /** 通知内核（缺省=不发站内信） */
+  notifications?: NotificationService;
 }): Promise<boolean> {
   const { channel, task } = p;
   let missing = await p.inspect(p.user.id, p.codes);
@@ -71,6 +74,16 @@ export async function promptMissingCredentials(p: {
         text: `⏸️ 任务已暂停（缺少凭证：${names}）。配置凭证后重新发起任务即可；不需要时可取消。`,
       });
       channel.pushResult?.(p.conversation.id, "error", "任务已暂停：缺少凭证");
+      // 通知收编：dedupeKey 按 task，同任务多轮重复暂停只发首条
+      void p.notifications
+        ?.notify({
+          event: "credential.missing",
+          recipients: [{ kind: "user", userId: p.user.id }],
+          title: "任务已暂停：缺少凭证",
+          body: `缺少：${names}。配置凭证后重新发起任务即可；不需要时可取消。`,
+          dedupeKey: `cred:${task.id}`,
+        })
+        .catch((e) => console.error("[notification] 凭证缺失通知失败", e));
     }
     return false;
   }

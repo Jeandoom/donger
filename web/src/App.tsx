@@ -20,6 +20,7 @@ import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { LoopDetailPage } from "./pages/LoopDetailPage";
 import { LoopsPage } from "./pages/LoopsPage";
 import { ModelsPage } from "./pages/ModelsPage";
+import { NotificationPage } from "./pages/NotificationPage";
 import { ProxyPage } from "./pages/ProxyPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { SetupPage } from "./pages/SetupPage";
@@ -83,6 +84,7 @@ export function App() {
             <Route path="/mcp" element={<Navigate to="/authorization?section=mcp" replace />} />
             <Route path="/proxy" element={<ProxyPage />} />
             <Route path="/feedback" element={<FeedbackPage />} />
+            <Route path="/notifications" element={<NotificationPage />} />
             <Route path="/settings" element={<Navigate to="/profile" replace />} />
             <Route path="/settings/profile" element={<Navigate to="/profile" replace />} />
             <Route path="/settings/models" element={<Navigate to="/models" replace />} />

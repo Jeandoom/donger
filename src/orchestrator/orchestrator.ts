@@ -37,6 +37,7 @@ import type { AppStore } from "../ports/app-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
+import type { NotificationService } from "./notification-service.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
@@ -117,6 +118,8 @@ export interface OrchestratorDeps {
   selfImproveGitRepository?: AgentGitRepository;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
   commentStore?: CommentStore;
+  /** 通知内核（spec 2026-09-28-notification-module-design；缺省=不发站内信） */
+  notificationService?: NotificationService;
   /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
   agentChain?: AgentChainConfig;
   /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
@@ -483,6 +486,8 @@ export class Orchestrator {
     noResume?: boolean;
     /** 内部轮（dispatcher）：事件只落审计，不推送渠道、不持久化消息 */
     silent?: boolean;
+    /** 无人值守轮（loop/定时触发）：完成/失败由 loop-runner 发 loop 事件，此处不发 task 事件防双发 */
+    unattended?: boolean;
     /** 用户显式选择的 LLM（消息级 modelRef；透传 prepare 最高优先级解析） */
     modelRef?: string;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
@@ -856,6 +861,21 @@ export class Orchestrator {
     const ok = last?.type === "result" && last.subtype === "success";
     const error = last?.type === "result" && last.subtype === "error" ? last.error : undefined;
 
+    // 通知收编（spec §6）：任务完成/失败 → 站内信（决策②：交互式会话同样发）。
+    // 内部轮/非末轮静默；无人值守轮由 loop-runner 发 loop 事件，此处跳过防双发
+    if (!p.silent && !p.quietResult && !p.unattended && last?.type === "result") {
+      void this.deps.notificationService
+        ?.notify({
+          event: ok ? "task.completed" : "task.failed",
+          recipients: [{ kind: "user", userId: p.user.id }],
+          title: ok ? "任务完成" : "任务失败",
+          body: (ok ? (last.result ?? "(无结果)") : (last.error ?? "未知错误")).slice(0, 400),
+          dedupeKey: `task:${p.task.id}:${ok ? "completed" : "failed"}`,
+          data: { conversationId: p.conversation.id, taskId: p.task.id },
+        })
+        .catch((e) => console.error("[orchestrator] 任务通知失败", e));
+    }
+
     // 用量统计：result 带 usage 就落一条（错误运行也落，subtype 无关）；失败仅日志
     if (last?.type === "result" && last.usage) {
       const u = last.usage;
@@ -1226,6 +1246,16 @@ export class Orchestrator {
         pendingSince: victim.pendingSince ?? canceledAt,
         canceledAt,
       });
+      // 通知收编：并发淘汰强制站内信（spec §9 mandatoryInapp）
+      void this.deps.notificationService
+        ?.notify({
+          event: "eviction.notice",
+          recipients: [{ kind: "user", userId: user.id }],
+          title: "并发任务被自动结束",
+          body: `${reason}\n${detail}`,
+          dedupeKey: `eviction:${victim.taskId}`,
+        })
+        .catch((e) => console.error("[orchestrator] 淘汰通知失败", e));
     }
 
     this.markBusy(conversation.id, "");
@@ -1552,6 +1582,7 @@ export class Orchestrator {
           channel,
           threadId: msg.threadId,
           codes: credentialCodes,
+          notifications: this.deps.notificationService,
           inspect: (userId, codes) => this.deps.runtimeMgr.inspectCredentials(userId, codes),
           updateTask: async (status, patch) => {
             await store.updateStatus(currentTask.id, status as TaskStatus, patch);
@@ -1607,6 +1638,7 @@ export class Orchestrator {
         gitMaterializeItems,
         runController,
         modelRef: msg.modelRef,
+        unattended: msg.unattended === true,
       });
 
       if (r.aborted) return await this.finishCanceled(task, conversation);

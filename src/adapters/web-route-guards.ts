@@ -241,6 +241,19 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "authenticated" },
     },
 
+    // ===== 通知模块（spec 2026-09-28-notification-module-design）=====
+    // 全部本人维度（viewer 过滤在 store SQL 条件内），无跨用户读取面；
+    // admin 投递日志查询随 M2 站外通道加入时另行登记 admin 规则。
+    { method: "GET", pattern: "/api/notifications", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/notifications/unread-count",
+      access: { kind: "authenticated" },
+    },
+    { method: "POST", pattern: "/api/notifications/read", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/notifications/prefs", access: { kind: "authenticated" } },
+    { method: "PUT", pattern: "/api/notifications/prefs", access: { kind: "authenticated" } },
+
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },

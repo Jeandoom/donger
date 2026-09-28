@@ -1,5 +1,6 @@
 import {
   AppWindow,
+  Bell,
   Bot,
   KeyRound,
   LogOut,
@@ -20,6 +21,7 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { apiFetch, apiFetchRetry, clearToken, getToken } from "../../lib/auth";
+import { fetchUnreadCount } from "../../lib/notifications";
 import { cn } from "../../lib/utils";
 import { CredentialIcon } from "../icons/CredentialIcon";
 import { InviteIcon } from "../icons/InviteIcon";
@@ -40,6 +42,8 @@ interface LeafItem {
 // 主导航（模块）
 const mainEntries: LeafItem[] = [
   { to: "/", label: "对话", icon: MessageSquare, end: true },
+  // 通知：站内信中心（一级导航，未读徽标轮询）
+  { to: "/notifications", label: "通知", icon: Bell },
   // 智能体会话已并入对话模块（/），智能体入口收敛为管理页叶节点
   { to: "/agents", label: "智能体", icon: Bot },
   // 应用模块：平台内开发/托管/运行的个人应用（app runtime）
@@ -111,6 +115,7 @@ export function NavigationSidebar({
   const navigate = useNavigate();
   const [user, setUser] = useState<UserInfo | null>(null);
   const [userError, setUserError] = useState(false);
+  const [unreadNotices, setUnreadNotices] = useState(0);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     if (!collapsible) return false;
@@ -150,6 +155,27 @@ export function NavigationSidebar({
     if (getToken()) void loadUser();
   }, [loadUser]);
 
+  // 通知未读徽标：20s 轮询 + 通知页操作后经自定义事件即时刷新
+  useEffect(() => {
+    if (!getToken()) return;
+    let alive = true;
+    const refresh = () => {
+      fetchUnreadCount()
+        .then((count) => {
+          if (alive) setUnreadNotices(count);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const timer = setInterval(refresh, 20_000);
+    window.addEventListener("donger:notifications-changed", refresh);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      window.removeEventListener("donger:notifications-changed", refresh);
+    };
+  }, []);
+
   const handleLogout = async () => {
     await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
     clearToken();
@@ -183,6 +209,18 @@ export function NavigationSidebar({
 
   const renderLeaf = (e: LeafItem, collapsedMode: boolean) => {
     const Icon = e.icon;
+    const badge =
+      e.to === "/notifications" && unreadNotices > 0 ? (
+        collapsedMode ? (
+          <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
+            {unreadNotices > 99 ? "99+" : unreadNotices}
+          </span>
+        ) : (
+          <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-semibold leading-none text-white">
+            {unreadNotices > 99 ? "99+" : unreadNotices}
+          </span>
+        )
+      ) : null;
     if (collapsedMode) {
       return (
         <NavLink
@@ -194,6 +232,7 @@ export function NavigationSidebar({
           className={iconLinkClass}
         >
           <Icon size={18} className="shrink-0" />
+          {badge}
           <span className={tipClass}>{e.label}</span>
         </NavLink>
       );
@@ -202,6 +241,7 @@ export function NavigationSidebar({
       <NavLink key={e.to} to={e.to} end={e.end} onClick={onNavigate} className={linkClass}>
         <Icon size={18} className="shrink-0" />
         <span className="truncate">{e.label}</span>
+        {badge}
       </NavLink>
     );
   };

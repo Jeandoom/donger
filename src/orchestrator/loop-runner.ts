@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import type { Loop } from "../domain/loop.js";
 import { validateTriggerHttpUrlDeep } from "../domain/net-target.js";
 import type { Trigger } from "../domain/trigger.js";
 import { evaluateMatcher } from "../domain/trigger-matcher.js";
@@ -10,6 +11,7 @@ import type { LoopStore } from "../ports/loop-store.js";
 import type { TriggerStore } from "../ports/trigger-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import type { Logger } from "../util/logger.js";
+import type { NotificationService } from "./notification-service.js";
 
 export interface LoopRunnerDeps {
   loopStore: LoopStore;
@@ -21,6 +23,8 @@ export interface LoopRunnerDeps {
   logger: Logger;
   /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
   allowPrivateNet?: boolean;
+  /** 通知内核（spec 2026-09-28-notification-module-design；缺省=不发站内信） */
+  notifications?: NotificationService;
 }
 
 /** 触发器 http source 响应体上限：防大响应打爆内存（matcher 只需小样本即可判定） */
@@ -102,6 +106,7 @@ export class LoopRunner {
         lastRunAt: now,
         lastError: err,
       });
+      this.emitRunNotice(loop, run.id, "loop.run_failed", "循环任务运行失败", err);
       return;
     }
 
@@ -132,6 +137,13 @@ export class LoopRunner {
         lastRunAt: now,
         lastError: null,
       });
+      this.emitRunNotice(
+        loop,
+        run.id,
+        "loop.run_succeeded",
+        `「${workflow.name}」运行成功`,
+        sourceOutput.slice(0, 400),
+      );
     } catch (e) {
       const err = (e as Error).message;
       logger.error({ loopId, err }, "loop run failed");
@@ -145,7 +157,34 @@ export class LoopRunner {
         lastRunAt: now,
         lastError: err,
       });
+      this.emitRunNotice(
+        loop,
+        run.id,
+        "loop.run_failed",
+        `「${workflow?.name ?? "循环任务"}」运行失败`,
+        err,
+      );
     }
+  }
+
+  /** 循环运行结果 → 站内信（无人值守刚需：失败不再只落 lastError 等用户自己发现） */
+  private emitRunNotice(
+    loop: Loop,
+    runId: string,
+    event: "loop.run_succeeded" | "loop.run_failed",
+    title: string,
+    body: string,
+  ): void {
+    void this.deps.notifications
+      ?.notify({
+        event,
+        recipients: [{ kind: "user", userId: loop.ownerId }],
+        title,
+        body,
+        link: `/loops/${loop.id}`,
+        dedupeKey: `loop:${loop.id}:${event === "loop.run_succeeded" ? "ok" : "fail"}:${runId}`,
+      })
+      .catch((e) => this.deps.logger.error({ loopId: loop.id, err: String(e) }, "loop 通知失败"));
   }
 
   async testTrigger(triggerId: string): Promise<TestTriggerResult> {

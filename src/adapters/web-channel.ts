@@ -112,6 +112,11 @@ import {
   parseSignupDomains,
 } from "../domain/module-config.js";
 import {
+  isMandatoryGroup,
+  NOTIFICATION_GROUP_LABELS,
+  NotificationPrefInputSchema,
+} from "../domain/notification.js";
+import {
   type AgentPermissionMode,
   AgentPermissionModeSchema,
   resolvePermissionMode,
@@ -145,6 +150,7 @@ import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-g
 import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
 import type { LoopRunner } from "../orchestrator/loop-runner.js";
+import type { NotificationService } from "../orchestrator/notification-service.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
 import {
@@ -476,6 +482,8 @@ export interface WebChannelDeps {
   commentStore?: CommentStore;
   /** 反馈模块存储（缺省=反馈端点 503） */
   feedbackStore?: FeedbackStore;
+  /** 通知内核（spec 2026-09-28-notification-module-design；缺省=通知端点 503、不发站内信） */
+  notificationService?: NotificationService;
   /** 知识库三表存储（spec 2026-09-22-knowledge-base-design；缺省=KB 端点 503） */
   kbLibraryStore?: KbLibraryStore;
   kbShareStore?: KbShareStore;
@@ -2905,6 +2913,16 @@ export class WebChannel implements Channel {
           targetUserName: target.name,
           detail: `${actor?.name ?? viewer.id} 将 ${target.name} 的角色从 ${prevRole} 变更为 ${role}`,
         });
+        // 通知收编（spec §6）：角色变更强制站内信（mandatoryInapp），离线用户下次登录可见
+        void this.deps.notificationService
+          ?.notify({
+            event: "user.role_changed",
+            recipients: [{ kind: "user", userId: targetId }],
+            title: role === "admin" ? "你已被授予管理员" : "你的管理员已取消",
+            body: `${actor?.name ?? viewer.id} 将你的账号角色从 ${prevRole} 变更为 ${role}。`,
+            dedupeKey: `role:${targetId}:${role}:${Date.now()}`,
+          })
+          .catch((e) => console.error("[web-channel] 角色变更通知失败", e));
       }
       return this.json(res, { user: await this.adminUserDto(targetId) });
     }
@@ -3951,6 +3969,19 @@ export class WebChannel implements Channel {
           createdAt: new Date().toISOString(),
         };
         await store.addReply(reply);
+        // 通知收编（spec §6）：回复触达反馈提交者（自己回自己不发）
+        if (fb.userId !== viewer.id) {
+          void this.deps.notificationService
+            ?.notify({
+              event: "feedback.replied",
+              recipients: [{ kind: "user", userId: fb.userId }],
+              title: reply.authorRole === "admin" ? "你的反馈有官方回复" : "你的反馈有新回复",
+              body: content.slice(0, 200),
+              link: "/feedback",
+              dedupeKey: `fb:${id}:${reply.id}`,
+            })
+            .catch((e) => console.error("[web-channel] 反馈回复通知失败", e));
+        }
         res.writeHead(201);
         res.end(JSON.stringify(reply));
         return;
@@ -3977,6 +4008,87 @@ export class WebChannel implements Channel {
       res.writeHead(200, { "Content-Type": mimeForExt(ext) });
       res.end(readFileSync(absPath));
       return;
+    }
+
+    // ===== 通知模块（spec 2026-09-28-notification-module-design）=====
+
+    // GET /api/notifications —— 本人站内信列表（?limit&offset&unread=1）
+    if (
+      (url === "/api/notifications" || url.startsWith("/api/notifications?")) &&
+      req.method === "GET"
+    ) {
+      const svc = this.deps.notificationService;
+      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
+      const viewer = this.currentViewer(req);
+      const limit = Math.min(
+        Math.max(Number.parseInt(this.extractQuery(url, "limit") ?? "", 10) || 20, 1),
+        100,
+      );
+      const offset = Math.max(Number.parseInt(this.extractQuery(url, "offset") ?? "", 10) || 0, 0);
+      const unreadOnly = this.extractQuery(url, "unread") === "1";
+      return this.json(res, await svc.list(viewer.id, { limit, offset, unreadOnly }));
+    }
+
+    // GET /api/notifications/unread-count —— 导航未读徽标
+    if (url === "/api/notifications/unread-count" && req.method === "GET") {
+      const svc = this.deps.notificationService;
+      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
+      return this.json(res, { count: await svc.unreadCount(this.currentViewer(req).id) });
+    }
+
+    // POST /api/notifications/read —— 标记已读（{id} 单条 / {all:true} 全部；属主过滤在 store）
+    if (url === "/api/notifications/read" && req.method === "POST") {
+      const svc = this.deps.notificationService;
+      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
+      const viewer = this.currentViewer(req);
+      let body: { id?: unknown; all?: unknown } = {};
+      try {
+        body = JSON.parse(await this.readBody(req)) as { id?: unknown; all?: unknown };
+      } catch {
+        // 空 body 走下方参数校验
+      }
+      if (body.all === true) {
+        return this.json(res, { updated: await svc.markAllRead(viewer.id) });
+      }
+      if (typeof body.id !== "string" || !body.id) {
+        return this.json(res, { error: "须提供 id 或 all=true" }, 400);
+      }
+      const ok = await svc.markRead(viewer.id, body.id);
+      if (!ok) return this.json(res, { error: "通知不存在或已读" }, 404);
+      return this.json(res, { ok: true });
+    }
+
+    // GET /api/notifications/prefs —— 订阅偏好（组×通道矩阵；缺省=全部开）
+    if (url === "/api/notifications/prefs" && req.method === "GET") {
+      const svc = this.deps.notificationService;
+      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
+      const saved = await svc.getPrefs(this.currentViewer(req).id);
+      const groups = (
+        Object.keys(NOTIFICATION_GROUP_LABELS) as (keyof typeof NOTIFICATION_GROUP_LABELS)[]
+      ).map((g) => ({
+        eventGroup: g,
+        label: NOTIFICATION_GROUP_LABELS[g],
+        mandatory: isMandatoryGroup(g),
+        inapp: saved.find((p) => p.eventGroup === g && p.channel === "inapp")?.enabled ?? true,
+      }));
+      return this.json(res, { groups });
+    }
+
+    // PUT /api/notifications/prefs —— 更新一条偏好；强制组（账号安全）拒绝关闭
+    if (url === "/api/notifications/prefs" && req.method === "PUT") {
+      const svc = this.deps.notificationService;
+      if (!svc) return this.json(res, { error: "通知服务未启用" }, 503);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const parsed = NotificationPrefInputSchema.safeParse(raw);
+      if (!parsed.success) return this.json(res, { error: "参数无效" }, 400);
+      const ok = await svc.setPref(this.currentViewer(req).id, parsed.data);
+      if (!ok) return this.json(res, { error: "该通知不可关闭" }, 409);
+      return this.json(res, { ok: true });
     }
 
     // GET /api/usage —— 默认仅本人记录；admin 可显式传 userId 查任意用户

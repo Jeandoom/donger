@@ -38,6 +38,7 @@ import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMcpTokenStore } from "./adapters/sqlite-mcp-token-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
+import { SqliteNotificationStore } from "./adapters/sqlite-notification-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
@@ -57,6 +58,7 @@ import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { HookRegistry } from "./orchestrator/hook-registry.js";
 import { LoopRunner } from "./orchestrator/loop-runner.js";
+import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
@@ -321,6 +323,7 @@ async function main(): Promise<void> {
       usageStore,
       auditStore,
       commentStore,
+      notificationService,
       gates: createDefaultGates(),
       // 三引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6、
       // specs/2026-09-25-zcode-engine-integration.md §4.1）：
@@ -410,6 +413,11 @@ async function main(): Promise<void> {
   workflowStore.migrate();
   const loopStore = new SqliteLoopStore(db);
   loopStore.migrate();
+
+  // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好
+  const notificationStore = new SqliteNotificationStore(db);
+  notificationStore.migrate();
+  const notificationService = new NotificationService({ store: notificationStore });
 
   // Web Channel（始终启动）
   const fileBrowser = new LocalFileBrowser({
@@ -506,6 +514,7 @@ async function main(): Promise<void> {
     triggerStore,
     workflowStore,
     loopStore,
+    notificationService,
     agentMeta: {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],
@@ -529,6 +538,7 @@ async function main(): Promise<void> {
     channelId: "web",
     logger: log,
     allowPrivateNet: cfg.triggerAllowPrivateNet,
+    notifications: notificationService,
   });
   const scheduler = new SchedulerService({
     loopStore,
