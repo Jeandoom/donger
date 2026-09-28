@@ -15,6 +15,8 @@ import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
+import { DingTalkNotificationAdapter } from "./adapters/notif-dingtalk.js";
+import { WebhookNotificationAdapter } from "./adapters/notif-webhook.js";
 import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
@@ -414,10 +416,17 @@ async function main(): Promise<void> {
   const loopStore = new SqliteLoopStore(db);
   loopStore.migrate();
 
-  // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好
-  const notificationStore = new SqliteNotificationStore(db);
+  // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好 + 站外通道
+  const notificationStore = new SqliteNotificationStore(db, secretCipher);
   notificationStore.migrate();
-  const notificationService = new NotificationService({ store: notificationStore });
+  const notificationService = new NotificationService({
+    store: notificationStore,
+    adapters: [
+      new DingTalkNotificationAdapter(() => moduleConfigStore?.getDingTalk()),
+      new WebhookNotificationAdapter({ allowPrivateNet: cfg.triggerAllowPrivateNet }),
+    ],
+    getIdentities: (userId) => userStore.getIdentities(userId),
+  });
 
   // Web Channel（始终启动）
   const fileBrowser = new LocalFileBrowser({

@@ -15,15 +15,21 @@ export type NotificationEvent =
   | "eviction.notice"
   | "user.role_changed"
   | "credential.missing"
-  | "feedback.replied";
+  | "feedback.replied"
+  | "approval.requested"
+  | "system.announcement";
 
-/** 订阅偏好按事件组粒度（用户不感知单事件开关）；M2 站外通道加入后组×通道成矩阵 */
+/** 订阅偏好按事件组粒度（用户不感知单事件开关）；组×通道成矩阵 */
 export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
 
-/** 投递通道；M1 仅站内信，M2 起扩展 dingtalk/webhook/email/webpush */
-export type NotificationChannelId = "inapp";
+/** 投递通道：站内信恒开；站外通道用户显式订阅（opt-in，spec §4.4） */
+export type NotificationChannelId = "inapp" | "dingtalk" | "webhook";
+
+export type OutboundChannelId = Exclude<NotificationChannelId, "inapp">;
+
+export const OUTBOUND_CHANNELS: OutboundChannelId[] = ["dingtalk", "webhook"];
 
 export interface NotificationEventSpec {
   group: NotificationEventGroup;
@@ -71,6 +77,18 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     severity: "info",
     mandatoryInapp: false,
     label: "反馈有新回复",
+  },
+  "approval.requested": {
+    group: "task",
+    severity: "warn",
+    mandatoryInapp: false,
+    label: "等待审批",
+  },
+  "system.announcement": {
+    group: "system",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "系统公告",
   },
 };
 
@@ -132,6 +150,34 @@ export interface NotificationPrefsEntry {
 
 export const NotificationPrefInputSchema = z.object({
   eventGroup: z.enum(["task", "loop", "system", "account", "feedback"]),
-  channel: z.enum(["inapp"]),
+  channel: z.enum(["inapp", "dingtalk", "webhook"]),
   enabled: z.boolean(),
 });
+
+// ===== 地址簿（M2 站外通道投递目标，spec §4.2）=====
+
+/** 地址簿行（notification_addresses 表）。extra 为解密后的机密载荷（webhook 自定义头+签名密钥）。 */
+export interface NotificationAddress {
+  userId: string;
+  channel: OutboundChannelId;
+  /** 钉钉 staffId / webhook URL */
+  address: string;
+  extra?: Record<string, unknown>;
+  /** 非空=已完成验证（钉钉手填地址必须验证；webhook 保存即视为已配置） */
+  verifiedAt?: string;
+  createdAt: string;
+}
+
+export const DingTalkVerifyRequestSchema = z.object({
+  staffId: z.string().regex(/^[\w.-]{1,64}$/, "staffId 格式无效"),
+});
+
+export const WebhookAddressInputSchema = z.object({
+  url: z.string().url().max(2048),
+  /** 自定义请求头（值属机密，加密落库，任何 API 不回显） */
+  headers: z.record(z.string(), z.string().max(1024)).optional(),
+});
+
+/** 验证码：6 位数字、10 分钟有效、最多 5 次尝试（spec 决策⑧验证码闭环） */
+export const VERIFY_CODE_TTL_MS = 10 * 60_000;
+export const VERIFY_CODE_MAX_ATTEMPTS = 5;

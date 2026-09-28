@@ -5,6 +5,7 @@ import type { ApprovalResolver, QuestionResolver } from "../ports/agent-runner.j
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { TaskStore } from "../ports/task-store.js";
+import type { NotificationService } from "./notification-service.js";
 
 /**
  * 构造 approvalResolver：runner 命中门时——
@@ -18,6 +19,8 @@ export function makeApprovalResolver(
   threadId: string,
   gates: GateRouter,
   commentStore?: CommentStore,
+  notifications?: NotificationService,
+  ownerId?: string,
 ): ApprovalResolver {
   return async (req) => {
     const gate = gates.getGate(req.gateId);
@@ -34,6 +37,19 @@ export function makeApprovalResolver(
         requestedAt: new Date().toISOString(),
       },
     });
+
+    // 通知收编（spec §6 M2）：审批请求 → 站内信+订阅站外；离线用户不再漏审批
+    if (notifications && ownerId) {
+      void notifications
+        .notify({
+          event: "approval.requested",
+          recipients: [{ kind: "user", userId: ownerId }],
+          title: card.title,
+          body: req.summary.slice(0, 400),
+          dedupeKey: `approval:${req.gateId}`,
+        })
+        .catch((e) => console.error("[approval-flow] 审批通知失败", e));
+    }
 
     const result = await channel.requestApproval(threadId, card);
 

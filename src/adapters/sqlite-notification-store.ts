@@ -1,13 +1,26 @@
 import type { Database } from "better-sqlite3";
 import type {
   InAppNotification,
+  NotificationAddress,
   NotificationChannelId,
   NotificationEvent,
   NotificationEventGroup,
   NotificationPrefsEntry,
   NotificationSeverity,
+  OutboundChannelId,
 } from "../domain/notification.js";
-import type { NotificationListResult, NotificationStore } from "../ports/notification-store.js";
+import type {
+  DeliveryStatus,
+  NotificationDelivery,
+  NotificationListResult,
+  NotificationStore,
+} from "../ports/notification-store.js";
+
+/** extra 机密透明加解密契约（SecretCipher 子集） */
+interface ExtraCipher {
+  encrypt(plain: string): string;
+  decrypt(blob: string): string;
+}
 
 interface NotificationRow {
   id: string;
@@ -28,6 +41,27 @@ interface PrefRow {
   enabled: number;
 }
 
+interface AddressRow {
+  userId: string;
+  channel: string;
+  address: string;
+  extra: string | null;
+  verifiedAt: string | null;
+  createdAt: string;
+}
+
+interface DeliveryRow {
+  id: string;
+  notificationId: string | null;
+  channel: string;
+  event: string;
+  title: string;
+  status: string;
+  error: string | null;
+  attempts: number;
+  createdAt: string;
+}
+
 function rowToNotification(r: NotificationRow): InAppNotification {
   return {
     id: r.id,
@@ -44,7 +78,10 @@ function rowToNotification(r: NotificationRow): InAppNotification {
 }
 
 export class SqliteNotificationStore implements NotificationStore {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly cipher?: ExtraCipher,
+  ) {}
 
   migrate(): void {
     this.db.exec(`
@@ -75,7 +112,6 @@ export class SqliteNotificationStore implements NotificationStore {
         PRIMARY KEY (userId, eventGroup, channel)
       );
 
-      -- M2 站外通道建表先行（schema 稳定，API 随通道适配器上线）
       CREATE TABLE IF NOT EXISTS notification_addresses (
         userId TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -85,18 +121,35 @@ export class SqliteNotificationStore implements NotificationStore {
         createdAt TEXT NOT NULL,
         PRIMARY KEY (userId, channel)
       );
+    `);
+    this.migrateDeliveries();
+  }
 
+  /** deliveries 升级：M1 旧表 notificationId NOT NULL 且无 event/title 冗余列。
+   *  投递日志属可弃观测数据（M1 从未写入），检测到旧结构直接重建。 */
+  private migrateDeliveries(): void {
+    const cols = (
+      this.db.prepare("PRAGMA table_info(notification_deliveries)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
+    if (cols.length > 0 && !cols.includes("event")) {
+      this.db.exec("DROP TABLE notification_deliveries");
+    }
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS notification_deliveries (
         id TEXT PRIMARY KEY,
-        notificationId TEXT NOT NULL,
+        notificationId TEXT,
         channel TEXT NOT NULL,
+        event TEXT NOT NULL,
+        title TEXT NOT NULL,
         status TEXT NOT NULL,
         error TEXT,
         attempts INTEGER NOT NULL DEFAULT 1,
         createdAt TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_deliveries_notification
-        ON notification_deliveries(notificationId);
+      CREATE INDEX IF NOT EXISTS idx_deliveries_created
+        ON notification_deliveries(createdAt DESC);
     `);
   }
 
@@ -191,5 +244,121 @@ export class SqliteNotificationStore implements NotificationStore {
          ON CONFLICT(userId, eventGroup, channel) DO UPDATE SET enabled = excluded.enabled`,
       )
       .run(userId, entry.eventGroup, entry.channel, entry.enabled ? 1 : 0);
+  }
+
+  // ===== 地址簿 =====
+
+  async putAddress(entry: {
+    userId: string;
+    channel: OutboundChannelId;
+    address: string;
+    extra?: Record<string, unknown>;
+    verifiedAt?: string;
+  }): Promise<void> {
+    const extraBlob = entry.extra
+      ? this.cipher
+        ? this.cipher.encrypt(JSON.stringify(entry.extra))
+        : JSON.stringify(entry.extra)
+      : null;
+    this.db
+      .prepare(
+        `INSERT INTO notification_addresses (userId, channel, address, extra, verifiedAt, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(userId, channel) DO UPDATE SET
+           address = excluded.address, extra = excluded.extra, verifiedAt = excluded.verifiedAt`,
+      )
+      .run(
+        entry.userId,
+        entry.channel,
+        entry.address,
+        extraBlob,
+        entry.verifiedAt ?? null,
+        new Date().toISOString(),
+      );
+  }
+
+  async getAddress(
+    userId: string,
+    channel: OutboundChannelId,
+  ): Promise<NotificationAddress | undefined> {
+    const row = this.db
+      .prepare("SELECT * FROM notification_addresses WHERE userId = ? AND channel = ?")
+      .get(userId, channel) as AddressRow | undefined;
+    return row ? this.rowToAddress(row) : undefined;
+  }
+
+  async deleteAddress(userId: string, channel: OutboundChannelId): Promise<void> {
+    this.db
+      .prepare("DELETE FROM notification_addresses WHERE userId = ? AND channel = ?")
+      .run(userId, channel);
+  }
+
+  async findAddressOwners(channel: OutboundChannelId, address: string): Promise<string[]> {
+    return (
+      this.db
+        .prepare("SELECT userId FROM notification_addresses WHERE channel = ? AND address = ?")
+        .all(channel, address) as Array<{ userId: string }>
+    ).map((r) => r.userId);
+  }
+
+  private rowToAddress(r: AddressRow): NotificationAddress {
+    let extra: Record<string, unknown> | undefined;
+    if (r.extra) {
+      try {
+        const plain = this.cipher ? this.cipher.decrypt(r.extra) : r.extra;
+        const parsed: unknown = JSON.parse(plain);
+        if (parsed && typeof parsed === "object") extra = parsed as Record<string, unknown>;
+      } catch {
+        // 解密/解析失败按无机密处理（密钥轮换后的兜底，不阻塞地址本身）
+      }
+    }
+    return {
+      userId: r.userId,
+      channel: r.channel as OutboundChannelId,
+      address: r.address,
+      extra,
+      verifiedAt: r.verifiedAt ?? undefined,
+      createdAt: r.createdAt,
+    };
+  }
+
+  // ===== 投递日志 =====
+
+  async insertDelivery(d: NotificationDelivery): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO notification_deliveries
+           (id, notificationId, channel, event, title, status, error, attempts, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        d.id,
+        d.notificationId ?? null,
+        d.channel,
+        d.event,
+        d.title,
+        d.status,
+        d.error ?? null,
+        d.attempts,
+        d.createdAt,
+      );
+  }
+
+  async listDeliveries(limit: number): Promise<NotificationDelivery[]> {
+    return (
+      this.db
+        .prepare("SELECT * FROM notification_deliveries ORDER BY createdAt DESC, id DESC LIMIT ?")
+        .all(limit) as DeliveryRow[]
+    ).map((r) => ({
+      id: r.id,
+      notificationId: r.notificationId ?? undefined,
+      channel: r.channel as OutboundChannelId,
+      event: r.event,
+      title: r.title,
+      status: r.status as DeliveryStatus,
+      error: r.error ?? undefined,
+      attempts: r.attempts,
+      createdAt: r.createdAt,
+    }));
   }
 }

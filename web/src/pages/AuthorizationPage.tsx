@@ -2,6 +2,7 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { McpSection } from "../components/mcp/McpSection";
+import { NotificationsAdminSection } from "../components/notifications/NotificationsAdminSection";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -43,7 +44,14 @@ interface EmailVerification {
   verifyPath: string | null;
 }
 
-type SectionId = "dingtalk" | "github" | "email" | "verifications" | "users" | "mcp";
+type SectionId =
+  | "dingtalk"
+  | "github"
+  | "email"
+  | "verifications"
+  | "users"
+  | "notifications"
+  | "mcp";
 
 /** admin 专属分区（平台授权配置） */
 const ADMIN_SECTIONS: Array<{ id: SectionId; label: string }> = [
@@ -52,6 +60,8 @@ const ADMIN_SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "email", label: "邮箱注册" },
   { id: "verifications", label: "待验证账号" },
   { id: "users", label: "用户管理" },
+  // 通知：通道状态+投递日志+系统公告群发（spec 2026-09-28-notification-module-design §8）
+  { id: "notifications", label: "通知" },
 ];
 
 /** 全用户分区：MCP 接入（签发个人接入令牌，权限=本人 web 登录口径） */
@@ -773,6 +783,7 @@ export function AuthorizationPage() {
               {active === "email" ? <EmailSection view={view} onReload={load} /> : null}
               {active === "verifications" ? <VerificationsSection /> : null}
               {active === "users" ? <UserManagementSection /> : null}
+              {active === "notifications" ? <NotificationsAdminSection /> : null}
             </>
           )}
         </main>
