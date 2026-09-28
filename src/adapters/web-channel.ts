@@ -225,7 +225,6 @@ import {
   appContentType,
   appVersionDir,
   createAppRuntimeHandlers,
-  handleCreateApp,
   handleDeleteApp,
   handleDeleteAppDataByOwner,
   handleGetApp,
@@ -235,7 +234,6 @@ import {
   handleListVersions,
   handlePatchApp,
   handlePublishVersion,
-  handleUploadVersion,
   resolveAppStaticTarget,
 } from "./app-api.js";
 import { AppTokenService } from "./app-token-service.js";
@@ -2004,9 +2002,8 @@ export class WebChannel implements Channel {
       if (appPath === "/api/apps" && req.method === "GET") {
         return this.sendApi(res, await handleListApps(ctx, api, req));
       }
-      if (appPath === "/api/apps" && req.method === "POST") {
-        return this.sendApi(res, await handleCreateApp(ctx, api, req));
-      }
+      // POST /api/apps 与 POST /api/apps/:id/versions（zip 上传/手动建壳）已移除：
+      // 应用创建与发布唯一入口=会话智能体 donger-apps 工具（spec 修订 2026-09-26）
       const appMatch = appPath.match(/^\/api\/apps\/([\w-]+)$/);
       if (appMatch) {
         const appId = appMatch[1] ?? "";
@@ -2027,9 +2024,6 @@ export class WebChannel implements Channel {
       const versionsMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/versions$/);
       if (versionsMatch && req.method === "GET") {
         return this.sendApi(res, await handleListVersions(ctx, api, req, versionsMatch[1] ?? ""));
-      }
-      if (versionsMatch && req.method === "POST") {
-        return this.sendApi(res, await handleUploadVersion(ctx, api, req, versionsMatch[1] ?? ""));
       }
       const publishMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/versions\/(\d+)\/publish$/);
       if (publishMatch && req.method === "POST") {

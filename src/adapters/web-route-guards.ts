@@ -458,8 +458,8 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // ===== 平台应用（spec 2026-09-25-app-platform-architecture M1 应用内核）=====
     // 属主面：owner=appStore.get；运行时面 /api/app-data/*：app-token 自鉴权（public 登记，
     // handler 内 AppTokenService 校验 aud=appId，主 JWT 不被接受）。
+    // 应用创建与产物上传的 POST 通道已移除——唯一入口=会话智能体 donger-apps 工具（修订 2026-09-26）。
     { method: "GET", pattern: "/api/apps", access: { kind: "authenticated" } },
-    { method: "POST", pattern: "/api/apps", access: { kind: "authenticated" } },
     {
       method: "GET",
       pattern: "/api/apps/:id",
@@ -480,12 +480,6 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     },
     {
       method: "GET",
-      pattern: "/api/apps/:id/versions",
-      access: { kind: "owner", resource: "app" },
-      ...ownerApp,
-    },
-    {
-      method: "POST",
       pattern: "/api/apps/:id/versions",
       access: { kind: "owner", resource: "app" },
       ...ownerApp,
