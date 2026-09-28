@@ -8,12 +8,31 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { ArrowUp, Bot, Square, UserRound, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ArrowUp,
+  Bot,
+  File as FileIcon,
+  FileSpreadsheet,
+  FileText,
+  Square,
+  UserRound,
+  X,
+} from "lucide-react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import remarkGfm from "remark-gfm";
-import { fetchMe, getToken } from "../../lib/auth";
+import { type AttachmentKind, attachmentKindForName, uploadUrl } from "../../lib/attachments";
+import { fetchMe } from "../../lib/auth";
 import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
+import { extractChangedFilePaths, shortChangePath } from "../../lib/fileChanges";
 import { lineRefBadge } from "../../lib/lineRefBadge";
 import type { Mention } from "../../lib/mentions";
 import { tokenizeMentionMarkers } from "../../lib/mentions";
@@ -21,6 +40,7 @@ import { collapseToolNarration } from "../../lib/toolNarration";
 import { cn } from "../../lib/utils";
 import type { PendingApproval, PendingCredential, PendingQuestion } from "../../types";
 import { Button } from "../ui/button";
+import { AttachmentPreviewDialog } from "./AttachmentPreviewDialog";
 import {
   ComposerMentionTriggers,
   ComposerPlusMenu,
@@ -35,18 +55,8 @@ import { ToolCard } from "./ToolCard";
 
 const THREAD_CONTENT_WIDTH = "mx-auto w-full max-w-3xl px-3 sm:px-5";
 
-function uploadUrl(path: string): string | null {
-  const normalized = path.replaceAll("\\", "/");
-  const relativePath = normalized.split("/sessions/")[1];
-  if (!relativePath) return null;
-  const [conversationId, ...parts] = relativePath.split("/");
-  const fileName = parts.at(-1);
-  if (!conversationId || !fileName) return null;
-  // 附件已不无鉴权直出（规格 M4）：img 请求带属主 token
-  const token = getToken();
-  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-  return `/uploads/${encodeURIComponent(conversationId)}/${encodeURIComponent(fileName)}${qs}`;
-}
+/** 助手消息「变更文件」链接 → 打开右侧文件抽屉的变更 tab（ChatWorkspace 提供） */
+const OpenFileChangeContext = createContext<(path: string) => void>(() => {});
 
 function ThreadWelcome({ hidden }: { hidden: boolean }) {
   if (hidden) return null;
@@ -92,39 +102,67 @@ function ThinkingContent() {
   );
 }
 
+/** 非图片附件缩略块的类别图标（word 蓝 / excel 绿 / 文本灰） */
+function AttachmentKindIcon({ kind }: { kind: AttachmentKind }) {
+  if (kind === "docx") return <FileText aria-hidden="true" size={20} className="text-blue-600" />;
+  if (kind === "xlsx")
+    return <FileSpreadsheet aria-hidden="true" size={20} className="text-green-600" />;
+  return <FileIcon aria-hidden="true" size={20} className="text-muted-foreground" />;
+}
+
+/** 单个附件缩略记录：正方形圆角块（图片直出缩略，其余为图标块）+ 下方文件名 */
+function FileThumb({ file, onOpen }: { file: FileInfo; onOpen: () => void }) {
+  const kind = attachmentKindForName(file.name);
+  const url = uploadUrl(file.path);
+  const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".") + 1) : "文件";
+  return (
+    <div className="flex w-16 flex-col items-center gap-1">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`预览 ${file.name}`}
+        title={`预览 ${file.name}`}
+        className="block overflow-hidden rounded-xl transition-shadow hover:shadow-md hover:ring-2 hover:ring-primary/40"
+      >
+        {kind === "image" && url ? (
+          <img
+            src={url}
+            alt={file.name}
+            className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
+          />
+        ) : (
+          <span className="flex h-16 w-16 flex-col items-center justify-center gap-0.5 rounded-xl border border-border bg-card">
+            <AttachmentKindIcon kind={kind} />
+            <span className="max-w-full truncate px-1 text-[10px] font-medium text-muted-foreground uppercase">
+              {ext}
+            </span>
+          </span>
+        )}
+      </button>
+      <span
+        className="w-16 truncate text-center text-[10px] text-muted-foreground"
+        title={file.name}
+      >
+        {file.name}
+      </span>
+    </div>
+  );
+}
+
+/** 用户消息附件区：气泡外部的缩略记录行（超出气泡宽度自动换行），点击弹预览 */
 function MessageFiles() {
   const files = useAuiState(({ message }) => (message.metadata.custom.files ?? []) as FileInfo[]);
+  const [preview, setPreview] = useState<FileInfo | null>(null);
   if (files.length === 0) return null;
   return (
-    <div className="mt-2 flex flex-wrap gap-2">
-      {files.map((file) => {
-        const url = uploadUrl(file.path);
-        if (file.type === "image" && url) {
-          return (
-            <img
-              key={file.path}
-              src={url}
-              alt={file.name}
-              className="max-h-32 max-w-full rounded object-contain"
-            />
-          );
-        }
-        return url ? (
-          <a
-            key={file.path}
-            href={url}
-            download={file.name}
-            className="rounded-lg bg-muted px-2 py-1 text-xs underline"
-          >
-            {file.name}
-          </a>
-        ) : (
-          <span key={file.path} className="rounded-lg bg-muted px-2 py-1 text-xs">
-            {file.name}
-          </span>
-        );
-      })}
-    </div>
+    <>
+      <div className="mt-2 flex flex-wrap justify-end gap-2">
+        {files.map((file) => (
+          <FileThumb key={file.path} file={file} onOpen={() => setPreview(file)} />
+        ))}
+      </div>
+      {preview ? <AttachmentPreviewDialog file={preview} onClose={() => setPreview(null)} /> : null}
+    </>
   );
 }
 
@@ -171,13 +209,16 @@ function UserMessage() {
       aria-label="用户消息"
       className={cn(THREAD_CONTENT_WIDTH, "flex items-start justify-end gap-3 py-4")}
     >
-      <div className="min-w-0 max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground shadow-sm">
-        <div className="mb-1 text-xs font-medium opacity-75">
-          你
-          <MessageTime />
-        </div>
-        <div className="whitespace-pre-wrap break-words">
-          <MessagePrimitive.Parts components={{ Text: UserText }} />
+      {/* 气泡与附件缩略记录纵向排布（附件在气泡外部，右对齐随气泡），超宽自动换行 */}
+      <div className="flex min-w-0 max-w-[85%] flex-col items-end">
+        <div className="max-w-full min-w-0 rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground shadow-sm">
+          <div className="mb-1 text-xs font-medium opacity-75">
+            你
+            <MessageTime />
+          </div>
+          <div className="whitespace-pre-wrap break-words">
+            <MessagePrimitive.Parts components={{ Text: UserText }} />
+          </div>
         </div>
         <MessageFiles />
       </div>
@@ -227,6 +268,46 @@ function AssistantText() {
   );
 }
 
+/** 助手回合写入/编辑过的文件链接行：点击打开右侧文件抽屉的变更 tab 并定位该文件 */
+function FileChangeLinks() {
+  const content = useAuiState(({ message }) => message.content);
+  const openFileChange = useContext(OpenFileChangeContext);
+  const paths = useMemo(
+    () =>
+      extractChangedFilePaths(
+        content.flatMap((part) =>
+          part.type === "tool-call"
+            ? [
+                {
+                  tool: part.toolName,
+                  inputPreview: part.argsText ?? "",
+                },
+              ]
+            : [],
+        ),
+      ),
+    [content],
+  );
+  if (paths.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted-foreground">变更文件：</span>
+      {paths.map((path) => (
+        <button
+          key={path}
+          type="button"
+          title={`${path}（点击查看变更内容）`}
+          onClick={() => openFileChange(path)}
+          className="inline-flex max-w-full items-center gap-1 rounded-lg border border-border bg-card px-2 py-1 font-medium text-primary underline-offset-2 hover:bg-muted hover:underline"
+        >
+          <FileText aria-hidden="true" size={12} className="shrink-0" />
+          <span className="min-w-0 truncate">{shortChangePath(path)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function AssistantMessage() {
   const isThinking = useAuiState(
     ({ message }) =>
@@ -266,6 +347,7 @@ function AssistantMessage() {
             />
           )}
         </div>
+        <FileChangeLinks />
       </div>
     </MessagePrimitive.Root>
   );
@@ -328,6 +410,8 @@ export interface AssistantThreadProps {
   aboveComposer?: React.ReactNode;
   /** 输入框底部行插槽：➕ 菜单右侧（会话权限模式切换器等） */
   composerLeading?: React.ReactNode;
+  /** 点击助手消息的「变更文件」链接：打开右侧文件抽屉的变更 tab 并定位该文件 */
+  onOpenFileChange?: (path: string) => void;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -373,101 +457,106 @@ export function AssistantThread(props: AssistantThreadProps) {
     },
     [aui],
   );
+  const openFileChange = props.onOpenFileChange;
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
-      <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
-        <ThreadWelcome hidden={hasPendingInteraction} />
-        <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-        <div className={THREAD_CONTENT_WIDTH}>
-          <PendingInteraction
-            approval={props.pendingApproval}
-            credential={props.pendingCredential}
-            approvalError={props.approvalError}
-            credentialError={props.credentialError}
-            onResolveApproval={props.onResolveApproval}
-            onDecideCredentialMissing={props.onDecideCredentialMissing}
-          />
-        </div>
-      </ThreadPrimitive.Viewport>
-      <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
-        {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
-        {props.pendingQuestion ? (
-          <QuestionCard
-            key={props.pendingQuestion.reqId}
-            question={props.pendingQuestion}
-            error={props.questionError}
-            onAnswer={props.onAnswerQuestion}
-          />
-        ) : null}
-        {props.aboveComposer}
-        <ComposerPrimitive.Root
-          aria-label="消息输入"
-          className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
-        >
-          <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-            <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
-              <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
-            </div>
-            <div ref={inputWrapRef} className="relative">
-              {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
-              {hasAgent ? <MentionBackdrop text={composerText} backdropRef={backdropRef} /> : null}
-              <ComposerPrimitive.Input
-                className={cn(
-                  "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground",
-                  hasAgent && "text-transparent caret-primary selection:bg-primary/30",
-                )}
-                onScroll={syncBackdropScroll}
-                placeholder={props.placeholder}
-              />
-              {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
-              {hasAgent ? (
-                <ComposerMentionTriggers
-                  candidates={candidates}
-                  loading={loading}
-                  error={error}
-                  onMentionInserted={props.onMentionInserted}
-                  getTextarea={getTextarea}
-                />
-              ) : null}
-            </div>
-            {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-1">
-                <ComposerPlusMenu
-                  hasAgent={hasAgent}
-                  onInsertTrigger={insertTrigger}
-                  onOpen={refresh}
-                />
-                {props.composerLeading}
+    <OpenFileChangeContext.Provider value={openFileChange ?? (() => {})}>
+      <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
+        <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
+          <ThreadWelcome hidden={hasPendingInteraction} />
+          <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+          <div className={THREAD_CONTENT_WIDTH}>
+            <PendingInteraction
+              approval={props.pendingApproval}
+              credential={props.pendingCredential}
+              approvalError={props.approvalError}
+              credentialError={props.credentialError}
+              onResolveApproval={props.onResolveApproval}
+              onDecideCredentialMissing={props.onDecideCredentialMissing}
+            />
+          </div>
+        </ThreadPrimitive.Viewport>
+        <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
+          {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
+          {props.pendingQuestion ? (
+            <QuestionCard
+              key={props.pendingQuestion.reqId}
+              question={props.pendingQuestion}
+              error={props.questionError}
+              onAnswer={props.onAnswerQuestion}
+            />
+          ) : null}
+          {props.aboveComposer}
+          <ComposerPrimitive.Root
+            aria-label="消息输入"
+            className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
+          >
+            <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+              <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
+                <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
               </div>
-              <ThreadPrimitive.If running={false}>
-                <ComposerPrimitive.Send asChild>
-                  <Button
-                    type="submit"
-                    size="icon"
-                    aria-label="发送消息"
-                    className="min-h-11 min-w-11 rounded-full"
-                  >
-                    <ArrowUp aria-hidden="true" size={18} />
-                  </Button>
-                </ComposerPrimitive.Send>
-              </ThreadPrimitive.If>
-              <ThreadPrimitive.If running>
-                <ComposerPrimitive.Cancel asChild>
-                  <Button
-                    type="button"
-                    size="icon"
-                    aria-label="停止输出"
-                    className="min-h-11 min-w-11 rounded-full"
-                  >
-                    <Square aria-hidden="true" size={16} fill="currentColor" />
-                  </Button>
-                </ComposerPrimitive.Cancel>
-              </ThreadPrimitive.If>
-            </div>
-          </ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        </ComposerPrimitive.Root>
-      </div>
-    </ThreadPrimitive.Root>
+              <div ref={inputWrapRef} className="relative">
+                {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
+                {hasAgent ? (
+                  <MentionBackdrop text={composerText} backdropRef={backdropRef} />
+                ) : null}
+                <ComposerPrimitive.Input
+                  className={cn(
+                    "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground",
+                    hasAgent && "text-transparent caret-primary selection:bg-primary/30",
+                  )}
+                  onScroll={syncBackdropScroll}
+                  placeholder={props.placeholder}
+                />
+                {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
+                {hasAgent ? (
+                  <ComposerMentionTriggers
+                    candidates={candidates}
+                    loading={loading}
+                    error={error}
+                    onMentionInserted={props.onMentionInserted}
+                    getTextarea={getTextarea}
+                  />
+                ) : null}
+              </div>
+              {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-1">
+                  <ComposerPlusMenu
+                    hasAgent={hasAgent}
+                    onInsertTrigger={insertTrigger}
+                    onOpen={refresh}
+                  />
+                  {props.composerLeading}
+                </div>
+                <ThreadPrimitive.If running={false}>
+                  <ComposerPrimitive.Send asChild>
+                    <Button
+                      type="submit"
+                      size="icon"
+                      aria-label="发送消息"
+                      className="min-h-11 min-w-11 rounded-full"
+                    >
+                      <ArrowUp aria-hidden="true" size={18} />
+                    </Button>
+                  </ComposerPrimitive.Send>
+                </ThreadPrimitive.If>
+                <ThreadPrimitive.If running>
+                  <ComposerPrimitive.Cancel asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      aria-label="停止输出"
+                      className="min-h-11 min-w-11 rounded-full"
+                    >
+                      <Square aria-hidden="true" size={16} fill="currentColor" />
+                    </Button>
+                  </ComposerPrimitive.Cancel>
+                </ThreadPrimitive.If>
+              </div>
+            </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+          </ComposerPrimitive.Root>
+        </div>
+      </ThreadPrimitive.Root>
+    </OpenFileChangeContext.Provider>
   );
 }

@@ -13,8 +13,12 @@ export function FileBrowserDrawer(props: {
   open: boolean;
   onClose: () => void;
   activeConversationId: string | null;
+  /** 外部指定打开时的初始 tab（如消息里的「变更文件」链接直达「变更」）；缺省维持 files */
+  initialTab?: DrawerTab;
+  /** 直达焦点文件：变更 tab 列表就绪后自动选中并展开该文件的变更详情 */
+  focusPath?: string | null;
 }) {
-  const { open, onClose, activeConversationId } = props;
+  const { open, onClose, activeConversationId, initialTab, focusPath } = props;
   const [tab, setTab] = useState<DrawerTab>("files");
   const [scope, setScope] = useState<FileScope>("runtime");
   const [nodes, setNodes] = useState<FileNode[]>([]);
@@ -49,6 +53,14 @@ export function FileBrowserDrawer(props: {
   useEffect(() => {
     if (open && tab === "files") void reload();
   }, [open, scope, activeConversationId, tab]);
+
+  // 打开时若外部指定了初始 tab（变更链接入口），切过去并让变更 tab 重新拉取
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只响应 open/initialTab 变化，tab 为受控内的派生
+  useEffect(() => {
+    if (!open || !initialTab || initialTab === tab) return;
+    setTab(initialTab);
+    if (initialTab === "changes") setRefreshTick((n) => n + 1);
+  }, [open, initialTab]);
 
   function switchScope(s: FileScope): void {
     setScope(s);
@@ -160,7 +172,7 @@ export function FileBrowserDrawer(props: {
         </div>
 
         {tab === "changes" ? (
-          <FileChangesTab key={refreshTick} conversationId={convId} />
+          <FileChangesTab key={refreshTick} conversationId={convId} focusPath={focusPath} />
         ) : (
           <>
             {error && (

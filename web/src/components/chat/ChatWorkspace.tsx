@@ -61,8 +61,20 @@ export interface ChatWorkspaceProps {
   blockingContent?: React.ReactNode;
 }
 
+/** 右侧文件抽屉状态：open 之外携带初始 tab 与焦点文件（消息里的「变更文件」链接直达定位） */
+interface DrawerState {
+  open: boolean;
+  tab: "files" | "changes";
+  focusPath: string | null;
+}
+
+const INITIAL_DRAWER: DrawerState = { open: false, tab: "files", focusPath: null };
+
 export function ChatWorkspace(props: ChatWorkspaceProps) {
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawer, setDrawer] = useState<DrawerState>(INITIAL_DRAWER);
+  const openFileChange = useCallback((path: string) => {
+    setDrawer({ open: true, tab: "changes", focusPath: path });
+  }, []);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   // 附件 add/send 失败在 assistant-ui 里是静默吞掉的（fire-and-forget），经 adapter onError 上抛到这里显性化
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -208,7 +220,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() => setDrawerOpen(true)}
+              onClick={() => setDrawer({ open: true, tab: "files", focusPath: null })}
               className="shrink-0 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted"
             >
               文件
@@ -276,6 +288,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               }
               conversationId={activeConversation?.id}
               onMentionInserted={collectMention}
+              onOpenFileChange={openFileChange}
               aboveComposer={
                 <>
                   {props.aboveComposer}
@@ -310,9 +323,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         )}
       </div>
       <FileBrowserDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        open={drawer.open}
+        onClose={() => setDrawer((d) => ({ ...d, open: false }))}
         activeConversationId={props.activeConversationId}
+        initialTab={drawer.tab}
+        focusPath={drawer.focusPath}
       />
     </div>
   );

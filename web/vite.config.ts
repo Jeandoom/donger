@@ -78,6 +78,7 @@ export default defineConfig(({ mode }) => {
       allowedHosts: env.HOST === "127.0.0.1" || env.HOST === "localhost" ? undefined : true,
       proxy: {
         "/api": { target: backend, changeOrigin: true, secure: false },
+        "/uploads": { target: backend, changeOrigin: true, secure: false },
         "/ws": { target: backend, changeOrigin: true, secure: false, ws: true },
       },
     },

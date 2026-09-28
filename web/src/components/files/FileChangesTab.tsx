@@ -1,6 +1,6 @@
 import { FilePlus2, FileText, RefreshCw, ScissorsLineDashed } from "lucide-react";
 import { Highlight, themes } from "prism-react-renderer";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   type DiffRow,
   type FileChangeContent,
@@ -145,8 +145,14 @@ function ResultView({
   );
 }
 
-/** 对话文件变更 tab：左列表 + 右详情（diff 默认 / 当前结果） */
-export function FileChangesTab({ conversationId }: { conversationId: string }) {
+/** 对话文件变更 tab：左列表 + 右详情（diff 默认 / 当前结果）；focusPath 用于消息链接直达定位 */
+export function FileChangesTab({
+  conversationId,
+  focusPath,
+}: {
+  conversationId: string;
+  focusPath?: string | null;
+}) {
   const [files, setFiles] = useState<FileChangeSummary[] | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<FileChangeSummary | null>(null);
@@ -173,17 +179,31 @@ export function FileChangesTab({ conversationId }: { conversationId: string }) {
     };
   }, [conversationId]);
 
-  const openDetail = (file: FileChangeSummary) => {
-    setSelected(file);
-    setDetail(null);
-    setDetailError("");
-    setMode("diff");
-    fetchFileChangeDetail(conversationId, file.path)
-      .then(setDetail)
-      .catch((reason: unknown) =>
-        setDetailError(reason instanceof Error ? reason.message : String(reason)),
-      );
-  };
+  const openDetail = useCallback(
+    (file: FileChangeSummary) => {
+      setSelected(file);
+      setDetail(null);
+      setDetailError("");
+      setMode("diff");
+      fetchFileChangeDetail(conversationId, file.path)
+        .then(setDetail)
+        .catch((reason: unknown) =>
+          setDetailError(reason instanceof Error ? reason.message : String(reason)),
+        );
+    },
+    [conversationId],
+  );
+
+  // 焦点直达：列表就绪后按精确/后缀匹配（容忍绝对路径 vs 展示路径的口径差）自动展开
+  useEffect(() => {
+    if (!files || !focusPath) return;
+    const norm = (p: string) => p.replaceAll("\\", "/");
+    const target = norm(focusPath);
+    const match =
+      files.find((f) => norm(f.path) === target) ??
+      files.find((f) => norm(f.path).endsWith(`/${target}`) || target.endsWith(`/${norm(f.path)}`));
+    if (match) openDetail(match);
+  }, [files, focusPath, openDetail]);
 
   if (!conversationId) {
     return <p className="p-3 text-sm text-muted-foreground">当前无活跃会话</p>;
