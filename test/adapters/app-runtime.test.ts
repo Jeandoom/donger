@@ -141,6 +141,85 @@ describe("应用内核：发布-运行闭环", () => {
     expect(trav2.status).toBe(404);
   });
 
+  it("静态响应带 ACAO（沙箱 module 加载前提）且 HTML 注入日志采集脚本", async () => {
+    const f = await setup();
+    await seedVersion(f, "v1");
+    const index = await fetch(`http://127.0.0.1:${f.port}/apps/${f.appId}/`);
+    expect(index.headers.get("access-control-allow-origin")).toBe("*");
+    const html = await index.text();
+    expect(html).toContain("__dongerAppLogs");
+    expect(html).toContain(f.appId);
+    const asset = await fetch(`http://127.0.0.1:${f.port}/apps/${f.appId}/app.js`);
+    expect(asset.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("应用日志：网关埋点 + 前端采集 + 属主查询 + 越权拒绝", async () => {
+    const f = await setup();
+    await seedVersion(f, "v1");
+    // 触发网关面：页面加载（info）+ 缺失资产（error）+ 数据 API（info）
+    await fetch(`http://127.0.0.1:${f.port}/apps/${f.appId}/`);
+    await fetch(`http://127.0.0.1:${f.port}/apps/${f.appId}/missing.js`);
+    const issue = await fetch(`http://127.0.0.1:${f.port}/api/apps/${f.appId}/token`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${f.ownerToken}` },
+    });
+    const { token: appToken } = (await issue.json()) as { token: string };
+    await fetch(`http://127.0.0.1:${f.port}/api/app-data/${f.appId}/prefs`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${appToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ value: 1 }),
+    });
+
+    // 前端面采集（sendBeacon 形态：?token= + text/plain body）
+    const ingest = await fetch(
+      `http://127.0.0.1:${f.port}/api/app-logs/${f.appId}?token=${encodeURIComponent(appToken)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ entries: [{ level: "error", message: "boom: renderer crashed" }] }),
+      },
+    );
+    expect(ingest.status).toBe(200);
+
+    // 无效 token 401；超量 400
+    const bad = await fetch(`http://127.0.0.1:${f.port}/api/app-logs/${f.appId}?token=bad`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ entries: [{ message: "x" }] }),
+    });
+    expect(bad.status).toBe(401);
+    const tooMany = await fetch(`http://127.0.0.1:${f.port}/api/app-logs/${f.appId}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${appToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entries: Array.from({ length: 51 }, (_, i) => ({ message: `m${i}` })),
+      }),
+    });
+    expect(tooMany.status).toBe(400);
+
+    // 属主查询：两类来源都在；404 资产与前端 error 有痕
+    const logs = await fetch(`http://127.0.0.1:${f.port}/api/apps/${f.appId}/logs`, {
+      headers: { Authorization: `Bearer ${f.ownerToken}` },
+    });
+    expect(logs.status).toBe(200);
+    const body = (await logs.json()) as { items: AppLogItem[] };
+    const srcs = new Set(body.items.map((i) => i.source));
+    expect(srcs.has("gateway")).toBe(true);
+    expect(srcs.has("frontend")).toBe(true);
+    expect(body.items.some((i) => i.path?.endsWith("/missing.js") && i.status === 404)).toBe(true);
+    expect(body.items.some((i) => i.message?.includes("boom"))).toBe(true);
+
+    // 越权：非属主 403；未登录 401
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${f.port}/api/apps/${f.appId}/logs`, {
+          headers: { Authorization: `Bearer ${f.otherToken}` },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await fetch(`http://127.0.0.1:${f.port}/api/apps/${f.appId}/logs`)).status).toBe(401);
+  });
+
   it("版本历史与回滚：发布 v2 后可切回 v1", async () => {
     const f = await setup();
     await seedVersion(f, "v1");

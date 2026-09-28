@@ -1,7 +1,19 @@
 import type { Database } from "better-sqlite3";
-import type { AppManifest, AppVersionMeta, PlatformApp } from "../domain/app.js";
-import { parseAppManifest } from "../domain/app.js";
-import type { AppDataEntry, AppStore, AppVersionWithMeta } from "../ports/app-store.js";
+import {
+  APP_LOG_MAX_PER_APP,
+  APP_LOG_RETENTION_DAYS,
+  type AppManifest,
+  type AppVersionMeta,
+  type PlatformApp,
+  parseAppManifest,
+} from "../domain/app.js";
+import type {
+  AppDataEntry,
+  AppLogEntry,
+  AppLogRecord,
+  AppStore,
+  AppVersionWithMeta,
+} from "../ports/app-store.js";
 
 interface AppRow {
   id: string;
@@ -56,6 +68,20 @@ export class SqliteAppStore implements AppStore {
       )
     `);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_apps_user ON apps (userId, updatedAt)`);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS app_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        appId TEXT NOT NULL,
+        source TEXT NOT NULL,
+        level TEXT NOT NULL,
+        method TEXT,
+        path TEXT,
+        status INTEGER,
+        message TEXT,
+        ts TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_app_logs_app ON app_logs (appId, id)`);
   }
 
   async create(input: {
@@ -131,6 +157,7 @@ export class SqliteAppStore implements AppStore {
       this.db.prepare("DELETE FROM apps WHERE id = ?").run(id);
       this.db.prepare("DELETE FROM app_versions WHERE appId = ?").run(id);
       this.db.prepare("DELETE FROM app_data WHERE appId = ?").run(id);
+      this.db.prepare("DELETE FROM app_logs WHERE appId = ?").run(id);
     });
     tx(appId);
   }
@@ -217,6 +244,57 @@ export class SqliteAppStore implements AppStore {
       .prepare("SELECT COALESCE(SUM(sizeBytes), 0) AS total FROM app_data WHERE appId = ?")
       .get(appId) as { total: number };
     return row.total;
+  }
+
+  async appendLogs(appId: string, entries: AppLogEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    const insert = this.db.prepare(
+      `INSERT INTO app_logs (appId, source, level, method, path, status, message, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const tx = this.db.transaction((rows: AppLogEntry[]) => {
+      for (const e of rows) {
+        insert.run(
+          appId,
+          e.source,
+          e.level,
+          e.method ?? null,
+          e.path ?? null,
+          e.status ?? null,
+          e.message ?? null,
+          e.ts,
+        );
+      }
+      // 容量护栏：每应用只留最新 APP_LOG_MAX_PER_APP 条 + 过期清理
+      this.db
+        .prepare(
+          `DELETE FROM app_logs WHERE appId = ? AND id NOT IN (
+             SELECT id FROM app_logs WHERE appId = ? ORDER BY id DESC LIMIT ?
+           )`,
+        )
+        .run(appId, appId, APP_LOG_MAX_PER_APP);
+      this.db
+        .prepare(`DELETE FROM app_logs WHERE ts < ?`)
+        .run(new Date(Date.now() - APP_LOG_RETENTION_DAYS * 86_400_000).toISOString());
+    });
+    tx(entries);
+  }
+
+  async listLogs(appId: string, limit: number): Promise<AppLogRecord[]> {
+    const rows = this.db
+      .prepare(`SELECT * FROM app_logs WHERE appId = ? ORDER BY id DESC LIMIT ?`)
+      .all(appId, Math.min(limit, 500)) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as number,
+      appId: r.appId as string,
+      source: r.source as AppLogEntry["source"],
+      level: r.level as AppLogEntry["level"],
+      method: (r.method as string | null) ?? undefined,
+      path: (r.path as string | null) ?? undefined,
+      status: (r.status as number | null) ?? undefined,
+      message: (r.message as string | null) ?? undefined,
+      ts: r.ts as string,
+    }));
   }
 
   private rowToApp(row: AppRow): PlatformApp {

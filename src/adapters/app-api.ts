@@ -1,11 +1,14 @@
 import { existsSync, rmSync, statSync } from "node:fs";
 import type { IncomingMessage as HttpRequest } from "node:http";
 import { join, resolve, sep } from "node:path";
+import { z } from "zod";
 import {
   APP_DATA_KEY_PATTERN,
   APP_DATA_MAX_KEYS,
   APP_DATA_TOTAL_MAX_BYTES,
   APP_DATA_VALUE_MAX_BYTES,
+  APP_LOG_INGEST_MAX_ENTRIES,
+  APP_LOG_MESSAGE_MAX,
   type AppPatchInput,
   type PlatformApp,
   parseAppPatchInput,
@@ -463,4 +466,120 @@ export interface AppRuntimeHandlers {
 
 export function createAppRuntimeHandlers(deps: AppApiDeps): AppRuntimeHandlers {
   return makeAppDataHandlers(deps);
+}
+
+// ---------------------------------------------------------------------------
+// 应用日志（spec 修订 2026-09-29）：属主查询面 + app-token 采集面
+// ---------------------------------------------------------------------------
+
+export async function handleListAppLogs(
+  ctx: AppHttpCtx,
+  deps: AppApiDeps,
+  req: HttpRequest,
+  appId: string,
+): Promise<ApiResult> {
+  requireUser(ctx, req);
+  await requireOwnedApp(deps, ctx, req, appId);
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const limitRaw = Number(url.searchParams.get("limit") ?? 200);
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 200;
+  const items = await deps.appStore.listLogs(appId, limit);
+  return { status: 200, json: { items } };
+}
+
+/**
+ * 前端日志采集：仅 app-token（Bearer 或 ?token=——sendBeacon 无法带 header）。
+ * 只收 level/message；method/path/status 为网关面专属字段，不接受客户端伪造。
+ * body 允许 text/plain（sendBeacon Blob 不触发 CORS 预检）。
+ */
+export function createAppLogIngestHandler(deps: AppApiDeps) {
+  return async function ingest(req: HttpRequest, appId: string): Promise<ApiResult> {
+    const auth = req.headers.authorization;
+    let token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+    if (!token) {
+      token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token") ?? undefined;
+    }
+    if (!token || !(await deps.appToken.verify(token, appId))) {
+      return { status: 401, json: { error: "app-token 无效或已过期" } };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await ctxReadRaw(req));
+    } catch {
+      return { status: 400, json: { error: "body 须为 JSON" } };
+    }
+    const schema = z.object({
+      entries: z
+        .array(
+          z.object({
+            level: z.enum(["info", "warn", "error"]).default("info"),
+            message: z.string().min(1).max(APP_LOG_MESSAGE_MAX),
+          }),
+        )
+        .min(1)
+        .max(APP_LOG_INGEST_MAX_ENTRIES),
+    });
+    const parsedBody = schema.safeParse(parsed);
+    if (!parsedBody.success) {
+      return {
+        status: 400,
+        json: {
+          error: `entries 非法（1-${APP_LOG_INGEST_MAX_ENTRIES} 条，message ≤${APP_LOG_MESSAGE_MAX} 字符）`,
+        },
+      };
+    }
+    const now = new Date().toISOString();
+    await deps.appStore.appendLogs(
+      appId,
+      parsedBody.data.entries.map((e) => ({
+        source: "frontend",
+        level: e.level,
+        message: e.message,
+        ts: now,
+      })),
+    );
+    return { status: 200, json: { ok: true } };
+  };
+}
+
+/** sendBeacon/采集用的原始 body 读取（上限 256KB，防滥用） */
+function ctxReadRaw(req: HttpRequest): Promise<string> {
+  return new Promise((resolveP, rejectP) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      body += chunk;
+      if (Buffer.byteLength(body) > 256 * 1024) {
+        req.destroy();
+        rejectP(new PayloadTooLargeError("PAYLOAD_TOO_LARGE", "请求体过大"));
+      }
+    });
+    req.on("end", () => resolveP(body));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 应用 HTML 注入（前端日志采集 bootstrap；纯函数供单测）
+// ---------------------------------------------------------------------------
+
+/**
+ * 向应用 index.html 注入错误/资源加载采集脚本：
+ *  - window.error（捕获段，含资源 404）/ unhandledrejection / console.error
+ *  - 缓冲 2s 或 50 条后经 sendBeacon（?token= 鉴权形态）上报 /api/app-logs/<appId>
+ * 幂等（__dongerAppLogs 哨兵）；无 </head> 时前插。
+ */
+export function injectAppBootstrap(html: string, appId: string): string {
+  const script =
+    `<script>(function(){if(window.__dongerAppLogs)return;window.__dongerAppLogs=1;var A="${appId}";` +
+    `var T=new URLSearchParams(location.search).get("appToken")||"";var B=[];var t=null;` +
+    `function flush(){if(t){clearTimeout(t);t=null;}if(!B.length||!T)return;var e=B;B=[];` +
+    `try{var b=new Blob([JSON.stringify({entries:e})],{type:"text/plain"});` +
+    `if(navigator.sendBeacon)navigator.sendBeacon("/api/app-logs/"+A+"?token="+encodeURIComponent(T),b);` +
+    `else fetch("/api/app-logs/"+A+"?token="+encodeURIComponent(T),{method:"POST",body:JSON.stringify({entries:e})});}catch(_){}}` +
+    `function log(l,m){if(B.length>=${APP_LOG_INGEST_MAX_ENTRIES})flush();B.push({level:l,message:String(m).slice(0,${APP_LOG_MESSAGE_MAX})});if(!t)t=setTimeout(flush,2000);}` +
+    `window.addEventListener("error",function(ev){if(ev.target&&(ev.target.src||ev.target.href))log("error","resource error: "+(ev.target.src||ev.target.href));else log("error",(ev.message||"error")+" @"+(ev.filename||"")+":"+(ev.lineno||0));},true);` +
+    `window.addEventListener("unhandledrejection",function(ev){var r=ev.reason;log("error","unhandledrejection: "+String((r&&r.stack)||r));});` +
+    `var ef=console.error;console.error=function(){try{log("error",Array.prototype.map.call(arguments,function(a){return typeof a==="string"?a:(a instanceof Error?a.stack:JSON.stringify(a))}).join(" "))}catch(_){}ef.apply(console,arguments);};` +
+    `window.addEventListener("pagehide",flush);})();</script>`;
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${script}</head>`);
+  return `${script}${html}`;
 }

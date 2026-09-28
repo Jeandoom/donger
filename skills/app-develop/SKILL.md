@@ -18,6 +18,7 @@ description: 在平台内开发并发布 web 应用（静态站点）。当用�
 4. 平台数据 API（`/api/app-data/<appId>/<key>`）已开 CORS；调用**外部第三方 API** 要求对方支持 CORS，否则需换可 CORS 的数据源。
 5. 无构建依赖优先（单文件或原生 ESM）；确需构建则产物必须落在要发布的目录（如 `dist/`），并发布该目录而非源码目录。
 6. 图表用 CDN 引入 ECharts 等（`<script src="https://cdn...">`）；不要 npm 装 UI 框架除非确有构建必要。
+7. 平台自动采集前端日志：应用内的 window.error、资源加载失败、console.error 会进入「应用」详情的「日志」页签（网关面同时记录页面加载与数据 API 调用）——调试时让用户看日志页签即可。
 
 ## 工作流
 

@@ -25,14 +25,26 @@ interface AppDataItem {
   valueJson?: string;
 }
 
-type Tab = "overview" | "versions" | "data" | "run";
+type Tab = "overview" | "versions" | "data" | "logs" | "run";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "overview", label: "概览" },
   { key: "versions", label: "版本" },
   { key: "data", label: "数据" },
+  { key: "logs", label: "日志" },
   { key: "run", label: "运行" },
 ];
+
+interface AppLogItem {
+  id: number;
+  source: "gateway" | "frontend";
+  level: "info" | "warn" | "error";
+  method?: string;
+  path?: string;
+  status?: number;
+  message?: string;
+  ts: string;
+}
 
 export function AppDetailPage() {
   const { appId } = useParams();
@@ -177,6 +189,7 @@ export function AppDetailPage() {
         <VersionsTab appId={app.id} versions={versions} onChanged={refresh} />
       ) : null}
       {tab === "data" ? <DataTab appId={app.id} /> : null}
+      {tab === "logs" ? <LogsTab appId={app.id} /> : null}
       {tab === "run" ? <RunTab appId={app.id} published={app.currentVersion !== null} /> : null}
 
       <ConfirmDialog
@@ -418,6 +431,93 @@ function RunTab({ appId, published }: { appId: string; published: boolean }) {
           />
         </div>
       )}
+    </div>
+  );
+}
+
+/** 应用日志（spec 修订 2026-09-29）：网关面（页面/资产/数据 API）+ 前端面（注入采集）合并视图 */
+function LogsTab({ appId }: { appId: string }) {
+  const [items, setItems] = useState<AppLogItem[]>([]);
+  const [source, setSource] = useState<"all" | "gateway" | "frontend">("all");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    apiFetchRetry(`/api/apps/${appId}/logs?limit=300`)
+      .then((r) => r.json() as Promise<{ items?: AppLogItem[] }>)
+      .then((d) => setItems(d.items ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [appId]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const shown = items.filter((i) => source === "all" || i.source === source);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex gap-1 rounded-lg bg-muted/60 p-1 text-xs">
+          {(
+            [
+              ["all", "全部"],
+              ["gateway", "网关（页面/数据 API）"],
+              ["frontend", "应用前端（错误采集）"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setSource(key)}
+              className={
+                source === key
+                  ? "rounded-md bg-card px-2.5 py-1 font-medium shadow-sm"
+                  : "rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground"
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-[11px] text-muted-foreground">每 4 秒自动刷新</span>
+      </div>
+
+      <Card className="max-h-[65vh] overflow-auto bg-slate-950 p-4 font-mono text-[11px] leading-5 text-slate-300">
+        {loading ? <div className="text-slate-500">加载中…</div> : null}
+        {!loading && !shown.length ? (
+          <div className="text-slate-500">
+            暂无日志。打开应用后：网关面记录页面加载与数据 API 调用；前端面自动采集应用内错误、
+            资源加载失败与 console.error。
+          </div>
+        ) : null}
+        {shown.map((i) => (
+          <div key={i.id} className="whitespace-pre-wrap break-all">
+            <span className="text-slate-500">[{new Date(i.ts).toLocaleTimeString()}]</span>{" "}
+            <span
+              className={
+                i.level === "error"
+                  ? "text-rose-400"
+                  : i.level === "warn"
+                    ? "text-amber-300"
+                    : "text-sky-300"
+              }
+            >
+              {i.level.toUpperCase().padEnd(5)}
+            </span>{" "}
+            <span className="text-slate-500">{i.source === "gateway" ? "gw " : "fe "}</span>
+            {i.method ? <span className="text-emerald-300">{i.method} </span> : null}
+            {i.path ? <span className="text-slate-100">{i.path} </span> : null}
+            {i.status !== undefined ? (
+              <span className={i.status >= 400 ? "text-rose-400" : "text-slate-400"}>
+                {i.status}{" "}
+              </span>
+            ) : null}
+            {i.message ? <span>{i.message}</span> : null}
+          </div>
+        ))}
+      </Card>
     </div>
   );
 }

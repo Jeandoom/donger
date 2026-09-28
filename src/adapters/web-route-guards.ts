@@ -502,6 +502,15 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "owner", resource: "app" },
       ...ownerApp,
     },
+    // 应用日志查询（属主面；spec 修订 2026-09-29）
+    {
+      method: "GET",
+      pattern: "/api/apps/:id/logs",
+      access: { kind: "owner", resource: "app" },
+      ...ownerApp,
+    },
+    // 应用前端日志采集（运行时面；app-token 自鉴权，public 登记 handler 内校验）
+    { method: "POST", pattern: "/api/app-logs/:appId", access: { kind: "public" } },
     {
       method: "DELETE",
       pattern: "/api/apps/:id/data/:key",
