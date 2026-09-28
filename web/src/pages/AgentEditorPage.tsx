@@ -1,12 +1,12 @@
 import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { useDirtyGuard } from "../components/ui/dirty-guard";
+import { Menu } from "../components/ui/menu";
 import { PageHeader } from "../components/ui/page-header";
-import { apiFetchRetry } from "../lib/auth";
 import {
   type AgentMeta,
   createAgent,
@@ -20,22 +20,24 @@ import { createKb } from "../lib/kb";
 import { fetchCredentialTemplates } from "../lib/skills";
 import { cn } from "../lib/utils";
 import { BasicSection } from "./agent-editor/BasicSection";
-import { IntegrationSection } from "./agent-editor/IntegrationSection";
 import { KnowledgeSection } from "./agent-editor/KnowledgeSection";
 import {
   AGENT_EDITOR_SECTIONS,
   type AgentEditorForm,
+  blockingIssues,
   emptyAgent,
   REPO_NAME_PATTERN,
   scenarioIssues,
 } from "./agent-editor/model";
 import { PromptSkillsSection } from "./agent-editor/PromptSkillsSection";
 import { ResourcesSection } from "./agent-editor/ResourcesSection";
+import { RuntimeSection } from "./agent-editor/RuntimeSection";
 import { ToolsPermsSection } from "./agent-editor/ToolsPermsSection";
 
 /**
- * 智能体配置页（重构版，specs/2026-09-18-agent-editor-redesign.md）：
- * sticky 顶栏/底栏 + 左锚点导航（scrollspy）+ 五分区卡片。
+ * 智能体配置页（specs/2026-09-29-agent-editor-ui-redesign.md）：
+ * sticky 顶栏/底栏 + 左锚点导航（scrollspy）+ 五表单分区 + 运行管理带（即时态）。
+ * 表单态（受「保存」管、脏守卫覆盖）与即时态（回调/分享/管家，点按即生效）物理分离。
  */
 export function AgentEditorPage() {
   const { id } = useParams();
@@ -157,11 +159,20 @@ export function AgentEditorPage() {
   const dirty = JSON.stringify(form) !== baseline;
   const { attempt, dialog } = useDirtyGuard(dirty && !saving && !duplicating);
   const issues = useMemo(() => scenarioIssues(form), [form]);
-  const issuesBySection = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const issue of issues) map.set(issue.section, (map.get(issue.section) ?? 0) + 1);
+  // 保存阻断项 live 校验（MCP JSON 解析错/仓库目录名非法）：编辑中即时反映到导航徽标，
+  // 不再等点保存才发现（spec §5 要点3）；保存时的阻断校验仍以 save() 为准
+  const blockers = useMemo(() => blockingIssues(form, mcpJsonError), [form, mcpJsonError]);
+  const sectionBadges = useMemo(() => {
+    const map = new Map<string, { errors: number; hints: number }>();
+    const bump = (section: string, kind: "errors" | "hints") => {
+      const entry = map.get(section) ?? { errors: 0, hints: 0 };
+      entry[kind] += 1;
+      map.set(section, entry);
+    };
+    for (const issue of issues) bump(issue.section, "hints");
+    for (const issue of blockers) bump(issue.section, "errors");
     return map;
-  }, [issues]);
+  }, [issues, blockers]);
 
   async function save() {
     setError(undefined);
@@ -314,11 +325,32 @@ export function AgentEditorPage() {
           <Button
             variant="secondary"
             size="sm"
+            className="hidden sm:inline-flex"
             onClick={() => void handleDuplicate()}
             disabled={duplicating}
           >
             {duplicating ? "复制中…" : "复制"}
           </Button>
+        ) : null}
+        {/* 移动端：对话/复制收进溢出菜单，为标题让位（取消/保存由底部栏兜底） */}
+        {!isNew && id ? (
+          <Menu
+            label="更多操作"
+            className="sm:hidden"
+            entries={[
+              {
+                kind: "item",
+                label: "对话",
+                onSelect: () => navigate(`/agents/${id}/chat`),
+              },
+              {
+                kind: "item",
+                label: duplicating ? "复制中…" : "复制",
+                disabled: duplicating,
+                onSelect: () => void handleDuplicate(),
+              },
+            ]}
+          />
         ) : null}
         <Button
           variant="secondary"
@@ -341,9 +373,9 @@ export function AgentEditorPage() {
       {/* 移动端：横向分区 chips（sticky 于顶栏下） */}
       <nav className="no-scrollbar sticky top-16 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur md:hidden">
         {AGENT_EDITOR_SECTIONS.map((s) => {
-          const hidden = s.id === "agent-sec-integration" && isNew;
+          const hidden = s.id === "agent-sec-runtime" && isNew;
           if (hidden) return null;
-          const count = issuesBySection.get(s.id) ?? 0;
+          const badge = sectionBadges.get(s.id);
           const active = activeSection === s.id;
           return (
             <a
@@ -357,7 +389,16 @@ export function AgentEditorPage() {
               )}
             >
               {s.label}
-              {count > 0 ? <span className="ml-1 font-semibold text-warning">①</span> : null}
+              {badge ? (
+                <span
+                  className={cn(
+                    "ml-1 font-semibold",
+                    badge.errors > 0 ? "text-destructive" : "text-warning",
+                  )}
+                >
+                  ①
+                </span>
+              ) : null}
             </a>
           );
         })}
@@ -369,8 +410,8 @@ export function AgentEditorPage() {
         <nav className="sticky top-16 hidden w-56 shrink-0 flex-col gap-1 border-r border-border bg-card/60 p-4 md:flex">
           <p className="px-3 pb-1 text-[11px] font-semibold text-muted-foreground/70">配置分区</p>
           {AGENT_EDITOR_SECTIONS.map((s) => {
-            if (s.id === "agent-sec-integration" && isNew) return null;
-            const count = issuesBySection.get(s.id) ?? 0;
+            if (s.id === "agent-sec-runtime" && isNew) return null;
+            const badge = sectionBadges.get(s.id);
             const active = activeSection === s.id;
             return (
               <a
@@ -386,17 +427,21 @@ export function AgentEditorPage() {
               >
                 {s.label}
                 <span className="flex-1" />
-                {count > 0 ? <Badge tone="warning">{count}</Badge> : null}
+                {badge ? (
+                  <Badge tone={badge.errors > 0 ? "danger" : "warning"}>
+                    {badge.errors > 0 ? badge.errors : badge.hints}
+                  </Badge>
+                ) : null}
               </a>
             );
           })}
           <p className="mt-4 px-3 text-[10px] leading-snug text-muted-foreground/60">
-            徽标 = 该区有需处理的场景提示
+            红 = 不修复无法保存；黄 = 场景装配提示
           </p>
         </nav>
 
-        {/* 内容滚动区：五分区 */}
-        <main className="min-w-0 flex-1 space-y-5 p-5 pb-28 md:p-6">
+        {/* 内容滚动区：五表单分区 + 运行管理带；max-w 限宽防超宽屏行长过长 */}
+        <main className="mx-auto min-w-0 w-full max-w-3xl flex-1 space-y-5 p-5 pb-28 md:p-6">
           {error ? (
             <p className="rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2.5 text-sm text-destructive">
               {error}
@@ -435,8 +480,7 @@ export function AgentEditorPage() {
             kbNewName={kbNewName}
             onKbNewNameChange={setKbNewName}
           />
-          {!isNew && id ? <IntegrationSection agentId={id} /> : null}
-          {!isNew && id ? <StewardSection agentId={id} /> : null}
+          {!isNew && id ? <RuntimeSection agentId={id} /> : null}
         </main>
       </div>
 
@@ -465,46 +509,5 @@ export function AgentEditorPage() {
       </footer>
       {dialog}
     </div>
-  );
-}
-
-/** 管理的应用（应用管家制 spec §8）：反查视图——绑定关系在应用详情页改派，此处只读呈现 */
-function StewardSection({ agentId }: { agentId: string }) {
-  const [apps, setApps] = useState<
-    Array<{ id: string; name: string; currentVersion: number | null }>
-  >([]);
-  useEffect(() => {
-    apiFetchRetry(`/api/apps?managedBy=${encodeURIComponent(agentId)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ apps?: typeof apps }>) : { apps: [] }))
-      .then((d) => setApps(d.apps ?? []))
-      .catch(() => {});
-  }, [agentId]);
-  return (
-    <Card className="flex flex-col gap-2 p-4">
-      <div className="text-[13px] font-medium">管理的应用</div>
-      <p className="text-xs text-muted-foreground">
-        该智能体担任责任管家的应用（会话内创建应用时自动绑定；改派在应用详情页操作）。
-        管家身份会随身份节注入其全部会话，应用发布/回滚事件与反馈也路由到此。
-      </p>
-      {apps.length === 0 ? (
-        <div className="text-xs text-muted-foreground">暂无绑定的应用。</div>
-      ) : (
-        <ul className="flex flex-col gap-1.5">
-          {apps.map((a) => (
-            <li
-              key={a.id}
-              className="flex items-center justify-between gap-3 rounded-lg bg-muted/60 px-3 py-2 text-[13px]"
-            >
-              <Link to={`/apps/${a.id}`} className="text-primary hover:underline">
-                {a.name}
-              </Link>
-              <span className="text-xs text-muted-foreground">
-                {a.currentVersion !== null ? `v${a.currentVersion}` : "未发布"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
   );
 }
