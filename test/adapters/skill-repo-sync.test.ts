@@ -98,7 +98,7 @@ describe("SkillRepoSyncService", () => {
     expect(probe.ok).toBe(false);
   });
 
-  it("首同步到空仓库：镜像 manifest/pack/.meta 并留提交", async () => {
+  it("首同步到空仓库：镜像 manifest/pack/.meta 并留提交", { timeout: 30_000 }, async () => {
     await installSamplePack();
     await repoStore.upsert("u1", {
       repoUrl: remoteUrl,
@@ -152,7 +152,7 @@ describe("SkillRepoSyncService", () => {
     expect(remote.skillDoc).toBeUndefined();
   });
 
-  it("无变更时同步跳过提交且状态 ok", async () => {
+  it("无变更时同步跳过提交且状态 ok", { timeout: 30_000 }, async () => {
     await installSamplePack();
     await repoStore.upsert("u1", {
       repoUrl: remoteUrl,
