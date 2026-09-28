@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { McpSection } from "../components/mcp/McpSection";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -10,7 +11,6 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { type AdminUser, fetchAdminUsers, updateUserRole } from "../lib/adminUsers";
 import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
-import { McpSection } from "../components/mcp/McpSection";
 import { cn } from "../lib/utils";
 
 /**
