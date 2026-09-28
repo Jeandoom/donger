@@ -34,10 +34,10 @@ web/            前端子包：React 18 + Vite 6 + Tailwind + assistant-ui，生
 cli/            CLI 前端子包：commander + SSE，经 CLI_TOKEN 换 JWT 登录
 skills/         内置技能包（task-dispatch / task-optimize / web-ui-iterate）
 test/           测试（镜像 src）
-docs/           设计规格（superpowers/specs）、路线图、部署指南、测试记录
+docs/           部署与使用文档（远程访问部署、钉钉应用配置、分享功能说明）
 ```
 
-通信协议：Web 通道为 **HTTP + SSE**（用户消息 `POST /api/conversations/:id/messages`，Bot 流式回复与审批推送走 SSE），WebSocket 已废弃。规范详见 [`AGENTS.md` §10](./AGENTS.md)。
+通信协议：Web 通道为 **HTTP + SSE**（用户消息 `POST /api/conversations/:id/messages`，Bot 流式回复与审批推送走 SSE），WebSocket 已废弃。
 
 ## 快速开始
 
@@ -95,11 +95,15 @@ CI（`.github/workflows/ci.yml`）在 push / PR 时跑 `lint → test → build`
 
 ## 文档
 
-- **协作与技术规范**：[`AGENTS.md`](./AGENTS.md)（架构约定、编码规范、SSE + HTTP 协议）
-- **路线图**：[`docs/superpowers/roadmap.md`](./docs/superpowers/roadmap.md)（M0–M18 任务主计划）
-- **设计规格**：[`docs/superpowers/specs/`](./docs/superpowers/specs/)（编排、多智能体平台、凭证集、连接器、LLM 多供应商等）
-- **部署指南**：[`docs/deploy-remote-access.md`](./docs/deploy-remote-access.md)
+- **远程部署指南**：[`docs/deploy-remote-access.md`](./docs/deploy-remote-access.md)（DDNS + HTTPS + 端口转发）
+- **K8s + Jenkins 部署**：[`docs/deploy-k8s-jenkins.md`](./docs/deploy-k8s-jenkins.md)
+- **钉钉应用配置**：[`docs/dingtalk-app-setup.md`](./docs/dingtalk-app-setup.md)
+- **分享功能说明**：[`docs/agent-share.md`](./docs/agent-share.md)
 
 ## 状态
 
-开发中，核心链路（钉钉 / Web / CLI 三端 + 智能体 + 技能 + 审批门 + 自动化）已可用，持续推进见路线图。
+开发中，核心链路（钉钉 / Web / CLI 三端 + 智能体 + 技能 + 审批门 + 自动化）已可用。本仓库的大部分功能迭代由 donger 智能体自身参与完成（吃自己的狗粮）。
+
+## 许可证
+
+[MIT](./LICENSE) © 2026 Jeandoom

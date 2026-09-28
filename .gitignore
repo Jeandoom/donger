@@ -37,3 +37,8 @@ Thumbs.db
 /.claude/
 /.codegraph/
 /.superpowers/
+/.zcode/
+debug.log
+/donger.lock
+/.migrated
+/.zcodeignore
