@@ -76,6 +76,7 @@ import {
 import { mimeForExt } from "../domain/file-mime.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
+import { HostInputSchema } from "../domain/host.js";
 import {
   buildInvite,
   EMAIL_VERIFY_TTL_MS,
@@ -95,9 +96,6 @@ import type { LLMConfig } from "../domain/llm-config.js";
 import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
 import { resolveLlmOptions } from "../domain/llm-selection.js";
 import { type Loop, parseLoopInput } from "../domain/loop.js";
-import { DeployTargetInputSchema, type DeployTarget } from "../domain/deploy.js";
-import type { DeployStore } from "../ports/deploy-store.js";
-import type { DeployExecutor } from "../orchestrator/deploy-executor.js";
 import {
   CONVERSATION_MENTION_ALL_ID,
   conversationMarkerLabel,
@@ -188,6 +186,7 @@ import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
+import type { HostStore } from "../ports/host-store.js";
 import type { InviteStore } from "../ports/invite-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
@@ -495,10 +494,8 @@ export interface WebChannelDeps {
   llmProviderStore?: LlmProviderStore;
   /** 系统密钥管理（授权页·密钥管理：状态/轮换/导入历史/深度修复；缺省=端点 503） */
   systemKey?: SystemKeyService;
-  /** 部署目标/部署单存储（spec 2026-09-30-deploy-ops-loop-design；缺省=部署端点 503） */
-  deployStore?: DeployStore;
-  /** 部署执行器（手动触发部署端点用；缺省=触发端点 503） */
-  deployExecutor?: DeployExecutor;
+  /** 主机资产存储（spec 2026-09-30-deploy-ops-loop-design §6；缺省=主机端点 503） */
+  hostStore?: HostStore;
   /** Anthropic 协议连通性校验；缺省=测试连接端点不可用 */
   llmProviderTester?: LlmTester;
   agentStore?: AgentStore;
@@ -1953,7 +1950,6 @@ export class WebChannel implements Channel {
   private async handleApi(url: string, req: HttpRequest, res: ServerResponse): Promise<void> {
     // 鉴权与授权已由 routeGuard 在 handleHttp 的 /api 入口统一执行（fail-closed）；
     // 本方法只做路由分发。公开性/属主/管理员规则见 web-route-guards.ts。
-
 
     const preflightMatch = url.match(/^\/api\/conversations\/([\w-]+)\/preflight$/);
     if (preflightMatch && req.method === "GET") {
@@ -5132,7 +5128,7 @@ export class WebChannel implements Channel {
 
     if (await this.handleWorkflowApi(url, req, res)) return;
 
-    if (await this.handleDeployApi(url, req, res)) return;
+    if (await this.handleHostsApi(url, req, res)) return;
 
     if (await this.handleConnectorApi(url, req, res)) return;
 
@@ -5789,139 +5785,79 @@ export class WebChannel implements Channel {
     return false;
   }
 
-  /** 部署目标/部署单 API（spec 2026-09-30-deploy-ops-loop-design）。命中返回 true。
-   *  守卫面全部 authenticated（web-route-guards）；属主/管理员分流在 handler（usage 范式）：
-   *  登记（建/改/删）= admin；查看/触发部署 = 属主或 admin。资源不存在统一 404 防存在性枚举。 */
-  private async handleDeployApi(
+  /** 主机资产 API（spec 2026-09-30-deploy-ops-loop-design §6）。命中返回 true。
+   *  守卫面 authenticated（web-route-guards）；属主/管理员分流在 handler：
+   *  登记（建/改/删）= admin；查看 = 属主或 admin。部署操作不在本 API——走对话/Loop
+   *  经 donger-host 工具（审批门后执行），部署即会话。 */
+  private async handleHostsApi(
     url: string,
     req: HttpRequest,
     res: ServerResponse,
   ): Promise<boolean> {
     const pathname = url.split("?")[0] ?? url;
     const viewer = this.currentViewer(req);
-    const store = this.deps.deployStore;
+    const store = this.deps.hostStore;
 
-    if (pathname === "/api/deploy-targets" && req.method === "GET") {
+    if (pathname === "/api/hosts" && req.method === "GET") {
       if (!store) {
-        this.json(res, { error: "部署模块未启用" }, 503);
+        this.json(res, { error: "主机模块未启用" }, 503);
         return true;
       }
-      const all = await store.listTargets();
-      const visible = viewer.role === "admin" ? all : all.filter((t) => t.ownerId === viewer.id);
-      const targets = await Promise.all(
-        visible.map(async (t) => ({
-          ...t,
-          lastSuccessSha: (await store.getLastSuccessOrder(t.id))?.sha ?? null,
-        })),
-      );
-      this.json(res, { targets });
+      const all = await store.listHosts();
+      const visible = viewer.role === "admin" ? all : all.filter((h) => h.ownerId === viewer.id);
+      this.json(res, { hosts: visible });
       return true;
     }
-    if (pathname === "/api/deploy-targets" && req.method === "POST") {
+    if (pathname === "/api/hosts" && req.method === "POST") {
       if (!store) {
-        this.json(res, { error: "部署模块未启用" }, 503);
+        this.json(res, { error: "主机模块未启用" }, 503);
         return true;
       }
       if (viewer.role !== "admin") {
-        this.json(res, { error: "仅管理员可登记部署目标" }, 403);
+        this.json(res, { error: "仅管理员可登记主机" }, 403);
         return true;
       }
-      const input = DeployTargetInputSchema.parse(JSON.parse(await this.readBody(req)));
-      const created = await store.createTarget(input, viewer.id);
+      const input = HostInputSchema.parse(JSON.parse(await this.readBody(req)));
+      const created = await store.create(input, viewer.id);
       this.json(res, created, 201);
       return true;
     }
-    let m = pathname.match(/^\/api\/deploy-targets\/([\w-]+)$/);
+    const m = pathname.match(/^\/api\/hosts\/([\w-]+)$/);
     if (m) {
       const id = m[1] ?? "";
-      const target = store ? await store.getTarget(id) : undefined;
-      // 不存在/越权统一 404（防存在性枚举；admin 可操作全部）
+      const host = store ? await store.get(id) : undefined;
       const visible =
-        target && (viewer.role === "admin" || target.ownerId === viewer.id) ? target : undefined;
+        host && (viewer.role === "admin" || host.ownerId === viewer.id) ? host : undefined;
       if (req.method === "GET") {
         if (!visible) {
-          this.json(res, { error: "部署目标不存在" }, 404);
+          this.json(res, { error: "主机不存在" }, 404);
           return true;
         }
-        this.json(res, { ...visible, lastSuccessSha: (await store?.getLastSuccessOrder(id))?.sha ?? null });
+        this.json(res, visible);
         return true;
       }
       if (req.method === "PUT" || req.method === "DELETE") {
         if (!store) {
-          this.json(res, { error: "部署模块未启用" }, 503);
+          this.json(res, { error: "主机模块未启用" }, 503);
           return true;
         }
         if (viewer.role !== "admin") {
-          this.json(res, { error: "仅管理员可修改/删除部署目标" }, 403);
+          this.json(res, { error: "仅管理员可修改/删除主机" }, 403);
           return true;
         }
-        if (!target) {
-          this.json(res, { error: "部署目标不存在" }, 404);
+        if (!host) {
+          this.json(res, { error: "主机不存在" }, 404);
           return true;
         }
         if (req.method === "PUT") {
-          const input = DeployTargetInputSchema.parse(JSON.parse(await this.readBody(req)));
-          this.json(res, await store.updateTarget(id, input));
+          const input = HostInputSchema.parse(JSON.parse(await this.readBody(req)));
+          this.json(res, await store.update(id, input));
         } else {
-          await store.deleteTarget(id);
+          await store.delete(id);
           this.json(res, { ok: true });
         }
         return true;
       }
-    }
-    m = pathname.match(/^\/api\/deploy-targets\/([\w-]+)\/deploy$/);
-    if (m && req.method === "POST") {
-      if (!store || !this.deps.deployExecutor) {
-        this.json(res, { error: "部署模块未启用" }, 503);
-        return true;
-      }
-      const id = m[1] ?? "";
-      const target = await store.getTarget(id);
-      if (!target || (viewer.role !== "admin" && target.ownerId !== viewer.id)) {
-        this.json(res, { error: "部署目标不存在" }, 404);
-        return true;
-      }
-      if (!target.enabled) {
-        this.json(res, { error: "部署目标未启用" }, 409);
-        return true;
-      }
-      const body = JSON.parse(await this.readBody(req)) as { ref?: string };
-      const order = await this.deps.deployExecutor.run(target, {
-        trigger: "manual",
-        ...(body.ref ? { ref: body.ref } : {}),
-      });
-      this.json(res, order, 201);
-      return true;
-    }
-    m = pathname.match(/^\/api\/deploy-orders\/([\w-]+)\/orders$/);
-    if (m && req.method === "GET") {
-      if (!store) {
-        this.json(res, { error: "部署模块未启用" }, 503);
-        return true;
-      }
-      const id = m[1] ?? "";
-      const target = await store.getTarget(id);
-      if (!target || (viewer.role !== "admin" && target.ownerId !== viewer.id)) {
-        this.json(res, { error: "部署目标不存在" }, 404);
-        return true;
-      }
-      this.json(res, { orders: await store.listOrders(id, 50) });
-      return true;
-    }
-    m = pathname.match(/^\/api\/deploy-orders\/([\w-]+)$/);
-    if (m && req.method === "GET") {
-      if (!store) {
-        this.json(res, { error: "部署模块未启用" }, 503);
-        return true;
-      }
-      const order = await store.getOrder(m[1] ?? "");
-      const target = order ? await store.getTarget(order.targetId) : undefined;
-      if (!order || !target || (viewer.role !== "admin" && target.ownerId !== viewer.id)) {
-        this.json(res, { error: "部署单不存在" }, 404);
-        return true;
-      }
-      this.json(res, order);
-      return true;
     }
     return false;
   }
@@ -6988,7 +6924,6 @@ export class WebChannel implements Channel {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(body));
   }
-
 
   /** Agent → DTO；detailed=false 时隐藏配置明细，env/headers 永远掩码 */
   /** KB 三 store 装配检查（缺省=503）；返回 undefined 时响应已写出 */

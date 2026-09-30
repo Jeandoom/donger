@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { CREDENTIAL_CODE_PATTERN } from "./credential.js";
+import { GitProviderSchema, parseRepositoryUrl } from "./git.js";
 
 export const TriggerSourceSchema = z.discriminatedUnion("type", [
   z.object({
@@ -104,21 +106,42 @@ export const TriggerEventConfigSchema = z.object({
 });
 export type TriggerEventConfig = z.infer<typeof TriggerEventConfigSchema>;
 
+/**
+ * git 触发器（spec 2026-09-30-deploy-ops-loop-design §6）：平台出站轮询 git 分支
+ * HEAD，相对上次记录（trigger.lastState）出现新提交即触发一次绑定 Loop——
+ * 「每次新提交触发一次」的 agent 驱动部署自动化入口。无 matcher（变化即触发）。
+ */
+export const TriggerGitConfigSchema = z.object({
+  provider: GitProviderSchema,
+  repoUrl: z
+    .string()
+    .refine((v) => parseRepositoryUrl(v) !== undefined, "repoUrl 须为无凭证内嵌的 HTTPS 地址"),
+  branch: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(/^[\w.\-/]+$/, "分支名含非法字符"),
+  /** git PAT 凭证模板 code（私有仓库必填；公共仓库可空） */
+  credentialCode: z.string().regex(CREDENTIAL_CODE_PATTERN).optional(),
+});
+export type TriggerGitConfig = z.infer<typeof TriggerGitConfigSchema>;
+
 const TriggerBaseSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
   name: z.string().min(1),
-  type: z.enum(["scheduler", "hook", "event"]),
+  type: z.enum(["scheduler", "hook", "event", "git"]),
   scheduler: TriggerSchedulerConfigSchema.optional(),
   hook: TriggerHookConfigSchema.optional(),
   event: TriggerEventConfigSchema.optional(),
+  git: TriggerGitConfigSchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 
 // ponytail: DRY——schema 和 input schema 用同一 refine，避免维护双写
 function triggerTypeRefine(
-  t: { type: string; scheduler?: unknown; hook?: unknown; event?: unknown },
+  t: { type: string; scheduler?: unknown; hook?: unknown; event?: unknown; git?: unknown },
   ctx: z.RefinementCtx,
 ) {
   if (t.type === "scheduler" && !t.scheduler) {
@@ -129,6 +152,9 @@ function triggerTypeRefine(
   }
   if (t.type === "event" && !t.event) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "event 类型必须提供 event 配置" });
+  }
+  if (t.type === "git" && !t.git) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "git 类型必须提供 git 配置" });
   }
 }
 

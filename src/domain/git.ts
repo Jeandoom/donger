@@ -228,3 +228,19 @@ export function parseRepositoryUrl(
   if (repositoryPath.split("/").filter(Boolean).length < 2) return undefined;
   return { host, repositoryPath, knownProvider };
 }
+
+/** 从平台 getBranch 原生 JSON 提取分支 HEAD sha（gitee/github=commit.sha / gitlab=commit.id） */
+export function extractBranchHeadSha(provider: string, body: string): string | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const commit = (payload as { commit?: unknown }).commit;
+  if (typeof commit !== "object" || commit === null) return undefined;
+  const sha =
+    provider === "jihulab" ? (commit as { id?: unknown }).id : (commit as { sha?: unknown }).sha;
+  return typeof sha === "string" && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : undefined;
+}

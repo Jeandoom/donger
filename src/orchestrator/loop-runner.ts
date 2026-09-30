@@ -295,6 +295,23 @@ export class LoopRunner {
       const result = evaluateMatcher(t.event.matcher, { body: sourceOutput });
       return { sourceOutput, matched: result.matched, debug: result.debug, error: result.error };
     }
+    if (t.type === "git") {
+      // git 触发器由 GitWatcher 出站轮询自动触发（首见建基线、新提交 fire 一次）；
+      // 测试仅回显配置与基线，不做单次求值
+      if (!t.git) return { sourceOutput: "", matched: false, error: "git 配置缺失" };
+      const lastSha = await triggerStore.getGitLastSha(t.id);
+      return {
+        sourceOutput: "",
+        matched: false,
+        debug: {
+          provider: t.git.provider,
+          repoUrl: t.git.repoUrl,
+          branch: t.git.branch,
+          lastSha,
+          note: "git 触发器由平台轮询自动触发（分支出现新提交时 fire 一次）；首次保存仅建立基线",
+        },
+      };
+    }
     const sched = t.scheduler;
     if (!sched) return { sourceOutput: "", matched: false, error: "scheduler 配置缺失" };
 

@@ -11,4 +11,7 @@ export interface TriggerStore {
   delete(id: string): Promise<void>;
   /** 返回引用此 trigger 的 workflow 数（用于删除保护） */
   countWorkflowsReferencing(triggerId: string): Promise<number>;
+  /** git 触发器：上次已见分支 HEAD（首见 undefined=建立基线，不触发） */
+  getGitLastSha(id: string): Promise<string | undefined>;
+  setGitLastSha(id: string, sha: string): Promise<void>;
 }

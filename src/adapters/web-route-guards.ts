@@ -507,24 +507,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/skills/repo/verify", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/repo/sync", access: { kind: "authenticated" } },
 
-    // ===== 部署目标/部署单（spec 2026-09-30-deploy-ops-loop-design）=====
-    // 属主/管理员分流在 handler（登记= admin；查看/触发=属主或 admin；缺 store=503）
-    { method: "GET", pattern: "/api/deploy-targets", access: { kind: "authenticated" } },
-    { method: "POST", pattern: "/api/deploy-targets", access: { kind: "authenticated" } },
-    { method: "GET", pattern: "/api/deploy-targets/:id", access: { kind: "authenticated" } },
-    { method: "PUT", pattern: "/api/deploy-targets/:id", access: { kind: "authenticated" } },
-    { method: "DELETE", pattern: "/api/deploy-targets/:id", access: { kind: "authenticated" } },
-    {
-      method: "POST",
-      pattern: "/api/deploy-targets/:id/deploy",
-      access: { kind: "authenticated" },
-    },
-    {
-      method: "GET",
-      pattern: "/api/deploy-orders/:id/orders",
-      access: { kind: "authenticated" },
-    },
-    { method: "GET", pattern: "/api/deploy-orders/:id", access: { kind: "authenticated" } },
-
+    // ===== 主机资产（spec 2026-09-30-deploy-ops-loop-design §6）=====
+    // 属主/管理员分流在 handler（登记=admin；查看=属主或 admin；缺 store=503）
+    { method: "GET", pattern: "/api/hosts", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/hosts", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/hosts/:id", access: { kind: "authenticated" } },
+    { method: "PUT", pattern: "/api/hosts/:id", access: { kind: "authenticated" } },
+    { method: "DELETE", pattern: "/api/hosts/:id", access: { kind: "authenticated" } },
   ];
 }

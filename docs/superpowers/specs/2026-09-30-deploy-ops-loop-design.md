@@ -1,6 +1,41 @@
 # 部署运维闭环设计（L1：SSH 通道 + 出站轮询触发）
 
-日期：2026-09-30 ｜ 状态：已拍板实施（L1）
+日期：2026-09-30 ｜ 状态：**v2 重构已拍板实施**（agent 驱动部署模型，见 §6；L1 的剧本/状态机/纯通道快路径退役）
+
+## 6. v2 重构：agent 驱动部署（当日拍板）
+
+L1 落地+真机验证后复盘：剧本命令/部署单状态机/部署表单页是把 agent 平台做成了「小 Jenkins」——
+部署逻辑死配置化、游离在对话闭环外、与技能/审计/触发器三个已有抽象平行造轮子。
+
+**v2 模型：平台不拥有部署逻辑——平台拥有「资产+通道+治理」，部署逻辑在仓库与技能里，执行在 agent 会话里。**
+
+| 概念 | 实体 | 复用抽象 |
+|---|---|---|
+| 主机 | Host 资产（SSH 端点+凭证引用），`hosts` 表，`/api/hosts` CRUD | 凭证/连接器的资产模式 |
+| 部署知识 | 仓库 `deploy.sh` + 内置技能 `deploy-operator`（SOP，agent 可协助定制变体） | 技能体系（Git 版本化） |
+| 自动化 | **第四种触发器类型 `git`**：定时轮询分支 HEAD，lastSha 变化→fire 绑定 Loop（agent 会话） | Trigger/Workflow/Loop 全套 |
+| 治理 | 部署即会话：审批门+审计+通知全复用 | 零新增 |
+
+拍板：①**不保留纯通道快路径**（autoDeploy/executor/deploy_orders 全退役，表休眠不 DROP）；
+②内置部署技能做缺省（skills/deploy-operator），支持 agent 协助创建定制变体。
+
+### donger-host 工具集 v2（目标登记制→主机资产制）
+
+只读免审批：`hosts_list` / `host_status` / `host_disk_usage` / `host_process_top` / `host_logs_tail`；
+force 门（host-ops）：`host_exec`（任意单行命令，一律审批——部署/重启/跑仓库脚本由 agent 构造）、
+`host_logs_clean`。挂载条件：admin 或名下有 Host。
+
+### L1 资产处置
+
+保留：ssh2 适配器、ssh-command-runner 端口、host-ops force 门、凭证体系、deploy 通知组（预留 landside）。
+改造：DeployPoller→GitWatcher（扫 enabled loop 的 git 触发器）；部署页→主机页（部署操作走对话/Loop）。
+退役（表休眠）：deploy_targets/deploy_orders、DeployExecutor、DeployTarget 域、/api/deploy-* 路由、
+service_deploy/service_restart/deploy_status 工具。
+
+---
+
+以下为 L1 历史版本内容（已被 §6 取代，留档）：
+
 
 ## 1. 背景与目标
 

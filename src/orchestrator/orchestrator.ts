@@ -43,7 +43,7 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
-import type { DeployStore } from "../ports/deploy-store.js";
+import type { HostStore } from "../ports/host-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
@@ -67,7 +67,6 @@ import { materializeMessageFiles } from "./attachment-materializer.js";
 import { createAuditToolsServer } from "./audit-tools.js";
 import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent.js";
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
-import type { DeployExecutor } from "./deploy-executor.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
@@ -102,9 +101,8 @@ export interface OrchestratorDeps {
   transcriptStore?: TranscriptStore;
   /** 凭证集存储：agent 勾选 code → 当前用户已配置值（注入 env） */
   credentialSets: CredentialSetStore;
-  /** 部署运维闭环（spec 2026-09-30-deploy-ops-loop-design）；三者齐备才挂载 donger-host 工具 */
-  deployStore?: DeployStore;
-  deployExecutor?: DeployExecutor;
+  /** 主机资产+SSH 通道（spec 2026-09-30-deploy-ops-loop-design §6）；两者齐备才挂载 donger-host 工具 */
+  hostStore?: HostStore;
   sshRunner?: SshCommandRunner;
   /** 智能体存储（M13；缺省=不支持显式 agent，会话 agentId 必须为空） */
   agentStore?: AgentStore;
@@ -608,21 +606,20 @@ export class Orchestrator {
           }),
         };
       }
-      // 远程主机运维工具（donger-host）：会话用户为 admin 或名下有 enabled 部署目标时注入
-      //（spec 2026-09-30-deploy-ops-loop-design）。目标登记制——工具每次调用再校验 targetId
-      // 可见性；写操作（部署/重启/日志截断）由 host-ops force 门拦审批（full_access 不豁免）
-      if (this.deps.deployStore && this.deps.deployExecutor && this.deps.sshRunner) {
+      // 远程主机工具（donger-host v2）：会话用户为 admin 或名下有 enabled 主机时注入
+      //（spec 2026-09-30-deploy-ops-loop-design §6）。主机登记制——工具每次调用再校验
+      // hostId 可见性；写操作（host_exec/host_logs_clean）由 host-ops force 门拦审批
+      if (this.deps.hostStore && this.deps.sshRunner) {
         const viewer = {
           id: p.user.id,
           role: p.user.role === "admin" ? ("admin" as const) : ("user" as const),
         };
-        if (await canViewerUseHostTools(this.deps.deployStore, viewer)) {
+        if (await canViewerUseHostTools(this.deps.hostStore, viewer)) {
           base = {
             ...base,
             hostTools: createHostToolsServer({
               viewer,
-              deployStore: this.deps.deployStore,
-              executor: this.deps.deployExecutor,
+              hostStore: this.deps.hostStore,
               sshRunner: this.deps.sshRunner,
               credentialSets: this.deps.credentialSets,
             }),

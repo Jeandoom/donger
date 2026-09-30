@@ -26,7 +26,13 @@ type MatcherFields = Record<string, string>;
 interface TriggerDTO {
   id: string;
   name: string;
-  type: "scheduler" | "hook" | "event";
+  type: "scheduler" | "hook" | "event" | "git";
+  git?: {
+    provider: "github" | "gitee" | "jihulab";
+    repoUrl: string;
+    branch: string;
+    credentialCode?: string;
+  };
   scheduler?: {
     cron: string;
     source: { type: "http"; url: string; method: string } | { type: "file"; path: string };
@@ -71,7 +77,12 @@ export function TriggerEditorPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const [name, setName] = useState("");
-  const [type, setType] = useState<"scheduler" | "hook" | "event">("scheduler");
+  const [type, setType] = useState<"scheduler" | "hook" | "event" | "git">("scheduler");
+  const [gitProvider, setGitProvider] = useState<"github" | "gitee" | "jihulab">("gitee");
+  const [gitRepoUrl, setGitRepoUrl] = useState("");
+  const [gitBranch, setGitBranch] = useState("master");
+  const [gitCredentialCode, setGitCredentialCode] = useState("");
+  const [gitCreds, setGitCreds] = useState<Array<{ code: string; name: string }>>([]);
   const [eventName, setEventName] = useState("feedback.created");
   const [cron, setCron] = useState("0 * * * *");
   const [sourceType, setSourceType] = useState<"http" | "file">("http");
@@ -102,6 +113,10 @@ export function TriggerEditorPage() {
     filePath,
     hookPath,
     hookResponse,
+    gitProvider,
+    gitRepoUrl,
+    gitBranch,
+    gitCredentialCode,
     matcherKind,
     matcher,
   });
@@ -147,6 +162,12 @@ export function TriggerEditorPage() {
           Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, v == null ? "" : String(v)])),
         );
       }
+      if (t.git) {
+        setGitProvider(t.git.provider);
+        setGitRepoUrl(t.git.repoUrl);
+        setGitBranch(t.git.branch);
+        setGitCredentialCode(t.git.credentialCode ?? "");
+      }
       if (t.event) {
         setEventName(t.event.name);
         const { kind, ...rest } = t.event.matcher;
@@ -167,6 +188,18 @@ export function TriggerEditorPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // git 凭证模板下拉（git 触发类型可用；拉一次）
+  useEffect(() => {
+    if (type !== "git" || gitCreds.length) return;
+    apiFetch("/api/credential-templates")
+      .then(
+        (r) =>
+          r.json() as Promise<{ templates?: Array<{ code: string; name: string; kind: string }> }>,
+      )
+      .then((d) => setGitCreds((d.templates ?? []).filter((t) => t.kind === "git")))
+      .catch(() => setGitCreds([]));
+  }, [type, gitCreds.length]);
 
   const buildPayload = () => {
     const m = buildMatcher(matcherKind, matcher);
@@ -189,6 +222,18 @@ export function TriggerEditorPage() {
         name,
         type,
         event: { name: eventName, matcher: m },
+      };
+    }
+    if (type === "git") {
+      return {
+        name,
+        type,
+        git: {
+          provider: gitProvider,
+          repoUrl: gitRepoUrl.trim(),
+          branch: gitBranch.trim(),
+          ...(gitCredentialCode ? { credentialCode: gitCredentialCode } : {}),
+        },
       };
     }
     return {
@@ -214,6 +259,11 @@ export function TriggerEditorPage() {
       if (sourceType === "file" && !filePath.trim()) return "请填写文件路径";
     } else if (type === "hook" && !hookPath.trim().startsWith("/")) {
       return "回调路径需以 / 开头";
+    } else if (type === "git") {
+      if (!/^https:\/\/\S+\.git$|^https:\/\/\S+$/.test(gitRepoUrl.trim())) {
+        return "请填写仓库 HTTPS 地址（如 https://gitee.com/org/repo.git）";
+      }
+      if (!gitBranch.trim()) return "请填写分支名";
     }
     return null;
   };
@@ -337,11 +387,12 @@ export function TriggerEditorPage() {
         <FormField label="类型">
           <Select
             value={type}
-            onChange={(e) => setType(e.target.value as "scheduler" | "hook" | "event")}
+            onChange={(e) => setType(e.target.value as "scheduler" | "hook" | "event" | "git")}
           >
             <option value="scheduler">定时（scheduler）</option>
             <option value="hook">回调（hook）</option>
             <option value="event">事件（event）</option>
+            <option value="git">代码提交（git）</option>
           </Select>
         </FormField>
       </FormSection>
@@ -355,7 +406,9 @@ export function TriggerEditorPage() {
             ? "定时表达式与数据来源"
             : type === "event"
               ? "订阅平台内部事件（仅管理员可用）"
-              : "外部系统回调入口"
+              : type === "git"
+                ? "平台出站轮询分支 HEAD（默认 2 分钟），出现新提交触发一次（无需 webhook）"
+                : "外部系统回调入口"
         }
       >
         {type === "scheduler" ? (
@@ -405,6 +458,46 @@ export function TriggerEditorPage() {
               </FormField>
             )}
           </>
+        ) : type === "git" ? (
+          <>
+            <FormField label="代码平台">
+              <Select
+                value={gitProvider}
+                onChange={(e) => setGitProvider(e.target.value as "github" | "gitee" | "jihulab")}
+              >
+                <option value="gitee">gitee</option>
+                <option value="jihulab">jihulab / GitLab</option>
+                <option value="github">github</option>
+              </Select>
+            </FormField>
+            <FormField label="仓库 HTTPS 地址" required>
+              <Input
+                mono
+                value={gitRepoUrl}
+                onChange={(e) => setGitRepoUrl(e.target.value)}
+                placeholder="https://gitee.com/org/repo.git"
+              />
+            </FormField>
+            <FormField label="分支" required>
+              <Input mono value={gitBranch} onChange={(e) => setGitBranch(e.target.value)} />
+            </FormField>
+            <FormField
+              label="git 凭证"
+              hint="私有仓库必填（凭证页的 git PAT 模板）；公共仓库可不选"
+            >
+              <Select
+                value={gitCredentialCode}
+                onChange={(e) => setGitCredentialCode(e.target.value)}
+              >
+                <option value="">（公共仓库，匿名）</option>
+                {gitCreds.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.name}（{c.code}）
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+          </>
         ) : type === "hook" ? (
           <>
             <FormField
@@ -419,7 +512,11 @@ export function TriggerEditorPage() {
             </FormField>
           </>
         ) : (
-          <FormField label="事件" required hint="事件发生时把载荷 JSON 交给触发条件判定；循环忙时自动排队不丢">
+          <FormField
+            label="事件"
+            required
+            hint="事件发生时把载荷 JSON 交给触发条件判定；循环忙时自动排队不丢"
+          >
             <Select value={eventName} onChange={(e) => setEventName(e.target.value)}>
               {EVENT_NAME_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -431,114 +528,116 @@ export function TriggerEditorPage() {
         )}
       </FormSection>
 
-      <FormSection
-        id="trigger-sec-matcher"
-        no="3"
-        title="触发条件"
-        description="对数据源输出做匹配，命中才进入工作流"
-      >
-        <FormField label="匹配方式">
-          <Select
-            value={matcherKind}
-            onChange={(e) => {
-              setMatcherKind(e.target.value as MatcherKind);
-              setMatcher({});
-            }}
-          >
-            {MATCHER_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
-        </FormField>
-        {matcherKind === "statusEq" && (
-          <FormField label="状态码">
-            <Input
-              type="number"
-              placeholder="200"
-              value={matcher.value ?? ""}
-              onChange={(e) => setMatcher({ value: e.target.value })}
-            />
+      {type !== "git" ? (
+        <FormSection
+          id="trigger-sec-matcher"
+          no="3"
+          title="触发条件"
+          description="对数据源输出做匹配，命中才进入工作流"
+        >
+          <FormField label="匹配方式">
+            <Select
+              value={matcherKind}
+              onChange={(e) => {
+                setMatcherKind(e.target.value as MatcherKind);
+                setMatcher({});
+              }}
+            >
+              {MATCHER_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
           </FormField>
-        )}
-        {matcherKind === "bodyContains" && (
-          <FormField label="关键词">
-            <Input
-              placeholder="keyword"
-              value={matcher.keyword ?? ""}
-              onChange={(e) => setMatcher({ keyword: e.target.value })}
-            />
-          </FormField>
-        )}
-        {matcherKind === "bodyRegex" && (
-          <FormField label="正则表达式">
-            <Input
-              mono
-              placeholder="v\d+"
-              value={matcher.pattern ?? ""}
-              onChange={(e) => setMatcher({ pattern: e.target.value })}
-            />
-          </FormField>
-        )}
-        {(matcherKind === "jsonPathEq" || matcherKind === "jsonPathGt") && (
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <FormField label="JSON Path">
+          {matcherKind === "statusEq" && (
+            <FormField label="状态码">
+              <Input
+                type="number"
+                placeholder="200"
+                value={matcher.value ?? ""}
+                onChange={(e) => setMatcher({ value: e.target.value })}
+              />
+            </FormField>
+          )}
+          {matcherKind === "bodyContains" && (
+            <FormField label="关键词">
+              <Input
+                placeholder="keyword"
+                value={matcher.keyword ?? ""}
+                onChange={(e) => setMatcher({ keyword: e.target.value })}
+              />
+            </FormField>
+          )}
+          {matcherKind === "bodyRegex" && (
+            <FormField label="正则表达式">
               <Input
                 mono
-                placeholder="$.count"
-                value={matcher.path ?? ""}
-                onChange={(e) => setMatcher((m) => ({ ...m, path: e.target.value }))}
+                placeholder="v\d+"
+                value={matcher.pattern ?? ""}
+                onChange={(e) => setMatcher({ pattern: e.target.value })}
               />
             </FormField>
-            <FormField label="比较值">
-              <Input
-                type={matcherKind === "jsonPathGt" ? "number" : "text"}
-                placeholder={matcherKind === "jsonPathGt" ? "10" : "value"}
-                value={matcher.value ?? ""}
-                onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
-              />
-            </FormField>
-          </div>
-        )}
-        {matcherKind === "bodyFieldEq" && (
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <FormField label="顶层字段名">
-              <Input
-                placeholder="type"
-                value={matcher.field ?? ""}
-                onChange={(e) => setMatcher((m) => ({ ...m, field: e.target.value }))}
-              />
-            </FormField>
-            <FormField label="等于值">
-              <Input
-                placeholder="issue"
-                value={matcher.value ?? ""}
-                onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
-              />
-            </FormField>
-          </div>
-        )}
-        {matcherKind === "headerEq" && (
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <FormField label="Header 名">
-              <Input
-                mono
-                placeholder="x-signature"
-                value={matcher.header ?? ""}
-                onChange={(e) => setMatcher((m) => ({ ...m, header: e.target.value }))}
-              />
-            </FormField>
-            <FormField label="等于值">
-              <Input
-                placeholder="value"
-                value={matcher.value ?? ""}
-                onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
-              />
-            </FormField>
-          </div>
-        )}
-      </FormSection>
+          )}
+          {(matcherKind === "jsonPathEq" || matcherKind === "jsonPathGt") && (
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <FormField label="JSON Path">
+                <Input
+                  mono
+                  placeholder="$.count"
+                  value={matcher.path ?? ""}
+                  onChange={(e) => setMatcher((m) => ({ ...m, path: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="比较值">
+                <Input
+                  type={matcherKind === "jsonPathGt" ? "number" : "text"}
+                  placeholder={matcherKind === "jsonPathGt" ? "10" : "value"}
+                  value={matcher.value ?? ""}
+                  onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
+                />
+              </FormField>
+            </div>
+          )}
+          {matcherKind === "bodyFieldEq" && (
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <FormField label="顶层字段名">
+                <Input
+                  placeholder="type"
+                  value={matcher.field ?? ""}
+                  onChange={(e) => setMatcher((m) => ({ ...m, field: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="等于值">
+                <Input
+                  placeholder="issue"
+                  value={matcher.value ?? ""}
+                  onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
+                />
+              </FormField>
+            </div>
+          )}
+          {matcherKind === "headerEq" && (
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <FormField label="Header 名">
+                <Input
+                  mono
+                  placeholder="x-signature"
+                  value={matcher.header ?? ""}
+                  onChange={(e) => setMatcher((m) => ({ ...m, header: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="等于值">
+                <Input
+                  placeholder="value"
+                  value={matcher.value ?? ""}
+                  onChange={(e) => setMatcher((m) => ({ ...m, value: e.target.value }))}
+                />
+              </FormField>
+            </div>
+          )}
+        </FormSection>
+      ) : null}
 
       {testResult && (
         <FormSection id="trigger-sec-test" no="4" title="测试结果">

@@ -10,6 +10,8 @@ interface TriggerRow {
   name: string;
   type: string;
   config: string;
+  /** git 触发器运行时状态（JSON：{lastSha}）；其余类型为空 */
+  lastState: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +27,11 @@ export class SqliteTriggerStore implements TriggerStore {
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
       )
     `);
+    // v2 git 触发器（2026-09-30）：既有库补 lastState 列
+    const cols = this.db.prepare("PRAGMA table_info(triggers)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "lastState")) {
+      this.db.exec("ALTER TABLE triggers ADD COLUMN lastState TEXT");
+    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_triggers_owner ON triggers(ownerId)");
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_triggers_type_path ON triggers(type, json_extract(config, '$.hook.path'))",
@@ -37,7 +44,9 @@ export class SqliteTriggerStore implements TriggerStore {
         ? { scheduler: t.scheduler }
         : t.type === "event"
           ? { event: t.event }
-          : { hook: t.hook };
+          : t.type === "git"
+            ? { git: t.git }
+            : { hook: t.hook };
     return { type: t.type, config: JSON.stringify(cfg) };
   }
 
@@ -51,6 +60,7 @@ export class SqliteTriggerStore implements TriggerStore {
       scheduler: cfg.scheduler,
       hook: cfg.hook,
       event: cfg.event,
+      git: cfg.git,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     });
@@ -123,5 +133,25 @@ export class SqliteTriggerStore implements TriggerStore {
       .prepare("SELECT COUNT(*) AS n FROM workflows WHERE triggerId = ?")
       .get(triggerId) as { n: number };
     return row.n;
+  }
+
+  /** git 触发器：上次已见分支 HEAD（首见返回 undefined=建立基线，不触发） */
+  async getGitLastSha(id: string): Promise<string | undefined> {
+    const row = this.db.prepare("SELECT lastState FROM triggers WHERE id = ?").get(id) as
+      | { lastState: string | null }
+      | undefined;
+    if (!row?.lastState) return undefined;
+    try {
+      const parsed = JSON.parse(row.lastState) as { lastSha?: string };
+      return parsed.lastSha;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async setGitLastSha(id: string, sha: string): Promise<void> {
+    this.db
+      .prepare("UPDATE triggers SET lastState = ? WHERE id = ?")
+      .run(JSON.stringify({ lastSha: sha }), id);
   }
 }
