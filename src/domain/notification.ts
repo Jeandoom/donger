@@ -18,10 +18,13 @@ export type NotificationEvent =
   | "credential.missing"
   | "feedback.replied"
   | "approval.requested"
-  | "system.announcement";
+  | "system.announcement"
+  | "deploy.detected"
+  | "deploy.succeeded"
+  | "deploy.failed";
 
 /** 订阅偏好按事件组粒度（用户不感知单事件开关）；组×通道成矩阵 */
-export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback";
+export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback" | "deploy";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
 
@@ -97,6 +100,24 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     mandatoryInapp: false,
     label: "系统公告",
   },
+  "deploy.detected": {
+    group: "deploy",
+    severity: "warn",
+    mandatoryInapp: false,
+    label: "发现新提交待部署",
+  },
+  "deploy.succeeded": {
+    group: "deploy",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "部署成功",
+  },
+  "deploy.failed": {
+    group: "deploy",
+    severity: "critical",
+    mandatoryInapp: false,
+    label: "部署失败",
+  },
 };
 
 export function isNotificationEvent(v: unknown): v is NotificationEvent {
@@ -109,6 +130,7 @@ export const NOTIFICATION_GROUP_LABELS: Record<NotificationEventGroup, string> =
   system: "系统提醒",
   account: "账号安全",
   feedback: "反馈回复",
+  deploy: "部署运维",
 };
 
 /** account 组整体强制站内信（组内事件 mandatoryInapp=true），订阅矩阵中锁定为开 */

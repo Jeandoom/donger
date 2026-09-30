@@ -44,6 +44,7 @@ export class ClaudeAgentRunner implements AgentRunner {
       ...(opts.mcpServers?.length ? mcpServersToSdk(opts.mcpServers) : {}),
       ...(opts.platformTools ? { "donger-platform": opts.platformTools } : {}),
       ...(opts.gitPlatformTools ? { "donger-git": opts.gitPlatformTools } : {}),
+      ...(opts.hostTools ? { "donger-host": opts.hostTools } : {}),
       ...(opts.kbTools ? { "donger-kb": opts.kbTools } : {}),
       ...(opts.auditTools ? { "donger-audit": opts.auditTools } : {}),
     };

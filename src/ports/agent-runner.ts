@@ -58,6 +58,9 @@ export interface RunOptions {
   platformTools?: McpSdkServerConfigWithInstance;
   /** in-process git 平台元数据 MCP server（agent 绑定 git 仓库时注入） */
   gitPlatformTools?: McpSdkServerConfigWithInstance;
+  /** in-process 远程主机运维 MCP server（donger-host；会话用户为 admin 或部署目标属主时注入，
+   *  spec 2026-09-30-deploy-ops-loop-design；写操作由 host-ops force 门拦审批） */
+  hostTools?: McpSdkServerConfigWithInstance;
   /** in-process 业务知识库 MCP server（恒挂载，可用性由 agent tools 白名单控制） */
   kbTools?: McpSdkServerConfigWithInstance;
   /** KB 目录根清单（<workspaceDir>/kb/<kbId>）：Bash 写守卫的敏感根（spec §9，D6）——

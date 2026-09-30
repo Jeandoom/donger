@@ -36,6 +36,9 @@ import {
 } from "./adapters/sqlite-kb-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
 import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
+import { SqliteDeployStore } from "./adapters/sqlite-deploy-store.js";
+import { createSsh2CommandRunner } from "./adapters/ssh2-command-runner.js";
+import { createGitPlatformApiResolver } from "./adapters/git-platform-api-resolver.js";
 import { SqliteMcpTokenStore } from "./adapters/sqlite-mcp-token-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
@@ -61,6 +64,8 @@ import { EventTriggerDispatcher } from "./orchestrator/event-trigger-dispatcher.
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { HookRegistry } from "./orchestrator/hook-registry.js";
 import { LoopRunner } from "./orchestrator/loop-runner.js";
+import { DeployExecutor } from "./orchestrator/deploy-executor.js";
+import { DeployPoller } from "./orchestrator/deploy-poller.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
@@ -345,6 +350,9 @@ async function main(): Promise<void> {
       channel,
       runtimeMgr,
       credentialSets,
+      deployStore,
+      deployExecutor,
+      sshRunner,
       agentStore,
       agentShareStore,
       kbLibraryStore,
@@ -425,6 +433,10 @@ async function main(): Promise<void> {
   workflowStore.migrate();
   const loopStore = new SqliteLoopStore(db);
   loopStore.migrate();
+
+  // 部署运维闭环（spec 2026-09-30-deploy-ops-loop-design）：目标/部署单两表 + 崩溃清扫
+  const deployStore = new SqliteDeployStore(db);
+  deployStore.migrate();
 
   // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好 + 站外通道
   const notificationStore = new SqliteNotificationStore(db, secretCipher);
@@ -538,6 +550,25 @@ async function main(): Promise<void> {
     llm: cfg.llm,
     llmDebugRunner: new ClaudeLlmDebugRunner(),
   };
+  // 部署执行器 + 出站轮询器（spec 2026-09-30-deploy-ops-loop-design；触发=donger 主动
+  // 轮询 git 平台分支 HEAD，不依赖平台 webhook）。须在 createOrch 调用前就绪（deps 传参）
+  const sshRunner = createSsh2CommandRunner();
+  const deployExecutor = new DeployExecutor({
+    deployStore,
+    credentialSets,
+    sshRunner,
+    notifications: notificationService,
+    logger: log,
+  });
+  const deployPoller = new DeployPoller({
+    deployStore,
+    credentialSets,
+    platformApis: createGitPlatformApiResolver(),
+    executor: deployExecutor,
+    notifications: notificationService,
+    logger: log,
+    intervalMs: cfg.deployPollIntervalMs,
+  });
   const webChannel = new WebChannel(webChannelDeps);
   const webOrch = createOrch(webChannel, skillPackStore, credentialSets, skillInstaller);
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
@@ -589,6 +620,8 @@ async function main(): Promise<void> {
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
   webChannelDeps.loopRunner = loopRunner;
   webChannelDeps.scheduler = scheduler;
+  webChannelDeps.deployStore = deployStore;
+  webChannelDeps.deployExecutor = deployExecutor;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.eventTriggers = eventTriggers;
   webChannelDeps.triggerQueue = triggerQueueStore;
@@ -609,6 +642,12 @@ async function main(): Promise<void> {
     }
   };
   await scheduler.restore();
+  // 部署单崩溃清扫（遗留 running → failed）+ 轮询器启动（出站轮询 git 平台）
+  {
+    const swept = await deployStore.failRunningOrders("process restart");
+    if (swept > 0) log.warn({ swept }, "崩溃遗留部署单已标记失败");
+    deployPoller.start();
+  }
   // 触发事件队列恢复：崩溃遗留 running→pending 重投 + 抽积压 + 清理终态行
   await loopRunner.restoreQueue();
   log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
@@ -617,6 +656,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     log.info({ signal }, "关闭中");
     scheduler.stopAll();
+    deployPoller.stop();
     await Promise.race([webChannel.stop(), new Promise((resolve) => setTimeout(resolve, 500))]);
     process.exit(0);
   };

@@ -40,5 +40,11 @@ export function createDefaultGates(): GateRouter {
   ]) {
     gates.add({ gateId: "git-write", toolName: `mcp__donger-git__${t}`, force: true });
   }
+  // 远程主机运维写操作（spec 2026-09-30-deploy-ops-loop-design §4）：目标机上的部署/
+  // 重启/日志截断均改变远端状态且不可在平台内撤销，force 门（full_access 不豁免）
+  gates.describe({ id: "host-ops", description: "远程主机运维写操作审批（部署/重启/日志截断）" });
+  for (const t of ["service_deploy", "service_restart", "host_logs_clean"]) {
+    gates.add({ gateId: "host-ops", toolName: `mcp__donger-host__${t}`, force: true });
+  }
   return gates;
 }
