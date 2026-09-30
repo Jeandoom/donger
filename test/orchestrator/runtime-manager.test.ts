@@ -12,8 +12,8 @@ import {
   RuntimeManager,
   type RuntimeManagerConfig,
 } from "../../src/orchestrator/runtime-manager.js";
-import type { ConversationStore } from "../../src/ports/conversation-store.js";
 import type { AppStore } from "../../src/ports/app-store.js";
+import type { ConversationStore } from "../../src/ports/conversation-store.js";
 import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { TranscriptStore } from "../../src/ports/transcript-store.js";
 import { loadOrGenerateAppSecret } from "../../src/util/app-secret.js";
@@ -100,7 +100,7 @@ function emptySkillDeps() {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialSets = new SqliteCredentialSetStore(
+  const credentialSets = SqliteCredentialSetStore.fromSeed(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
@@ -131,7 +131,10 @@ describe("RuntimeManager", () => {
     db = new Database(":memory:");
     packStore = new SqliteSkillPackStore(db);
     packStore.migrate();
-    credStore = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+    credStore = SqliteCredentialSetStore.fromSeed(
+      db,
+      loadOrGenerateAppSecret(db, "skill_secret_key"),
+    );
     credStore.migrate();
   });
 

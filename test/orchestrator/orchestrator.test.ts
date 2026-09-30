@@ -152,7 +152,7 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
   packStore.migrate();
-  const credentialSets = new SqliteCredentialSetStore(
+  const credentialSets = SqliteCredentialSetStore.fromSeed(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );

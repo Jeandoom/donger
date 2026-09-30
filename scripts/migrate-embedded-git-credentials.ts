@@ -35,7 +35,10 @@ if (!statSync(usersRoot, { throwIfNoEntry: false })) {
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
-const store = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+const store = SqliteCredentialSetStore.fromSeed(
+  db,
+  loadOrGenerateAppSecret(db, "skill_secret_key"),
+);
 store.migrate();
 
 const PROVIDER_BY_HOST: Record<string, "github" | "gitee" | "jihulab"> = {

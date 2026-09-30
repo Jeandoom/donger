@@ -12,6 +12,15 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { type AdminUser, fetchAdminUsers, updateUserRole } from "../lib/adminUsers";
 import { apiFetch, type CurrentUser, fetchMe } from "../lib/auth";
+import {
+  fetchSystemKeyStatus,
+  importSystemKeyHistory,
+  type ReEncryptReport,
+  repairSystemKeys,
+  rotateSystemKey,
+  SYSTEM_KEY_SOURCE_LABEL,
+  type SystemKeyStatus,
+} from "../lib/systemKey";
 import { cn } from "../lib/utils";
 
 /**
@@ -51,6 +60,7 @@ type SectionId =
   | "verifications"
   | "users"
   | "notifications"
+  | "secretkey"
   | "mcp";
 
 /** admin 专属分区（平台授权配置） */
@@ -60,6 +70,8 @@ const ADMIN_SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "email", label: "邮箱注册" },
   { id: "verifications", label: "待验证账号" },
   { id: "users", label: "用户管理" },
+  // 系统密钥生命周期（2026-09-30）：单一真源=DB，轮换自动重加密全部依赖数据
+  { id: "secretkey", label: "密钥管理" },
   // 通知：通道状态+投递日志+系统公告群发（spec 2026-09-28-notification-module-design §8）
   { id: "notifications", label: "通知" },
 ];
@@ -655,6 +667,297 @@ function McpAccessSection() {
   );
 }
 
+/** 重加密报告面板：扫描/正常/重加密计数 + 无法恢复清单（轮换/导入/修复共用） */
+function KeyReportPanel({
+  title,
+  report,
+  onClose,
+}: {
+  title: string;
+  report: ReEncryptReport;
+  onClose: () => void;
+}) {
+  return (
+    <Card className="flex flex-col gap-2 p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">{title}</span>
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          关闭
+        </Button>
+      </div>
+      <p className="text-[13px] text-muted-foreground">
+        共扫描 {report.scanned} 个密文：{report.healthy} 个已用当前密钥可解，
+        {report.healed} 个已重加密收编。
+        {report.failed.length > 0
+          ? `另有 ${report.failed.length} 个无法恢复，需重新录入：`
+          : "无无法恢复的密文。"}
+      </p>
+      {report.failed.length > 0 ? (
+        <ul className="flex flex-col gap-1 text-[13px] text-destructive">
+          {report.failed.map((f) => (
+            <li key={`${f.kind}-${f.name}-${f.field}`}>
+              {f.kind} · {f.name}（{f.field}）
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </Card>
+  );
+}
+
+const fmtTime = (iso: string) => (iso ? new Date(iso).toLocaleString() : "—");
+
+/**
+ * 系统密钥管理分区（2026-09-30 系统密钥生命周期）：
+ * 单一真源=DB，启动 DB 优先（env 仅首次导入）；轮换一键随机/自定义，数据自动重加密；
+ * 历史密钥带时间全量保留，导入历史密钥是外部漂移数据的恢复通道。
+ */
+function SecretKeySection() {
+  const [status, setStatus] = useState<SystemKeyStatus | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [report, setReport] = useState<{ title: string; r: ReEncryptReport } | null>(null);
+  const [customSeed, setCustomSeed] = useState("");
+  const [importSeed, setImportSeed] = useState("");
+  const [importNote, setImportNote] = useState("");
+  const [confirmRotate, setConfirmRotate] = useState<"generate" | "custom" | null>(null);
+  const [confirmRepair, setConfirmRepair] = useState(false);
+
+  const load = useCallback(() => {
+    setLoadError("");
+    void fetchSystemKeyStatus()
+      .then(setStatus)
+      .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)));
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const runRotate = async (mode: "generate" | "custom") => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const result =
+        mode === "generate"
+          ? await rotateSystemKey({ generate: true })
+          : await rotateSystemKey({ newValue: customSeed.trim() });
+      const healed = result.report.healed + result.leftover.healed;
+      setReport({
+        title: `轮换完成，新密钥指纹 ${result.fingerprint}（重加密 ${healed} 个密文）`,
+        r: result.leftover.healed > 0 ? result.leftover : result.report,
+      });
+      setCustomSeed("");
+      setConfirmRotate(null);
+      load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runImport = async () => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const r = await importSystemKeyHistory({
+        seed: importSeed.trim(),
+        note: importNote.trim() || undefined,
+      });
+      setReport({ title: "历史密钥已导入并完成修复", r });
+      setImportSeed("");
+      setImportNote("");
+      load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runRepair = async () => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const r = await repairSystemKeys();
+      setReport({ title: "深度修复完成", r });
+      setConfirmRepair(false);
+      load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-4">
+      <SectionHead
+        title="系统密钥"
+        description="加密模型密钥、连接器、智能体 MCP、凭证集与通知地址。密钥持久化在数据库中，改环境变量不再生效；轮换会自动用新密钥重加密全部依赖数据，历史密钥保留用于恢复。"
+        status={status ? { label: SYSTEM_KEY_SOURCE_LABEL[status.source], tone: "success" } : null}
+      />
+
+      {loadError ? (
+        <div className="flex items-center justify-between rounded-lg bg-destructive-soft p-3 text-sm text-destructive">
+          <span>{loadError}</span>
+          <Button variant="outline" size="sm" onClick={load}>
+            重试
+          </Button>
+        </div>
+      ) : null}
+
+      {status ? (
+        <Card className="flex flex-col gap-4 p-5">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            <span className="text-muted-foreground">当前密钥</span>
+            <span className="font-mono text-[13px] font-semibold">{status.fingerprint}</span>
+            <span className="text-xs text-muted-foreground">
+              {SYSTEM_KEY_SOURCE_LABEL[status.source]} · {fmtTime(status.createdAt)}
+            </span>
+          </div>
+
+          {status.envKeyPresent && !status.envKeyMatches ? (
+            <div className="rounded-lg bg-warning-soft p-3 text-[13px] text-warning-foreground">
+              检测到环境变量 SECRET_KEY 与数据库密钥不一致：已按「数据库优先」忽略
+              env。若存量数据是用该 env 密钥加密的，请在下方「导入历史密钥」填入该值完成修复。
+            </div>
+          ) : null}
+
+          <div className="flex flex-col gap-2.5">
+            <span className="text-[13px] font-semibold">轮换</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={busy} onClick={() => setConfirmRotate("generate")}>
+                一键随机生成并轮换
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-8 w-72 text-sm"
+                placeholder="自定义新密钥（建议 ≥32 位随机串）"
+                value={customSeed}
+                onChange={(e) => setCustomSeed(e.target.value)}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy || customSeed.trim().length < 8}
+                onClick={() => setConfirmRotate("custom")}
+              >
+                使用自定义密钥轮换
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2.5 border-t border-border pt-4">
+            <span className="text-[13px] font-semibold">历史密钥与恢复</span>
+            <p className="text-xs text-muted-foreground">
+              旧平台/旧部署的数据若用其它密钥加密，把那把密钥导入为历史密钥即可自动修复；也可对已知历史密钥直接深度修复。
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-8 w-72 text-sm font-mono"
+                placeholder="历史密钥原文"
+                value={importSeed}
+                onChange={(e) => setImportSeed(e.target.value)}
+              />
+              <Input
+                className="h-8 w-40 text-sm"
+                placeholder="备注（可选）"
+                value={importNote}
+                onChange={(e) => setImportNote(e.target.value)}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy || importSeed.trim().length === 0}
+                onClick={() => void runImport()}
+              >
+                导入并修复
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => setConfirmRepair(true)}
+              >
+                深度修复
+              </Button>
+            </div>
+          </div>
+
+          {status.history.length > 0 ? (
+            <div className="flex flex-col gap-1.5 border-t border-border pt-4">
+              <span className="text-[13px] font-semibold">密钥历史</span>
+              {status.history.map((h) => (
+                <div
+                  key={h.fingerprint + h.createdAt}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs"
+                >
+                  <span className="font-mono">{h.fingerprint}</span>
+                  <span className="text-muted-foreground">{SYSTEM_KEY_SOURCE_LABEL[h.source]}</span>
+                  <span className="text-muted-foreground">{fmtTime(h.createdAt)}</span>
+                  {h.retiredAt === null ? (
+                    <Badge tone="success">当前</Badge>
+                  ) : (
+                    <span className="text-muted-foreground/70">退役于 {fmtTime(h.retiredAt)}</span>
+                  )}
+                  {h.note ? <span className="text-muted-foreground/80">{h.note}</span> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {actionError ? (
+            <div
+              role="alert"
+              className="rounded-lg bg-destructive-soft p-3 text-sm text-destructive"
+            >
+              {actionError}
+            </div>
+          ) : null}
+
+          {report ? (
+            <KeyReportPanel
+              title={report.title}
+              report={report.r}
+              onClose={() => setReport(null)}
+            />
+          ) : null}
+        </Card>
+      ) : !loadError ? (
+        <SectionSkeleton />
+      ) : null}
+
+      <ConfirmDialog
+        open={confirmRotate !== null}
+        title="轮换系统密钥？"
+        description="将用新密钥重新加密全部已存密文（模型密钥/连接器/智能体 MCP/凭证集/通知地址），数据量大时耗时相应变长。建议先备份数据库；当前密钥会进入历史记录，仍可用于恢复。"
+        confirmText="确认轮换"
+        busy={busy}
+        error={actionError}
+        onConfirm={() => {
+          if (confirmRotate === "generate") return void runRotate("generate");
+          if (confirmRotate === "custom") return void runRotate("custom");
+        }}
+        onCancel={() => setConfirmRotate(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmRepair}
+        title="执行深度修复？"
+        description="以全部历史密钥为来源，把仍无法解开的密文收编到当前密钥。幂等操作，可反复执行。"
+        confirmText="执行修复"
+        busy={busy}
+        error={actionError}
+        onConfirm={() => void runRepair()}
+        onCancel={() => setConfirmRepair(false)}
+      />
+    </section>
+  );
+}
+
 /** 主组件：左侧固定导航 + 右侧详情（平台授权分区 admin 专属；MCP 接入分区全用户可用） */
 export function AuthorizationPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -784,6 +1087,7 @@ export function AuthorizationPage() {
               {active === "email" ? <EmailSection view={view} onReload={load} /> : null}
               {active === "verifications" ? <VerificationsSection /> : null}
               {active === "users" ? <UserManagementSection /> : null}
+              {active === "secretkey" ? <SecretKeySection /> : null}
               {active === "notifications" ? <NotificationsAdminSection /> : null}
             </>
           )}

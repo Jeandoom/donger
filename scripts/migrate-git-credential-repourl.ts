@@ -30,7 +30,10 @@ if (!statSync(DB_PATH, { throwIfNoEntry: false })) {
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
-const store = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "skill_secret_key"));
+const store = SqliteCredentialSetStore.fromSeed(
+  db,
+  loadOrGenerateAppSecret(db, "skill_secret_key"),
+);
 store.migrate();
 
 interface AgentDatum {

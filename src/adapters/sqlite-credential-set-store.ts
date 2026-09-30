@@ -5,7 +5,8 @@ import type {
   CredentialValueEntry,
 } from "../domain/credential.js";
 import type { CredentialSetStore, CredentialTemplateQuery } from "../ports/credential-set-store.js";
-import { decryptValue, encryptValue } from "../util/skill-crypto.js";
+import { createSecretCipher, type SecretCipher } from "../util/secret-cipher.js";
+import { decryptValue } from "../util/skill-crypto.js";
 
 interface TemplateRow {
   code: string;
@@ -31,8 +32,16 @@ interface ValueRow {
 export class SqliteCredentialSetStore implements CredentialSetStore {
   constructor(
     private readonly db: Database,
-    private readonly keyHex: string,
+    /** 系统密钥 cipher（2026-09-30 起与 MCP/模型密钥统一为一把系统密钥） */
+    private readonly cipher: SecretCipher,
+    /** 统一前旧格式（skill-crypto iv:tag:ct）的兜底 keyHex：双读容忍，migrate 一并重加密收编 */
+    private readonly legacyKeyHex: string,
   ) {}
+
+  /** 便捷构造（测试/脚本）：seed 派生 cipher、legacyKeyHex 缺省同 seed；生产装配见 index.ts（系统密钥） */
+  static fromSeed(db: Database, seed: string): SqliteCredentialSetStore {
+    return new SqliteCredentialSetStore(db, createSecretCipher(seed), seed);
+  }
 
   migrate(): void {
     // 全局模板：结构元数据（code 全局唯一，管理权归创建人），不含任何值
@@ -82,6 +91,34 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     }
     // 旧单值凭证体系（pack 声明式）已移除；表为空，直接删除
     this.db.exec("DROP TABLE IF EXISTS user_credentials;");
+    this.migrateLegacySkillCrypto();
+  }
+
+  /** 统一迁移（幂等）：skill-crypto 旧格式（iv:tag:ct，无 v1: 前缀）→ 系统密钥 v1: 格式 */
+  private migrateLegacySkillCrypto(): void {
+    const rows = this.db
+      .prepare(
+        "SELECT userId, code, valuesCipher FROM user_credential_values WHERE valuesCipher NOT LIKE 'v1:%'",
+      )
+      .all() as Array<{ userId: string; code: string; valuesCipher: string }>;
+    for (const r of rows) {
+      try {
+        const plain = decryptValue(this.legacyKeyHex, r.valuesCipher);
+        this.db
+          .prepare(
+            "UPDATE user_credential_values SET valuesCipher = ? WHERE userId = ? AND code = ?",
+          )
+          .run(this.cipher.encrypt(plain), r.userId, r.code);
+      } catch {
+        // 毒数据/旧密钥丢失：留待读路径按损坏项跳过，不阻断启动
+      }
+    }
+  }
+
+  /** 双读：v1: 走系统密钥，否则按统一前旧格式（skill-crypto）兜底 */
+  private decryptValuesBlob(blob: string): string {
+    if (blob.startsWith("v1:")) return this.cipher.decrypt(blob);
+    return decryptValue(this.legacyKeyHex, blob);
   }
 
   // ---- 模板 ----
@@ -188,7 +225,7 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
           userId: r.userId,
           code: r.code,
           name: r.name ?? undefined,
-          values: JSON.parse(decryptValue(this.keyHex, r.valuesCipher)) as Record<string, string>,
+          values: JSON.parse(this.decryptValuesBlob(r.valuesCipher)) as Record<string, string>,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
         });
@@ -208,7 +245,7 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     name?: string,
   ): Promise<void> {
     const existing = (await this.getFilledValues(userId, [code]))[0]?.values ?? {};
-    const ct = encryptValue(this.keyHex, JSON.stringify({ ...existing, ...values }));
+    const ct = this.cipher.encrypt(JSON.stringify({ ...existing, ...values }));
     this.db
       .prepare(
         `INSERT INTO user_credential_values (userId,code,name,valuesCipher,createdAt,updatedAt)

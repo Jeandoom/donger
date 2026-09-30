@@ -104,7 +104,7 @@ function setup(script: FakeScript) {
   const db = new Database(":memory:");
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
-  const credentialSets = new SqliteCredentialSetStore(
+  const credentialSets = SqliteCredentialSetStore.fromSeed(
     db,
     loadOrGenerateAppSecret(db, "skill_secret_key"),
   );
