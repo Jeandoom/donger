@@ -11,7 +11,7 @@ describe("SqliteCredentialSetStore", () => {
   const other = randomUUID();
 
   beforeEach(() => {
-    store = new SqliteCredentialSetStore(new Database(":memory:"), KEY_HEX);
+    store = SqliteCredentialSetStore.fromSeed(new Database(":memory:"), KEY_HEX);
     store.migrate();
   });
 
@@ -132,7 +132,7 @@ describe("SqliteCredentialSetStore", () => {
       `INSERT INTO credential_templates (code,name,keySpecsJson,createdBy,createdAt,updatedAt)
        VALUES ('legacy','旧模板','[]','u','t','t')`,
     ).run();
-    const legacyStore = new SqliteCredentialSetStore(db, KEY_HEX);
+    const legacyStore = SqliteCredentialSetStore.fromSeed(db, KEY_HEX);
     legacyStore.migrate();
     expect((await legacyStore.getTemplate("legacy"))?.kind).toBe("generic");
     expect((await legacyStore.getTemplate("legacy"))?.repoUrl).toBeUndefined();
@@ -175,7 +175,7 @@ describe("SqliteCredentialSetStore", () => {
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, PRIMARY KEY (userId, code)
       );
     `);
-    const legacyStore = new SqliteCredentialSetStore(db, KEY_HEX);
+    const legacyStore = SqliteCredentialSetStore.fromSeed(db, KEY_HEX);
     legacyStore.migrate();
     await legacyStore.createTemplate("legacy", templateInput, owner);
     await legacyStore.upsertValue(owner, "legacy", { token: "v" });

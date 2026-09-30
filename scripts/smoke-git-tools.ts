@@ -37,7 +37,7 @@ function report(step: string, ok: boolean, note = ""): void {
 
 const db = new Database(DB_PATH, { readonly: true });
 db.pragma("journal_mode = WAL");
-const credentialSets = new SqliteCredentialSetStore(
+const credentialSets = SqliteCredentialSetStore.fromSeed(
   db,
   loadOrGenerateAppSecret(db, "skill_secret_key"),
 ) as unknown as CredentialSetStore;

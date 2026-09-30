@@ -86,7 +86,7 @@ describe("RuntimeManager 会话空闲滚动", () => {
     const db = new Database(":memory:");
     const packStore = new SqliteSkillPackStore(db);
     packStore.migrate();
-    const csets = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "k"));
+    const csets = SqliteCredentialSetStore.fromSeed(db, loadOrGenerateAppSecret(db, "k"));
     csets.migrate();
     const config: RuntimeManagerConfig = {
       workspaceDir: ws,
@@ -151,7 +151,7 @@ describe("RuntimeManager resume 指针恢复", () => {
     const db = new Database(":memory:");
     const packStore = new SqliteSkillPackStore(db);
     packStore.migrate();
-    const csets = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "k"));
+    const csets = SqliteCredentialSetStore.fromSeed(db, loadOrGenerateAppSecret(db, "k"));
     csets.migrate();
     const config: RuntimeManagerConfig = {
       workspaceDir: ws,

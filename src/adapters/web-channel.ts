@@ -276,6 +276,7 @@ import {
   type SkillRepoApiDeps,
 } from "./skill-repo-api.js";
 import type { SkillRepoSyncService } from "./skill-repo-sync.js";
+import type { SystemKeyService } from "./system-key-service.js";
 import { buildWebRouteGuardSpecs } from "./web-route-guards.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -519,6 +520,8 @@ export interface WebChannelDeps {
   connectorStore?: ConnectorStore;
   /** 用户 LLM 供应商配置（多平台多配置）；缺省=模型配置端点不可用 */
   llmProviderStore?: LlmProviderStore;
+  /** 系统密钥管理（授权页·密钥管理：状态/轮换/导入历史/深度修复；缺省=端点 503） */
+  systemKey?: SystemKeyService;
   /** Anthropic 协议连通性校验；缺省=测试连接端点不可用 */
   llmProviderTester?: LlmTester;
   agentStore?: AgentStore;
@@ -2970,6 +2973,83 @@ export class WebChannel implements Channel {
     if (url.split("?")[0] === "/api/admin/system-events" && req.method === "GET") {
       const events = (await this.deps.systemEventStore?.list(200)) ?? [];
       return this.json(res, { events });
+    }
+
+    // ===== 系统密钥管理（授权页·密钥管理；admin；spec 2026-09-30 系统密钥生命周期）=====
+    const sk = this.deps.systemKey;
+    const skBase = url.split("?")[0];
+    const skActor = async () => {
+      const actorId = this.requireRequestUser(req);
+      const actor = await this.deps.userStore?.get(actorId);
+      return { actorId, actorName: actor?.name ?? actorId };
+    };
+    const skEvent = async (
+      type: string,
+      actorId: string,
+      actorName: string,
+      detail: string,
+    ): Promise<void> => {
+      await this.deps.systemEventStore?.record({ type, actorId, actorName, detail });
+    };
+    // GET /api/admin/secret-key —— 状态+历史（只回指纹，不回明文）
+    if (skBase === "/api/admin/secret-key" && req.method === "GET") {
+      if (!sk) return this.json(res, { error: "密钥管理服务未启用" }, 503);
+      return this.json(res, sk.status());
+    }
+    // POST /api/admin/secret-key/rotate —— 轮换：{ newValue } 或 { generate: true }；数据自动重加密
+    if (skBase === "/api/admin/secret-key/rotate" && req.method === "POST") {
+      if (!sk) return this.json(res, { error: "密钥管理服务未启用" }, 503);
+      const body = JSON.parse(await this.readBody(req)) as {
+        newValue?: string;
+        generate?: boolean;
+        note?: string;
+      };
+      const newSeed = body.generate ? randomBytes(32).toString("hex") : (body.newValue ?? "");
+      try {
+        const result = sk.rotate({ newSeed, note: body.note });
+        const { actorId, actorName } = await skActor();
+        await skEvent(
+          "secret_key.rotated",
+          actorId,
+          actorName,
+          `密钥已轮换（新指纹 ${result.fingerprint}）；数据重加密 ${result.report.healed}` +
+            `，残留 ${result.leftover.healed}，无法恢复 ${result.report.failed.length}`,
+        );
+        return this.json(res, result);
+      } catch (e) {
+        return this.json(res, { error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    }
+    // POST /api/admin/secret-key/history —— 导入历史密钥并立即以它为来源修复
+    if (skBase === "/api/admin/secret-key/history" && req.method === "POST") {
+      if (!sk) return this.json(res, { error: "密钥管理服务未启用" }, 503);
+      const body = JSON.parse(await this.readBody(req)) as { seed?: string; note?: string };
+      try {
+        const report = sk.importHistory({ seed: body.seed ?? "", note: body.note });
+        const { actorId, actorName } = await skActor();
+        await skEvent(
+          "secret_key.imported",
+          actorId,
+          actorName,
+          `导入历史密钥并修复：扫描 ${report.scanned}，重加密 ${report.healed}，无法恢复 ${report.failed.length}`,
+        );
+        return this.json(res, { report });
+      } catch (e) {
+        return this.json(res, { error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    }
+    // POST /api/admin/secret-key/repair —— 深度修复：以全部历史密钥为来源收编残留密文（幂等）
+    if (skBase === "/api/admin/secret-key/repair" && req.method === "POST") {
+      if (!sk) return this.json(res, { error: "密钥管理服务未启用" }, 503);
+      const report = sk.repair();
+      const { actorId, actorName } = await skActor();
+      await skEvent(
+        "secret_key.repaired",
+        actorId,
+        actorName,
+        `深度修复：扫描 ${report.scanned}，重加密 ${report.healed}，无法恢复 ${report.failed.length}`,
+      );
+      return this.json(res, { report });
     }
 
     // GET /api/invites —— 当前用户的邀请列表
@@ -6187,6 +6267,14 @@ export class WebChannel implements Channel {
         send({ status: 200, json: { ok: true } });
         return true;
       }
+      // 系统密钥守卫（防御性：正常情况下启动即保证有钥，此分支仅在密钥体系异常时拦截）
+      if (this.deps.systemKey && !this.deps.systemKey.isConfigured()) {
+        send({
+          status: 503,
+          json: { error: "系统密钥未配置，请先在「授权页·密钥管理」完成配置后再填写凭证" },
+        });
+        return true;
+      }
       const tpl = await csets.getTemplate(code);
       if (!tpl) return notFound(`凭证模板 ${code} `);
       const b = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
@@ -6576,7 +6664,11 @@ export class WebChannel implements Channel {
    * 具名 agent（非内置兜底）时，站内信知会管家属主；管家属主=提交人时静默跳过
    * （自己反馈自己管的应用，列表已可见，通知即噪音）。任何失败不影响反馈提交。
    */
-  private async notifyAppSteward(feedback: Feedback, appId: string, submitterId: string): Promise<void> {
+  private async notifyAppSteward(
+    feedback: Feedback,
+    appId: string,
+    submitterId: string,
+  ): Promise<void> {
     if (!this.deps.notificationService) return;
     const app = await this.deps.appStore?.get(appId);
     const stewardId = app?.managerAgentId;

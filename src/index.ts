@@ -51,6 +51,7 @@ import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
+import { resolveSystemKeySeed, SystemKeyService } from "./adapters/system-key-service.js";
 import { WebChannel } from "./adapters/web-channel.js";
 import { ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
 import { loadConfig } from "./config.js";
@@ -138,26 +139,31 @@ async function main(): Promise<void> {
   const mcpTokenStore = new SqliteMcpTokenStore(db);
   mcpTokenStore.migrate();
 
-  // Agent 密钥加密器 + Agent/分享 store
+  // 系统密钥（单一真源=DB）：DB 优先 → env 首次导入（过渡能力，待删）→ 双空自动生成兜底。
+  // DB 有钥后 env 改动不再生效——漂移在结构上不可能发生；轮换走授权页·密钥管理。
   const bootAppConfig = new SqliteModuleConfigStore(
     db,
     loadOrGenerateAppSecret(db, "module_config_secret_key"),
   );
   bootAppConfig.migrate();
-  if (!cfg.secretKeySeed) {
-    // SECRET_KEY 与 JWT_SECRET 均未配置：生成一次性随机 seed 持久化到 app_config
-    //（此前回退硬编码公开常量 = 拿到库文件即可解密全部 MCP 密钥）
-    const persisted = bootAppConfig.getFlag("secret_key_seed");
-    if (persisted) {
-      cfg.secretKeySeed = persisted;
-      log.warn("SECRET_KEY 未配置，使用首次启动生成的持久化随机密钥（建议显式配置 SECRET_KEY）");
-    } else {
-      cfg.secretKeySeed = randomBytes(32).toString("hex");
-      bootAppConfig.setFlag("secret_key_seed", cfg.secretKeySeed);
-      log.warn("SECRET_KEY 未配置，已生成并持久化随机密钥到 app_config（建议显式配置 SECRET_KEY）");
-    }
+  const systemKeyBoot = resolveSystemKeySeed(db, cfg.secretKeySeed);
+  if (systemKeyBoot.source === "generated") {
+    log.warn("SECRET_KEY 未配置，已自动生成随机密钥并持久化到 DB（授权页·密钥管理可查看/轮换）");
+  } else if (systemKeyBoot.source === "env_imported") {
+    log.warn(
+      "SECRET_KEY 已从环境变量导入并持久化到 DB（此后改 env 不再生效，轮换请用授权页·密钥管理）",
+    );
   }
-  const secretCipher = createSecretCipher(cfg.secretKeySeed);
+  if (systemKeyBoot.envIgnored) {
+    log.warn(
+      "SECRET_KEY env 与 DB 持久化密钥不一致，已忽略 env（DB 优先；如需更换请用授权页·密钥管理轮换）",
+    );
+  }
+  const secretCipher = createSecretCipher(systemKeyBoot.seed);
+  // 凭证集统一前旧格式（skill-crypto）兜底 keyHex：双读容忍 + 重加密引擎收编用
+  const legacySkillKeyHex = loadOrGenerateAppSecret(db, "skill_secret_key");
+  const systemKey = new SystemKeyService(db, secretCipher, legacySkillKeyHex, cfg.secretKeySeed);
+  secretCipher.setFallbacks(systemKey.historyCiphers());
   const agentStore = new SqliteAgentStore(db, secretCipher);
   agentStore.migrate();
   const agentShareStore = new SqliteAgentShareStore(db);
@@ -169,11 +175,9 @@ async function main(): Promise<void> {
   db.exec("DROP TABLE IF EXISTS git_repository_grants");
   const repositoryMaterializer = new GitCliRepositoryMaterializer(cfg.gitCloneTimeoutMs);
   const extensionDirectoryResolver = new LocalExtensionDirectoryResolver();
-  // 凭证集 store（Gate 的 PAT 桥与 RuntimeManager 注入共享同一实例）；须先于 GitAccessGate 构造
-  const credentialSets = new SqliteCredentialSetStore(
-    db,
-    loadOrGenerateAppSecret(db, "skill_secret_key"),
-  );
+  // 凭证集 store（Gate 的 PAT 桥与 RuntimeManager 注入共享同一实例）；须先于 GitAccessGate 构造。
+  // 2026-09-30 起与系统密钥统一：migrate 幂等收编旧 skill-crypto 格式
+  const credentialSets = new SqliteCredentialSetStore(db, secretCipher, legacySkillKeyHex);
   credentialSets.migrate();
   // 连接器注册表（HTTP MCP）：与 agent 密钥共用同一加密器
   const connectorStore = new SqliteConnectorStore(db, secretCipher);
@@ -520,6 +524,7 @@ async function main(): Promise<void> {
     credentialSets,
     connectorStore,
     llmProviderStore,
+    systemKey,
     llmProviderTester: new LlmProviderTester(),
     agentStore,
     agentShareStore,

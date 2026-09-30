@@ -309,6 +309,11 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/admin/users", access: { kind: "admin" } },
     { method: "PATCH", pattern: "/api/admin/users/:id/role", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/system-events", access: { kind: "admin" } },
+    // 系统密钥管理（授权页·密钥管理；2026-09-30 系统密钥生命周期）
+    { method: "GET", pattern: "/api/admin/secret-key", access: { kind: "admin" } },
+    { method: "POST", pattern: "/api/admin/secret-key/rotate", access: { kind: "admin" } },
+    { method: "POST", pattern: "/api/admin/secret-key/history", access: { kind: "admin" } },
+    { method: "POST", pattern: "/api/admin/secret-key/repair", access: { kind: "admin" } },
     // 授权/代理模块配置（spec 2026-09-21-auth-module-design §3.3/§3.6）
     { method: "GET", pattern: "/api/admin/auth-configs", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/dingtalk", access: { kind: "admin" } },

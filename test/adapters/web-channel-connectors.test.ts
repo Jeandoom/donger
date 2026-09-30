@@ -40,7 +40,7 @@ describe("WebChannel /api/connectors", () => {
     const cipher = createSecretCipher("test-seed");
     cstore = new SqliteConnectorStore(db, cipher);
     cstore.migrate();
-    const csets = new SqliteCredentialSetStore(db, KEY_HEX);
+    const csets = SqliteCredentialSetStore.fromSeed(db, KEY_HEX);
     csets.migrate();
     const agentStore = new SqliteAgentStore(db, cipher);
     agentStore.migrate();
@@ -204,7 +204,7 @@ describe("WebChannel /api/connectors", () => {
   });
 
   it("test 端点：凭证引用按发起者解析，探活返回工具清单", async () => {
-    const csets = new SqliteCredentialSetStore(db, KEY_HEX);
+    const csets = SqliteCredentialSetStore.fromSeed(db, KEY_HEX);
     await csets.upsertValue(uid, "amap", { token: "live-key" });
 
     const res = await fetch(`http://127.0.0.1:${web.boundPort}/api/connectors/test`, {

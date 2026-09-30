@@ -105,7 +105,7 @@ describe("RuntimeManager 连接器注入", () => {
     const db = new Database(":memory:");
     const packStore = new SqliteSkillPackStore(db);
     packStore.migrate();
-    csets = new SqliteCredentialSetStore(db, loadOrGenerateAppSecret(db, "k"));
+    csets = SqliteCredentialSetStore.fromSeed(db, loadOrGenerateAppSecret(db, "k"));
     csets.migrate();
     cstore = new SqliteConnectorStore(db, createSecretCipher("conn-seed"));
     cstore.migrate();
