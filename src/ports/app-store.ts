@@ -36,12 +36,22 @@ export interface AppStore {
   listByUser(userId: string): Promise<PlatformApp[]>;
   update(
     appId: string,
-    patch: Partial<Pick<PlatformApp, "name" | "description" | "icon" | "manifest">> & {
+    patch: Partial<Pick<PlatformApp, "name" | "description" | "icon" | "manifest" | "shareGrants">> & {
       /** 管家绑定：null=清除（交还内置兜底）；undefined=保持不变（应用管家制 spec §3.1） */
       managerAgentId?: string | null;
+      /**
+       * 出网通道绑定（spec 2026-09-29 §2.2）：键存在即整体替换（{} = 清空）；
+       * undefined=保持不变。shareGrants（分发面 §7.2）同款整体替换语义。
+       */
+      proxyBindings?: Record<string, string>;
     },
   ): Promise<PlatformApp | undefined>;
   delete(appId: string): Promise<void>;
+  /**
+   * 分享给我的应用（分发面 spec §7.2）：按 manifest.access 判定——all-users 全量，
+   * grants 按 shareGrants 名单；不含用户名下的应用。数量级为团队规模，内存过滤即可。
+   */
+  listSharedWith(userId: string): Promise<PlatformApp[]>;
 
   // ---- 版本 ----
   /** 落一条版本元数据；num 由 store 递增分配（同应用单调） */

@@ -4,11 +4,13 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { DialogShell } from "../components/ui/dialog-shell";
+import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { apiFetch, apiFetchRetry } from "../lib/auth";
 import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
-import type { PlatformAppView, ProxyChannelView } from "./AppsPage";
+import { ACCESS_LABEL, type PlatformAppView, type ProxyChannelView } from "./AppsPage";
 
 interface AppVersionView {
   num: number;
@@ -65,6 +67,7 @@ export function AppDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [stewardSaving, setStewardSaving] = useState(false);
   const tab = (params.get("tab") as Tab | null) ?? "overview";
@@ -167,6 +170,13 @@ export function AppDetailPage() {
                 打开应用
               </Link>
             ) : null}
+            <button
+              type="button"
+              onClick={() => setShareOpen(true)}
+              className="rounded-lg border border-border px-4 py-2 text-[13px] hover:bg-muted/60"
+            >
+              分享
+            </button>
             <Link
               to={`/feedback?app=${app.id}`}
               className="rounded-lg border border-border px-4 py-2 text-[13px] hover:bg-muted/60"
@@ -210,7 +220,22 @@ export function AppDetailPage() {
       {tab === "overview" ? (
         <Card className="flex flex-col gap-3 p-5 text-sm">
           <Row label="运行时" value={<Badge>{app.manifest.runtime}</Badge>} />
-          <Row label="访问范围" value={<span>私有（仅本人）</span>} />
+          <Row
+            label="访问范围"
+            value={
+              <span>
+                {ACCESS_LABEL[app.manifest.access] ?? app.manifest.access}
+                {app.manifest.access === "grants"
+                  ? `（${app.shareGrantsUsers?.length ?? 0} 人）`
+                  : null}
+                {app.manifest.access !== "private" ? (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    被分享者仅可运行（数据只读、代理仅 GET）
+                  </span>
+                ) : null}
+              </span>
+            }
+          />
           <Row
             label="责任管家"
             value={
@@ -269,6 +294,17 @@ export function AppDetailPage() {
         onConfirm={() => void del()}
         onCancel={() => setConfirmDelete(false)}
       />
+
+      {shareOpen ? (
+        <ShareDialog
+          app={app}
+          onClose={() => setShareOpen(false)}
+          onChanged={() => {
+            setShareOpen(false);
+            refresh();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -279,6 +315,195 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="text-xs text-muted-foreground">{label}</span>
       {value}
     </div>
+  );
+}
+
+/** 分享四档（分发面 spec §7.2）：access 档位 + grants 名单编辑 */
+const SHARE_ACCESS_OPTIONS: Array<{ value: string; label: string; desc: string }> = [
+  { value: "private", label: "私有", desc: "仅本人可打开（默认）" },
+  { value: "grants", label: "名单授权", desc: "名单内用户登录后可打开；数据只读、代理仅 GET" },
+  { value: "all-users", label: "全体用户", desc: "平台内所有登录用户可打开；数据只读、代理仅 GET" },
+  {
+    value: "public-anonymous",
+    label: "公开匿名",
+    desc: "任何持有链接者免登录可打开；数据只读、代理仅 GET",
+  },
+];
+
+function ShareDialog({
+  app,
+  onClose,
+  onChanged,
+}: {
+  app: PlatformAppView;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [access, setAccess] = useState<string>(app.manifest.access);
+  const [grants, setGrants] = useState<Array<{ id: string; name: string }>>(
+    app.shareGrantsUsers ?? [],
+  );
+  const [q, setQ] = useState("");
+  const [candidates, setCandidates] = useState<Array<{ id: string; name: string }>>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 候选搜索：300ms 防抖；过滤已在名单内的用户
+  useEffect(() => {
+    if (access !== "grants") return;
+    const t = setTimeout(() => {
+      apiFetch(`/api/apps/${app.id}/grant-candidates?q=${encodeURIComponent(q)}`)
+        .then((r) => (r.ok ? r.json() : { users: [] }))
+        .then((d: { users?: Array<{ id: string; name: string }> }) =>
+          setCandidates(
+            (d.users ?? []).filter((u) => !grants.some((g) => g.id === u.id)),
+          ),
+        )
+        .catch(() => setCandidates([]));
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, access, app.id]);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await apiFetch(`/api/apps/${app.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          manifest: { ...app.manifest, access },
+          shareGrants: grants.map((g) => g.id),
+        }),
+      });
+      if (r.ok) {
+        onChanged();
+      } else {
+        const d = (await r.json().catch(() => ({}))) as { error?: string };
+        setError(d.error ?? `保存失败：HTTP ${r.status}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const shareUrl = `${window.location.origin}/apps/${app.id}/open`;
+  return (
+    <DialogShell
+      title={`分享「${app.name}」`}
+      subtitle="被分享者仅可运行应用：运行数据只读、出网代理仅 GET，凭证永不离开服务端"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-[13px] hover:bg-muted/60"
+          >
+            取消
+          </button>
+          <Button disabled={busy} onClick={() => void save()}>
+            {busy ? "保存中…" : "保存"}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4 text-sm">
+        <div className="flex flex-col gap-2">
+          {SHARE_ACCESS_OPTIONS.map((o) => (
+            <label
+              key={o.value}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 ${
+                access === o.value ? "border-primary bg-primary-soft" : "border-border"
+              }`}
+            >
+              <input
+                type="radio"
+                name="share-access"
+                className="mt-0.5"
+                checked={access === o.value}
+                onChange={() => setAccess(o.value)}
+              />
+              <span>
+                <span className="block font-medium">{o.label}</span>
+                <span className="block text-xs text-muted-foreground">{o.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        {access === "grants" ? (
+          <div className="flex flex-col gap-2 rounded-lg bg-muted/40 p-3">
+            <div className="flex flex-wrap gap-1.5">
+              {grants.map((g) => (
+                <span
+                  key={g.id}
+                  className="flex items-center gap-1 rounded-full bg-card px-2.5 py-1 text-xs shadow-sm"
+                >
+                  {g.name}
+                  <button
+                    type="button"
+                    aria-label={`移除 ${g.name}`}
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => setGrants(grants.filter((x) => x.id !== g.id))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {!grants.length ? (
+                <span className="text-xs text-muted-foreground">名单为空——保存后无人可访问</span>
+              ) : null}
+            </div>
+            <Input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="按用户名/ID 搜索平台用户…"
+            />
+            {candidates.length ? (
+              <div className="flex flex-col gap-1">
+                {candidates.map((u) => (
+                  <button
+                    key={u.id}
+                    type="button"
+                    className="rounded px-2 py-1 text-left text-xs hover:bg-muted"
+                    onClick={() => {
+                      setGrants([...grants, u]);
+                      setCandidates(candidates.filter((c) => c.id !== u.id));
+                      setQ("");
+                    }}
+                  >
+                    {u.name}
+                    <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                      {u.id}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {access !== "private" ? (
+          <div className="rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+            <div className="mb-1 font-medium text-foreground">访问链接</div>
+            <code className="break-all font-mono">{shareUrl}</code>
+            <div className="mt-1">
+              {access === "public-anonymous"
+                ? "任何持有该链接者均可打开；收回分享（改回私有）后已签发令牌最多 60 分钟内失效。"
+                : "链接仅对被授权的登录用户生效。"}
+            </div>
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </DialogShell>
   );
 }
 

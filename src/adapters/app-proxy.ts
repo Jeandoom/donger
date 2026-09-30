@@ -28,7 +28,8 @@ import type { ApiResult, AppApiDeps, AppHttpCtx } from "./app-api.js";
  * 响应统一包装 { status, contentType, body, location? }——上游状态码/文本体原样透传，
  * location 仅透传 Jenkins 触发构建返回的队列地址（前端取 pathname 轮询）。
  * 通道不可用（未绑定/连接器失效/凭证缺失）一律 503 带原因；鉴权：app-token
- * （Bearer，aud=appId），与 app-data 运行时面同款。
+ * （Bearer，aud=appId），与 app-data 运行时面同款。分发面只读边界：viewer/anonymous
+ * scope 仅放 GET（写类 POST 403）——被分享者不得借属主凭证触发外部系统写操作。
  */
 
 const PROXY_TIMEOUT_MS = 30_000;
@@ -77,6 +78,23 @@ export function createAppProxyHandler(deps: AppProxyHandlerDeps) {
     const claims = token ? await deps.appToken.verify(token, appId) : null;
     if (!claims) return { status: 401, json: { error: "app-token 无效或已过期" } };
 
+    // 入参与 method 先行解析：分发面只读边界要在碰连接器/凭证之前裁定
+    const input = JSON.parse(await ctx.readBody(req, 64 * 1024)) as ProxyInput;
+    const path = assertSafePart(input.path, "path", true);
+    const query =
+      input.query === undefined || input.query === ""
+        ? ""
+        : assertSafePart(input.query, "query", false);
+    const method = input.method === undefined ? "GET" : input.method;
+    if (method !== "GET" && method !== "POST") {
+      throw new ValidationError("INVALID_REQUEST", "method 仅支持 GET/POST");
+    }
+    // 只读收口（分发面 spec §7.2）：viewer/anonymous 借的是属主凭证出网，
+    // POST 可能触发外部系统写操作（如 Jenkins 触发构建）——非属主 scope 仅放 GET。
+    if (claims.scope !== "owner" && method !== "GET") {
+      return { status: 403, json: { error: "只读访问仅支持 GET 请求" } };
+    }
+
     // 通道解析：服务名 → 应用绑定 → 连接器（读时再校验：事后停用/删除/改私有即失效）
     const app = await deps.appStore.get(appId);
     if (!app) return channelUnavailable(service, "应用不存在或已删除");
@@ -122,16 +140,6 @@ export function createAppProxyHandler(deps: AppProxyHandlerDeps) {
       }
     }
 
-    const input = JSON.parse(await ctx.readBody(req, 64 * 1024)) as ProxyInput;
-    const path = assertSafePart(input.path, "path", true);
-    const query =
-      input.query === undefined || input.query === ""
-        ? ""
-        : assertSafePart(input.query, "query", false);
-    const method = input.method === undefined ? "GET" : input.method;
-    if (method !== "GET" && method !== "POST") {
-      throw new ValidationError("INVALID_REQUEST", "method 仅支持 GET/POST");
-    }
     const body = input.body === undefined ? undefined : JSON.stringify(input.body);
 
     // 连接器 url 去尾斜杠防拼接出 //（服务端路径校验拒绝双斜杠）

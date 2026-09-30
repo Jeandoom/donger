@@ -29,19 +29,43 @@ export interface PlatformAppView {
   managerAgentId: string | null;
   steward: { agentId: string; name: string } | null;
   proxyChannels?: ProxyChannelView[];
+  /** 分享面（分发面 §7.2）：仅属主视图携带 */
+  shareGrants?: string[];
+  shareGrantsUsers?: Array<{ id: string; name: string }>;
 }
+
+/** 被分享者最小视图（服务端 sharedAppView；无管理面字段，也无属主 id） */
+export interface SharedAppView {
+  id: string;
+  name: string;
+  description: string;
+  icon: string | null;
+  access: string;
+  currentVersion: number | null;
+  updatedAt: string;
+  runPath: string | null;
+}
+
+export const ACCESS_LABEL: Record<string, string> = {
+  private: "私有",
+  grants: "名单授权",
+  "all-users": "全体用户",
+  "public-anonymous": "公开匿名",
+};
 
 export function AppsPage() {
   const navigate = useNavigate();
   const [apps, setApps] = useState<PlatformAppView[]>([]);
+  const [shared, setShared] = useState<SharedAppView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     apiFetchRetry("/api/apps")
-      .then((r) => r.json() as Promise<{ apps?: PlatformAppView[] }>)
+      .then((r) => r.json() as Promise<{ apps?: PlatformAppView[]; shared?: SharedAppView[] }>)
       .then((d) => {
         setApps(d.apps ?? []);
+        setShared(d.shared ?? []);
         setError(null);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
@@ -69,7 +93,7 @@ export function AppsPage() {
       ) : null}
       {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
 
-      {!loading && !apps.length ? (
+      {!loading && !apps.length && !shared.length ? (
         <Card className="p-10 text-center text-sm text-muted-foreground">
           暂无应用。点击右上角「应用管家」对话描述需求，由智能体完成开发与发布；或按
           <Link to="/skills" className="mx-1 text-primary hover:underline">
@@ -115,6 +139,38 @@ export function AppsPage() {
           </Card>
         ))}
       </div>
+
+      {shared.length ? (
+        <>
+          <h2 className="mt-2 text-sm font-semibold text-muted-foreground">分享给我的</h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {shared.map((a) => (
+              <Card key={a.id} className="flex flex-col gap-3 p-5">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-sm font-semibold">{a.name}</span>
+                  <Badge tone="info">{ACCESS_LABEL[a.access] ?? a.access}</Badge>
+                </div>
+                <p className="line-clamp-2 min-h-10 text-xs text-muted-foreground">
+                  {a.description || "（无描述）"}
+                </p>
+                <div className="mt-auto flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground">
+                    {a.currentVersion !== null ? `已发布 v${a.currentVersion}` : "未发布产物"}
+                  </span>
+                  {a.currentVersion !== null ? (
+                    <Link
+                      to={`/apps/${a.id}/open`}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      打开
+                    </Link>
+                  ) : null}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

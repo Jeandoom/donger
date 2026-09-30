@@ -26,6 +26,7 @@ interface AppRow {
   currentVersion: number | null;
   managerAgentId: string | null;
   proxyJson: string | null;
+  shareGrantsJson: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -57,6 +58,12 @@ export class SqliteAppStore implements AppStore {
     // 出网通道绑定（spec 2026-09-29-app-proxy-credential-binding §2.2）存量库加列
     try {
       this.db.exec(`ALTER TABLE apps ADD COLUMN proxyJson TEXT`);
+    } catch {
+      // 列已存在——静默跳过
+    }
+    // grants 名单（分发面 spec §7.2）存量库加列：零破坏迁移
+    try {
+      this.db.exec(`ALTER TABLE apps ADD COLUMN shareGrantsJson TEXT`);
     } catch {
       // 列已存在——静默跳过
     }
@@ -148,7 +155,7 @@ export class SqliteAppStore implements AppStore {
     patch: Partial<
       Pick<
         PlatformApp,
-        "name" | "description" | "icon" | "manifest" | "managerAgentId" | "proxyBindings"
+        "name" | "description" | "icon" | "manifest" | "managerAgentId" | "proxyBindings" | "shareGrants"
       >
     >,
   ): Promise<PlatformApp | undefined> {
@@ -165,10 +172,12 @@ export class SqliteAppStore implements AppStore {
           : (patch.managerAgentId ?? undefined),
       // 整体替换语义：patch 里有 proxyBindings 键即全量覆盖（含 {} 清空）
       proxyBindings: patch.proxyBindings === undefined ? app.proxyBindings : patch.proxyBindings,
+      // grants 名单同款整体替换语义（[] = 清空）；access 切回 private 后名单保留
+      shareGrants: patch.shareGrants === undefined ? app.shareGrants : patch.shareGrants,
     };
     this.db
       .prepare(
-        `UPDATE apps SET name = ?, description = ?, icon = ?, manifestJson = ?, managerAgentId = ?, proxyJson = ?, updatedAt = ? WHERE id = ?`,
+        `UPDATE apps SET name = ?, description = ?, icon = ?, manifestJson = ?, managerAgentId = ?, proxyJson = ?, shareGrantsJson = ?, updatedAt = ? WHERE id = ?`,
       )
       .run(
         next.name,
@@ -177,10 +186,25 @@ export class SqliteAppStore implements AppStore {
         JSON.stringify(next.manifest),
         next.managerAgentId ?? null,
         next.proxyBindings ? JSON.stringify(next.proxyBindings) : null,
+        next.shareGrants && next.shareGrants.length ? JSON.stringify(next.shareGrants) : null,
         new Date().toISOString(),
         appId,
       );
     return this.get(appId);
+  }
+
+  async listSharedWith(userId: string): Promise<PlatformApp[]> {
+    const rows = this.db
+      .prepare("SELECT * FROM apps WHERE userId != ? ORDER BY updatedAt DESC")
+      .all(userId) as AppRow[];
+    return rows
+      .map((r) => this.rowToApp(r))
+      .filter((a) => {
+        if (a.currentVersion === null) return false;
+        if (a.manifest.access === "all-users") return true;
+        if (a.manifest.access === "grants") return (a.shareGrants ?? []).includes(userId);
+        return false;
+      });
   }
 
   async delete(appId: string): Promise<void> {
@@ -341,8 +365,22 @@ export class SqliteAppStore implements AppStore {
       proxyBindings: row.proxyJson
         ? (parseProxyBindings(JSON.parse(row.proxyJson)) as Record<string, string>)
         : undefined,
+      shareGrants: parseShareGrants(row.shareGrantsJson),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
+  }
+}
+
+/** grants 名单读容错：库值损坏时降级为空名单（fail-closed——少给权限好过错给权限） */
+function parseShareGrants(raw: string | null): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const ids = parsed.filter((v): v is string => typeof v === "string" && v.length > 0);
+    return ids.length ? ids : undefined;
+  } catch {
+    return undefined;
   }
 }

@@ -242,7 +242,10 @@ import {
   handleDeleteApp,
   handleDeleteAppDataByOwner,
   handleGetApp,
+  handleGrantCandidates,
+  handleIssueAnonymousToken,
   handleIssueAppToken,
+  handleIssueViewerToken,
   handleListAppData,
   handleListAppLogs,
   handleListApps,
@@ -655,6 +658,8 @@ export class WebChannel implements Channel {
         appToken: new AppTokenService(deps.appTokenSecret),
         // 应用管家制（spec §3.1）：改派 owner 闭包校验 + DTO 管家解析
         ...(deps.agentStore ? { agentStore: deps.agentStore } : {}),
+        // 分享面（分发面 §7.2）：grants 名单用户名解析 + grant-candidates 候选
+        ...(deps.userStore ? { userStore: deps.userStore } : {}),
         // 出网通道（spec 2026-09-29-app-proxy-credential-binding）：绑定校验 + DTO 状态
         ...(deps.connectorStore ? { connectorStore: deps.connectorStore } : {}),
         ...(deps.credentialSets ? { credentialSets: deps.credentialSets } : {}),
@@ -2122,6 +2127,34 @@ export class WebChannel implements Channel {
       const tokenMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/token$/);
       if (tokenMatch && req.method === "POST") {
         return this.sendApi(res, await handleIssueAppToken(ctx, api, req, tokenMatch[1] ?? ""));
+      }
+      // 打开面令牌（分发面 §7.2）：属主/被授权者（grants/all-users）签发；授权判定在 handler
+      const viewerTokenMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/viewer-token$/);
+      if (viewerTokenMatch && req.method === "POST") {
+        return this.sendApi(
+          res,
+          await handleIssueViewerToken(ctx, api, req, viewerTokenMatch[1] ?? ""),
+        );
+      }
+      // 匿名令牌（分发面 §7.2）：免登录，仅 public-anonymous 应用；无 sessionStore 的
+      // 本地免认证模式同样可用（handler 不读登录态）
+      const anonymousTokenMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/anonymous-token$/);
+      if (anonymousTokenMatch && req.method === "POST") {
+        return this.sendApi(res, await handleIssueAnonymousToken(api, anonymousTokenMatch[1] ?? ""));
+      }
+      // grants 候选搜索（分发面 §7.2）：属主挑人入名单
+      const grantCandidatesMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/grant-candidates$/);
+      if (grantCandidatesMatch && req.method === "GET") {
+        return this.sendApi(
+          res,
+          await handleGrantCandidates(
+            ctx,
+            api,
+            req,
+            grantCandidatesMatch[1] ?? "",
+            this.extractQuery(url, "q") ?? "",
+          ),
+        );
       }
       const versionsMatch = appPath.match(/^\/api\/apps\/([\w-]+)\/versions$/);
       if (versionsMatch && req.method === "GET") {

@@ -332,7 +332,7 @@ export function appToolDefinitions(deps: AppToolsDeps): SdkMcpToolDefinition[] {
             dedupeKey: `app:${appId}:v${num}:published`,
           });
           return ok(
-            `发布成功：appId=${appId} 版本 v${num}\n运行路径 /apps/${appId}/（用户在「应用」中心 → 打开）\n应用为私有（仅当前用户可见）；数据读写用 /api/app-data/${appId}/<key>（Bearer 用 web 端「运行」页签发的 app-token）`,
+            `发布成功：appId=${appId} 版本 v${num}\n运行路径 /apps/${appId}/（用户在「应用」中心 → 打开）\n应用默认私有（仅当前用户可见）；要给其他用户用，属主可在「应用详情 → 分享」开放名单/全体/匿名访问。数据读写用 /api/app-data/${appId}/<key>（Bearer 用 web 端「运行」页签发的 app-token）`,
           );
         } catch (e) {
           return fail(`发布失败：${e instanceof Error ? e.message : String(e)}`);

@@ -557,6 +557,14 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "owner", resource: "app" },
       ...ownerApp,
     },
+    // 打开面令牌（分发面 §7.2）：属主→owner scope；被授权者（grants/all-users）→viewer。
+    // 授权判定在 handler（须连库读 access/名单），故登记 authenticated 而非 owner 规则。
+    { method: "POST", pattern: "/api/apps/:id/viewer-token", access: { kind: "authenticated" } },
+    // 匿名令牌（分发面 §7.2）：免登录；仅 public-anonymous 应用可签发（handler 内校验，
+    // 其余一律 404 防探测）。
+    { method: "POST", pattern: "/api/apps/:id/anonymous-token", access: { kind: "public" } },
+    // grants 候选搜索（分发面 §7.2）：属主挑人入名单；用户枚举收敛在属主面之后
+    { method: "GET", pattern: "/api/apps/:id/grant-candidates", access: { kind: "owner", resource: "app" }, ...ownerApp },
     {
       method: "GET",
       pattern: "/api/apps/:id/data",

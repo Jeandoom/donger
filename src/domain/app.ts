@@ -14,9 +14,16 @@ export const APP_MANIFEST_VERSION = 1 as const;
 export const AppRuntimeSchema = z.enum(["static"]);
 export type AppRuntime = z.infer<typeof AppRuntimeSchema>;
 
-/** M1 仅私有；后续：grants | all-users | public-anonymous */
-export const AppAccessSchema = z.enum(["private"]);
+/**
+ * 访问四档（分发面 spec §7.2）：private 仅属主；grants 名单制（shareGrants userIds）；
+ * all-users 全体登录用户；public-anonymous 凭链接匿名访问（匿名只读）。
+ * 放宽只加枚举值不改语义；存量 private 清单读入不受影响。
+ */
+export const AppAccessSchema = z.enum(["private", "grants", "all-users", "public-anonymous"]);
 export type AppAccess = z.infer<typeof AppAccessSchema>;
+
+/** grants 名单上限（防滥用；超团队规模的白名单没有意义） */
+export const APP_SHARE_GRANTS_MAX = 100;
 
 export const AppManifestSchema = z.object({
   manifestVersion: z.literal(APP_MANIFEST_VERSION),
@@ -51,6 +58,12 @@ export interface PlatformApp {
    * 通道是运行时配置，变更不触发重新发布。未绑定服务的代理请求 503。
    */
   proxyBindings?: Record<string, string>;
+  /**
+   * grants 名单（分发面 spec §7.2）：access=grants 时名单内用户可签发 viewer 令牌。
+   * 与通道同款运行时配置语义（不进 manifest）；access 切回 private 后名单保留，
+   * 再次开放无需重录。仅属主可改。
+   */
+  shareGrants?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +133,8 @@ export const AppPatchInputSchema = z.object({
   managerAgentId: z.string().min(1).nullable().optional(),
   /** 出网通道绑定：整体替换语义（传 {} 清空）；连接器合法性由调用方连库校验 */
   proxyBindings: ProxyBindingsSchema.optional(),
+  /** grants 名单：整体替换语义（传 [] 清空）；userId 存在性由调用方连库校验 */
+  shareGrants: z.array(z.string().min(1)).max(APP_SHARE_GRANTS_MAX).optional(),
 });
 export type AppPatchInput = z.infer<typeof AppPatchInputSchema>;
 

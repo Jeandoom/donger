@@ -19,8 +19,9 @@ import type { AgentStore } from "../ports/agent-store.js";
 import type { AppStore, AppVersionWithMeta } from "../ports/app-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
-import { NotFoundError, PayloadTooLargeError, ValidationError } from "../util/errors.js";
-import type { AppTokenService } from "./app-token-service.js";
+import type { UserStore } from "../ports/user-store.js";
+import { ForbiddenError, NotFoundError, PayloadTooLargeError, ValidationError } from "../util/errors.js";
+import type { AppTokenClaims, AppTokenService } from "./app-token-service.js";
 
 /**
  * 平台应用 API（spec 2026-09-25-app-platform-architecture；M1 应用内核）。
@@ -48,6 +49,11 @@ export interface AppApiDeps {
    */
   connectorStore?: ConnectorStore;
   credentialSets?: CredentialSetStore;
+  /**
+   * 用户存储（分发面 spec §7.2）：grants 名单 DTO 解析用户名 + grant-candidates 候选；
+   * 缺省=名单只回 userId、候选端点返回空。
+   */
+  userStore?: UserStore;
 }
 
 /** web-channel 注入的 HTTP 原语（保持本模块零 web-channel 依赖） */
@@ -82,7 +88,23 @@ export async function handleListApps(
   let apps = await deps.appStore.listByUser(userId);
   if (managedBy) apps = apps.filter((a) => a.managerAgentId === managedBy);
   const views = await Promise.all(apps.map((a) => appView(deps, a)));
-  return { status: 200, json: { apps: views } };
+  // 分享给我的（分发面 §7.2）：最小视图——被分享者不可见管理面（版本/数据/通道/日志/管家）
+  const shared = (await deps.appStore.listSharedWith(userId)).map(sharedAppView);
+  return { status: 200, json: { apps: views, shared } };
+}
+
+/** 被分享者视图：仅运行所需字段（名字/图标/入口），无管理面字段，也无属主 id */
+function sharedAppView(app: PlatformApp): Record<string, unknown> {
+  return {
+    id: app.id,
+    name: app.name,
+    description: app.description,
+    icon: app.icon ?? null,
+    access: app.manifest.access,
+    currentVersion: app.currentVersion,
+    updatedAt: app.updatedAt,
+    runPath: `/apps/${app.id}/`,
+  };
 }
 
 export async function handleGetApp(
@@ -121,6 +143,7 @@ export async function handlePatchApp(
     ...(patch.manifest !== undefined ? { manifest: patch.manifest } : {}),
     ...(stewardChange !== undefined ? { managerAgentId: stewardChange } : {}),
     ...(patch.proxyBindings !== undefined ? { proxyBindings: patch.proxyBindings } : {}),
+    ...(patch.shareGrants !== undefined ? { shareGrants: patch.shareGrants } : {}),
   });
   if (!updated) throw new NotFoundError("NOT_FOUND", "app not found");
   return { status: 200, json: { app: await appView(deps, updated) } };
@@ -277,8 +300,80 @@ export async function handleIssueAppToken(
 }
 
 /**
- * 运行时面数据读写：仅接受 app-token（aud=appId）。属主 scope 可写；
- * 未来 grants/anonymous scope 只读。校验失败一律 401（不区分原因，防探测）。
+ * 打开面令牌（分发面 spec §7.2）：属主/被授权者经 /apps/:id/open 运行应用。
+ *  - 属主（或 admin）→ owner scope（与 /token 等价，深链免区分）；
+ *  - 非属主按 access 判定：all-users 放行；grants 校验名单；其余一律 403；
+ *  - 未发布视同不存在（404）。viewer scope 运行时面只读（app-data 拒写、代理仅 GET）。
+ */
+export async function handleIssueViewerToken(
+  ctx: AppHttpCtx,
+  deps: AppApiDeps,
+  req: HttpRequest,
+  appId: string,
+): Promise<ApiResult> {
+  const userId = requireUser(ctx, req);
+  const app = await deps.appStore.get(appId);
+  if (!app || app.currentVersion === null) throw new NotFoundError("NOT_FOUND", "app not found");
+  const isOwner = app.userId === userId || ctx.roleOf(req) === "admin";
+  if (!isOwner) {
+    const access = app.manifest.access;
+    const entitled =
+      access === "all-users" ||
+      (access === "grants" && (app.shareGrants ?? []).includes(userId));
+    if (!entitled) throw new ForbiddenError("FORBIDDEN", "无权访问该应用");
+  }
+  const scope = isOwner ? "owner" : "viewer";
+  const { token, expiresIn } = await deps.appToken.issue({ userId, appId, scope });
+  return { status: 200, json: { token, expiresIn, appPath: `/apps/${appId}/`, scope, name: app.name } };
+}
+
+/**
+ * 匿名令牌（分发面 §7.2）：仅 access=public-anonymous 且已发布的应用可签发；
+ * 免登录（public 守卫登记），scope=anonymous 只读。应用不存在/未公开一律 404 防探测。
+ */
+export async function handleIssueAnonymousToken(
+  deps: AppApiDeps,
+  appId: string,
+): Promise<ApiResult> {
+  const app = await deps.appStore.get(appId);
+  if (!app || app.currentVersion === null || app.manifest.access !== "public-anonymous") {
+    throw new NotFoundError("NOT_FOUND", "app not found");
+  }
+  const { token, expiresIn } = await deps.appToken.issue({
+    userId: "anonymous",
+    appId,
+    scope: "anonymous",
+  });
+  return {
+    status: 200,
+    json: { token, expiresIn, appPath: `/apps/${appId}/`, scope: "anonymous", name: app.name },
+  };
+}
+
+/**
+ * grants 候选（分发面 §7.2）：属主挑人入名单的用户搜索。
+ * 属主面守卫（owner(app)）；q 匹配 id/名称子串，截断 10 条——不提供全量名册。
+ */
+export async function handleGrantCandidates(
+  ctx: AppHttpCtx,
+  deps: AppApiDeps,
+  req: HttpRequest,
+  appId: string,
+  q: string,
+): Promise<ApiResult> {
+  await requireOwnedApp(deps, ctx, req, appId);
+  const needle = q.trim().toLowerCase();
+  const users = deps.userStore ? await deps.userStore.list() : [];
+  const items = users
+    .filter((u) => !needle || u.id.toLowerCase().includes(needle) || (u.name ?? "").toLowerCase().includes(needle))
+    .slice(0, 10)
+    .map((u) => ({ id: u.id, name: u.name ?? u.id }));
+  return { status: 200, json: { users: items } };
+}
+
+/**
+ * 运行时面数据读写：仅接受 app-token（aud=appId）。owner scope 可写；
+ * viewer/anonymous scope 只读（写操作 403）。校验失败一律 401（不区分原因，防探测）。
  */
 export function makeAppDataHandlers(deps: AppApiDeps) {
   return {
@@ -354,7 +449,7 @@ async function requireAppToken(
   deps: AppApiDeps,
   req: HttpRequest,
   appId: string,
-): Promise<{ userId: string; appId: string; scope: "owner" } | null> {
+): Promise<AppTokenClaims | null> {
   const auth = req.headers.authorization;
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
   if (!token) return null;
@@ -529,11 +624,29 @@ async function appView(deps: AppApiDeps, app: PlatformApp): Promise<Record<strin
     currentVersion: app.currentVersion,
     managerAgentId: app.managerAgentId ?? null,
     steward,
+    // 分享面（分发面 §7.2）：名单 + 名单用户名解析（仅属主面 DTO 会走到这里）
+    shareGrants: app.shareGrants ?? [],
+    shareGrantsUsers: await shareGrantsUsers(deps, app),
     proxyChannels: await proxyChannelsView(deps, app),
     createdAt: app.createdAt,
     updatedAt: app.updatedAt,
     runPath: app.currentVersion ? `/apps/${app.id}/` : null,
   };
+}
+
+/** grants 名单的用户名解析（userStore 缺省/用户已删 → 退回 userId 本身） */
+async function shareGrantsUsers(
+  deps: AppApiDeps,
+  app: PlatformApp,
+): Promise<Array<{ id: string; name: string }>> {
+  const grants = app.shareGrants ?? [];
+  if (!grants.length) return [];
+  return Promise.all(
+    grants.map(async (id) => {
+      const u = deps.userStore ? await deps.userStore.get(id) : undefined;
+      return { id, name: u?.name ?? id };
+    }),
+  );
 }
 
 export interface ProxyChannelView {
