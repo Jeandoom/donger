@@ -6,8 +6,8 @@
     从 master 分支的 HEAD 导出独立部署副本到 <部署根>/donger，安装依赖、构建前后端、
     生成生产 .env，产出可直接 npm start 的运行目录。逻辑与 scripts/deploy.sh 对齐，
     另有三处适配：
-      1. 部署目录默认 <项目>/.deploy/donger（与线上实际布局一致，
-         避免清理 .deploy 根目录时波及部署本体）；
+      1. 部署目录默认 D:\deploy\donger（2026-09-30 生产迁移后的实际位置；
+         其他机器部署请显式传 -DeployRoot），
       2. 后端先全量安装依赖、构建完成后再裁剪 dev 依赖
          （tsc 在 devDependencies，若先 --production 安装会导致构建失败）；
       3. 重新部署前自动把部署目录内已有的 .env 备份到部署根
@@ -21,8 +21,9 @@
 param(
     [int]$Port = 3330,
     [int]$WebPort = 3333,
-    # 部署根目录；实际部署到 <DeployRoot>/donger
-    [string]$DeployRoot = ""
+    # 部署根目录；实际部署到 <DeployRoot>/donger。默认为生产迁移后的固定位置；
+    # 其他环境部署请显式传 -DeployRoot 覆盖
+    [string]$DeployRoot = "D:\deploy"
 )
 
 Set-StrictMode -Version Latest

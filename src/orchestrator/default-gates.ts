@@ -8,10 +8,12 @@ export function createDefaultGates(): GateRouter {
   gates.describe({ id: "deploy", description: "部署/发布/推送操作审批" });
   // release 用负向断言：release-202608-1 这类分支名/版本号是普通参数，不算发布动作
   //（此前误拦只读 git fetch origin release-202608-1，60s 审批超时致任务失败，复盘 P2-9）
-  // deploy/publish/release 同样排除前置 `.`：`.deploy` 是部署目录名（生产工作区路径
-  // 天然含 D:\...\.deploy\...），cd/python 等普通命令照抄附件绝对路径即被误拦、
-  // 审批卡在手机端未处理便无限挂起（2026-09-21 个人财物管家两条会话卡死复盘）。
-  // ./deploy.sh 前置是 / 不受负向断言影响，仍照拦。
+  // deploy/publish/release 同样排除前置 `.` 与 `\`：部署目录路径中的目录段不算发布
+  // 动作——生产部署目录现为 D:\deploy\donger（2026-09-30 迁移），工作区/附件路径天然
+  // 含 D:\...\deploy\...；此前 .deploy 时代靠排除前置 `.` 豁免，迁移后 `\` 前置同样会
+  // 把 cd/python 等照抄绝对路径的普通命令误拦进 force 门、审批卡在手机端未处理便无限
+  // 挂起（2026-09-21 个人财物管家两条会话卡死复盘，同模式）。
+  // ./deploy.sh、/deploy.sh 前置是 / 不受负向断言影响，仍照拦。
   // git push 匹配改为「git + 全局选项串 + push」：git -C dir push / --git-dir 形态此前绕过
   //（allowShellGit 的 agent 下 shell git 守卫退出，deploy 门是唯一防线）；
   // commit -m "push ..." 等消息词不误伤（push 须紧跟在选项位之后）。
@@ -19,7 +21,7 @@ export function createDefaultGates(): GateRouter {
     gateId: "deploy",
     toolName: "Bash",
     commandPattern:
-      /(?<!\.)\b(?:deploy|publish)\b|\bgit(?:\s+(?:-{1,2}[\w][\w-]*(?:=[^\s"']+)?|"[^"]*"))*\s+push\b|(?<!\.)\brelease(?![-\w])/i,
+      /(?<![.\\])\b(?:deploy|publish)\b|\bgit(?:\s+(?:-{1,2}[\w][\w-]*(?:=[^\s"']+)?|"[^"]*"))*\s+push\b|(?<![.\\])\brelease(?![-\w])/i,
     force: true,
   });
   // AI 生成子模块：平台工具写操作确认（SDK 中工具全名 = mcp__donger-platform__<tool>）
