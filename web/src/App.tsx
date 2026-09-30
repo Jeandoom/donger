@@ -8,6 +8,7 @@ import { AuditPage } from "./pages/AuditPage";
 import { AuthorizationPage } from "./pages/AuthorizationPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
+import { DeployPage } from "./pages/DeployPage";
 import { CredentialsPage } from "./pages/credentials/CredentialsPage";
 import { FeedbackPage } from "./pages/FeedbackPage";
 import { InvitesPage } from "./pages/InvitesPage";
@@ -68,6 +69,7 @@ export function App() {
             <Route path="/loops/:id" element={<LoopDetailPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
+            <Route path="/deploy" element={<DeployPage />} />
             {/* 原设置子模块一级化（/profile /models /credentials /invites）；旧 /settings/* 深链重定向 */}
             <Route path="/profile" element={<UserProfilePage />} />
             <Route path="/models" element={<ModelsPage />} />
