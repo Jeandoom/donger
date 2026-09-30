@@ -1,6 +1,5 @@
 import { ChevronDown } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
@@ -49,7 +48,6 @@ export function RuntimeSection({ agentId }: { agentId: string }) {
       <div className="flex flex-col divide-y divide-border">
         <CallbackPanel agentId={agentId} />
         <SharePanel agentId={agentId} />
-        <ManagedAppsPanel agentId={agentId} />
       </div>
     </section>
   );
@@ -382,58 +380,3 @@ function SharePanel({ agentId }: { agentId: string }) {
   );
 }
 
-/** 管理的应用（应用管家制 spec §8）：反查视图——绑定关系在应用详情页改派，此处只读呈现 */
-function ManagedAppsPanel({ agentId }: { agentId: string }) {
-  const [apps, setApps] = useState<
-    Array<{ id: string; name: string; currentVersion: number | null }>
-  >([]);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    apiFetchRetry(`/api/apps?managedBy=${encodeURIComponent(agentId)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ apps?: typeof apps }>) : { apps: [] }))
-      .then((d) => setApps(d.apps ?? []))
-      .catch(() => {});
-  }, [agentId]);
-
-  const summary = apps.length ? `${apps.length} 个应用` : "暂无";
-
-  return (
-    <div className="flex flex-col py-3.5 first:pt-0 last:pb-0">
-      <PanelHeader
-        title="管理的应用"
-        summary={summary}
-        open={open}
-        onToggle={() => setOpen((v) => !v)}
-      />
-      <PanelBody open={open}>
-        <p className="text-[11px] text-muted-foreground">
-          该智能体担任责任管家的应用（会话内创建应用时自动绑定；改派在应用详情页操作）。
-          管家身份会随身份节注入其全部会话，应用发布/回滚事件与反馈也路由到此。
-        </p>
-        {apps.length === 0 ? (
-          <div className="text-xs text-muted-foreground">暂无绑定的应用。</div>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {apps.map((a) => (
-              <li
-                key={a.id}
-                className="flex items-center justify-between gap-3 rounded-lg bg-muted/60 px-3 py-2 text-[13px]"
-              >
-                <Link
-                  to={`/apps/${a.id}`}
-                  className="min-w-0 truncate text-primary hover:underline"
-                >
-                  {a.name}
-                </Link>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {a.currentVersion !== null ? `v${a.currentVersion}` : "未发布"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </PanelBody>
-    </div>
-  );
-}

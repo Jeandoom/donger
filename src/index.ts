@@ -22,7 +22,6 @@ import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
-import { SqliteAppStore } from "./adapters/sqlite-app-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
@@ -191,11 +190,7 @@ async function main(): Promise<void> {
   const kbRevisionStore = new SqliteKbRevisionStore(db);
   kbRevisionStore.migrate();
 
-  // 平台应用三表（spec 2026-09-25-app-platform-architecture M1）：产物落 <dataDir>/apps
-  //（deploy.ps1 重建目录不触及 data/，应用资产不会被清空）
-  const appStore = new SqliteAppStore(db);
-  appStore.migrate();
-  const appsDir = join(dirname(cfg.dbPath), "apps");
+  // 平台应用模块已于 2026-09-30 移除（方案 B GitOps 外接取代）；apps 四表与产物归档休眠保留。
   // FTS 三列式影子索引（R-A：seg=CJK 逐字切分，查询短语化；中文 0 命中修复）
   migrateKbFts(db);
   const kbFts = createKbFts(db);
@@ -325,8 +320,6 @@ async function main(): Promise<void> {
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
       extensionDirectoryResolver,
-      // 应用管家制（spec §4.1）：身份节派生「责任应用」清单
-      appStore,
     });
     return new Orchestrator({
       store,
@@ -368,9 +361,6 @@ async function main(): Promise<void> {
       selfImproveGitRepository,
       agentChain: cfg.agentChain,
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
-      appStore,
-      appsDir,
-      // 应用管家制（spec §6）：app.published/app.rolled_back → 事件触发器管线（晚绑定见 eventEmitRef）
       eventEmit: (eventName, payload) => {
         const dispatch = eventEmitRef.current;
         if (dispatch) dispatch(eventName, payload);
@@ -520,9 +510,6 @@ async function main(): Promise<void> {
     installer: skillInstaller,
     userSkillRepoStore,
     skillRepoSync,
-    appStore,
-    appsDir,
-    appTokenSecret: jwtSecret,
     credentialSets,
     connectorStore,
     llmProviderStore,

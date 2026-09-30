@@ -4,9 +4,6 @@ import { Shell } from "./components/layout/Shell";
 import { PwaUpdatePrompt } from "./components/pwa/PwaUpdatePrompt";
 import { AgentEditorPage } from "./pages/AgentEditorPage";
 import { AgentsPage } from "./pages/AgentsPage";
-import { AppDetailPage } from "./pages/AppDetailPage";
-import { AppOpenPage } from "./pages/AppOpenPage";
-import { AppsPage } from "./pages/AppsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { AuthorizationPage } from "./pages/AuthorizationPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -47,8 +44,6 @@ export function App() {
         <Route path="/setup" element={<SetupPage />} />
         {/* 分享落地页（公开；登录后自动授权进入） */}
         <Route path="/share/:token" element={<ShareLandingPage />} />
-        {/* 应用打开页（分发面 §7.2）：公开路由，页面内自鉴别（viewer→anonymous 降级） */}
-        <Route path="/apps/:appId/open" element={<AppOpenPage />} />
         {/* 合并流程已废弃：旧链接重定向到登录页 */}
         <Route path="/login/merge" element={<Navigate to="/login" replace />} />
 
@@ -57,9 +52,6 @@ export function App() {
           <Route element={<Shell />}>
             <Route path="/" element={<ChatPage />} />
             <Route path="/agents" element={<AgentsPage />} />
-            {/* 应用模块（spec 2026-09-25-app-platform-architecture）：列表 + 详情（概览/版本/数据/运行） */}
-            <Route path="/apps" element={<AppsPage />} />
-            <Route path="/apps/:appId" element={<AppDetailPage />} />
             <Route path="/kb" element={<KnowledgeBasePage />} />
             <Route path="/kb/:id" element={<KbDetailPage />} />
             <Route path="/agents/new" element={<AgentEditorPage />} />

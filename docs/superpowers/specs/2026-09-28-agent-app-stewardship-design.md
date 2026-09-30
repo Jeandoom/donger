@@ -1,5 +1,7 @@
 # 应用管家制：智能体×应用责任闭环设计（spec，待拍板）
 
+> **已下线（2026-09-30）**：应用模块已整体移除，本文档仅作历史记录。服务端应用开发部署改走「方案 B：GitOps 外接流水线 + donger AI 控制面」；git 历史保留全部实现（a540654…dfe9a54）。
+
 - 日期：2026-09-28
 - 状态：**已拍板实施（2026-09-28 五拍板点全部同意；P0=8811ba9，P1+M2=同日随版）**
 - 关联：应用内核 M1（`src/domain/app.ts` / `src/orchestrator/app-tools.ts` / 应用管家 `app-manager-agent.ts`）、事件触发器（spec 2026-09-28-event-trigger-feedback-design，已实施 b87cfdb）、通知模块（spec 2026-09-28-notification-module-design）、反馈对话化（c848a39）、zcode 引擎提示链缺陷（排障 2026-09-28，见 §4 前置地基）

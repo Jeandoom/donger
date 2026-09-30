@@ -17,12 +17,8 @@ export type TriggerSource = z.infer<typeof TriggerSourceSchema>;
 
 /** 进程内事件触发器的事件名注册表（spec 2026-09-28-event-trigger-feedback-design §3）；
  * 新事件源（KB 变更/会话完结等）在此追加即可复用整条投递管线。
- * app.* （应用管家制 spec §6.1）：payload 契约见 domain/event-payloads.ts，发射方=app-tools */
-export const EVENT_TRIGGER_NAMES = [
-  "feedback.created",
-  "app.published",
-  "app.rolled_back",
-] as const;
+ * payload 契约见 domain/event-payloads.ts */
+export const EVENT_TRIGGER_NAMES = ["feedback.created"] as const;
 export type EventTriggerName = (typeof EVENT_TRIGGER_NAMES)[number];
 
 /**

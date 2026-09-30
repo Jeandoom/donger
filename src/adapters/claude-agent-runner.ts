@@ -46,7 +46,6 @@ export class ClaudeAgentRunner implements AgentRunner {
       ...(opts.gitPlatformTools ? { "donger-git": opts.gitPlatformTools } : {}),
       ...(opts.kbTools ? { "donger-kb": opts.kbTools } : {}),
       ...(opts.auditTools ? { "donger-audit": opts.auditTools } : {}),
-      ...(opts.appTools ? { "donger-apps": opts.appTools } : {}),
     };
 
     const stream = query({

@@ -102,8 +102,7 @@ const EnvSchema = z.object({
     .transform((v) => v === "true"),
   // 触发事件队列单 loop pending 上限（超出落 dropped+告警；防 DoS 显式边界）
   TRIGGER_QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(10_000).default(200),
-  // app-proxy 外部服务凭证已迁出 .env（2026-09-29-app-proxy-credential-binding）：
-  // 应用属主在「凭证」页自填、经 type=http 连接器绑定到应用通道；.env 不再承载任何代理凭证。
+  // .env 不承载任何代理凭证（凭证走用户凭证集 + type=http 连接器；历史 app-proxy 已随应用模块移除）。
 });
 
 /** 钉钉企业自建应用配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全才出现） */

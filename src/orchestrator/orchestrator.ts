@@ -37,7 +37,6 @@ import type {
 } from "../ports/agent-runner.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
-import type { AppStore } from "../ports/app-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
 import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
@@ -60,8 +59,6 @@ import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
-import { BUILTIN_APP_MANAGER_AGENT, BUILTIN_APP_MANAGER_ID } from "./app-manager-agent.js";
-import { createAppToolsServer } from "./app-tools.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { materializeMessageFiles } from "./attachment-materializer.js";
@@ -131,7 +128,7 @@ export interface OrchestratorDeps {
   /** 通知内核（spec 2026-09-28-notification-module-design；缺省=不发站内信） */
   notificationService?: NotificationService;
   /**
-   * 进程内事件发射（应用管家制 spec §6：app.published/app.rolled_back → 触发器管线）。
+   * 进程内事件发射（→ 触发器管线）。
    * index 侧晚绑定 EventTriggerDispatcher（它依赖本 orchestrator 构造出的 loopRunner）；
    * 缺省=不发事件。调用方保证 fire-and-forget。
    */
@@ -140,9 +137,6 @@ export interface OrchestratorDeps {
   agentChain?: AgentChainConfig;
   /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
   turnStallTimeoutMs?: number;
-  /** 平台应用存储 + 产物根目录（spec 2026-09-25-app-platform-architecture M2）；缺省=app 工具不挂载 */
-  appStore?: AppStore;
-  appsDir?: string;
 }
 
 /** 活跃任务明细：并发额度按条目记账，满载时从中挑「最早进入挂起」的淘汰 */
@@ -322,7 +316,6 @@ export class Orchestrator {
     // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
     if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
     if (agentId === BUILTIN_KB_ASSISTANT_ID) return { agent: BUILTIN_KB_ASSISTANT_AGENT };
-    if (agentId === BUILTIN_APP_MANAGER_ID) return { agent: BUILTIN_APP_MANAGER_AGENT };
     if (agentId === BUILTIN_SKILL_FORGE_AGENT_ID) return { agent: BUILTIN_SKILL_FORGE_AGENT };
     if (agentId === BUILTIN_AUDITOR_AGENT_ID) return { agent: BUILTIN_AUDITOR_AGENT };
     if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
@@ -575,31 +568,6 @@ export class Orchestrator {
           systemPromptAppend: [base.systemPromptAppend, kbPrompt]
             .filter((s) => s && s.length > 0)
             .join("\n\n"),
-        };
-      }
-      // 平台应用工具（donger-apps）：会话用户闭包绑定所有权；产物目录相对运行时目录解析；
-      // 备份还原仅接受运行时目录与本会话附件目录内的 zip（无独立外部导入通道）
-      if (this.deps.appStore && this.deps.appsDir) {
-        base = {
-          ...base,
-          appTools: createAppToolsServer({
-            appStore: this.deps.appStore,
-            appsDir: this.deps.appsDir,
-            runtimeDir: context.runtimeDir,
-            userId: p.user.id,
-            importRoots: [
-              context.runtimeDir,
-              resolve(
-                join(p.user.homeDir, "sessions", p.conversation.id, "workspace", "attachments"),
-              ),
-            ],
-            // 应用管家制（spec §5）：创建即自动落责任绑定；发布/回滚发射事件+owner 通知
-            ...(p.agent ? { agentId: p.agent.id } : {}),
-            ...(this.deps.eventEmit ? { emitEvent: this.deps.eventEmit } : {}),
-            ...(this.deps.notificationService
-              ? { notifications: this.deps.notificationService }
-              : {}),
-          }),
         };
       }
       // 审计读取工具（donger-audit）：内置审计智能体、技能工坊、平台进化官挂载。

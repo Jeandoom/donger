@@ -33,8 +33,7 @@ export const PWA_OPTIONS: Partial<VitePWAOptions> = {
     cleanupOutdatedCaches: true,
     globPatterns: ["**/*.{html,js,css,ico,png,svg,woff2}"],
     navigateFallback: "index.html",
-    // denylist 必含 /apps/：应用 bundle 的导航不能被 SPA fallback 劫持回主站 index.html
-    navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /^\/apps\//, /\/stream(?:\?|$)/],
+    navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /\/stream(?:\?|$)/],
     runtimeCaching: [],
   },
 };

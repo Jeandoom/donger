@@ -26,7 +26,7 @@ export function isHttpUrl(u: string): boolean {
 }
 
 /**
- * 连接器认证风格（应用受控代理面消费；spec 2026-09-29-app-proxy-credential-binding §2.1）：
+ * 连接器认证风格（外部 HTTP 服务调用面消费；历史应用代理已移除，风格保留供外部集成复用）：
  * - none（缺省）：headers 静态头 + 凭证引用替换即最终请求头；
  * - basic-crumb：凭证键 username/apiToken 组 Basic，POST 自动带 CRUMB、403 重取重试一次（Jenkins 形态）；
  * - token-login：凭证键 username/password POST <baseUrl>/api/token/ 换 JWT，401 重登一次（Ops 形态）。

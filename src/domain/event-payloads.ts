@@ -40,49 +40,5 @@ export function sampleFeedbackCreatedPayload(): string {
   });
 }
 
-// ===== 应用生命周期事件（应用管家制 spec §6.1；发射方=app-tools）=====
-
-export interface AppPublishedFact {
-  appId: string;
-  name: string;
-  /** 本次发布版本号 */
-  version: number;
-  /** 发布前的当前版本；null=首次发布 */
-  previousVersion: number | null;
-  /** 发布来源：agent 会话工具 or 属主 UI 手动切版 */
-  publishedBy: { kind: "agent" | "user"; agentId?: string };
-  /** 责任管家（弱引用原样携带，NULL=内置应用管家兜底） */
-  managerAgentId: string | null;
-  at: string;
-}
-
-export function buildAppPublishedPayload(fact: AppPublishedFact): string {
-  return JSON.stringify({ event: "app.published", app: fact });
-}
-
-export interface AppRolledBackFact {
-  appId: string;
-  name: string;
-  from: number;
-  to: number;
-  rolledBy: { kind: "agent" | "user"; agentId?: string };
-  managerAgentId: string | null;
-  at: string;
-}
-
-export function buildAppRolledBackPayload(fact: AppRolledBackFact): string {
-  return JSON.stringify({ event: "app.rolled_back", app: fact });
-}
-
-/** testTrigger 用固定样例 */
-export function sampleAppPublishedPayload(): string {
-  return buildAppPublishedPayload({
-    appId: "app_sample",
-    name: "样例应用",
-    version: 1,
-    previousVersion: null,
-    publishedBy: { kind: "agent", agentId: "sample-agent" },
-    managerAgentId: null,
-    at: "1970-01-01T00:00:00.000Z",
-  });
-}
+// 应用生命周期事件（app.published/app.rolled_back）随应用模块于 2026-09-30 移除；
+// FeedbackCreatedFact.appId 为弱引用软关联，历史行悬空无害，字段保留。

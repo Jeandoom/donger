@@ -334,7 +334,6 @@ describe("通知 Web API", () => {
       "system",
       "account",
       "feedback",
-      "app",
     ]);
     const account = groups.find((g) => g.eventGroup === "account");
     expect(account?.mandatory).toBe(true);

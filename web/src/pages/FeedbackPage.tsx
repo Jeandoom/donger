@@ -309,7 +309,7 @@ function FeedbackListItem({
   );
 }
 
-/** 右区：新增反馈表单（类别 chips + 多行文本 + 截图上传 + 关联对话记录选择 + 关联应用） */
+/** 右区：新增反馈表单（类别 chips + 多行文本 + 截图上传 + 关联对话记录选择） */
 function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) {
   const [category, setCategory] = useState<FeedbackCategory>("other");
   const [content, setContent] = useState("");
@@ -320,9 +320,6 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  // 关联应用（应用管家制 spec §7）：应用详情页「反馈」入口以 ?app=<id> 带入
-  const [searchParams] = useSearchParams();
-  const appId = searchParams.get("app");
   // 草稿 key：本次表单的上传落盘目录，提交时由服务端收编为反馈附件目录
   const draftKey = useRef<string>(crypto.randomUUID());
 
@@ -367,7 +364,6 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
         content: content.trim(),
         images: images.map((i) => i.name),
         conversationIds: conversation ? [conversation.id] : undefined,
-        appId: appId ?? undefined,
         key: images.length > 0 ? draftKey.current : undefined,
       });
       for (const img of images) URL.revokeObjectURL(img.previewUrl);
@@ -386,13 +382,6 @@ function FeedbackForm({ onCreated }: { onCreated: (fb: FeedbackItem) => void }) 
   return (
     <Card className="p-5">
       <h2 className="mb-4 font-semibold">新增反馈</h2>
-      {appId ? (
-        <div className="mb-4 flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
-          <span>
-            本条反馈将关联应用 <code className="font-mono">{appId}</code>，会路由到该应用的责任管家。
-          </span>
-        </div>
-      ) : null}
       <div className="mb-4">
         <div className="mb-2 text-xs font-medium text-muted-foreground">反馈类型</div>
         <Segmented
