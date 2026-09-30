@@ -1,20 +1,13 @@
 // ssh2 适配器：SshCommandRunner 端口的唯一生产实现。
 // 每命令一连接（L1 简化：频率低、状态零残留；L2 landside 后此通道退救援用）。
 
+import { Client } from "ssh2";
 import type { SshCommandResult, SshCommandRunner } from "../ports/ssh-command-runner.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 200_000;
 
 export const createSsh2CommandRunner = (): SshCommandRunner => {
-  // 延迟 require：ssh2 为可选依赖路径，缺装时给出可行动的错误而非启动崩溃
-  let Client: typeof import("ssh2").Client;
-  try {
-    Client = require("ssh2").Client as typeof import("ssh2").Client;
-  } catch (e) {
-    throw new Error(`ssh2 未安装，SSH 通道不可用：${(e as Error).message}`);
-  }
-
   return (endpoint, auth, command, opts): Promise<SshCommandResult> =>
     new Promise((resolve, reject) => {
       const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
