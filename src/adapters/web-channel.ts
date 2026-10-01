@@ -129,6 +129,7 @@ import {
   resolvePermissionMode,
 } from "../domain/permission-mode.js";
 import { validateAgentAgainstPreset } from "../domain/scenario-preset.js";
+import { auditAgentSkillAvailability } from "../domain/skill-availability.js";
 import type { SkillPackSource } from "../domain/skill-pack.js";
 import { parseTriggerInput, type Trigger } from "../domain/trigger.js";
 import {
@@ -4576,6 +4577,11 @@ export class WebChannel implements Channel {
       }
       if (src.connectorIds.length > 0) warnings.push("连接器未随复制，请重新勾选");
       if (src.credentials.length > 0) warnings.push("凭证勾选未随复制，请自行补充");
+      // 技能实体在被复制者名下不存在（pack 落在属主 homeDir，不随配置复制）——
+      // 此前 skills 数组原样带过导致副本技能全部静默悬空（2026-10-01 共享智能体技能修复轮 B）
+      if (!isMine && src.skills.length > 0) {
+        warnings.push("技能包未随复制，请在技能工坊安装对应技能包后重新勾选技能");
+      }
       // 扩展目录已改版为相对路径（相对复制者自己的工作区根解析）；存量绝对路径条目不随复制
       const relativeDirs = src.extensionDirectories.filter((d) => isRelativeExtensionPath(d.path));
       if (relativeDirs.length < src.extensionDirectories.length) {
@@ -4608,6 +4614,98 @@ export class WebChannel implements Channel {
       });
       if (!duplicated) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(res, { ...this.agentToDTO(duplicated, true), warnings });
+    }
+    // === 技能可用性对账 + 技能问题上报（2026-10-01 共享智能体技能修复轮 C） ===
+    // url 含查询串防御沿用铁律：参数段收窄 + 先于 :id 泛路由（此处均在 /api/agents/:id 段之后无冲突）
+    const skillAuditMatch = url.match(/^\/api\/agents\/([\w-]+)\/skill-audit$/);
+    if (skillAuditMatch && req.method === "GET") {
+      const sid = skillAuditMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const src = await this.agentStore?.get(sid);
+      if (!src) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(sid, me) : false;
+      if (!canUseAgent(src, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      const owner =
+        src.ownerId === me
+          ? await this.deps.userStore?.get(me)
+          : await this.deps.userStore?.get(src.ownerId);
+      if (!owner || !this.deps.skillPackStore) {
+        return this.json(res, { error: "skill audit unavailable" }, 503);
+      }
+      const missing = await auditAgentSkillAvailability(
+        (ownerId) => this.deps.skillPackStore?.listPacks(ownerId) ?? Promise.resolve([]),
+        src,
+        owner,
+      );
+      return this.json(res, { missing });
+    }
+    const reportIssueMatch = url.match(/^\/api\/agents\/([\w-]+)\/report-issue$/);
+    if (reportIssueMatch && req.method === "POST") {
+      const sid = reportIssueMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const src = await this.agentStore?.get(sid);
+      if (!src) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      const granted = this.agentShareStore ? await this.agentShareStore.isGranted(sid, me) : false;
+      if (!canUseAgent(src, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
+      const body = JSON.parse(await this.readBody(req).catch(() => "{}")) as { message?: unknown };
+      const message = typeof body.message === "string" ? body.message.trim().slice(0, 500) : "";
+      const owner =
+        src.ownerId === me
+          ? await this.deps.userStore?.get(me)
+          : await this.deps.userStore?.get(src.ownerId);
+      if (!owner || !this.deps.skillPackStore || !this.deps.notificationService) {
+        return this.json(res, { error: "report unavailable" }, 503);
+      }
+      const missing = await auditAgentSkillAvailability(
+        (ownerId) => this.deps.skillPackStore?.listPacks(ownerId) ?? Promise.resolve([]),
+        src,
+        owner,
+      );
+      // 对账无缺失且无说明：不产生通知（防误报/空报），前端据此提示
+      if (missing.length === 0 && !message) {
+        return this.json(res, { reported: false, missing });
+      }
+      const reporter = await this.deps.userStore?.get(me);
+      const title = `「${src.name}」收到技能问题上报`;
+      const bodyText = [
+        `上报人：${reporter?.name ?? me}`,
+        missing.length > 0
+          ? `对账缺失技能：${missing.join("、")}`
+          : "平台对账未发现缺失技能（用户自述现象见说明）",
+        ...(message ? [`说明：${message}`] : []),
+      ].join("\n");
+      await this.deps.notificationService.notify({
+        event: "agent.skill_issue_reported",
+        recipients: [{ kind: "user", userId: src.ownerId }],
+        title,
+        body: bodyText,
+        // 深链到分享者自己的编辑页运行管理区（不可深链被分享者会话：属主隔离 403）
+        link: `/agents/${src.id}#agent-sec-runtime`,
+        // 天级幂等：同人同智能体同日只投一条，防刷不阻断跨日重报
+        dedupeKey: `skill-issue:${src.id}:${me}:${new Date().toISOString().slice(0, 10)}`,
+      });
+      return this.json(res, { reported: true, missing });
+    }
+    const skillIssuesMatch = url.match(/^\/api\/agents\/([\w-]+)\/skill-issues$/);
+    if (skillIssuesMatch && req.method === "GET") {
+      const sid = skillIssuesMatch[1] ?? "";
+      const me = this.requireUserId(req);
+      const src = await this.agentStore?.get(sid);
+      if (!src) return this.json(res, { error: "not found" }, 404);
+      const meUser = await this.deps.userStore?.get(me);
+      const actor = { id: me, role: (meUser?.role ?? "user") as "admin" | "user" };
+      if (!canManageAgent(src, actor)) return this.json(res, { error: "forbidden" }, 403);
+      if (!this.deps.notificationService) return this.json(res, { error: "unavailable" }, 503);
+      const result = await this.deps.notificationService.list(me, {
+        limit: 50,
+        offset: 0,
+        filter: { event: "agent.skill_issue_reported", linkPrefix: `/agents/${src.id}#` },
+      });
+      return this.json(res, { items: result.items });
     }
     // === 知识库（spec 2026-09-22-knowledge-base-design §7；权限判定统一走 kb-policy，禁止内联重复） ===
     // url 含查询串（铁律：反馈轮 ?token= 404 事故），KB 段统一剥 query 后再匹配

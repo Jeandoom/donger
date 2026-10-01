@@ -591,7 +591,6 @@ describe("RuntimeManager agent 分支", () => {
     expect(append).not.toContain("agent-identity");
   });
 
-
   it("cwd：agent 任务共享 agents/<agentId>/workspace（产物跨会话延续），无 agent 保持会话级", async () => {
     const user = baseUser(join(ws, "users", "u1"));
     const m = new RuntimeManager({
@@ -692,6 +691,88 @@ describe("RuntimeManager agent 分支", () => {
     );
     expect(sharedPlugin).toBeDefined();
     expect(existsSync(join(sharedPlugin ?? "", "skills", "query", "SKILL.md"))).toBe(true);
+  });
+
+  it("共享 agent 声明的技能缺失时注入「技能未就绪」提示", async () => {
+    const owner = {
+      ...baseUser(mkdtempSync(join(tmpdir(), "shared-agent-owner-"))),
+      id: "owner",
+    };
+    const skillDeps = emptySkillDeps();
+    const conv = baseConv();
+    const visitor = baseUser(join(ws, "users", "u1"));
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...skillDeps,
+    });
+    const { runOptions } = await m.prepare(visitor, conv, {
+      agent: {
+        id: "shared-agent",
+        ownerId: owner.id,
+        name: "共享助手",
+        // 分享者空间没有任何 pack：全部声明技能缺失
+        skills: ["ghost-pack:query", "ghost-pack:other"],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        createdAt: "",
+        updatedAt: "",
+      },
+      sharedAgentSkillOwner: owner,
+    });
+    expect(runOptions.systemPromptAppend).toContain("技能未就绪");
+    expect(runOptions.systemPromptAppend).toContain("ghost-pack:query");
+    expect(runOptions.systemPromptAppend).toContain("上报技能问题");
+  });
+
+  it("own agent 技能齐备时不注入缺失提示", async () => {
+    const ownerPackDir = mkdtempSync(join(tmpdir(), "own-agent-pack-"));
+    mkdirSync(join(ownerPackDir, ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(ownerPackDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "own-pack", version: "0.1.0" }),
+    );
+    mkdirSync(join(ownerPackDir, "skills", "query"), { recursive: true });
+    writeFileSync(
+      join(ownerPackDir, "skills", "query", "SKILL.md"),
+      "---\nname: query\ndescription: query\n---\n",
+    );
+    const user = baseUser(join(ws, "users", "u1"));
+    const skillDeps = emptySkillDeps();
+    await skillDeps.skillPackStore.upsertPack({
+      id: "own-pack-id",
+      userId: user.id,
+      slug: "own-pack",
+      name: "own-pack",
+      source: { kind: "paste" },
+      installedPath: ownerPackDir,
+      enabled: true,
+      builtin: false,
+      credentials: [],
+      createdAt: "t",
+      updatedAt: "t",
+    });
+    const conv = baseConv({ agentId: "a1" });
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...skillDeps,
+    });
+    const { runOptions } = await m.prepare(user, conv, {
+      agent: {
+        id: "a1",
+        ownerId: user.id,
+        name: "自建",
+        skills: ["own-pack:query"],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    expect(runOptions.systemPromptAppend).not.toContain("技能未就绪");
   });
 
   it("agent.tools.mode=all → allowedTools undefined", async () => {

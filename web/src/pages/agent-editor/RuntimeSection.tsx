@@ -14,8 +14,10 @@ import {
 import { apiFetchRetry } from "../../lib/auth";
 import {
   fetchShareStatus,
+  fetchSkillIssues,
   removeShareGrant,
   type ShareStatus,
+  type SkillIssueItem,
   setShareEnabled,
 } from "../../lib/share";
 import { cn } from "../../lib/utils";
@@ -305,6 +307,7 @@ function CallbackPanel({ agentId }: { agentId: string }) {
 
 function SharePanel({ agentId }: { agentId: string }) {
   const [status, setStatus] = useState<ShareStatus | null>(null);
+  const [issues, setIssues] = useState<SkillIssueItem[] | null>(null);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -313,7 +316,19 @@ function SharePanel({ agentId }: { agentId: string }) {
       .catch(() => {});
   }, [agentId]);
 
-  const summary = status?.enabled ? `已授权 ${status.grants.length} 人` : "未开启";
+  useEffect(() => {
+    // 技能问题反馈（分享者本人视角读通知表；非管理者打开编辑页 403 静默）
+    fetchSkillIssues(agentId)
+      .then(setIssues)
+      .catch(() => setIssues([]));
+  }, [agentId]);
+
+  const issueCount = issues?.length ?? 0;
+  const summary = status?.enabled
+    ? `已授权 ${status.grants.length} 人${issueCount > 0 ? ` · 技能反馈 ${issueCount}` : ""}`
+    : issueCount > 0
+      ? `技能反馈 ${issueCount}`
+      : "未开启";
 
   const toggle = async () => {
     if (!status) return;
@@ -375,8 +390,32 @@ function SharePanel({ agentId }: { agentId: string }) {
             </div>
           </>
         ) : null}
+        {issues !== null && issues.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-semibold text-muted-foreground">技能问题反馈</span>
+            <p className="text-[11px] text-muted-foreground">
+              被分享用户上报的技能缺失/异常。在技能工坊修复属主侧技能后，所有使用者下次对话自动生效。
+            </p>
+            {issues.map((issue) => (
+              <div
+                key={issue.id}
+                className="flex flex-col gap-1 rounded-lg border border-border bg-card px-3 py-2 text-sm"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="truncate font-medium">{issue.title}</span>
+                  <span className="flex-1" />
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    {new Date(issue.createdAt).toLocaleString()}
+                  </span>
+                </div>
+                <span className="whitespace-pre-wrap text-xs text-muted-foreground">
+                  {issue.body}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </PanelBody>
     </div>
   );
 }
-

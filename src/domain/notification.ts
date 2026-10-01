@@ -21,10 +21,18 @@ export type NotificationEvent =
   | "system.announcement"
   | "deploy.detected"
   | "deploy.succeeded"
-  | "deploy.failed";
+  | "deploy.failed"
+  | "agent.skill_issue_reported";
 
 /** 订阅偏好按事件组粒度（用户不感知单事件开关）；组×通道成矩阵 */
-export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback" | "deploy";
+export type NotificationEventGroup =
+  | "task"
+  | "loop"
+  | "system"
+  | "account"
+  | "feedback"
+  | "deploy"
+  | "share";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
 
@@ -118,6 +126,12 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     mandatoryInapp: false,
     label: "部署失败",
   },
+  "agent.skill_issue_reported": {
+    group: "share",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "智能体技能问题上报",
+  },
 };
 
 export function isNotificationEvent(v: unknown): v is NotificationEvent {
@@ -131,6 +145,7 @@ export const NOTIFICATION_GROUP_LABELS: Record<NotificationEventGroup, string> =
   account: "账号安全",
   feedback: "反馈回复",
   deploy: "部署运维",
+  share: "分享协作",
 };
 
 /** account 组整体强制站内信（组内事件 mandatoryInapp=true），订阅矩阵中锁定为开 */
@@ -178,7 +193,7 @@ export interface NotificationPrefsEntry {
 }
 
 export const NotificationPrefInputSchema = z.object({
-  eventGroup: z.enum(["task", "loop", "system", "account", "feedback"]),
+  eventGroup: z.enum(["task", "loop", "system", "account", "feedback", "deploy", "share"]),
   channel: z.enum(["inapp", "dingtalk", "webhook"]),
   enabled: z.boolean(),
 });

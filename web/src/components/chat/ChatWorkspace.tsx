@@ -55,6 +55,8 @@ export interface ChatWorkspaceProps {
   onModelRefChange?: (ref: string) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
+  /** 顶栏右侧扩展（「文件」按钮旁，技能问题上报入口等） */
+  headerExtra?: React.ReactNode;
   errors: ChatErrors;
   onReloadConversations: () => void;
   onReloadMessages: () => void;
@@ -218,6 +220,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {props.headerExtra}
             <button
               type="button"
               onClick={() => setDrawer({ open: true, tab: "files", focusPath: null })}

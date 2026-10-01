@@ -4,7 +4,14 @@
 import { apiFetch } from "./auth";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
-export type NotificationEventGroup = "task" | "loop" | "system" | "account" | "feedback";
+export type NotificationEventGroup =
+  | "task"
+  | "loop"
+  | "system"
+  | "account"
+  | "feedback"
+  | "deploy"
+  | "share";
 export type NotificationChannel = "inapp" | "dingtalk" | "webhook";
 
 export interface NotificationItem {

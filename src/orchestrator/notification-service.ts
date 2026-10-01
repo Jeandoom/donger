@@ -18,6 +18,7 @@ import type {
 } from "../ports/notification-channel.js";
 import type {
   NotificationDelivery,
+  NotificationListFilter,
   NotificationListResult,
   NotificationStore,
 } from "../ports/notification-store.js";
@@ -486,7 +487,12 @@ export class NotificationService {
 
   list(
     userId: string,
-    opts: { limit: number; offset: number; unreadOnly?: boolean },
+    opts: {
+      limit: number;
+      offset: number;
+      unreadOnly?: boolean;
+      filter?: NotificationListFilter;
+    },
   ): Promise<NotificationListResult> {
     return this.deps.store.list(userId, opts);
   }

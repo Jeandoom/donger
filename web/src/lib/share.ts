@@ -63,3 +63,40 @@ export async function removeShareGrant(agentId: string, userId: string): Promise
   const r = await apiFetch(`/api/agents/${agentId}/share/grants/${userId}`, { method: "DELETE" });
   if (!r.ok) throw new Error(`remove-grant ${r.status}`);
 }
+
+// ===== 技能可用性对账 + 技能问题上报（2026-10-01 共享智能体技能修复轮）=====
+
+export async function fetchSkillAudit(agentId: string): Promise<{ missing: string[] }> {
+  const r = await apiFetch(`/api/agents/${agentId}/skill-audit`);
+  if (!r.ok) throw new Error(`skill-audit ${r.status}`);
+  return (await r.json()) as { missing: string[] };
+}
+
+export async function reportSkillIssue(
+  agentId: string,
+  input: { message?: string },
+): Promise<{ reported: boolean; missing: string[] }> {
+  const r = await apiFetch(`/api/agents/${agentId}/report-issue`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error(`report-issue ${r.status}`);
+  return (await r.json()) as { reported: boolean; missing: string[] };
+}
+
+export interface SkillIssueItem {
+  id: string;
+  title: string;
+  body: string;
+  readAt?: string;
+  createdAt: string;
+}
+
+/** 分享者侧：本智能体收到的技能问题反馈（读本人通知表按事件+link 前缀过滤） */
+export async function fetchSkillIssues(agentId: string): Promise<SkillIssueItem[]> {
+  const r = await apiFetch(`/api/agents/${agentId}/skill-issues`);
+  if (!r.ok) throw new Error(`skill-issues ${r.status}`);
+  const data = (await r.json()) as { items: SkillIssueItem[] };
+  return data.items;
+}

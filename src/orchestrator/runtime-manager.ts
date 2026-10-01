@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { LlmPreset } from "../config.js";
 import type { Agent, McpServerConfig } from "../domain/agent.js";
@@ -14,12 +14,10 @@ import type { LLMConfig } from "../domain/llm-config.js";
 import type { LlmSdkType } from "../domain/llm-platforms.js";
 import { parseModelRef } from "../domain/model-ref.js";
 import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/runtime-context.js";
+import { auditAgentSkillAvailability, resolvePackDirectory } from "../domain/skill-availability.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
-import {
-  UNTRUSTED_DATA_PREAMBLE,
-  wrapUntrusted,
-} from "../domain/untrusted-content.js";
+import { UNTRUSTED_DATA_PREAMBLE, wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
 import type { MissingCredentialItem } from "../ports/channel.js";
@@ -36,7 +34,7 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
 import { seedBuiltinPacksIfAbsent } from "../util/builtin-skills.js";
-import { ensureSdkPluginLayout, materializeSharedSkillPlugin } from "../util/sdk-plugin-layout.js";
+import { materializeSharedSkillPlugin } from "../util/sdk-plugin-layout.js";
 import { ensureRuntimeDir } from "../util/workspace.js";
 
 export interface RuntimeManagerConfig {
@@ -213,6 +211,29 @@ export class RuntimeManager {
       if (a.systemPrompt) {
         // 在现有 extraPrompt（已含身份节与上游 append）之后追加，不整体重建
         extraPrompt = `${extraPrompt ? `${extraPrompt}\n\n` : ""}${a.systemPrompt}`;
+      }
+    }
+
+    // —— 技能可用性对账（2026-10-01 共享智能体技能修复轮 A）——
+    // 声明（agent.skills）vs 属主侧实际可加载（enabled pack + 磁盘 scan）的差集注入
+    // 系统提示：此前四类边界（包停用/删除/改名/复制悬空）全部静默缺失，agent 与用户均无感知。
+    if (opts.agent && opts.agent.skills.length > 0) {
+      const missingSkills = await auditAgentSkillAvailability(
+        (ownerId) => this.deps.skillPackStore.listPacks(ownerId),
+        opts.agent,
+        opts.sharedAgentSkillOwner ?? user,
+      );
+      if (missingSkills.length > 0) {
+        const guidance = opts.sharedAgentSkillOwner
+          ? "可建议用户在对话页点击「上报技能问题」告知分享者，或复制本智能体后自行配置技能。"
+          : "建议在技能工坊检查技能包是否安装并启用，或在智能体编辑页重新勾选技能。";
+        const note = [
+          "## 技能未就绪",
+          "以下智能体声明的技能当前未能加载（属主侧技能包已停用、删除或技能已改名）：",
+          wrapUntrusted(missingSkills.join("、"), "missing-skills", 1_000).wrapped,
+          `- 如实告知用户这些技能暂不可用，不要假装它们存在或可用。${guidance}`,
+        ].join("\n");
+        extraPrompt = extraPrompt ? `${extraPrompt}\n\n${note}` : note;
       }
     }
 
@@ -482,11 +503,7 @@ export class RuntimeManager {
 
   /** 解析 pack 绝对路径：预装/绝对路径原样，用户 pack 拼 homeDir。 */
   private resolvePackPath(user: User, pack: SkillPack): string {
-    const packPath =
-      pack.builtin || isAbsolute(pack.installedPath)
-        ? pack.installedPath
-        : join(user.homeDir, pack.installedPath);
-    return ensureSdkPluginLayout(packPath, pack.name);
+    return resolvePackDirectory(pack, user.homeDir);
   }
 
   private async materializeSharedAgentSkills(

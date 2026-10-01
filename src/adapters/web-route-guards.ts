@@ -397,6 +397,9 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "DELETE", pattern: "/api/agents/:id/callback", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/agents/:id/accept-share", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/agents/:id/duplicate", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/agents/:id/skill-audit", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/agents/:id/report-issue", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/agents/:id/skill-issues", access: { kind: "authenticated" } },
     {
       method: "GET",
       pattern: "/api/agents/:id/mention-candidates",

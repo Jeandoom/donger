@@ -29,6 +29,12 @@ export interface NotificationDelivery {
   createdAt: string;
 }
 
+/** 读侧过滤：事件类型 + link 前缀（智能体技能反馈视图按 link=/agents/:id# 定位） */
+export interface NotificationListFilter {
+  event?: string;
+  linkPrefix?: string;
+}
+
 /** 通知存储端口：站内信 + 订阅偏好 + 地址簿 + 投递日志 */
 export interface NotificationStore {
   migrate(): void;
@@ -36,7 +42,7 @@ export interface NotificationStore {
   insertInApp(n: InAppNotification): Promise<"inserted" | "duplicate">;
   list(
     userId: string,
-    opts: { limit: number; offset: number; unreadOnly?: boolean },
+    opts: { limit: number; offset: number; unreadOnly?: boolean; filter?: NotificationListFilter },
   ): Promise<NotificationListResult>;
   unreadCount(userId: string): Promise<number>;
   /** 属主校验在 SQL 条件内（userId 过滤）；未命中返回 false */

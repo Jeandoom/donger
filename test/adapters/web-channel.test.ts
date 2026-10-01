@@ -13,6 +13,7 @@ import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-sto
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
 import { SqliteMessageStore } from "../../src/adapters/sqlite-message-store.js";
+import { SqliteNotificationStore } from "../../src/adapters/sqlite-notification-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { resolveStaticFile, WebChannel } from "../../src/adapters/web-channel.js";
@@ -20,6 +21,7 @@ import type { LlmPreset } from "../../src/config.js";
 import type { AgentPermissionMode } from "../../src/domain/permission-mode.js";
 import type { PackSkill, SkillPack } from "../../src/domain/skill-pack.js";
 import type { GitAccessGate } from "../../src/orchestrator/git-access-gate.js";
+import { NotificationService } from "../../src/orchestrator/notification-service.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
 import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
 
@@ -1272,6 +1274,7 @@ async function startWebWithAgents(
   skillPackStore: SqliteSkillPackStore;
   convStore: SqliteConversationStore;
   userStore: SqliteUserStore;
+  notificationStore: SqliteNotificationStore;
 }> {
   const tmp = mkdtempSync(join(tmpdir(), "web-agent-"));
   const db = new Database(join(tmp, "t.db"));
@@ -1289,6 +1292,9 @@ async function startWebWithAgents(
   agentShareStore.migrate();
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
+  const notificationStore = new SqliteNotificationStore(db);
+  notificationStore.migrate();
+  const notificationService = new NotificationService({ store: notificationStore });
   const sessionStore = new JwtSessionStore(db, "test-secret", 3_600_000);
   sessionStore.migrate();
   const user = await userStore.getOrCreateByIdentity("internal", "webu", "tester");
@@ -1300,6 +1306,7 @@ async function startWebWithAgents(
     conversationStore: convStore,
     sessionStore,
     agentStore,
+    notificationService,
     agentShareStore,
     skillPackStore,
     agentMeta: { presets: opts.presets ?? [], skillPaths: opts.skillPaths ?? [] },
@@ -1318,6 +1325,7 @@ async function startWebWithAgents(
     skillPackStore,
     convStore,
     userStore,
+    notificationStore,
   };
 }
 
@@ -2654,5 +2662,144 @@ describe("WebChannel /api/agents 扩展目录相对路径校验", () => {
     };
     expect(body.extensionDirectories.map((d) => d.path)).toEqual(["knowledge_base/docs"]);
     expect(body.warnings.some((w) => w.includes("绝对路径"))).toBe(true);
+  });
+});
+
+describe("WebChannel 技能对账与技能问题上报", () => {
+  /** 登录用户名下登记一个真实 pack（磁盘标准插件布局），返回 ctx 与 pack 目录 */
+  async function setupAuditAgent() {
+    const ctx = await startWebWithAgents();
+    const packDir = mkdtempSync(join(tmpdir(), "web-audit-pack-"));
+    mkdirSync(join(packDir, ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "audit-pack", version: "0.1.0" }),
+    );
+    mkdirSync(join(packDir, "skills", "alpha"), { recursive: true });
+    writeFileSync(
+      join(packDir, "skills", "alpha", "SKILL.md"),
+      "---\nname: alpha\ndescription: a\n---\n",
+    );
+    await ctx.skillPackStore.upsertPack({
+      id: "audit-pack-id",
+      userId: ctx.userId,
+      slug: "audit-pack",
+      name: "audit-pack",
+      source: { kind: "paste" },
+      installedPath: packDir,
+      enabled: true,
+      builtin: false,
+      createdAt: "t",
+      updatedAt: "t",
+    });
+    return ctx;
+  }
+
+  it("skill-audit：齐备返回空缺失；引用失效技能记缺失", async () => {
+    const { port, token, agentStore, userId } = await setupAuditAgent();
+    const ok = await agentStore.create({
+      ownerId: userId,
+      name: "ok",
+      skills: ["audit-pack:alpha"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${ok.id}/skill-audit`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect((await r1.json()) as { missing: string[] }).toEqual({ missing: [] });
+    const bad = await agentStore.create({
+      ownerId: userId,
+      name: "bad",
+      skills: ["audit-pack:ghost"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const r2 = await fetch(`http://127.0.0.1:${port}/api/agents/${bad.id}/skill-audit`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect((await r2.json()) as { missing: string[] }).toEqual({ missing: ["audit-pack:ghost"] });
+  });
+
+  it("report-issue：对账无缺失且无说明 → reported:false 不产生通知", async () => {
+    const { port, token, agentStore, userId, notificationStore } = await setupAuditAgent();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "ok",
+      skills: ["audit-pack:alpha"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/report-issue`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const j = (await r.json()) as { reported: boolean };
+    expect(j.reported).toBe(false);
+    expect((await notificationStore.list(userId, { limit: 10, offset: 0 })).items).toHaveLength(0);
+  });
+
+  it("report-issue：缺失技能 → 通知落属主站内信；同日重报幂等", async () => {
+    const { port, token, agentStore, userId, notificationStore } = await setupAuditAgent();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "缺技能的",
+      skills: ["audit-pack:ghost"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const r1 = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/report-issue`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ message: "技能不可用" }),
+    });
+    expect(((await r1.json()) as { reported: boolean }).reported).toBe(true);
+    const first = await notificationStore.list(userId, { limit: 10, offset: 0 });
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]?.event).toBe("agent.skill_issue_reported");
+    expect(first.items[0]?.body).toContain("audit-pack:ghost");
+    expect(first.items[0]?.body).toContain("技能不可用");
+    // 同日同 agent 重报：dedupeKey 幂等，不重复落库
+    await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/report-issue`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ message: "再来一条" }),
+    });
+    expect((await notificationStore.list(userId, { limit: 10, offset: 0 })).items).toHaveLength(1);
+  });
+
+  it("skill-issues：属主读反馈清单；他人 agent → 403", async () => {
+    const { port, token, agentStore, userId, notificationStore } = await setupAuditAgent();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "缺技能的",
+      skills: ["audit-pack:ghost"],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/report-issue`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ message: "技能不可用" }),
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}/skill-issues`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const j = (await r.json()) as { items: Array<{ body: string }> };
+    expect(j.items).toHaveLength(1);
+    expect(j.items[0]?.body).toContain("audit-pack:ghost");
+    // 他人 agent：非属主非授权 → 403
+    const other = await agentStore.create({
+      ownerId: "someone-else",
+      name: "他人的",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const denied = await fetch(`http://127.0.0.1:${port}/api/agents/${other.id}/skill-issues`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(denied.status).toBe(403);
   });
 });

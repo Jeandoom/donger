@@ -4,6 +4,7 @@ import { AssistDraftBanner } from "../components/chat/AssistDraftBanner";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { EvictionNoticeDialog } from "../components/chat/EvictionNoticeDialog";
 import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
+import { SkillIssueReportDialog } from "../components/chat/SkillIssueReportDialog";
 import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/agentSidebar";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
@@ -58,6 +59,7 @@ export function ChatPage() {
   const [gitLoading, setGitLoading] = useState(false);
   const [gitError, setGitError] = useState("");
   const [assistDraft, setAssistDraft] = useState("");
+  const [reportIssueOpen, setReportIssueOpen] = useState(false);
 
   // 载入智能体列表（内置条目置顶；平台进化官仅管理员可见）
   useEffect(() => {
@@ -203,6 +205,13 @@ export function ChatPage() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <EvictionNoticeDialog notice={wc.evictionNotice} onClose={wc.dismissEviction} />
+      {reportIssueOpen && activeAgent && activeConversation?.agentId ? (
+        <SkillIssueReportDialog
+          agentId={activeConversation.agentId}
+          agentName={activeAgent.name}
+          onClose={() => setReportIssueOpen(false)}
+        />
+      ) : null}
       <ChatWorkspace
         conversations={wc.conversations}
         activeConversationId={wc.activeConversationId}
@@ -245,6 +254,20 @@ export function ChatPage() {
         onDecideCredentialMissing={wc.decideCredentialMissing}
         onAnswerQuestion={wc.answerQuestion}
         inputPlaceholder={activeAgent ? `向 ${activeAgent.name} 发消息…` : "输入消息…"}
+        headerExtra={
+          activeAgent &&
+          activeConversation?.agentId &&
+          !isBuiltinAgentId(activeConversation.agentId) ? (
+            <button
+              type="button"
+              onClick={() => setReportIssueOpen(true)}
+              title="技能未就绪或行为异常时，向智能体分享者反馈"
+              className="shrink-0 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              技能问题
+            </button>
+          ) : undefined
+        }
         aboveComposer={
           assistDraft ? (
             <AssistDraftBanner

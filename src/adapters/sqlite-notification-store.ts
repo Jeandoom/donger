@@ -12,6 +12,7 @@ import type {
 import type {
   DeliveryStatus,
   NotificationDelivery,
+  NotificationListFilter,
   NotificationListResult,
   NotificationStore,
 } from "../ports/notification-store.js";
@@ -177,10 +178,21 @@ export class SqliteNotificationStore implements NotificationStore {
 
   async list(
     userId: string,
-    opts: { limit: number; offset: number; unreadOnly?: boolean },
+    opts: {
+      limit: number;
+      offset: number;
+      unreadOnly?: boolean;
+      filter?: NotificationListFilter;
+    },
   ): Promise<NotificationListResult> {
-    const where = opts.unreadOnly ? "WHERE userId = ? AND readAt IS NULL" : "WHERE userId = ?";
+    const conditions = ["userId = ?"];
+    if (opts.unreadOnly) conditions.push("readAt IS NULL");
+    if (opts.filter?.event) conditions.push("event = ?");
+    if (opts.filter?.linkPrefix) conditions.push("link LIKE ? || '%'");
+    const where = `WHERE ${conditions.join(" AND ")}`;
     const args: (string | number)[] = [userId];
+    if (opts.filter?.event) args.push(opts.filter.event);
+    if (opts.filter?.linkPrefix) args.push(opts.filter.linkPrefix);
     const items = (
       this.db
         .prepare(
