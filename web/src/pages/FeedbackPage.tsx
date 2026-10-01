@@ -128,9 +128,11 @@ export function FeedbackPage() {
         title="反馈"
         description="提交改进意见与问题截图，跟踪官方回复；管理员在此回应并梳理演进方向"
       />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-7 pb-7 pt-5 lg:flex-row">
+      {/* 窄屏容器放开滚动 + 左列限高（同审计页移动端模式）：否则左列表 shrink-0 吃满
+          整屏高度，右区新增表单/详情对话被压成 0 高度裁死——手机上表现为点新增无反应 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-7 pb-7 pt-5 lg:flex-row lg:overflow-hidden">
         {/* 左：提交记录列表 */}
-        <Card className="flex w-full shrink-0 flex-col overflow-hidden lg:w-80">
+        <Card className="flex min-h-0 w-full shrink-0 max-h-80 flex-col overflow-hidden lg:w-80 lg:max-h-none">
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
             <span className="text-xs font-semibold text-muted-foreground">
               {isAdmin ? "全部反馈" : "我的反馈"}（{list.length}）
