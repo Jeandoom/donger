@@ -12,6 +12,11 @@ import { SqliteAgentCallbackStore } from "../../src/adapters/sqlite-agent-callba
 import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
+import {
+  SqliteKbLibraryStore,
+  SqliteKbRevisionStore,
+  SqliteKbShareStore,
+} from "../../src/adapters/sqlite-kb-store.js";
 import { SqliteMessageStore } from "../../src/adapters/sqlite-message-store.js";
 import { SqliteSkillPackStore } from "../../src/adapters/sqlite-skill-pack-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
@@ -1272,6 +1277,7 @@ async function startWebWithAgents(
   skillPackStore: SqliteSkillPackStore;
   convStore: SqliteConversationStore;
   userStore: SqliteUserStore;
+  kbLibraryStore: SqliteKbLibraryStore;
 }> {
   const tmp = mkdtempSync(join(tmpdir(), "web-agent-"));
   const db = new Database(join(tmp, "t.db"));
@@ -1289,6 +1295,12 @@ async function startWebWithAgents(
   agentShareStore.migrate();
   const skillPackStore = new SqliteSkillPackStore(db);
   skillPackStore.migrate();
+  const kbLibraryStore = new SqliteKbLibraryStore(db);
+  kbLibraryStore.migrate();
+  const kbShareStore = new SqliteKbShareStore(db);
+  kbShareStore.migrate();
+  const kbRevisionStore = new SqliteKbRevisionStore(db);
+  kbRevisionStore.migrate();
   const sessionStore = new JwtSessionStore(db, "test-secret", 3_600_000);
   sessionStore.migrate();
   const user = await userStore.getOrCreateByIdentity("internal", "webu", "tester");
@@ -1302,6 +1314,9 @@ async function startWebWithAgents(
     agentStore,
     agentShareStore,
     skillPackStore,
+    kbLibraryStore,
+    kbShareStore,
+    kbRevisionStore,
     agentMeta: { presets: opts.presets ?? [], skillPaths: opts.skillPaths ?? [] },
     onPermissionModeChange: opts.onPermissionModeChange,
   });
@@ -1318,6 +1333,7 @@ async function startWebWithAgents(
     skillPackStore,
     convStore,
     userStore,
+    kbLibraryStore,
   };
 }
 
@@ -2654,5 +2670,127 @@ describe("WebChannel /api/agents 扩展目录相对路径校验", () => {
     };
     expect(body.extensionDirectories.map((d) => d.path)).toEqual(["knowledge_base/docs"]);
     expect(body.warnings.some((w) => w.includes("绝对路径"))).toBe(true);
+  });
+});
+
+describe("WebChannel /api/agents 独立知识库（kbWriteTargetId）", () => {
+  const baseBody = {
+    name: "A",
+    skills: [],
+    tools: { mode: "all" as const, whitelist: [] },
+    mcpServers: [],
+  };
+
+  it("POST：本人库为独立库——落库并幂等并入绑定，DTO 双字段可见", async () => {
+    const { port, token, userId, agentStore, kbLibraryStore } = await startWebWithAgents();
+    const lib = await kbLibraryStore.create({ ownerId: userId, name: "我的库" });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...baseBody, kbWriteTargetId: lib.id }),
+    });
+    expect(r.status).toBe(201);
+    const body = (await r.json()) as {
+      id: string;
+      kbWriteTargetId?: string;
+      knowledgeBaseIds?: string[];
+    };
+    expect(body.kbWriteTargetId).toBe(lib.id);
+    expect(body.knowledgeBaseIds).toContain(lib.id);
+    const stored = await agentStore.get(body.id);
+    expect(stored?.kbWriteTargetId).toBe(lib.id);
+    expect(stored?.knowledgeBaseIds).toContain(lib.id);
+  });
+
+  it("POST：他人库为独立库 → 400（须本人可管理）", async () => {
+    const { port, token, kbLibraryStore } = await startWebWithAgents();
+    const lib = await kbLibraryStore.create({ ownerId: "someone-else", name: "他人库" });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...baseBody, kbWriteTargetId: lib.id }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it("POST：不存在的库为独立库 → 400", async () => {
+    const { port, token } = await startWebWithAgents();
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...baseBody, kbWriteTargetId: "no-such-kb" }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it("PATCH：null 清除独立库（绑定保留不动）", async () => {
+    const { port, token, userId, agentStore, kbLibraryStore } = await startWebWithAgents();
+    const lib = await kbLibraryStore.create({ ownerId: userId, name: "我的库" });
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "B",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      knowledgeBaseIds: [lib.id],
+      kbWriteTargetId: lib.id,
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ kbWriteTargetId: null }),
+    });
+    expect(r.status).toBe(200);
+    const stored = await agentStore.get(a.id);
+    expect(stored?.kbWriteTargetId ?? null).toBeNull();
+    expect(stored?.knowledgeBaseIds).toContain(lib.id);
+  });
+
+  it("duplicate：被复制者无权的独立库清空", async () => {
+    const { port, token, userId, agentStore, agentShareStore, kbLibraryStore } =
+      await startWebWithAgents();
+    const lib = await kbLibraryStore.create({ ownerId: "someone-else", name: "他人库" });
+    const src = await agentStore.create({
+      ownerId: "someone-else",
+      name: "S",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      knowledgeBaseIds: [lib.id],
+      kbWriteTargetId: lib.id,
+    });
+    await agentShareStore.enableShare(src.id);
+    await agentShareStore.addGrant(src.id, userId);
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${src.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { id: string; kbWriteTargetId?: string | null };
+    expect(body.kbWriteTargetId ?? null).toBeNull();
+    const stored = await agentStore.get(body.id);
+    expect(stored?.knowledgeBaseIds ?? []).toEqual([]);
+  });
+
+  it("DELETE /api/kb/:id 级联清理 agent 的绑定与独立库（悬空 id 会 400 死锁保存）", async () => {
+    const { port, token, userId, agentStore, kbLibraryStore } = await startWebWithAgents();
+    const lib = await kbLibraryStore.create({ ownerId: userId, name: "待删库" });
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "C",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      knowledgeBaseIds: [lib.id, "keep-me"],
+      kbWriteTargetId: lib.id,
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/kb/${lib.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const stored = await agentStore.get(a.id);
+    expect(stored?.knowledgeBaseIds).toEqual(["keep-me"]);
+    expect(stored?.kbWriteTargetId ?? null).toBeNull();
   });
 });

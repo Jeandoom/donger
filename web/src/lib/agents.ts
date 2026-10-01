@@ -78,6 +78,8 @@ export interface AgentDTO {
   knowledgeBaseIds?: string[];
   /** 自动学习与记忆（默认关）：对话收尾后自动沉淀进绑定的可写库 */
   kbAutoLearn?: boolean;
+  /** 独立知识库（可写目标，单选）：自动学习沉淀写入该库；null=未指定（回退全部可写绑定库） */
+  kbWriteTargetId?: string | null;
   /** 反馈资源范围（# 反馈引用；缺省 = 功能未开启） */
   feedbackScope?: AgentFeedbackScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */

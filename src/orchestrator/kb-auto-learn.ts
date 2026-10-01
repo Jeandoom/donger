@@ -28,6 +28,19 @@ export function kbAutoLearnAllowed(conversationId: string): boolean {
   return c.count < DAILY_LIMIT;
 }
 
+/**
+ * 独立知识库（可写目标）收窄：命中候选集则只写它；悬空/失权（不在候选集）回退全量，
+ * 未指定不变（specs/2026-10-01-agent-own-kb-picker-design.md §2.3）。
+ */
+export function narrowAutoLearnTargets(
+  targetId: string | null | undefined,
+  candidates: KbLibrary[],
+): KbLibrary[] {
+  if (!targetId) return candidates;
+  const hit = candidates.filter((k) => k.id === targetId);
+  return hit.length > 0 ? hit : candidates;
+}
+
 function consumeQuota(conversationId: string): void {
   const today = new Date().toISOString().slice(0, 10);
   const c = counters.get(conversationId);

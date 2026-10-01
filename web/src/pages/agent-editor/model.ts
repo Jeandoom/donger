@@ -21,6 +21,7 @@ export const emptyAgent: AgentEditorForm = {
   conversationScope: { enabled: false, agentIds: [] },
   knowledgeBaseIds: [],
   kbAutoLearn: false,
+  kbWriteTargetId: null,
   feedbackScope: { enabled: false },
 };
 
