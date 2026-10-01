@@ -281,7 +281,7 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
       code: r.code,
       name: r.name,
       description: r.description ?? undefined,
-      kind: r.kind === "git" ? "git" : "generic",
+      kind: r.kind === "git" ? "git" : r.kind === "host" ? "host" : "generic",
       repoUrl: r.repoUrl ?? undefined,
       keySpecs: JSON.parse(r.keySpecsJson),
       createdBy: r.createdBy,
