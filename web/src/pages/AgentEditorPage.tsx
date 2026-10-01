@@ -225,10 +225,14 @@ export function AgentEditorPage() {
       }
       const saved = isNew ? await createAgent(formToSave) : await updateAgent(id ?? "", formToSave);
       if (saved.warnings && saved.warnings.length > 0) {
-        // 装备告警不阻断：后端已保存成功，更新基线消除未保存标记，留在编辑页展示告警
+        // 装备告警不阻断：后端已保存成功，更新基线消除未保存标记（用 formToSave，含新建 KB 合并）
         setWarnings(saved.warnings);
-        setBaseline(JSON.stringify(form));
+        setBaseline(JSON.stringify(formToSave));
         setSaving(false);
+        if (isNew) {
+          // 创建已落库：必须切到编辑态展示告警；URL 停在 /agents/new 会让下次保存重复创建
+          navigate(`/agents/${saved.id}`, { state: { warnings: saved.warnings } });
+        }
         return;
       }
       // 已落库：同步基线消除脏标记后再跳转，避免脏守卫把保存成功后的跳转当离开
