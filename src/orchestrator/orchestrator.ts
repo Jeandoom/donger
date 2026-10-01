@@ -43,7 +43,6 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
-import type { HostStore } from "../ports/host-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
@@ -101,8 +100,7 @@ export interface OrchestratorDeps {
   transcriptStore?: TranscriptStore;
   /** 凭证集存储：agent 勾选 code → 当前用户已配置值（注入 env） */
   credentialSets: CredentialSetStore;
-  /** 主机资产+SSH 通道（spec 2026-09-30-deploy-ops-loop-design §6）；两者齐备才挂载 donger-host 工具 */
-  hostStore?: HostStore;
+  /** SSH 命令通道（spec 2026-09-30-deploy-ops-loop-design §6 模型合并：主机=凭证）；装配后挂载 donger-host 工具 */
   sshRunner?: SshCommandRunner;
   /** 智能体存储（M13；缺省=不支持显式 agent，会话 agentId 必须为空） */
   agentStore?: AgentStore;
@@ -606,22 +604,21 @@ export class Orchestrator {
           }),
         };
       }
-      // 远程主机工具（donger-host v2）：会话用户为 admin 或名下有 enabled 主机时注入
-      //（spec 2026-09-30-deploy-ops-loop-design §6）。主机登记制——工具每次调用再校验
-      // hostId 可见性；写操作（host_exec/host_logs_clean）由 host-ops force 门拦审批
-      if (this.deps.hostStore && this.deps.sshRunner) {
+      // 远程主机工具（donger-host v3）：主机=凭证（kind=host）——admin 或名下有已填值
+      // 的 host 凭证时挂载（spec 2026-09-30-deploy-ops-loop-design §6 模型合并）。
+      // 主机登记制——工具每次调用按凭证 code 再校验；写操作由 host-ops force 门拦审批
+      if (this.deps.sshRunner) {
         const viewer = {
           id: p.user.id,
           role: p.user.role === "admin" ? ("admin" as const) : ("user" as const),
         };
-        if (await canViewerUseHostTools(this.deps.hostStore, viewer)) {
+        if (await canViewerUseHostTools(this.deps.credentialSets, viewer)) {
           base = {
             ...base,
             hostTools: createHostToolsServer({
               viewer,
-              hostStore: this.deps.hostStore,
-              sshRunner: this.deps.sshRunner,
               credentialSets: this.deps.credentialSets,
+              sshRunner: this.deps.sshRunner,
             }),
           };
         }

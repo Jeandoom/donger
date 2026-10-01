@@ -1,192 +1,175 @@
-import Database from "better-sqlite3";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { SqliteHostStore } from "../../src/adapters/sqlite-host-store.js";
-import { HostInputSchema } from "../../src/domain/host.js";
+import { describe, expect, it } from "vitest";
+import {
+  HOST_KEY_SPECS,
+  sshEndpointFromValues,
+  withKindKeySpecs,
+} from "../../src/domain/credential.js";
 import { createDefaultGates } from "../../src/orchestrator/default-gates.js";
 import { canViewerUseHostTools, hostToolDefinitions } from "../../src/orchestrator/host-tools.js";
 import type { CredentialSetStore } from "../../src/ports/credential-set-store.js";
 import type { SshCommandRunner } from "../../src/ports/ssh-command-runner.js";
-import type { Logger } from "../../src/util/logger.js";
 
-const logger = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  debug: vi.fn(),
-  error: vi.fn(),
-} as unknown as Logger;
-const credStore: CredentialSetStore = {
-  getFilledValues: async (_uid, codes) =>
-    codes.map((code) => ({ code, values: { private_key: "K" } })),
-} as unknown as CredentialSetStore;
+const HOST_VALUES = {
+  host: "homedb.example.com",
+  port: "22",
+  username: "ubuntu",
+  password: "secret",
+};
 
-function makeStore() {
-  const db = new Database(":memory:");
-  const store = new SqliteHostStore(db);
-  store.migrate();
-  return { db, store };
-}
-
-async function seed(store: SqliteHostStore, ownerId: string, enabled = true) {
-  return store.create(
-    HostInputSchema.parse({
-      name: "homedb",
-      host: "homedb.example.com",
-      port: 22,
-      username: "ubuntu",
-      credentialCode: "ssh-homedb",
-      enabled,
-    }),
-    ownerId,
-  );
+function credStore(
+  templates: Array<{
+    code: string;
+    name: string;
+    kind: "generic" | "git" | "host";
+    description?: string;
+  }>,
+  filledByUser: Record<string, Record<string, string>> = {},
+): CredentialSetStore {
+  return {
+    listTemplates: async () => templates,
+    getTemplate: async (code) => templates.find((t) => t.code === code),
+    listValueCodes: async (userId) => Object.keys(filledByUser[userId] ?? {}),
+    getFilledValues: async (userId, codes) =>
+      codes
+        .filter((c) => filledByUser[userId]?.[c])
+        .map((c) => ({
+          userId,
+          code: c,
+          values: filledByUser[userId]?.[c],
+          createdAt: "t",
+          updatedAt: "t",
+        })),
+  } as unknown as CredentialSetStore;
 }
 
 function tools(
-  store: SqliteHostStore,
   viewer: { id: string; role: "admin" | "user" },
-  sshRunner?: SshCommandRunner,
+  store: CredentialSetStore,
+  runner?: SshCommandRunner,
 ) {
-  const runner =
-    sshRunner ?? ((async () => ({ exitCode: 0, stdout: "out", stderr: "" })) as SshCommandRunner);
-  const defs = hostToolDefinitions({
-    viewer,
-    hostStore: store,
-    sshRunner: runner,
-    credentialSets: credStore,
-  });
+  const ssh =
+    runner ?? ((async () => ({ exitCode: 0, stdout: "out", stderr: "" })) as SshCommandRunner);
+  const defs = hostToolDefinitions({ viewer, credentialSets: store, sshRunner: ssh });
   const byName = (n: string) => {
     const t = defs.find((d) => d.name === n);
     if (!t) throw new Error(`tool not found: ${n}`);
     return t;
   };
-  return { defs, byName };
+  return { byName };
 }
 
-const dbs: Database[] = [];
-afterEach(() => {
-  for (const db of dbs.splice(0)) db.close();
+const HOST_TPL = [{ code: "ssh-homedb", name: "homedb", kind: "host" as const }];
+
+describe("credential 域 host kind", () => {
+  it("kind=host 模板键收口为固定五键；generic 原样", () => {
+    const h = withKindKeySpecs({ kind: "host", keySpecs: [{ key: "whatever" }] });
+    expect(h.keySpecs).toEqual(HOST_KEY_SPECS);
+    const g = withKindKeySpecs({ kind: "generic", keySpecs: [{ key: "k" }] });
+    expect(g.keySpecs).toEqual([{ key: "k" }]);
+  });
+  it("sshEndpointFromValues：缺端点/缺认证/正常解析（port 缺省 22）", () => {
+    expect(() => sshEndpointFromValues({ password: "x" }, "c")).toThrow(/host\/username/);
+    expect(() => sshEndpointFromValues({ host: "h", username: "u" }, "c")).toThrow(/认证材料/);
+    const ep = sshEndpointFromValues({ host: "h", username: "u", private_key: "K" }, "c");
+    expect(ep).toMatchObject({ host: "h", port: 22, username: "u", privateKey: "K" });
+  });
 });
 
-describe("canViewerUseHostTools（挂载判定）", () => {
-  it("admin 恒可；host 属主可；他人不可；属主但 disabled 不可", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    await seed(store, "u1");
-    expect(await canViewerUseHostTools(store, { id: "a1", role: "admin" })).toBe(true);
+describe("canViewerUseHostTools（挂载判定 v3）", () => {
+  it("admin 恒可；有 host 已填值可；未填/无 host 模板不可", async () => {
+    const store = credStore(HOST_TPL, { u1: { "ssh-homedb": HOST_VALUES } });
+    expect(await canViewerUseHostTools(store, { id: "a", role: "admin" })).toBe(true);
     expect(await canViewerUseHostTools(store, { id: "u1", role: "user" })).toBe(true);
     expect(await canViewerUseHostTools(store, { id: "u2", role: "user" })).toBe(false);
-    const { db: db2, store: store2 } = makeStore();
-    dbs.push(db2);
-    await seed(store2, "u1", false);
-    expect(await canViewerUseHostTools(store2, { id: "u1", role: "user" })).toBe(false);
+    const noTpl = credStore([{ code: "g", name: "g", kind: "generic" }], { u1: { g: { x: "y" } } });
+    expect(await canViewerUseHostTools(noTpl, { id: "u1", role: "user" })).toBe(false);
   });
 });
 
-describe("donger-host 工具集 v2（主机登记制）", () => {
-  it("非属主非 admin 访问他人主机 → isError；不存在同理（存在性不泄漏）", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    const h = await seed(store, "u1");
-    const { byName } = tools(store, { id: "u2", role: "user" });
-    const r = await byName("host_status").handler({ hostId: h.id });
+describe("donger-host 工具集 v3（凭证化）", () => {
+  it("resolveHost：未配置值 → isError（提示补全）；非 host 模板拒绝", async () => {
+    const store = credStore(HOST_TPL, {});
+    const r = await tools({ id: "u1", role: "user" }, store)
+      .byName("host_status")
+      .handler({ hostCode: "ssh-homedb" });
     expect(r.isError).toBe(true);
-    expect((r as { content: Array<{ text: string }> }).content[0]?.text).toContain("无权访问");
-    const missing = await byName("host_status").handler({ hostId: "nope" });
-    expect(missing.isError).toBe(true);
+    expect((r as { content: Array<{ text: string }> }).content[0]?.text).toContain("补全");
+    const genericStore = credStore([{ code: "g", name: "g", kind: "generic" }], {
+      u1: { g: { x: "y" } },
+    });
+    const bad = await tools({ id: "u1", role: "user" }, genericStore)
+      .byName("host_status")
+      .handler({ hostCode: "g" });
+    expect(bad.isError).toBe(true);
   });
 
-  it("host_logs_tail：固定命令模板 + 元字符 file 拒绝", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    const h = await seed(store, "u1");
-    const commands: string[] = [];
-    const { byName } = tools(store, { id: "u1", role: "user" }, async (_e, _a, cmd) => {
-      commands.push(cmd);
+  it("host_logs_tail：值解析端点 + 固定命令模板 + 元字符拒绝", async () => {
+    const commands: Array<{ endpoint: { host: string }; cmd: string }> = [];
+    const store = credStore(HOST_TPL, { u1: { "ssh-homedb": HOST_VALUES } });
+    const runner: SshCommandRunner = async (endpoint, _auth, cmd) => {
+      commands.push({ endpoint, cmd });
       return { exitCode: 0, stdout: "log", stderr: "" };
-    });
+    };
+    const { byName } = tools({ id: "u1", role: "user" }, store, runner);
     const r = await byName("host_logs_tail").handler({
-      hostId: h.id,
+      hostCode: "ssh-homedb",
       file: "/var/log/app.log",
       lines: 50,
     });
     expect(r.isError).toBeUndefined();
-    expect(commands).toEqual(["tail -n 50 /var/log/app.log"]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.endpoint.host).toBe("homedb.example.com");
+    expect(commands[0]?.cmd).toBe("tail -n 50 /var/log/app.log");
     const bad = await byName("host_logs_tail").handler({
-      hostId: h.id,
+      hostCode: "ssh-homedb",
       file: "/var/log/a;rm -rf /",
     });
     expect(bad.isError).toBe(true);
-    expect(commands.length).toBe(1);
+    expect(commands).toHaveLength(1);
   });
 
-  it("host_exec：命令透传（agent 构造部署命令的唯一写通道）", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    const h = await seed(store, "u1");
+  it("host_exec：命令透传（按 code 取端点）；多行拒绝", async () => {
     const commands: string[] = [];
-    const { byName } = tools(store, { id: "u1", role: "user" }, async (_e, _a, cmd) => {
+    const store = credStore(HOST_TPL, { u1: { "ssh-homedb": HOST_VALUES } });
+    const { byName } = tools({ id: "u1", role: "user" }, store, async (_e, _a, cmd) => {
       commands.push(cmd);
-      return { exitCode: 0, stdout: "deployed", stderr: "" };
+      return { exitCode: 0, stdout: "done", stderr: "" };
     });
     const deployCmd = "cd /srv/app && git pull origin master && sudo systemctl restart stock";
-    const r = await byName("host_exec").handler({ hostId: h.id, command: deployCmd });
+    const r = await byName("host_exec").handler({ hostCode: "ssh-homedb", command: deployCmd });
     expect(r.isError).toBeUndefined();
     expect(commands).toEqual([deployCmd]);
-    // 多行命令拒绝（命令注入面收口）
-    const bad = await byName("host_exec").handler({ hostId: h.id, command: "cd /x\nrm -rf /" });
+    const bad = await byName("host_exec").handler({
+      hostCode: "ssh-homedb",
+      command: "cd /x\nrm -rf /",
+    });
     expect(bad.isError).toBe(true);
   });
 
-  it("host_logs_clean：原子截断命令形态", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    const h = await seed(store, "u1");
-    const commands: string[] = [];
-    const { byName } = tools(store, { id: "u1", role: "user" }, async (_e, _a, cmd) => {
-      commands.push(cmd);
-      return { exitCode: 0, stdout: "1000 /var/log/app.log", stderr: "" };
-    });
-    await byName("host_logs_clean").handler({
-      hostId: h.id,
-      file: "/var/log/app.log",
-      keepLines: 1000,
-    });
-    expect(commands[0]).toBe(
-      "tail -n 1000 /var/log/app.log > /var/log/app.log.donger-tmp && mv /var/log/app.log.donger-tmp /var/log/app.log && wc -l /var/log/app.log",
-    );
-  });
-
-  it("disabled 主机：所有工具拒绝执行", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    const h = await seed(store, "u1", false);
-    const { byName } = tools(store, { id: "u1", role: "user" });
-    const r = await byName("host_status").handler({ hostId: h.id });
-    expect(r.isError).toBe(true);
-  });
-
-  it("hosts_list：user 只见本人", async () => {
-    const { db, store } = makeStore();
-    dbs.push(db);
-    const mine = await seed(store, "u1");
-    const other = await seed(store, "u2");
-    const { byName } = tools(store, { id: "u1", role: "user" });
-    const text = ((await byName("hosts_list").handler({})) as { content: Array<{ text: string }> })
-      .content[0]?.text;
-    expect(text).toContain(mine.id);
-    expect(text).not.toContain(other.id);
+  it("hosts_list：标注已配置/未配置", async () => {
+    const store = credStore(HOST_TPL, { u1: { "ssh-homedb": HOST_VALUES } });
+    const text = (
+      (await tools({ id: "u1", role: "user" }, store).byName("hosts_list").handler({})) as {
+        content: Array<{ text: string }>;
+      }
+    ).content[0]?.text;
+    expect(text).toContain("ssh-homedb｜homedb｜已配置");
+    const text2 = (
+      (await tools({ id: "u2", role: "user" }, store).byName("hosts_list").handler({})) as {
+        content: Array<{ text: string }>;
+      }
+    ).content[0]?.text;
+    expect(text2).toContain("未配置");
   });
 });
 
-describe("host-ops 审批门（default-gates v2）", () => {
+describe("host-ops 审批门", () => {
   const g = createDefaultGates();
-  it("host_exec / host_logs_clean 命中 force 门", () => {
+  it("host_exec / host_logs_clean 命中 force 门；只读工具不设门", () => {
     for (const t of ["host_exec", "host_logs_clean"]) {
-      const m = g.match(`mcp__donger-host__${t}`, {});
-      expect(m?.gateId).toBe("host-ops");
-      expect(m?.force).toBe(true);
+      expect(g.match(`mcp__donger-host__${t}`, {})?.gateId).toBe("host-ops");
+      expect(g.match(`mcp__donger-host__${t}`, {})?.force).toBe(true);
     }
-  });
-  it("只读诊断工具不设门", () => {
     for (const t of [
       "hosts_list",
       "host_status",
@@ -194,11 +177,6 @@ describe("host-ops 审批门（default-gates v2）", () => {
       "host_process_top",
       "host_logs_tail",
     ]) {
-      expect(g.match(`mcp__donger-host__${t}`, {})).toBeUndefined();
-    }
-  });
-  it("v1 退役工具不再挂门", () => {
-    for (const t of ["service_deploy", "service_restart"]) {
       expect(g.match(`mcp__donger-host__${t}`, {})).toBeUndefined();
     }
   });

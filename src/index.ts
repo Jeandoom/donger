@@ -29,7 +29,6 @@ import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
-import { SqliteHostStore } from "./adapters/sqlite-host-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import {
   SqliteKbLibraryStore,
@@ -349,7 +348,6 @@ async function main(): Promise<void> {
       channel,
       runtimeMgr,
       credentialSets,
-      hostStore,
       sshRunner,
       agentStore,
       agentShareStore,
@@ -431,10 +429,6 @@ async function main(): Promise<void> {
   workflowStore.migrate();
   const loopStore = new SqliteLoopStore(db);
   loopStore.migrate();
-
-  // 主机资产（spec 2026-09-30-deploy-ops-loop-design §6）：SSH 端点+凭证引用的一等资产
-  const hostStore = new SqliteHostStore(db);
-  hostStore.migrate();
 
   // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好 + 站外通道
   const notificationStore = new SqliteNotificationStore(db, secretCipher);
@@ -613,7 +607,6 @@ async function main(): Promise<void> {
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
   webChannelDeps.loopRunner = loopRunner;
   webChannelDeps.scheduler = scheduler;
-  webChannelDeps.hostStore = hostStore;
   webChannelDeps.hookRegistry = hookRegistry;
   webChannelDeps.eventTriggers = eventTriggers;
   webChannelDeps.triggerQueue = triggerQueueStore;

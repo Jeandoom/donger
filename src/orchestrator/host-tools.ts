@@ -1,8 +1,8 @@
-// donger-host MCP 工具集 v2（spec 2026-09-30-deploy-ops-loop-design §6）：
-// 主机资产制——工具入参一律 hostId（登记资产，防横向移动）。只读诊断走固定命令模板
-// （参数 regex 收口）免审批；写操作两工具（host_exec/host_logs_clean）挂 host-ops
-// force 门（full_access 不豁免）。部署逻辑不在平台：agent 读仓库 deploy 脚本后经
-// host_exec 构造命令执行，每次审批留痕（部署即会话，审计即记录）。
+// donger-host MCP 工具集 v3（spec 2026-09-30-deploy-ops-loop-design §6 模型合并）：
+// 主机=凭证（kind=host）——工具入参一律主机凭证 code（防横向移动：仅登记过的主机）。
+// 只读诊断走固定命令模板（参数 regex 收口）免审批；写操作两工具（host_exec/
+// host_logs_clean）挂 host-ops force 门（full_access 不豁免）。端点与密钥按当前
+// 用户凭证值现取（值永不进 prompt/审计/输出），部署逻辑在仓库与技能里。
 
 import {
   createSdkMcpServer,
@@ -10,10 +10,9 @@ import {
   type SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { type Host, REMOTE_PATH_PATTERN } from "../domain/host.js";
+import { type CredentialTemplate, sshEndpointFromValues } from "../domain/credential.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
-import type { HostStore } from "../ports/host-store.js";
-import type { SshAuthMaterial, SshCommandRunner } from "../ports/ssh-command-runner.js";
+import type { SshCommandRunner } from "../ports/ssh-command-runner.js";
 
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -23,6 +22,8 @@ const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }],
 const MAX_OUTPUT_CHARS = 40_000;
 const DIAG_TIMEOUT_MS = 30_000;
 const EXEC_TIMEOUT_MS = 600_000;
+/** 目标机绝对路径（诊断类工具入参的元字符收口） */
+const REMOTE_PATH_PATTERN = /^\/[\w.\-/]{0,240}$/;
 
 export interface HostToolsViewer {
   id: string;
@@ -31,64 +32,63 @@ export interface HostToolsViewer {
 
 export interface HostToolsDeps {
   viewer: HostToolsViewer;
-  hostStore: HostStore;
-  sshRunner: SshCommandRunner;
   credentialSets: CredentialSetStore;
+  sshRunner: SshCommandRunner;
 }
 
-/** 挂载判定：admin 或名下存在 enabled 主机（orchestrator 装配处调用） */
+interface ResolvedHost {
+  code: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  privateKey?: string;
+}
+
+/** 挂载判定：admin，或名下已填值的 host 凭证存在（orchestrator 装配处调用） */
 export async function canViewerUseHostTools(
-  store: HostStore,
+  credentialSets: CredentialSetStore,
   viewer: HostToolsViewer,
 ): Promise<boolean> {
   if (viewer.role === "admin") return true;
-  const hosts = await store.listHosts();
-  return hosts.some((h) => h.ownerId === viewer.id && h.enabled);
+  const templates = (await credentialSets.listTemplates({})).filter((t) => t.kind === "host");
+  if (!templates.length) return false;
+  const filled = new Set(await credentialSets.listValueCodes(viewer.id));
+  return templates.some((t) => filled.has(t.code));
 }
 
-/** 主机登记制：按 hostId 解析并校验可见性（owner/admin；不存在/越权统一提示） */
-async function visibleHost(
+/** 主机登记制：按凭证 code 解析当前用户的端点与认证（值缺失/未登记统一提示） */
+async function resolveHost(
   deps: HostToolsDeps,
-  hostId: string,
-): Promise<{ host: Host } | { error: ToolResult }> {
-  const host = await deps.hostStore.get(hostId);
-  if (!host) return { error: fail(`主机不存在：${hostId}`) };
-  if (!host.enabled) return { error: fail(`主机「${host.name}」已停用`) };
-  if (deps.viewer.role !== "admin" && host.ownerId !== deps.viewer.id) {
-    return { error: fail(`无权访问主机 ${hostId}（仅属主或管理员）`) };
+  code: string,
+): Promise<{ host: ResolvedHost } | { error: ToolResult }> {
+  const template = await deps.credentialSets.getTemplate(code);
+  if (!template || template.kind !== "host") {
+    return { error: fail(`主机凭证不存在：${code}（hostId 概念已退役，入参用凭证 code）`) };
   }
-  return { host };
-}
-
-/** 解析主机 SSH 凭证（按 host 属主，generic 模板键 private_key/password） */
-export async function resolveSshAuth(
-  credentialSets: CredentialSetStore,
-  host: Host,
-): Promise<SshAuthMaterial> {
-  const [filled] = await credentialSets.getFilledValues(host.ownerId, [host.credentialCode]);
-  const values = filled?.values ?? {};
-  const auth: SshAuthMaterial = {};
-  if (values.private_key) auth.privateKey = values.private_key;
-  if (values.password) auth.password = values.password;
-  if (!auth.privateKey && !auth.password) {
-    throw new Error(
-      `SSH 凭证未填写：主机 ${host.name} 引用模板 ${host.credentialCode}（需 private_key 或 password 至少其一）`,
-    );
+  const [filled] = await deps.credentialSets.getFilledValues(deps.viewer.id, [code]);
+  try {
+    const ep = sshEndpointFromValues(filled?.values, code);
+    return { host: { code, name: template.name, ...ep } };
+  } catch (e) {
+    return { error: fail((e as Error).message) };
   }
-  return auth;
 }
 
 async function sshRun(
   deps: HostToolsDeps,
-  host: Host,
+  host: ResolvedHost,
   command: string,
   timeoutMs = DIAG_TIMEOUT_MS,
 ): Promise<ToolResult> {
   try {
-    const auth = await resolveSshAuth(deps.credentialSets, host);
     const r = await deps.sshRunner(
       { host: host.host, port: host.port, username: host.username },
-      auth,
+      {
+        ...(host.password ? { password: host.password } : {}),
+        ...(host.privateKey ? { privateKey: host.privateKey } : {}),
+      },
       command,
       { timeoutMs },
     );
@@ -107,39 +107,39 @@ async function sshRun(
 }
 
 export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[] {
-  const HostIdShape = {
-    hostId: z.string().min(1).describe("主机 id（hosts_list 查询）"),
+  const HostCodeShape = {
+    hostCode: z.string().min(1).describe("主机凭证 code（hosts_list 查询）"),
   };
 
   return [
     {
       name: "hosts_list",
-      description: "列出可见的登记主机（名称、端点、凭证模板、启用状态）",
+      description: "列出可见的主机凭证（kind=host，含配置状态与说明）",
       inputSchema: {},
       handler: async (): Promise<ToolResult> => {
-        const all = await deps.hostStore.listHosts();
-        const visible = all.filter(
-          (h) => deps.viewer.role === "admin" || h.ownerId === deps.viewer.id,
+        const templates = (await deps.credentialSets.listTemplates({})).filter(
+          (t: CredentialTemplate) => t.kind === "host",
         );
+        if (!templates.length)
+          return ok("（暂无主机凭证；管理员可在凭证页创建 host 类模板并填写主机值）");
+        const filled = new Set(await deps.credentialSets.listValueCodes(deps.viewer.id));
         return ok(
-          visible.length
-            ? visible
-                .map(
-                  (h) =>
-                    `- ${h.id}｜${h.name}｜${h.username}@${h.host}:${h.port}｜凭证=${h.credentialCode}｜${h.enabled ? "启用" : "停用"}${h.description ? `｜${h.description}` : ""}`,
-                )
-                .join("\n")
-            : "（无可见主机，请管理员在主机页登记）",
+          templates
+            .map(
+              (t) =>
+                `- ${t.code}｜${t.name}｜${filled.has(t.code) ? "已配置" : "未配置（当前用户不可用）"}${t.description ? `｜${t.description}` : ""}`,
+            )
+            .join("\n"),
         );
       },
     },
     {
       name: "host_status",
       description: "主机总览：系统版本/负载/根分区与 /var 磁盘/CPU 前 15 进程（只读诊断）",
-      inputSchema: HostIdShape,
+      inputSchema: HostCodeShape,
       handler: async (args): Promise<ToolResult> => {
-        const a = z.object(HostIdShape).parse(args);
-        const r = await visibleHost(deps, a.hostId);
+        const a = z.object(HostCodeShape).parse(args);
+        const r = await resolveHost(deps, a.hostCode);
         if ("error" in r) return r.error;
         return sshRun(
           deps,
@@ -152,13 +152,13 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
       name: "host_disk_usage",
       description: "主机磁盘占用（df -h，缺省根分区）",
       inputSchema: {
-        ...HostIdShape,
+        ...HostCodeShape,
         path: z.string().regex(REMOTE_PATH_PATTERN).optional().describe("绝对路径（缺省 /）"),
       },
       handler: async (args): Promise<ToolResult> => {
-        const a = z.object({ ...HostIdShape, path: z.string().optional() }).parse(args);
+        const a = z.object({ ...HostCodeShape, path: z.string().optional() }).parse(args);
         if (a.path && !REMOTE_PATH_PATTERN.test(a.path)) return fail("path 须为无元字符的绝对路径");
-        const r = await visibleHost(deps, a.hostId);
+        const r = await resolveHost(deps, a.hostCode);
         if ("error" in r) return r.error;
         return sshRun(deps, r.host, `df -h ${a.path ?? "/"}`);
       },
@@ -166,10 +166,10 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
     {
       name: "host_process_top",
       description: "主机 CPU 占用前 N 进程（ps aux）",
-      inputSchema: { ...HostIdShape, count: z.number().int().min(1).max(50).default(15) },
+      inputSchema: { ...HostCodeShape, count: z.number().int().min(1).max(50).default(15) },
       handler: async (args): Promise<ToolResult> => {
-        const a = z.object({ ...HostIdShape, count: z.number().optional() }).parse(args);
-        const r = await visibleHost(deps, a.hostId);
+        const a = z.object({ ...HostCodeShape, count: z.number().optional() }).parse(args);
+        const r = await resolveHost(deps, a.hostCode);
         if ("error" in r) return r.error;
         return sshRun(deps, r.host, `ps aux --sort=-%cpu | head -${a.count ?? 15}`);
       },
@@ -178,16 +178,16 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
       name: "host_logs_tail",
       description: "查看主机日志文件尾部（只读；文件须为绝对路径）",
       inputSchema: {
-        ...HostIdShape,
+        ...HostCodeShape,
         file: z.string().regex(REMOTE_PATH_PATTERN).describe("日志文件绝对路径"),
         lines: z.number().int().min(1).max(2000).default(200),
       },
       handler: async (args): Promise<ToolResult> => {
         const a = z
-          .object({ ...HostIdShape, file: z.string(), lines: z.number().optional() })
+          .object({ ...HostCodeShape, file: z.string(), lines: z.number().optional() })
           .parse(args);
         if (!REMOTE_PATH_PATTERN.test(a.file)) return fail("file 须为无元字符的绝对路径");
-        const r = await visibleHost(deps, a.hostId);
+        const r = await resolveHost(deps, a.hostCode);
         if ("error" in r) return r.error;
         return sshRun(deps, r.host, `tail -n ${a.lines ?? 200} ${a.file}`);
       },
@@ -197,16 +197,16 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
       description:
         "截断主机日志文件（保留末尾 N 行；写操作，会弹审批卡确认）——磁盘打满时的自愈动作",
       inputSchema: {
-        ...HostIdShape,
+        ...HostCodeShape,
         file: z.string().regex(REMOTE_PATH_PATTERN).describe("日志文件绝对路径"),
         keepLines: z.number().int().min(1).max(100_000).default(1000).describe("保留末尾行数"),
       },
       handler: async (args): Promise<ToolResult> => {
         const a = z
-          .object({ ...HostIdShape, file: z.string(), keepLines: z.number().optional() })
+          .object({ ...HostCodeShape, file: z.string(), keepLines: z.number().optional() })
           .parse(args);
         if (!REMOTE_PATH_PATTERN.test(a.file)) return fail("file 须为无元字符的绝对路径");
-        const r = await visibleHost(deps, a.hostId);
+        const r = await resolveHost(deps, a.hostCode);
         if ("error" in r) return r.error;
         const keep = a.keepLines ?? 1000;
         // 临时文件+mv 原子替换，避免 > 重定向自身导致的清空竞态
@@ -223,7 +223,7 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
         "在主机上执行任意单行 shell 命令（写操作，一律弹审批卡人工确认——命令内容会完整展示给审批人）。" +
         "用于部署（如 `cd /srv/app && ./deploy.sh`）、重启服务、运行仓库脚本等。需要 root 的命令要求主机已配置受限 sudoers NOPASSWD；不支持交互式命令（无 tty）",
       inputSchema: {
-        ...HostIdShape,
+        ...HostCodeShape,
         command: z
           .string()
           .min(1)
@@ -231,11 +231,11 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
           .refine((v) => !/[\r\n]/.test(v), "命令必须为单行"),
       },
       handler: async (args): Promise<ToolResult> => {
-        const a = z.object({ ...HostIdShape, command: z.string() }).parse(args);
+        const a = z.object({ ...HostCodeShape, command: z.string() }).parse(args);
         if (a.command.length > 600 || /[\r\n]/.test(a.command)) {
           return fail("命令必须为单行且不超过 600 字符");
         }
-        const r = await visibleHost(deps, a.hostId);
+        const r = await resolveHost(deps, a.hostCode);
         if ("error" in r) return r.error;
         return sshRun(deps, r.host, a.command, EXEC_TIMEOUT_MS);
       },
@@ -246,7 +246,7 @@ export function hostToolDefinitions(deps: HostToolsDeps): SdkMcpToolDefinition[]
 export function createHostToolsServer(deps: HostToolsDeps): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: "donger-host",
-    version: "2.0.0",
+    version: "3.0.0",
     tools: hostToolDefinitions(deps),
   });
 }

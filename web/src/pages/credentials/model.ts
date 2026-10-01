@@ -11,7 +11,7 @@ export interface CredentialRow {
   name: string;
   alias?: string;
   description?: string;
-  kind: "generic" | "git";
+  kind: "generic" | "git" | "host";
   keySpecs: CredentialKeySpecDTO[];
   filledKeys: string[];
   missingKeys: string[];

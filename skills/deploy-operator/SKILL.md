@@ -5,7 +5,7 @@ description: 对登记主机上的服务做部署与运维：发布新版本（�
 
 # 部署运维操作规程（deploy-operator）
 
-你（agent）通过 `donger-host` 工具集操作**已登记的主机**。核心原则：
+你（agent）通过 `donger-host` 工具集操作**已登记的主机凭证**（凭证页 kind=host；工具入参 hostCode=凭证 code）。核心原则：
 
 - **部署逻辑在仓库里，不在平台里**——先读仓库的部署方式（deploy.sh / Makefile / docker-compose.yml / README），再经 `host_exec` 执行，不凭空构造部署命令。
 - **写操作一律走审批**：`host_exec` / `host_logs_clean` 每次都会弹审批卡，命令内容会完整展示给审批人——**构造命令时保持一行、可读、完整展示意图**（如 `cd /srv/app && git pull origin master && sudo systemctl restart stock`）。
@@ -13,7 +13,7 @@ description: 对登记主机上的服务做部署与运维：发布新版本（�
 
 ## 标准部署流程（SOP）
 
-1. **定位资产**：`hosts_list` 找到目标主机；仓库信息从用户给的仓库 URL / 绑定的 git 仓库获取。
+1. **定位资产**：`hosts_list` 找到目标主机凭证（hostCode）；仓库信息从用户给的仓库 URL / 绑定的 git 仓库获取。
 2. **了解部署方式**（按优先级）：
    - 仓库根的 `deploy.sh` / `Makefile`（看 `deploy` target）→ 首选执行入口；
    - `docker-compose.yml` → `docker compose up -d --build`；

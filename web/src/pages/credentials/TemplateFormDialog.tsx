@@ -18,6 +18,7 @@ import { CREDENTIAL_KEY_PATTERN, validateCredentialCode } from "./model";
 
 /** git PAT 凭证固定键名（与服务端 GIT_PAT_KEY_SPECS 契约对齐，键名不可自定义） */
 const GIT_PAT_KEYS = ["access_token", "user"] as const;
+const HOST_KEYS = ["host", "port", "username", "password", "private_key"] as const;
 
 const MAX_KEYS = 32;
 
@@ -35,7 +36,7 @@ export function TemplateFormDialog(props: {
   const t = props.template;
   const [name, setName] = useState(t?.name ?? "");
   const [code, setCode] = useState(t?.code ?? "");
-  const [kind, setKind] = useState<"generic" | "git">(t?.kind ?? "generic");
+  const [kind, setKind] = useState<"generic" | "git" | "host">(t?.kind ?? "generic");
   const [repoUrl, setRepoUrl] = useState(t?.repoUrl ?? "");
   const [description, setDescription] = useState(t?.description ?? "");
   const [keys, setKeys] = useState<string[]>(t ? t.keySpecs.map((k) => k.key) : []);
@@ -90,7 +91,11 @@ export function TemplateFormDialog(props: {
         kind,
         repoUrl: kind === "git" && repoUrl.trim() ? repoUrl.trim() : undefined,
         keySpecs:
-          kind === "git" ? [...GIT_PAT_KEYS].map((key) => ({ key })) : keys.map((key) => ({ key })),
+          kind === "git"
+            ? [...GIT_PAT_KEYS].map((key) => ({ key }))
+            : kind === "host"
+              ? [...HOST_KEYS].map((key) => ({ key }))
+              : keys.map((key) => ({ key })),
       };
       if (props.mode === "create") {
         await createCredentialTemplate(payload);
@@ -122,7 +127,8 @@ export function TemplateFormDialog(props: {
   };
 
   const isCreate = props.mode === "create";
-  const keyNames = kind === "git" ? [...GIT_PAT_KEYS] : keys;
+  const keyNames =
+    kind === "git" ? [...GIT_PAT_KEYS] : kind === "host" ? [...HOST_KEYS] : keys;
 
   return (
     <>
@@ -189,6 +195,16 @@ export function TemplateFormDialog(props: {
               onChange={() => setKind("git")}
               title="git PAT"
               description="git 工具专用，不注入环境变量"
+            />
+          </div>
+          <div className="mt-2.5">
+            <RadioCard
+              name="credential-kind"
+              value="host"
+              checked={kind === "host"}
+              onChange={() => setKind("host")}
+              title="SSH 主机"
+              description="登记一台主机：端点+密码/私钥，donger-host 工具专用"
             />
           </div>
         </FormField>

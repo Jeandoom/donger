@@ -6,6 +6,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Server,
   Settings2,
   Trash2,
 } from "lucide-react";
@@ -378,7 +379,7 @@ function CredentialRowCard(props: {
   const [renameError, setRenameError] = useState<string | null>(null);
 
   const partial = !row.orphan && row.missingKeys.length > 0;
-  const RowIcon = row.kind === "git" ? GitBranch : KeyRound;
+  const RowIcon = row.kind === "git" ? GitBranch : row.kind === "host" ? Server : KeyRound;
 
   const saveRename = async () => {
     const name = renameText.trim();

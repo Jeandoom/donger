@@ -10,7 +10,6 @@ import {
   PanelLeftOpen,
   Plug,
   Repeat,
-  Rocket,
   ScrollText,
   Sparkles,
   UserRound,
@@ -52,8 +51,6 @@ const mainEntries: LeafItem[] = [
   { to: "/loops", label: "LOOPs", icon: Repeat },
   { to: "/skills", label: "技能", icon: Sparkles },
   { to: "/connectors", label: "连接器", icon: Plug },
-  // 主机资产（spec 2026-09-30-deploy-ops-loop-design §6）：SSH 端点登记；部署走对话/Loop
-  { to: "/hosts", label: "主机", icon: Rocket },
 ];
 
 // 配置类模块沉底展示（个人并入底部用户栏，不再占导航位；审计/MCP 接入自主导航迁入）

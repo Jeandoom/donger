@@ -50,7 +50,7 @@ export interface CredentialTemplateDTO {
   name: string;
   description?: string;
   /** 用途：generic=注入环境变量；git=git PAT 专用（不注入 env，仅 donger-git 工具现取） */
-  kind?: "generic" | "git";
+  kind?: "generic" | "git" | "host";
   /** kind=git 时的目标仓库声明（一凭一仓）；缺省 = 平台级凭证 */
   repoUrl?: string;
   keySpecs: CredentialKeySpecDTO[];
@@ -65,7 +65,7 @@ export interface CredentialValueViewDTO {
   /** 用户自定显示名（未设置时 undefined） */
   alias?: string;
   description?: string;
-  kind?: "generic" | "git";
+  kind?: "generic" | "git" | "host";
   keySpecs: CredentialKeySpecDTO[];
   filledKeys: string[];
   missingKeys: string[];
@@ -85,7 +85,7 @@ export async function createCredentialTemplate(input: {
   code: string;
   name: string;
   description?: string;
-  kind?: "generic" | "git";
+  kind?: "generic" | "git" | "host";
   repoUrl?: string;
   keySpecs: CredentialKeySpecDTO[];
 }): Promise<void> {
@@ -102,7 +102,7 @@ export async function updateCredentialTemplate(
   input: {
     name: string;
     description?: string;
-    kind?: "generic" | "git";
+    kind?: "generic" | "git" | "host";
     repoUrl?: string;
     keySpecs: CredentialKeySpecDTO[];
   },

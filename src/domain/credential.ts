@@ -11,9 +11,11 @@ export const CREDENTIAL_CODE_PATTERN = /^[a-z0-9][a-z0-9-_]{0,63}$/;
  * - generic：注入 SDK env（<CODE>_<KEY>），供 agent 进程直接读取；
  * - git：git 平台 PAT 专用，不注入 env——token 仅经凭证桥在 donger-git 工具/
  *   仓库物化内现取，防止 agent 拿到 token 后绕过工具直连平台（规格
- *   2026-09-09-git-platform-tools-design.md 防线 1）。
+ *   2026-09-09-git-platform-tools-design.md 防线 1）；
+ * - host：SSH 主机凭证（spec 2026-09-30-deploy-ops-loop-design §6 模型合并）——
+ *   一张模板=一台主机，值含端点与密钥，仅经 donger-host 工具现取，不注入 env。
  */
-export const CredentialKindSchema = z.enum(["generic", "git"]).default("generic");
+export const CredentialKindSchema = z.enum(["generic", "git", "host"]).default("generic");
 export type CredentialKind = z.infer<typeof CredentialKindSchema>;
 
 export const CredentialKeySpecSchema = z.object({
@@ -54,6 +56,58 @@ export function withGitPatKeySpecs<
   T extends { kind: CredentialKind; keySpecs: CredentialKeySpec[] },
 >(input: T): T {
   return input.kind === "git" ? { ...input, keySpecs: GIT_PAT_KEY_SPECS } : input;
+}
+
+/**
+ * host 凭证固定键名契约（读取与表单唯一来源）：端点三键 + 认证二选一。
+ * host/port/username 为端点元数据（随值加密存储，查询面不回显）；donger-host
+ * 工具按 code 现取解析（hostId 概念退役，code 即主机标识）。
+ */
+export const HOST_KEY_SPECS: CredentialKeySpec[] = [
+  { key: "host", label: "主机 hostname" },
+  { key: "port", label: "SSH 端口（缺省 22）" },
+  { key: "username", label: "SSH 用户名" },
+  { key: "password", label: "SSH 密码（与私钥二选一）" },
+  { key: "private_key", label: "SSH 私钥（与密码二选一）" },
+];
+
+/** kind=host 模板键名收口（照 git 先例）；其余 kind 原样 */
+export function withHostKeySpecs<T extends { kind: CredentialKind; keySpecs: CredentialKeySpec[] }>(
+  input: T,
+): T {
+  return input.kind === "host" ? { ...input, keySpecs: HOST_KEY_SPECS } : input;
+}
+
+/** 按 kind 统一收口模板键名（创建/编辑入口调用；各 kind 幂等） */
+export function withKindKeySpecs<T extends { kind: CredentialKind; keySpecs: CredentialKeySpec[] }>(
+  input: T,
+): T {
+  return withHostKeySpecs(withGitPatKeySpecs(input));
+}
+
+/** 从 host 凭证已解密值解析 SSH 端点与认证材料；缺端点或认证缺一报错 */
+export function sshEndpointFromValues(
+  values: Record<string, string> | undefined,
+  code: string,
+): { host: string; port: number; username: string; password?: string; privateKey?: string } {
+  const host = values?.host?.trim();
+  const username = values?.username?.trim();
+  if (!host || !username) {
+    throw new Error(`主机凭证 ${code} 缺少 host/username（请在凭证页补全该主机的值）`);
+  }
+  const port = Number(values?.port) || 22;
+  const password = values?.password?.trim() || undefined;
+  const privateKey = values?.private_key?.trim() || undefined;
+  if (!password && !privateKey) {
+    throw new Error(`主机凭证 ${code} 缺少认证材料（password / private_key 至少其一）`);
+  }
+  return {
+    host,
+    port,
+    username,
+    ...(password ? { password } : {}),
+    ...(privateKey ? { privateKey } : {}),
+  };
 }
 
 /** 全局凭证模板：结构元数据，不含任何值 */

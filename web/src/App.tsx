@@ -8,7 +8,6 @@ import { AuditPage } from "./pages/AuditPage";
 import { AuthorizationPage } from "./pages/AuthorizationPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ConnectorsPage } from "./pages/ConnectorsPage";
-import { HostsPage } from "./pages/HostsPage";
 import { CredentialsPage } from "./pages/credentials/CredentialsPage";
 import { FeedbackPage } from "./pages/FeedbackPage";
 import { InvitesPage } from "./pages/InvitesPage";
@@ -69,9 +68,9 @@ export function App() {
             <Route path="/loops/:id" element={<LoopDetailPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
-            <Route path="/hosts" element={<HostsPage />} />
-            {/* v2 重构：部署页已升级为主机资产页（spec 2026-09-30 §6）；旧深链重定向 */}
-            <Route path="/deploy" element={<Navigate to="/hosts" replace />} />
+            {/* v3 模型合并：主机=凭证（kind=host），独立页退役；旧深链重定向凭证页 */}
+            <Route path="/hosts" element={<Navigate to="/credentials" replace />} />
+            <Route path="/deploy" element={<Navigate to="/credentials" replace />} />
             {/* 原设置子模块一级化（/profile /models /credentials /invites）；旧 /settings/* 深链重定向 */}
             <Route path="/profile" element={<UserProfilePage />} />
             <Route path="/models" element={<ModelsPage />} />

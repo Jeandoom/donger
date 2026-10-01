@@ -50,7 +50,7 @@ import {
   CredentialValueInputSchema,
   type CredentialValueView,
   parseCredentialCode,
-  withGitPatKeySpecs,
+  withKindKeySpecs,
 } from "../domain/credential.js";
 import { buildFeedbackCreatedPayload } from "../domain/event-payloads.js";
 import {
@@ -76,7 +76,6 @@ import {
 import { mimeForExt } from "../domain/file-mime.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
-import { HostInputSchema } from "../domain/host.js";
 import {
   buildInvite,
   EMAIL_VERIFY_TTL_MS,
@@ -186,7 +185,6 @@ import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
-import type { HostStore } from "../ports/host-store.js";
 import type { InviteStore } from "../ports/invite-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
@@ -494,8 +492,6 @@ export interface WebChannelDeps {
   llmProviderStore?: LlmProviderStore;
   /** 系统密钥管理（授权页·密钥管理：状态/轮换/导入历史/深度修复；缺省=端点 503） */
   systemKey?: SystemKeyService;
-  /** 主机资产存储（spec 2026-09-30-deploy-ops-loop-design §6；缺省=主机端点 503） */
-  hostStore?: HostStore;
   /** Anthropic 协议连通性校验；缺省=测试连接端点不可用 */
   llmProviderTester?: LlmTester;
   agentStore?: AgentStore;
@@ -5128,8 +5124,6 @@ export class WebChannel implements Channel {
 
     if (await this.handleWorkflowApi(url, req, res)) return;
 
-    if (await this.handleHostsApi(url, req, res)) return;
-
     if (await this.handleConnectorApi(url, req, res)) return;
 
     res.writeHead(404);
@@ -5785,83 +5779,6 @@ export class WebChannel implements Channel {
     return false;
   }
 
-  /** 主机资产 API（spec 2026-09-30-deploy-ops-loop-design §6）。命中返回 true。
-   *  守卫面 authenticated（web-route-guards）；属主/管理员分流在 handler：
-   *  登记（建/改/删）= admin；查看 = 属主或 admin。部署操作不在本 API——走对话/Loop
-   *  经 donger-host 工具（审批门后执行），部署即会话。 */
-  private async handleHostsApi(
-    url: string,
-    req: HttpRequest,
-    res: ServerResponse,
-  ): Promise<boolean> {
-    const pathname = url.split("?")[0] ?? url;
-    const viewer = this.currentViewer(req);
-    const store = this.deps.hostStore;
-
-    if (pathname === "/api/hosts" && req.method === "GET") {
-      if (!store) {
-        this.json(res, { error: "主机模块未启用" }, 503);
-        return true;
-      }
-      const all = await store.listHosts();
-      const visible = viewer.role === "admin" ? all : all.filter((h) => h.ownerId === viewer.id);
-      this.json(res, { hosts: visible });
-      return true;
-    }
-    if (pathname === "/api/hosts" && req.method === "POST") {
-      if (!store) {
-        this.json(res, { error: "主机模块未启用" }, 503);
-        return true;
-      }
-      if (viewer.role !== "admin") {
-        this.json(res, { error: "仅管理员可登记主机" }, 403);
-        return true;
-      }
-      const input = HostInputSchema.parse(JSON.parse(await this.readBody(req)));
-      const created = await store.create(input, viewer.id);
-      this.json(res, created, 201);
-      return true;
-    }
-    const m = pathname.match(/^\/api\/hosts\/([\w-]+)$/);
-    if (m) {
-      const id = m[1] ?? "";
-      const host = store ? await store.get(id) : undefined;
-      const visible =
-        host && (viewer.role === "admin" || host.ownerId === viewer.id) ? host : undefined;
-      if (req.method === "GET") {
-        if (!visible) {
-          this.json(res, { error: "主机不存在" }, 404);
-          return true;
-        }
-        this.json(res, visible);
-        return true;
-      }
-      if (req.method === "PUT" || req.method === "DELETE") {
-        if (!store) {
-          this.json(res, { error: "主机模块未启用" }, 503);
-          return true;
-        }
-        if (viewer.role !== "admin") {
-          this.json(res, { error: "仅管理员可修改/删除主机" }, 403);
-          return true;
-        }
-        if (!host) {
-          this.json(res, { error: "主机不存在" }, 404);
-          return true;
-        }
-        if (req.method === "PUT") {
-          const input = HostInputSchema.parse(JSON.parse(await this.readBody(req)));
-          this.json(res, await store.update(id, input));
-        } else {
-          await store.delete(id);
-          this.json(res, { ok: true });
-        }
-        return true;
-      }
-    }
-    return false;
-  }
-
   /** 技能/凭证 API 命中返回 true。委托 skill-api handler。 */
   private async handleSkillsApi(
     url: string,
@@ -5927,7 +5844,7 @@ export class WebChannel implements Channel {
         send({ status: 409, json: { error: `凭证 code 已存在: ${code}` } });
         return true;
       }
-      await csets.createTemplate(code, withGitPatKeySpecs(parsed.data), uid);
+      await csets.createTemplate(code, withKindKeySpecs(parsed.data), uid);
       send({ status: 201, json: { ok: true, code } });
       return true;
     }
@@ -5959,7 +5876,7 @@ export class WebChannel implements Channel {
         send({ status: 400, json: { error: parsed.error.issues[0]?.message ?? "参数非法" } });
         return true;
       }
-      await csets.updateTemplate(code, withGitPatKeySpecs(parsed.data));
+      await csets.updateTemplate(code, withKindKeySpecs(parsed.data));
       send({ status: 200, json: { ok: true } });
       return true;
     }
