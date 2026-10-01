@@ -1028,7 +1028,12 @@ export class Orchestrator {
       if (!libs || !revisions || !workspaceDir || !llm) return;
       if (!ok || resultText.length === 0 || resultText === "(无结果)") return;
       if (p.agent?.kbAutoLearn !== true) return;
-      const kbIds = p.agent.knowledgeBaseIds ?? [];
+      // 独立知识库（可写目标）：命中候选则收窄为该库；悬空/失权时回退全量可管理绑定库
+      // （specs/2026-10-01-agent-own-kb-picker-design.md §2.3）
+      const targetId = p.agent.kbWriteTargetId ?? undefined;
+      const boundIds = p.agent.knowledgeBaseIds ?? [];
+      const kbIds =
+        targetId && !boundIds.includes(targetId) ? [targetId, ...boundIds] : boundIds;
       if (kbIds.length === 0) return;
       // 候选库=调用者可管理的绑定库（异步取，避免阻塞返回）
       void (async () => {
@@ -1039,12 +1044,15 @@ export class Orchestrator {
             const lib = await libs.get(kbId);
             if (lib && canManageKb(lib, actor)) candidates.push(lib);
           }
+          const narrowed = targetId
+            ? candidates.filter((k) => k.id === targetId)
+            : candidates;
           enqueueAutoLearn(
             {
               user: p.user,
               conversation: p.conversation,
               taskId: p.task.id,
-              candidateKbs: candidates,
+              candidateKbs: narrowed.length > 0 ? narrowed : candidates,
               workspaceDir,
               llm,
               revisionStore: revisions,
