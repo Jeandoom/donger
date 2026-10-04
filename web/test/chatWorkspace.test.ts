@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { type ComponentProps, createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentConversationSidebarProps } from "../src/components/chat/AgentConversationSidebar";
@@ -245,5 +245,49 @@ describe("ChatWorkspace", () => {
     expect(screen.queryByText("Claude Code SDK")).not.toBeInTheDocument();
     expect(screen.queryByText("Codex Agent SDK")).not.toBeInTheDocument();
     expect(screen.queryByText("ZCode CLI")).not.toBeInTheDocument();
+  });
+});
+
+describe("对话内反馈入口与会话 ID 复制（spec 2026-10-01-chat-feedback-entry-design）", () => {
+  const conversation = {
+    id: "conv-abc12345",
+    userId: "u1",
+    sdkSessionId: "",
+    title: "排障会话",
+    channelId: "web",
+    agentId: "",
+    createdAt: "2026-10-04T00:00:00.000Z",
+    updatedAt: "2026-10-04T00:00:00.000Z",
+    archived: false,
+  };
+
+  it("非草稿会话显示复制会话 ID 按钮，点击写入剪贴板", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    renderWorkspace({ conversations: [conversation], activeConversationId: conversation.id });
+
+    fireEvent.click(screen.getByRole("button", { name: "复制会话 ID" }));
+    expect(writeText).toHaveBeenCalledWith(conversation.id);
+    // 已复制态在剪贴板 promise 兑现后切换（微任务），用 findBy 等待
+    expect(await screen.findByRole("button", { name: "会话 ID 已复制" })).toBeInTheDocument();
+  });
+
+  it("草稿会话隐藏复制按钮，反馈入口禁用并提示先发首条消息", () => {
+    renderWorkspace({ activeConversationIsDraft: true });
+
+    expect(screen.queryByRole("button", { name: "复制会话 ID" })).not.toBeInTheDocument();
+    const feedbackButton = screen.getByRole("button", { name: "反馈" });
+    expect(feedbackButton).toBeDisabled();
+    expect(feedbackButton).toHaveAttribute("title", "发送首条消息后可对此会话提交反馈");
+  });
+
+  it("反馈弹窗预填当前会话作为关联对话记录，可移除更换", () => {
+    renderWorkspace({ conversations: [conversation], activeConversationId: conversation.id });
+
+    fireEvent.click(screen.getByRole("button", { name: "反馈" }));
+    const dialog = within(screen.getByRole("dialog", { name: "提交反馈" }));
+    // 关联会话 chip 预填当前会话（标题同时出现在顶栏，须在弹窗内断言）
+    expect(dialog.getByText("排障会话")).toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "移除关联会话" })).toBeInTheDocument();
   });
 });

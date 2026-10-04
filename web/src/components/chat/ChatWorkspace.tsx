@@ -1,9 +1,11 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import { Check, Copy, Megaphone } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
 import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
+import type { ConversationCandidate } from "../../lib/feedback";
 import { type LlmSdkType, llmSdkLabel, llmSdkTone } from "../../lib/llmSdk";
 import type { Mention } from "../../lib/mentions";
 import { reconcileMentions } from "../../lib/mentions";
@@ -17,7 +19,9 @@ import type {
   PendingCredential,
   PendingQuestion,
 } from "../../types";
+import { FeedbackForm } from "../feedback/FeedbackForm";
 import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
+import { DialogShell } from "../ui/dialog-shell";
 import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
@@ -85,6 +89,20 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     const timer = setTimeout(() => setAttachmentError(null), 6000);
     return () => clearTimeout(timer);
   }, [attachmentError]);
+  // 对话内反馈入口（spec 2026-10-01-chat-feedback-entry-design）：弹窗开关 + 提交成功提示（瞬态自清）
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackNotice, setFeedbackNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!feedbackNotice) return;
+    const timer = setTimeout(() => setFeedbackNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [feedbackNotice]);
+  const [idCopied, setIdCopied] = useState(false);
+  useEffect(() => {
+    if (!idCopied) return;
+    const timer = setTimeout(() => setIdCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [idCopied]);
   const activeConversation = props.conversations.find((c) => c.id === props.activeConversationId);
   const effectiveMode: AgentPermissionMode =
     activeConversation?.effectivePermissionMode ??
@@ -121,6 +139,14 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     },
     [props.onSend],
   );
+  const copyConversationId = useCallback(() => {
+    const id = props.activeConversationId;
+    if (!id) return;
+    void navigator.clipboard?.writeText(id).then(
+      () => setIdCopied(true),
+      () => undefined,
+    );
+  }, [props.activeConversationId]);
   const runtime = useAssistantRuntimeBridge({
     messages: props.messages,
     loading: props.loadingMessages,
@@ -221,6 +247,31 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {props.headerExtra}
+            {props.activeConversationId ? (
+              <button
+                type="button"
+                aria-label={idCopied ? "会话 ID 已复制" : "复制会话 ID"}
+                title="复制会话 ID（反馈时粘贴给管理员可快速定位会话）"
+                onClick={copyConversationId}
+                className="shrink-0 rounded-lg border border-border bg-card p-2 text-muted-foreground hover:bg-muted"
+              >
+                {idCopied ? <Check size={13} className="text-primary" /> : <Copy size={13} />}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={!props.activeConversationId || props.activeConversationIsDraft}
+              title={
+                props.activeConversationIsDraft
+                  ? "发送首条消息后可对此会话提交反馈"
+                  : "对此会话提交反馈（自动关联当前会话作为证据）"
+              }
+              onClick={() => setFeedbackOpen(true)}
+              className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Megaphone size={12} />
+              反馈
+            </button>
             <button
               type="button"
               onClick={() => setDrawer({ open: true, tab: "files", focusPath: null })}
@@ -230,6 +281,28 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             </button>
           </div>
         </div>
+        {feedbackOpen && activeConversation ? (
+          <DialogShell
+            title="提交反馈"
+            subtitle="将自动关联当前会话，作为问题定位的证据；官方回复在「反馈」页可见"
+            onClose={() => setFeedbackOpen(false)}
+            ariaLabel="提交反馈"
+            className="max-w-xl"
+            footer={<span />}
+          >
+            <FeedbackForm
+              initialConversation={{
+                id: activeConversation.id,
+                title: activeConversation.title || "(无标题)",
+                updatedAt: activeConversation.updatedAt,
+              }}
+              onCreated={() => {
+                setFeedbackOpen(false);
+                setFeedbackNotice("反馈已提交，感谢！可在「反馈」页查看官方回复进展。");
+              }}
+            />
+          </DialogShell>
+        ) : null}
         <ConfirmDialog
           open={confirmFullAccess}
           title="切换到完全权限模式？"
@@ -295,6 +368,22 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               aboveComposer={
                 <>
                   {props.aboveComposer}
+                  {feedbackNotice ? (
+                    <div
+                      role="status"
+                      className="mb-2 flex items-center justify-between rounded-xl border border-primary/30 bg-primary-soft px-3 py-2 text-sm text-primary-foreground"
+                    >
+                      <span className="min-w-0 break-all">{feedbackNotice}</span>
+                      <button
+                        type="button"
+                        aria-label="关闭提示"
+                        onClick={() => setFeedbackNotice(null)}
+                        className="ml-2 shrink-0 text-xs underline"
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  ) : null}
                   {attachmentError ? (
                     <div
                       role="alert"
