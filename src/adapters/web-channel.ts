@@ -4319,6 +4319,8 @@ export class WebChannel implements Channel {
       if (bindingError) return this.json(res, { error: bindingError }, 400);
       const connectorError = await this.validateAgentConnectorRefs(me, input);
       if (connectorError) return this.json(res, { error: connectorError }, 400);
+      const kbTargetError = await this.validateKbWriteTarget(me, input);
+      if (kbTargetError) return this.json(res, { error: kbTargetError }, 400);
       const kbError = await this.validateKbBindings(me, input.knowledgeBaseIds);
       if (kbError) return this.json(res, { error: kbError }, 400);
       const created = await this.agentStore?.create(input);
@@ -4438,6 +4440,8 @@ export class WebChannel implements Channel {
         if (bindingError) return this.json(res, { error: bindingError }, 400);
         const connectorError = await this.validateAgentConnectorRefs(me, validated);
         if (connectorError) return this.json(res, { error: connectorError }, 400);
+        const kbTargetError = await this.validateKbWriteTarget(me, validated);
+        if (kbTargetError) return this.json(res, { error: kbTargetError }, 400);
         const kbError = await this.validateKbBindings(me, validated.knowledgeBaseIds);
         if (kbError) return this.json(res, { error: kbError }, 400);
         const updated = await this.agentStore?.update(id, validated);
@@ -4611,6 +4615,8 @@ export class WebChannel implements Channel {
             : src.conversationScope,
         // 知识库绑定弱引用：他人的清空（复制者无权），自有保留（spec §10.2）
         knowledgeBaseIds: isMine ? src.knowledgeBaseIds : [],
+        // 独立知识库（可写目标）同口径：他人的清空，自有保留
+        kbWriteTargetId: isMine ? (src.kbWriteTargetId ?? null) : null,
       });
       if (!duplicated) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(res, { ...this.agentToDTO(duplicated, true), warnings });
@@ -5056,6 +5062,18 @@ export class WebChannel implements Channel {
         });
         await kb.libraries.delete(id);
         rmSync(kbRootDir(this.workspaceDir, id), { recursive: true, force: true });
+        // 级联清理弱引用：被删库从所有 agent 的绑定/独立库摘除——悬空 id 会让该 agent
+        // 后续保存 400（知识库不存在），且勾选行已不渲染、无法取消（spec §2.4）
+        for (const ag of (await this.agentStore?.listAll()) ?? []) {
+          const bound = ag.knowledgeBaseIds ?? [];
+          const nextTarget = ag.kbWriteTargetId === id ? null : ag.kbWriteTargetId;
+          if (bound.includes(id) || nextTarget !== ag.kbWriteTargetId) {
+            await this.agentStore?.update(ag.id, {
+              knowledgeBaseIds: bound.filter((x) => x !== id),
+              kbWriteTargetId: nextTarget,
+            });
+          }
+        }
         return this.json(res, { ok: true, revisionsKept: revCount + 1 });
       }
     }
@@ -6981,6 +6999,28 @@ export class WebChannel implements Channel {
     return undefined;
   }
 
+  /**
+   * 独立知识库（可写目标）校验：须存在且本人可管理（canManageKb）；通过则幂等并入
+   * knowledgeBaseIds——独立蕴含绑定（specs/2026-10-01-agent-own-kb-picker-design.md §2.2）。
+   * 直接改写入参，须先于 validateKbBindings 调用。
+   */
+  private async validateKbWriteTarget(
+    userId: string,
+    input: { kbWriteTargetId?: string | null; knowledgeBaseIds?: string[] },
+  ): Promise<string | undefined> {
+    const targetId = input.kbWriteTargetId;
+    if (!targetId) return undefined;
+    if (!this.kbLibraryStore) return "知识库模块不可用";
+    const lib = await this.kbLibraryStore.get(targetId);
+    if (!lib) return `知识库不存在: ${targetId.slice(0, 8)}`;
+    const actor = await this.kbActor(userId);
+    if (!canManageKb(lib, actor)) return `独立知识库须为本人可管理的知识库「${lib.name}」`;
+    if (!(input.knowledgeBaseIds ?? []).includes(targetId)) {
+      input.knowledgeBaseIds = [...(input.knowledgeBaseIds ?? []), targetId];
+    }
+    return undefined;
+  }
+
   /** canReadKb 校验（含 404/403 响应写出）；返回 false 时响应已写出 */
   private async requireKbRead(
     kb: { libraries: KbLibraryStore; shares: KbShareStore; revisions: KbRevisionStore },
@@ -7053,6 +7093,11 @@ export class WebChannel implements Channel {
       defaultPermissionMode: a.defaultPermissionMode,
       version: a.version,
       conversationScope: a.conversationScope,
+      // KB 三字段此前漏传：编辑器装载不到存量绑定与自动学习开关（装载后一动勾选即抹掉全部存量绑定）
+      knowledgeBaseIds: a.knowledgeBaseIds ?? [],
+      kbAutoLearn: a.kbAutoLearn === true,
+      feedbackScope: a.feedbackScope,
+      kbWriteTargetId: a.kbWriteTargetId ?? null,
     };
   }
 

@@ -159,6 +159,12 @@ export const AgentSchema = z.object({
   knowledgeBaseIds: z.array(z.string()).optional(),
   /** 自动学习与记忆（默认关）：对话收尾后 LLM 梳理沉淀进绑定的可写库（spec §9.3） */
   kbAutoLearn: z.boolean().optional(),
+  /**
+   * 独立知识库（可写目标，单选）：自动学习沉淀收窄到该库；保存时须本人可管理并幂等并入
+   * knowledgeBaseIds（specs/2026-10-01-agent-own-kb-picker-design.md §2.2；null=清除，
+   * 缺省/null=回退「全部可管理绑定库」的既有语义）
+   */
+  kbWriteTargetId: z.string().nullable().optional(),
   /** 勾选的凭证模板 code（弱引用：执行时按当前用户解析，未配置的注入 _MISSING 标记） */
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,

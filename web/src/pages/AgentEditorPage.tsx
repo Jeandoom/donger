@@ -52,8 +52,11 @@ export function AgentEditorPage() {
     llmPresets: [],
   });
   const [form, setForm] = useState<AgentEditorForm>(emptyAgent);
-  /** 独立知识库创建名（保存时先建库回填；见 handleSave） */
-  const [kbNewName, setKbNewName] = useState("");
+  /** 「＋ 新建独立知识库」伪行状态（保存时先建库回填 kbWriteTargetId；不入 baseline，见 handleSave） */
+  const [kbNew, setKbNew] = useState<{ enabled: boolean; name: string }>({
+    enabled: false,
+    name: "",
+  });
   const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -127,6 +130,10 @@ export function AgentEditorPage() {
             gitAllowShellGit: a.gitAllowShellGit ?? false,
             defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
             conversationScope: a.conversationScope ?? { enabled: false, agentIds: [] },
+            // KB 三字段此前漏装：编辑器看不到存量绑定/自动学习开关，一动勾选即把存量绑定清空
+            knowledgeBaseIds: a.knowledgeBaseIds ?? [],
+            kbAutoLearn: a.kbAutoLearn === true,
+            kbWriteTargetId: a.kbWriteTargetId ?? null,
             feedbackScope: a.feedbackScope ?? { enabled: false },
           };
           setForm(loaded);
@@ -208,20 +215,22 @@ export function AgentEditorPage() {
     setSaving(true);
     setWarnings(undefined);
     try {
-      // 独立知识库：保存前先建库并并入绑定（spec §10.2；编辑态带 sourceAgentId 溯源）
+      // 「＋ 新建独立知识库」：保存前先建库，回填 kbWriteTargetId 并并入绑定（spec §10.2；
+      // 编辑态带 sourceAgentId 溯源）；名称留空用默认名兜底
       let formToSave = form;
-      if (kbNewName.trim().length > 0) {
+      if (kbNew.enabled) {
         const newKb = await createKb({
-          name: kbNewName.trim(),
+          name: kbNew.name.trim() || `${form.name || "本智能体"}-知识库`,
           description: `智能体「${form.name || "未命名"}」的独立知识库`,
           ...(!isNew && id ? { sourceAgentId: id } : {}),
         });
         formToSave = {
           ...form,
+          kbWriteTargetId: newKb.id,
           knowledgeBaseIds: [...(form.knowledgeBaseIds ?? []), newKb.id],
         };
         setForm(formToSave);
-        setKbNewName("");
+        setKbNew({ enabled: false, name: "" });
       }
       const saved = isNew ? await createAgent(formToSave) : await updateAgent(id ?? "", formToSave);
       if (saved.warnings && saved.warnings.length > 0) {
@@ -479,11 +488,7 @@ export function AgentEditorPage() {
             onMcpJsonErrorChange={setMcpJsonError}
           />
           <ResourcesSection {...sectionProps} gitCredentialOptions={gitCredentialOptions} />
-          <KnowledgeSection
-            {...sectionProps}
-            kbNewName={kbNewName}
-            onKbNewNameChange={setKbNewName}
-          />
+          <KnowledgeSection {...sectionProps} kbNew={kbNew} onKbNewChange={setKbNew} />
           {!isNew && id ? <RuntimeSection agentId={id} /> : null}
         </main>
       </div>
