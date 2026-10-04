@@ -2820,6 +2820,8 @@ describe("WebChannel 技能对账与技能问题上报", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(denied.status).toBe(403);
+  });
+});
 
 describe("WebChannel /api/agents 独立知识库（kbWriteTargetId）", () => {
   const baseBody = {
