@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
+import { isLikelyChitchat } from "../domain/chitchat.js";
 import type { Conversation } from "../domain/conversation.js";
 import {
   DEFAULT_CONVERSATION_TITLE,
@@ -23,7 +24,6 @@ import {
   resolvePermissionMode,
 } from "../domain/permission-mode.js";
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
-import { isLikelyChitchat } from "../domain/chitchat.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
@@ -542,44 +542,44 @@ export class Orchestrator {
         base = {
           ...base,
           kbTools: createKbToolsServer({
-          mounts: kbMounts,
-          defaultKbId: kbDefault,
-          // FTS 影子索引（R-A）：命中文件先行过滤，工具内行级定位；未装配时 grep 兜底
-          ftsSearch: this.deps.kbFts
-            ? (kbIds, query) => {
-                const fts = this.deps.kbFts;
-                return fts ? fts.search(kbIds, query) : [];
+            mounts: kbMounts,
+            defaultKbId: kbDefault,
+            // FTS 影子索引（R-A）：命中文件先行过滤，工具内行级定位；未装配时 grep 兜底
+            ftsSearch: this.deps.kbFts
+              ? (kbIds, query) => {
+                  const fts = this.deps.kbFts;
+                  return fts ? fts.search(kbIds, query) : [];
+                }
+              : undefined,
+            onChange: async (e) => {
+              const revisions = this.deps.kbRevisionStore;
+              if (!revisions) return;
+              const diff =
+                e.action === "delete" ? undefined : lineDiff(e.before ?? "", e.after ?? "");
+              // FTS 影子索引同步（R-A）：写即 upsert、删即 delete（与账本同事务语义：先记后同步均可）
+              if (this.deps.kbFts) {
+                if (e.action === "delete" && e.before !== undefined) {
+                  this.deps.kbFts.delete(e.kbId, e.path);
+                } else if (e.after !== undefined) {
+                  this.deps.kbFts.upsert(e.kbId, e.path, e.after);
+                }
               }
-            : undefined,
-          onChange: async (e) => {
-            const revisions = this.deps.kbRevisionStore;
-            if (!revisions) return;
-            const diff =
-              e.action === "delete" ? undefined : lineDiff(e.before ?? "", e.after ?? "");
-            // FTS 影子索引同步（R-A）：写即 upsert、删即 delete（与账本同事务语义：先记后同步均可）
-            if (this.deps.kbFts) {
-              if (e.action === "delete" && e.before !== undefined) {
-                this.deps.kbFts.delete(e.kbId, e.path);
-              } else if (e.after !== undefined) {
-                this.deps.kbFts.upsert(e.kbId, e.path, e.after);
-              }
-            }
-            await revisions.record({
-              kbId: e.kbId,
-              path: e.path,
-              action: e.action,
-              actorUserId: p.user.id,
-              actorKind: "chat",
-              conversationId: p.conversation.id,
-              taskId: p.task.id,
-              beforeHash: e.before !== undefined ? sha256Text(e.before) : undefined,
-              afterHash: e.after !== undefined ? sha256Text(e.after) : undefined,
-              ...(diff ? { diffText: diff } : {}),
-              summary: `对话维护（${p.conversation.title || "会话"}）`,
-            });
-          },
-        }),
-        kbWriteGuardRoots: kbMounts.map((m) => m.root),
+              await revisions.record({
+                kbId: e.kbId,
+                path: e.path,
+                action: e.action,
+                actorUserId: p.user.id,
+                actorKind: "chat",
+                conversationId: p.conversation.id,
+                taskId: p.task.id,
+                beforeHash: e.before !== undefined ? sha256Text(e.before) : undefined,
+                afterHash: e.after !== undefined ? sha256Text(e.after) : undefined,
+                ...(diff ? { diffText: diff } : {}),
+                summary: `对话维护（${p.conversation.title || "会话"}）`,
+              });
+            },
+          }),
+          kbWriteGuardRoots: kbMounts.map((m) => m.root),
         };
         const kbPrompt = this.kbContextPrompt(kbMounts);
         if (kbPrompt) {

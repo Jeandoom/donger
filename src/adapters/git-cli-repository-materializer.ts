@@ -67,7 +67,11 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
         // TTL 窗口内复用已同步目录（目录真实性由窗口内首次同步的 remote 校验/自愈保证；
         // 表是进程内存态，重启后首轮强制同步一次，fail-safe）。
         const syncedAt = this.lastSyncAt.get(target);
-        if (this.syncTtlMs <= 0 || syncedAt === undefined || this.now() - syncedAt >= this.syncTtlMs) {
+        if (
+          this.syncTtlMs <= 0 ||
+          syncedAt === undefined ||
+          this.now() - syncedAt >= this.syncTtlMs
+        ) {
           const message = await this.fastForward(target, item, signal);
           this.lastSyncAt.set(target, this.now());
           if (message) return resultFor(item.repository, target, "warning", message);

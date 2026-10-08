@@ -38,9 +38,7 @@ const CORE_TOOLS: ReadonlyArray<{ name: string; why: string }> = [
  * 工具面执行，白名单缺核心工具=配置性误伤（历史实锤：analyzer 白名单缺 Write 卡死任务）。
  * 保存时告警不阻断（回显走 agentEquipmentWarnings 既有通道）；all 模式与未勾选技能不告警。
  */
-export function agentToolCoverageWarnings(
-  agent: Pick<Agent, "skills" | "tools">,
-): string[] {
+export function agentToolCoverageWarnings(agent: Pick<Agent, "skills" | "tools">): string[] {
   if (agent.skills.length === 0) return [];
   if (agent.tools.mode !== "whitelist") return [];
   if (agent.tools.whitelist.length === 0) {

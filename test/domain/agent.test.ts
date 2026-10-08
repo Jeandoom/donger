@@ -356,10 +356,10 @@ describe("agentToolCoverageWarnings（白名单完备性静态校验）", () => 
   it("白名单齐备不告警", () => {
     expect(
       agentToolCoverageWarnings(
-        agentWith(
-          ["code-review-execute"],
-          { mode: "whitelist", whitelist: ["Write", "Edit", "Read", "Bash", "mcp__donger-git"] },
-        ),
+        agentWith(["code-review-execute"], {
+          mode: "whitelist",
+          whitelist: ["Write", "Edit", "Read", "Bash", "mcp__donger-git"],
+        }),
       ),
     ).toEqual([]);
   });

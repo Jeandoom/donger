@@ -9,8 +9,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { afterEach, describe, expect, it } from "vitest";
 
 const enabled = process.env.E2E_LIVE === "1";
 
@@ -141,7 +141,7 @@ describe.skipIf(!enabled)("常驻会话 spike（streaming input；需 E2E_LIVE=1
       const collector = makeCollector(input.stream);
       const cwd = mkdtempSync(join(tmpdir(), "donger-resident-"));
       roots.push(cwd);
-      const q = query({ prompt: input.stream as never, options: { cwd } });
+      query({ prompt: input.stream as never, options: { cwd } });
       input.push("用一句话回答：1+1等于几？");
       const r1 = await collector.nextResult();
       expect(r1.subtype ?? r1.type).toBeDefined();
@@ -168,7 +168,7 @@ describe.skipIf(!enabled)("常驻会话 spike（streaming input；需 E2E_LIVE=1
       const store = makeMemorySessionStore();
       const input = makeInputStream();
       const collector = makeCollector(input.stream);
-      const q = query({
+      query({
         prompt: input.stream as never,
         options: { cwd, sessionStore: store as never },
       });

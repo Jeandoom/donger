@@ -48,7 +48,16 @@ describe("isLikelyChitchat（闲聊短路径判定）", () => {
   });
 
   it("含引用/任务面标记一律放行给 dispatcher", () => {
-    for (const text of ["你好 @file.ts", "//code-review 你好", "$jihulab 你好", "%会话 你好", "#反馈 你好", "看下 https://example.com", "你好\n世界", "`code`"]) {
+    for (const text of [
+      "你好 @file.ts",
+      "//code-review 你好",
+      "$jihulab 你好",
+      "%会话 你好",
+      "#反馈 你好",
+      "看下 https://example.com",
+      "你好\n世界",
+      "`code`",
+    ]) {
       expect(isLikelyChitchat(text), text).toBe(false);
     }
   });
@@ -56,6 +65,10 @@ describe("isLikelyChitchat（闲聊短路径判定）", () => {
   it("超长与空输入不判闲聊", () => {
     expect(isLikelyChitchat("")).toBe(false);
     expect(isLikelyChitchat("   ")).toBe(false);
-    expect(isLikelyChitchat("你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好")).toBe(false);
+    expect(
+      isLikelyChitchat(
+        "你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好",
+      ),
+    ).toBe(false);
   });
 });
