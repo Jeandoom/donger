@@ -546,6 +546,46 @@ describe("ZcodeAgentRunner", () => {
     expect(result.error).toContain("provider_not_found");
   });
 
+  it("契约 C2/C4：resume 轮 session_init/subscribe/send 全部对准干活 id（resume 目标）", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    server.eventsAfterSend = [completedEvent("resumed")];
+    const runner = new ZcodeAgentRunner(makeGates([]), factoryFor(server).factory);
+    const events = await collect(
+      runner.run(task, { ...baseOpts(), resume: "sess_prev_9" }, async () => ({ approved: true })),
+    );
+    // session_init 上报干活 id——指针回写/反查/对账全以此为准（create id 仅协议握手）
+    const init = events.at(0) as Extract<RunnerEvent, { type: "session_init" }>;
+    expect(init.sessionId).toBe("sess_prev_9");
+    expect(server.request("session/subscribe")?.sessionId).toBe("sess_prev_9");
+    expect(server.request("session/send")?.sessionId).toBe("sess_prev_9");
+    // 订阅晚于 resume（会话激活是 subscribe 的前置）
+    expect(server.requests.map((r) => r.method)).toEqual([
+      "session/create",
+      "session/resume",
+      "session/subscribe",
+      "session/send",
+    ]);
+  });
+
+  it("契约 C5：send 后长时间零事件显性 fail（停摆守卫），不再无限挂死", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    // 不回放任何事件：send 后永久静默（订阅错位/引擎挂死形态，2026-10-08 事故）
+    const runner = new ZcodeAgentRunner(makeGates([]), factoryFor(server).factory);
+    const prev = process.env.DONGER_ZCODE_EVENT_STALL_MS;
+    process.env.DONGER_ZCODE_EVENT_STALL_MS = "80";
+    try {
+      const events = await collect(runner.run(task, baseOpts(), async () => ({ approved: true })));
+      const result = events.at(-1) as Extract<RunnerEvent, { type: "result" }>;
+      expect(result.subtype).toBe("error");
+      expect(result.error).toContain("事件流停摆");
+    } finally {
+      if (prev === undefined) delete process.env.DONGER_ZCODE_EVENT_STALL_MS;
+      else process.env.DONGER_ZCODE_EVENT_STALL_MS = prev;
+    }
+  });
+
   it("writeProviderConfig：个人 provider 注册形状（personalModelIds，禁 builtinModelIds）", () => {
     const dir = newWorkDir();
     const path = join(dir, "provider_config.json");

@@ -193,20 +193,26 @@ export class ZcodeAgentRunner implements AgentRunner {
       });
       const sessionId = created.session?.sessionId ?? "";
       if (!sessionId) throw new Error("ZCode session/create 未返回 sessionId");
-      enqueue({ type: "session_init", taskId: task.id, sessionId });
-
-      await connection.request("session/subscribe", {
-        sessionId,
-        deliveryKind: "desktop-continuous",
-      });
+      // 会话生命周期契约（specs/2026-10-08-zcode-session-lifecycle-contract.md §C2/C4）：
+      // create 的返回值是协议握手 id，本轮干活的是 resume 目标（无 resume 时才是 create id）。
+      // 新 CLI 按会话绑定严格投递事件且 resume 不改绑定——上报/订阅/发送必须全部对准干活
+      // id，否则 resume 轮事件全盲（2026-10-08 生产事故：turn.completed 永不到达、任务挂死）。
+      const workingSessionId = opts.resume ?? sessionId;
+      enqueue({ type: "session_init", taskId: task.id, sessionId: workingSessionId });
 
       if (opts.resume) {
-        // 冷恢复：同 sessionId 重建 runtime（隔离目录 db 按用户持久）
+        // 冷恢复：同 sessionId 重建 runtime（隔离目录 db 按用户持久）；订阅必须晚于
+        // resume——会话激活是 subscribe 查找的前置（未持久化在此显性报错走 C3 重试）
         await connection.request("session/resume", {
           sessionId: opts.resume,
           workspace: { workspacePath: cwd, workspaceKey: cwd },
         });
       }
+
+      await connection.request("session/subscribe", {
+        sessionId: workingSessionId,
+        deliveryKind: "desktop-continuous",
+      });
 
       enqueue({
         type: "llm_input",
@@ -234,7 +240,7 @@ export class ZcodeAgentRunner implements AgentRunner {
       });
 
       const sendAck = await connection.request("session/send", {
-        sessionId: opts.resume ?? sessionId,
+        sessionId: workingSessionId,
         content: task.prompt,
         modelSelection: {
           providerId: DONGER_ZCODE_PROVIDER_ID,
@@ -252,9 +258,16 @@ export class ZcodeAgentRunner implements AgentRunner {
       }
 
       // —— 事件泵：消费队列直到 result（turn.completed/failed 已映射入队）——
+      // 轮级事件停摆守卫（契约 §C5）：全局看门狗在生产关闭（AskUserQuestion 竞态），
+      // 订阅错位/引擎挂死曾让轮无限等待（2026-10-08 事故）——send 后长时间零事件即显性
+      // fail 本轮，队列不堵。AskUserQuestion 桥接挂起期间合法无事件，豁免（不设闹钟）。
+      const stallMs = resolveEventStallMs();
+      let lastEventAt = Date.now();
+      let stallTimer: NodeJS.Timeout | null = null;
       while (true) {
         const event = eventQueue.shift();
         if (event) {
+          lastEventAt = Date.now();
           if (event.type === "result") {
             yield event;
             return;
@@ -263,11 +276,32 @@ export class ZcodeAgentRunner implements AgentRunner {
           continue;
         }
         if (opts.abortSignal?.aborted) throw new Error("任务已取消");
+        const remainMs =
+          stallMs > 0 ? lastEventAt + stallMs - Date.now() : Number.POSITIVE_INFINITY;
+        if (remainMs <= 0 && !this.isAwaitingUserInput(task.id)) {
+          throw new Error(
+            `zcode 事件流停摆：${Math.round(stallMs / 1000)}s 零事件（订阅错位或引擎挂起），显性失败防无限挂死`,
+          );
+        }
+        const armed = Number.isFinite(remainMs) && !this.isAwaitingUserInput(task.id);
         await new Promise<void>((resolveWake) => {
           wake = () => {
+            if (stallTimer) {
+              clearTimeout(stallTimer);
+              stallTimer = null;
+            }
             wake = null;
             resolveWake();
           };
+          if (armed) {
+            stallTimer = setTimeout(
+              () => {
+                stallTimer = null;
+                wake?.();
+              },
+              Math.max(1, remainMs),
+            );
+          }
         });
       }
     } catch (err) {
@@ -627,6 +661,19 @@ export function writeProviderConfig(path: string, llm: LLMConfig): void {
 
 /** CLI 入口解析：DONGER_ZCODE_CLI_PATH 指向 zcode.cjs（node 执行）或可执行文件。
  *  未配置时按常见安装位置探测；都未命中抛错（fail-closed，不静默换引擎）。 */
+/**
+ * 轮级事件停摆阈值（契约 §C5）：send 后零事件超过该值即显性 fail 本轮。0=关闭。
+ * 默认 10 分钟（与历史全局看门狗阈值一致）；DONGER_ZCODE_EVENT_STALL_MS 可覆盖。
+ */
+export function resolveEventStallMs(): number {
+  const raw = process.env.DONGER_ZCODE_EVENT_STALL_MS?.trim();
+  if (raw !== undefined && raw !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 600_000;
+}
+
 export function resolveCliPath(): string {
   const configured = process.env.DONGER_ZCODE_CLI_PATH?.trim();
   if (configured) return configured;

@@ -80,6 +80,7 @@ import type { NotificationService } from "./notification-service.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
+import { isSessionExpiredError } from "./session-expiry.js";
 import { BUILTIN_SKILL_FORGE_AGENT, BUILTIN_SKILL_FORGE_AGENT_ID } from "./skill-forge-agent.js";
 import { guardStreamStall } from "./stream-stall-guard.js";
 import { reconcileZcodeRound } from "./zcode-record-reconciler.js";
@@ -727,7 +728,9 @@ export class Orchestrator {
     let rawEvents: AsyncIterable<RunnerEvent>;
 
     // 尝试运行，如果 SDK session 过期则清空重试一次
-    const SESSION_EXPIRED_RE = /No conversation found with session ID/i;
+    // 会话不可恢复识别（契约 specs/2026-10-08-zcode-session-lifecycle-contract.md §C3，
+    // 文案表在 session-expiry.ts）：命中即清指针重开——B0 反查只救空指针，
+    // 坏指针（2026-10-08 事故：被重启杀掉的轮把一次性 create id 写进指针）只能靠这里兜底。
     let attemptOpts = opts;
     for (let attempt = 0; attempt < 2; attempt++) {
       rawEvents = this.deps.runner.run(
@@ -757,8 +760,7 @@ export class Orchestrator {
         first.value &&
         first.value.type === "result" &&
         first.value.subtype === "error" &&
-        first.value.error &&
-        SESSION_EXPIRED_RE.test(first.value.error)
+        isSessionExpiredError(first.value.error)
       ) {
         // session 过期：经 RuntimeManager 清空 sdkSessionId，重新 prepare（不带 resume）。
         // recoverResume=false 防回环：反查恢复命中的正是刚过期的这条 session，接回去只会再失败一轮。
