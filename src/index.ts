@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { BufferedAuditStore } from "./adapters/buffered-audit-store.js";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
@@ -110,6 +111,11 @@ async function main(): Promise<void> {
   const dbDir = dirname(cfg.dbPath);
   mkdirSync(dbDir, { recursive: true });
   const db = new Database(cfg.dbPath);
+  // WAL + synchronous=NORMAL（运行时性能轮 §SQLite）：默认 DELETE journal + FULL sync 下每条
+  // autocommit 多轮 fsync（Windows 单条 1-10ms），审计/消息/transcript/usage 全 store 受益；
+  // 零语义变化（单进程单连接）。运维口径：库目录出现 -wal/-shm 伴生文件，备份/迁移须整目录拷贝。
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
   const store = new SqliteTaskStore(db);
   store.migrate();
   const usersDir = join(cfg.workspaceDir, "users");
@@ -126,8 +132,10 @@ async function main(): Promise<void> {
   conversationStore.migrate();
   const usageStore = new SqliteUsageStore(db);
   usageStore.migrate();
-  const auditStore = new SqliteAuditStore(db);
-  auditStore.migrate();
+  const sqliteAuditStore = new SqliteAuditStore(db);
+  sqliteAuditStore.migrate();
+  // 审计异步化：record 入队即回，防抖批量事务落库；读路径先 flush，保留「audit ≥ 实时流」
+  const auditStore = new BufferedAuditStore(sqliteAuditStore);
   const systemEventStore = new SqliteSystemEventStore(db);
   systemEventStore.migrate();
   const commentStore = new SqliteCommentStore(db);
@@ -637,6 +645,8 @@ async function main(): Promise<void> {
     log.info({ signal }, "关闭中");
     scheduler.stopAll();
     gitWatcher.stop();
+    // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
+    await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);
     await Promise.race([webChannel.stop(), new Promise((resolve) => setTimeout(resolve, 500))]);
     process.exit(0);
   };

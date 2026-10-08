@@ -13,10 +13,14 @@ export class InMemoryAuditStore implements AuditStore {
     },
   ) {}
 
-  async record(e: Omit<AuditEvent, "id">): Promise<AuditEvent> {
-    const rec: AuditEvent = { ...e, id: crypto.randomUUID() };
+  async record(e: Omit<AuditEvent, "id"> & { id?: string }): Promise<AuditEvent> {
+    const rec: AuditEvent = { ...e, id: e.id ?? crypto.randomUUID() };
     this.byId.set(rec.id, rec);
     return rec;
+  }
+
+  async recordMany(events: AuditEvent[]): Promise<void> {
+    for (const rec of events) this.byId.set(rec.id, rec);
   }
 
   async listByConversation(conversationId: string): Promise<AuditEvent[]> {

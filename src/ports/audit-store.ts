@@ -15,7 +15,10 @@ export interface AuditConversationSummary {
 }
 
 export interface AuditStore {
-  record(e: Omit<AuditEvent, "id">): Promise<AuditEvent>;
+  /** id 可选传入（BufferedAuditStore 入队时预分配，保证 record 返回值与落库行 id 一致） */
+  record(e: Omit<AuditEvent, "id"> & { id?: string }): Promise<AuditEvent>;
+  /** 批量落库（审计缓冲刷盘用）：单事务保序插入，空数组无操作 */
+  recordMany(events: AuditEvent[]): Promise<void>;
   listByConversation(conversationId: string): Promise<AuditEvent[]>;
   /** 按任务查全量审计事件（T17.3 观测面板数据源） */
   listByTask(taskId: string): Promise<AuditEvent[]>;

@@ -45,17 +45,29 @@ export class SqliteAuditStore implements AuditStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_events(taskId)");
   }
 
-  async record(e: Omit<AuditEvent, "id">): Promise<AuditEvent> {
-    const rec: AuditEvent = { ...e, id: crypto.randomUUID() };
-    this.db
-      .prepare(
-        `INSERT INTO audit_events
+  private static readonly INSERT_SQL = `INSERT INTO audit_events
          (id, conversationId, taskId, userId, seq, type, text, llmInput, llmOutput, toolName, toolInput, toolUseId,
           toolOutput, isError, resultSubtype, inputTokens, outputTokens, cacheCreationInputTokens,
           cacheReadInputTokens, model, durationMs, recordedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+
+  async record(e: Omit<AuditEvent, "id"> & { id?: string }): Promise<AuditEvent> {
+    const rec: AuditEvent = { ...e, id: e.id ?? crypto.randomUUID() };
+    this.insertEvent(rec);
+    return rec;
+  }
+
+  async recordMany(events: AuditEvent[]): Promise<void> {
+    if (events.length === 0) return;
+    const stmt = this.db.prepare(SqliteAuditStore.INSERT_SQL);
+    // 单事务批量插入：把每事件一次 autocommit 的多轮 fsync 摊薄为一次（WAL 之上的第二层收益）
+    this.db.transaction((rows: AuditEvent[]) => {
+      for (const rec of rows) this.insertEvent(rec, stmt);
+    })(events);
+  }
+
+  private insertEvent(rec: AuditEvent, stmt = this.db.prepare(SqliteAuditStore.INSERT_SQL)): void {
+    stmt.run(
         rec.id,
         rec.conversationId,
         rec.taskId,
@@ -79,7 +91,6 @@ export class SqliteAuditStore implements AuditStore {
         rec.durationMs ?? null,
         rec.recordedAt,
       );
-    return rec;
   }
 
   async backfillToolUseInputs(
