@@ -23,6 +23,7 @@ import {
   resolvePermissionMode,
 } from "../domain/permission-mode.js";
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
+import { isLikelyChitchat } from "../domain/chitchat.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
@@ -90,6 +91,8 @@ export interface OrchestratorDeps {
   messageStore?: MessageStore;
   usageStore: UsageStore;
   auditStore: AuditStore;
+  /** 闲聊短路径开关（运行时性能轮 §效率杠杆）：规则判非任务输入直连 chat 兜底，省 dispatcher 一跳；缺省开 */
+  chitchatShortPath?: boolean;
   gates: GateRouter;
   runner: AgentRunner;
   channel: Channel;
@@ -1556,9 +1559,33 @@ export class Orchestrator {
       if (activeEntry) activeEntry.taskId = task.id;
 
       // 任务分发（P1）：会话未绑定 agent 且装配了 agentStore → 经 dispatcher 路由（Task Flow 第一步）
+      // 闲聊短路径先行：保守规则判「明显非任务」的输入直连 chat 兜底，省掉每消息固定的一跳
+      // dispatcher LLM 调用（isLikelyChitchat 判定宁漏放不误收——误路由代价=真实任务进无工具 chat）
       let firstTurnPrompt: string | undefined;
       let steps: FlowStep[] = task.steps ?? [];
-      if (!conversation.agentId && this.deps.agentStore) {
+      if (
+        (this.deps.chitchatShortPath ?? true) &&
+        !conversation.agentId &&
+        this.deps.agentStore &&
+        isLikelyChitchat(task.prompt)
+      ) {
+        const chatAgent = await this.resolveChainAgent(
+          this.deps.agentChain?.chatAgentId,
+          BUILTIN_CHAT_AGENT,
+        );
+        steps = beginStep(steps, {
+          role: "chat",
+          agentId: chatAgent.id,
+          conversationId: conversation.id,
+          startedAt: new Date().toISOString(),
+        });
+        await store.updateStatus(task.id, nextStatus("created", "plan"), {
+          agentId: chatAgent.id,
+          steps,
+          routingRationale: "闲聊短路径：规则判非任务输入，直连对话兜底",
+        });
+        agent = chatAgent;
+      } else if (!conversation.agentId && this.deps.agentStore) {
         steps = beginStep(steps, {
           role: "dispatcher",
           agentId: this.deps.agentChain?.dispatcherAgentId ?? "builtin-dispatcher",

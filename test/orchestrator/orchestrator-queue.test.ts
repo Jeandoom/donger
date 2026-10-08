@@ -325,7 +325,25 @@ describe("会话 busy 排队", () => {
 });
 
 describe("task flow steps", () => {
-  it("chat 兜底：steps 记录 dispatcher→chat，任务归属 builtin-chat", async () => {
+  it("闲聊短路径：规则判非任务输入直连 chat 兜底，跳过 dispatcher 轮", async () => {
+    const runner = new ScriptedRunner(["你好呀，有什么可以帮你？"]);
+    const channel = seqChannel();
+    const { orch, store } = build(runner, channel, new InMemoryAuditStore(), {
+      withDispatch: true,
+    });
+
+    await orch.handleMessage(MSG("在吗"));
+
+    const done = await store.listByStatus("done");
+    expect(done).toHaveLength(1);
+    expect(done[0]?.agentId).toBe("builtin-chat");
+    // 只有一跳 chat 轮：无 dispatcher prompt、steps 无 dispatcher 步
+    expect(runner.prompts).toEqual(["在吗"]);
+    expect(done[0]?.steps?.map((s) => `${s.role}:${s.status}`)).toEqual(["chat:done"]);
+    expect(done[0]?.routingRationale).toContain("闲聊短路径");
+  });
+
+  it("chat 兜底：非闲聊输入仍走 dispatcher→chat 完整链", async () => {
     const routing = JSON.stringify({
       agentId: "none",
       taskType: "chat",
@@ -337,7 +355,7 @@ describe("task flow steps", () => {
       withDispatch: true,
     });
 
-    await orch.handleMessage(MSG("在吗"));
+    await orch.handleMessage(MSG("给我讲个笑话"));
 
     const done = await store.listByStatus("done");
     expect(done).toHaveLength(1);
@@ -348,7 +366,7 @@ describe("task flow steps", () => {
     ]);
     expect(done[0]?.steps?.[0]?.summary).toBe("闲聊问候");
     // dispatcher 轮静默：路由 JSON 不进聊天消息流
-    expect(runner.prompts).toEqual(["在吗", "在吗"]);
+    expect(runner.prompts).toEqual(["给我讲个笑话", "给我讲个笑话"]);
   });
 
   it("builder 完成自动重派：原任务作为系统消息接续执行", async () => {
