@@ -30,6 +30,7 @@ import {
   effectiveFeedbackScope,
   filterConversationsByScope,
   filterFeedbacksByScope,
+  agentToolCoverageWarnings,
   parseAgent,
   parseAgentInput,
   resolveDuplicateName,
@@ -7122,7 +7123,11 @@ export class WebChannel implements Channel {
   /** 编辑器回传掩码占位时，用库内原密文值回填 */
   /** agent 装备告警：场景 preset 规则 + 凭证值存在性（不含任何值本身；warning 级不阻断） */
   private async agentEquipmentWarnings(actorId: string, agent: Agent): Promise<string[]> {
-    const warnings = validateAgentAgainstPreset(agent).map((w) => `[${w.presetKey}] ${w.message}`);
+    // 白名单完备性（运行时性能轮 §效率杠杆①）+ 场景预设符合性 + 凭证缺配，三源合一回显编辑页
+    const warnings = [
+      ...agentToolCoverageWarnings(agent),
+      ...validateAgentAgainstPreset(agent).map((w) => `[${w.presetKey}] ${w.message}`),
+    ];
     const csets = this.deps.credentialSets;
     if (csets && agent.credentials.length > 0) {
       const filled = await csets.getFilledValues(actorId, agent.credentials);

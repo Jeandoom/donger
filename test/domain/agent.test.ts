@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type Agent,
   AgentSchema,
+  agentToolCoverageWarnings,
   appendDefaultSkill,
   effectiveConversationScope,
   effectiveFeedbackScope,
@@ -315,5 +316,51 @@ describe("filterFeedbacksByScope", () => {
       now,
     );
     expect(out.map((f) => f.id)).toEqual(["new"]);
+  });
+});
+
+describe("agentToolCoverageWarnings（白名单完备性静态校验）", () => {
+  const agentWith = (skills: string[], tools: Agent["tools"]): Pick<Agent, "skills" | "tools"> => ({
+    skills,
+    tools,
+  });
+
+  it("all 模式与未勾选技能不告警", () => {
+    expect(
+      agentToolCoverageWarnings(agentWith(["code-review-execute"], { mode: "all", whitelist: [] })),
+    ).toEqual([]);
+    expect(
+      agentToolCoverageWarnings(agentWith([], { mode: "whitelist", whitelist: ["Bash"] })),
+    ).toEqual([]);
+  });
+
+  it("白名单为空 + 有技能：提示技能操作将全部被拒", () => {
+    const out = agentToolCoverageWarnings(
+      agentWith(["code-review-execute"], { mode: "whitelist", whitelist: [] }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("白名单为空");
+  });
+
+  it("缺核心工具逐项点名（analyzer 缺 Write 卡死任务的配置性误伤面）", () => {
+    const out = agentToolCoverageWarnings(
+      agentWith(["code-review-execute"], { mode: "whitelist", whitelist: ["Bash", "Read"] }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("Write");
+    expect(out[0]).toContain("Edit");
+    expect(out[0]).not.toContain("Bash（");
+    expect(out[0]).not.toContain("Read（");
+  });
+
+  it("白名单齐备不告警", () => {
+    expect(
+      agentToolCoverageWarnings(
+        agentWith(
+          ["code-review-execute"],
+          { mode: "whitelist", whitelist: ["Write", "Edit", "Read", "Bash", "mcp__donger-git"] },
+        ),
+      ),
+    ).toEqual([]);
   });
 });

@@ -25,6 +25,36 @@ export const AgentToolsSchema = z.object({
 });
 export type AgentTools = z.infer<typeof AgentToolsSchema>;
 
+/** 白名单模式下的核心工具面：缺了 = 技能声明的操作会被硬拒并触发重规划 */
+const CORE_TOOLS: ReadonlyArray<{ name: string; why: string }> = [
+  { name: "Write", why: "写产物文件" },
+  { name: "Edit", why: "修改已有文件" },
+  { name: "Read", why: "读取文件" },
+  { name: "Bash", why: "执行命令" },
+];
+
+/**
+ * 工具白名单完备性静态校验（运行时性能轮 §效率杠杆①）：skills 声明的能力最终要落在
+ * 工具面执行，白名单缺核心工具=配置性误伤（历史实锤：analyzer 白名单缺 Write 卡死任务）。
+ * 保存时告警不阻断（回显走 agentEquipmentWarnings 既有通道）；all 模式与未勾选技能不告警。
+ */
+export function agentToolCoverageWarnings(
+  agent: Pick<Agent, "skills" | "tools">,
+): string[] {
+  if (agent.skills.length === 0) return [];
+  if (agent.tools.mode !== "whitelist") return [];
+  if (agent.tools.whitelist.length === 0) {
+    return ["已勾选技能但工具白名单为空：技能声明的操作将全部被拒，请改为 all 或补全白名单"];
+  }
+  const missing = CORE_TOOLS.filter((t) => !agent.tools.whitelist.includes(t.name));
+  if (missing.length === 0) return [];
+  return [
+    `已勾选技能但白名单缺核心工具：${missing
+      .map((t) => `${t.name}（${t.why}）`)
+      .join("、")}——执行中相关操作会被硬拒并触发重规划`,
+  ];
+}
+
 /** 会话资源范围（% 会话引用）：enabled 关闭时候选为空、resolve 一律丢弃 */
 export const AgentConversationScopeSchema = z.object({
   enabled: z.boolean().default(false),

@@ -526,9 +526,22 @@ export class Orchestrator {
         p.conversation,
         p.agent,
       );
-      base = {
-        ...base,
-        kbTools: createKbToolsServer({
+      // KB 读按需挂载（运行时性能轮 §效率杠杆②）：有显式库意图（会话/agent 绑定库、可写目标）
+      // 或工具面证明需要（all 模式无法证伪 → 保守挂载 / 白名单含 donger-kb 工具）才装配；
+      // 白名单型且不涉 kb 的 agent 跳过——省每轮 MCP schema token 与工具选择干扰。
+      // 个人库兜底（spec §8 行为连续）仅在挂载时生效，不构成挂载理由。
+      const kbWhitelisted =
+        p.agent?.tools.mode !== "whitelist" ||
+        p.agent.tools.whitelist.some((t) => t.startsWith("mcp__donger-kb"));
+      const kbIntent =
+        p.conversation.kbId !== undefined ||
+        (p.agent?.knowledgeBaseIds?.length ?? 0) > 0 ||
+        p.agent?.kbWriteTargetId != null ||
+        kbWhitelisted;
+      if (kbIntent) {
+        base = {
+          ...base,
+          kbTools: createKbToolsServer({
           mounts: kbMounts,
           defaultKbId: kbDefault,
           // FTS 影子索引（R-A）：命中文件先行过滤，工具内行级定位；未装配时 grep 兜底
@@ -567,15 +580,16 @@ export class Orchestrator {
           },
         }),
         kbWriteGuardRoots: kbMounts.map((m) => m.root),
-      };
-      const kbPrompt = this.kbContextPrompt(kbMounts);
-      if (kbPrompt) {
-        base = {
-          ...base,
-          systemPromptAppend: [base.systemPromptAppend, kbPrompt]
-            .filter((s) => s && s.length > 0)
-            .join("\n\n"),
         };
+        const kbPrompt = this.kbContextPrompt(kbMounts);
+        if (kbPrompt) {
+          base = {
+            ...base,
+            systemPromptAppend: [base.systemPromptAppend, kbPrompt]
+              .filter((s) => s && s.length > 0)
+              .join("\n\n"),
+          };
+        }
       }
       // 审计读取工具（donger-audit）：内置审计智能体、技能工坊、平台进化官挂载。
       // viewer=发起用户，构造时闭包绑定——member 仅本人 / admin 全量，store L2 visible 兜底。
