@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { BufferedAuditStore } from "./adapters/buffered-audit-store.js";
+import { CachedTranscriptStore } from "./adapters/cached-transcript-store.js";
 import { ClaudeAgentRunner } from "./adapters/claude-agent-runner.js";
 import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
@@ -144,8 +145,11 @@ async function main(): Promise<void> {
   feedbackStore.migrate();
   const messageStore = new SqliteMessageStore(db);
   messageStore.migrate();
-  const transcriptStore = new SqliteTranscriptStore(db);
-  transcriptStore.migrate();
+  const sqliteTranscriptStore = new SqliteTranscriptStore(db);
+  sqliteTranscriptStore.migrate();
+  // 长会话全量重建·档一：宿主缓存已解析 transcript——SDK resume 每轮 load() 的
+  // 全表 SELECT+逐条 parse 消掉（TTFT 线性劣化的最大痛点）；进程内唯一写者保证一致性
+  const transcriptStore = new CachedTranscriptStore(sqliteTranscriptStore);
   const mcpTokenStore = new SqliteMcpTokenStore(db);
   mcpTokenStore.migrate();
 
