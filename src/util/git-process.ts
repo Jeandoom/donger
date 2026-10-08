@@ -132,12 +132,20 @@ function createAskPass(): { directory: string; path: string } {
   const directory = mkdtempSync(join(tmpdir(), "donger-git-askpass-"));
   const isWindows = process.platform === "win32";
   const path = join(directory, isWindows ? "askpass.cmd" : "askpass.sh");
-  const content = isWindows
-    ? "@echo off\r\necho %1 | findstr /I username >nul && (echo %DONGER_GIT_USERNAME%) || (echo %DONGER_GIT_PASSWORD%)\r\n"
-    : '#!/bin/sh\ncase "$1" in *sername*) printf \'%s\\n\' "$DONGER_GIT_USERNAME" ;; *) printf \'%s\\n\' "$DONGER_GIT_PASSWORD" ;; esac\n';
-  writeFileSync(path, content, { encoding: "utf8", mode: 0o700 });
+  writeFileSync(path, buildAskPassScript(), { encoding: "utf8", mode: 0o700 });
   if (!isWindows) chmodSync(path, 0o700);
   return { directory, path };
+}
+
+/**
+ * AskPass 脚本内容（导出供单测断言凭证通道形态）。Windows 必须用延迟展开回显凭证：
+ * `%VAR%` 形态在解析期展开，凭证值里的 &/^ 等元字符会被 cmd 当作语句成分（截断/注入）；
+ * `!VAR!` 展开发生在特殊字符解析之后，值按字面输出。%1 是 git 传来的提示语（非凭证），保持原样。
+ */
+export function buildAskPassScript(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32"
+    ? "@echo off\r\nsetlocal enabledelayedexpansion\r\necho %1 | findstr /I username >nul && (echo !DONGER_GIT_USERNAME!) || (echo !DONGER_GIT_PASSWORD!)\r\n"
+    : '#!/bin/sh\ncase "$1" in *sername*) printf \'%s\\n\' "$DONGER_GIT_USERNAME" ;; *) printf \'%s\\n\' "$DONGER_GIT_PASSWORD" ;; esac\n';
 }
 
 /** 脱敏 git 错误输出：认证 URL、token/password 形态的内容一律打码 */

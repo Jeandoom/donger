@@ -17,7 +17,16 @@ import type { GitProcessResult } from "../util/git-process.js";
 import { runGit, sanitizeGitError } from "../util/git-process.js";
 
 export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
-  constructor(private readonly timeoutMs = 120_000) {}
+  /** 目标目录 → 最近一次完成同步（clone 或 fastForward 往返）的时刻 */
+  private readonly lastSyncAt = new Map<string, number>();
+
+  constructor(
+    private readonly timeoutMs = 120_000,
+    /** 快进同步 TTL 窗口毫秒：窗口内已有目录直接 ready，跳过 status/fetch/merge 往返
+     *  （慢网每轮数百 ms~数秒的固定开销；新鲜度代价=窗口时长。0=禁用，每轮强制同步） */
+    private readonly syncTtlMs = 60_000,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   async checkRead(
     repository: AgentGitRepository,
@@ -51,10 +60,18 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
   ): Promise<RepositoryMaterializeResult> {
     const target = join(destination, item.repository.name);
     try {
-      if (!existsSync(target)) await this.clone(target, item, signal);
-      else if (item.repository.syncMode === "fastForward") {
-        const message = await this.fastForward(target, item, signal);
-        if (message) return resultFor(item.repository, target, "warning", message);
+      if (!existsSync(target)) {
+        await this.clone(target, item, signal);
+        this.lastSyncAt.set(target, this.now());
+      } else if (item.repository.syncMode === "fastForward") {
+        // TTL 窗口内复用已同步目录（目录真实性由窗口内首次同步的 remote 校验/自愈保证；
+        // 表是进程内存态，重启后首轮强制同步一次，fail-safe）。
+        const syncedAt = this.lastSyncAt.get(target);
+        if (this.syncTtlMs <= 0 || syncedAt === undefined || this.now() - syncedAt >= this.syncTtlMs) {
+          const message = await this.fastForward(target, item, signal);
+          this.lastSyncAt.set(target, this.now());
+          if (message) return resultFor(item.repository, target, "warning", message);
+        }
       }
       return resultFor(item.repository, target, "ready");
     } catch (error) {

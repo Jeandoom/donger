@@ -54,6 +54,32 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("hello");
   });
 
+  it("TTL 窗口内复用已同步目录，窗口过后恢复同步", { timeout: 30_000 }, async () => {
+    const { root, repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    let nowMs = 1_000_000;
+    const materializer = new GitCliRepositoryMaterializer(10_000, 60_000, () => nowMs);
+
+    await materializer.materialize({ destination, items: [{ repository }] });
+    // 上游前进一个提交
+    writeFileSync(join(root, "README.md"), "v2");
+    execFileSync("git", ["-C", root, "add", "README.md"]);
+    execFileSync("git", ["-C", root, "commit", "-m", "v2"]);
+
+    // 窗口内：跳过 fetch/merge，仍读旧内容（status=ready，无 warning）
+    const within = await materializer.materialize({ destination, items: [{ repository }] });
+    expect(within[0]?.status).toBe("ready");
+    expect(within[0]?.message).toBeUndefined();
+    expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("hello");
+
+    // 窗口外：恢复同步，读到新内容
+    nowMs += 61_000;
+    const after = await materializer.materialize({ destination, items: [{ repository }] });
+    expect(after[0]?.status).toBe("ready");
+    expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("v2");
+  });
+
   it("已有本地修改时保留内容并返回 warning", { timeout: 30_000 }, async () => {
     const { repository } = sourceRepository();
     const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
@@ -62,7 +88,11 @@ describe("GitCliRepositoryMaterializer", () => {
     await materializer.materialize({ destination, items: [{ repository }] });
     writeFileSync(join(destination, "sample", "README.md"), "changed");
 
-    const results = await materializer.materialize({ destination, items: [{ repository }] });
+    // 同步行为用关闭 TTL 的实例验证（默认 TTL 下窗口内的第二次物化会跳过同步，属预期行为）
+    const results = await new GitCliRepositoryMaterializer(10_000, 0).materialize({
+      destination,
+      items: [{ repository }],
+    });
 
     expect(results[0]?.status).toBe("warning");
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("changed");
@@ -88,8 +118,11 @@ describe("GitCliRepositoryMaterializer", () => {
     ]).toString();
     expect(branches).toContain("origin/feature/AI-375");
 
-    // 第二次物化走 fast-forward：全量 refspec fetch 不破坏跟踪分支合并
-    const again = await materializer.materialize({ destination, items: [{ repository }] });
+    // 第二次物化走 fast-forward：全量 refspec fetch 不破坏跟踪分支合并（换新实例绕开 TTL 窗口）
+    const again = await new GitCliRepositoryMaterializer(10_000, 0).materialize({
+      destination,
+      items: [{ repository }],
+    });
     expect(again[0]?.status).toBe("ready");
   });
 

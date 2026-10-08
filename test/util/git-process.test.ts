@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runGitProcess } from "../../src/util/git-process.js";
+import { runGitProcess, buildAskPassScript } from "../../src/util/git-process.js";
 
 const roots: string[] = [];
 const savedEnv: Record<string, string | undefined> = {};
@@ -41,6 +41,19 @@ afterEach(() => {
 });
 
 describe("git 子进程认证通道隔离", () => {
+  it("AskPass 脚本凭证回显走延迟展开（&/^ 元字符凭证不再被 cmd 解析）", () => {
+    const win = buildAskPassScript("win32");
+    // 延迟展开是安全形态：%VAR% 会在解析期展开，值里的元字符会被 cmd 当作语句成分
+    expect(win).toContain("enabledelayedexpansion");
+    expect(win).toContain("!DONGER_GIT_PASSWORD!");
+    expect(win).toContain("!DONGER_GIT_USERNAME!");
+    expect(win).not.toContain("%DONGER_GIT_PASSWORD%");
+    expect(win).not.toContain("%DONGER_GIT_USERNAME%");
+    // POSIX 侧保持 shell 引用形态
+    const sh = buildAskPassScript("linux");
+    expect(sh).toContain('"$DONGER_GIT_PASSWORD"');
+  });
+
   it("剥离继承的 GIT_CONFIG_COUNT/KEY_n/VALUE_n 环境注入配置", async () => {
     setEnv("GIT_CONFIG_COUNT", "1");
     setEnv("GIT_CONFIG_KEY_0", "credential.helper");
