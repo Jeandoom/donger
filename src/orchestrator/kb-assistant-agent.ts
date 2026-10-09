@@ -30,7 +30,7 @@ export const BUILTIN_KB_ASSISTANT_AGENT: Agent = {
   credentials: [],
   gitRepositories: [],
   connectorIds: [],
-  gitAllowShellGit: false,
+  gitAllowShellGit: true,
   extensionDirectories: [],
   defaultPermissionMode: "ask_before_change",
   version: 1,

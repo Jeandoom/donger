@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { bashKbWriteGuard } from "../domain/bash-kb-guard.js";
-import { matchesShellGit } from "../domain/git-shell-guard.js";
+import { matchesShellGit, matchUnsafeShellGit } from "../domain/git-shell-guard.js";
 import { matchSensitiveRead, sensitiveReadDenyMessage } from "../domain/sensitive-read-guard.js";
 import { isStartupSensitivePath } from "../domain/startup-sensitive-paths.js";
 import type { RunOptions } from "../ports/agent-runner.js";
@@ -47,18 +47,24 @@ export function runStaticToolGuards({
       message: `工具 ${toolName} 不在该智能体的允许列表内（allowedTools）`,
     };
   }
-  // shell git 守卫（收口防线 2）：所有会话默认禁止 Bash 直跑 git（含 CLI/闲聊），
-  // 引导用 donger-git 工具；gitAllowShellGit=true（agent 显式逃生门）才放行。
-  if (
-    toolName === "Bash" &&
-    opts.gitAllowShellGit !== true &&
-    typeof input.command === "string" &&
-    matchesShellGit(input.command)
-  ) {
-    return {
-      message:
-        "git 操作请使用 donger-git 工具（git_clone/git_pull/git_push 等）。如确需 shell git，请在智能体配置中开启「允许 shell git」。",
-    };
+  // shell git 守卫（收口防线 2，2026-10-09 拍板④改版）：先拦系统级不可用形态
+  // （非 https 远程/宿主凭证栈/宿主配置写入，任何配置恒拒——这是「默认放开」的前提，
+  // 鉴权必须 https+平台系统凭证，凭证解析只在 donger-git 工具台按一凭一仓发生）；
+  // 其余 shell git 默认放开（agent.gitAllowShellGit 缺省 true），显式 false 才拦。
+  // push 不在此拦——default-gates 的 deploy force 门兜底（full_access 不豁免）。
+  if (toolName === "Bash" && typeof input.command === "string") {
+    const unsafe = matchUnsafeShellGit(input.command);
+    if (unsafe) {
+      return {
+        message: `git ${unsafe} 被系统级拒绝：git 鉴权仅允许 https + 平台系统凭证。请使用 https 远程；需要凭证的操作走 donger-git 工具（git_clone/git_pull/git_push 等，按仓库绑定解析平台凭证）。`,
+      };
+    }
+    if (opts.gitAllowShellGit !== true && matchesShellGit(input.command)) {
+      return {
+        message:
+          "该智能体已显式关闭 shell git（gitAllowShellGit=false）。git 操作请使用 donger-git 工具（git_clone/git_pull/git_push 等）。",
+      };
+    }
   }
   // KB 目录 Bash 写守卫（spec §9，D6 本期实施）：知识库内容变更唯一通道=kb_* 工具
   // （工具内记账 kb_revisions）；Bash 命中库目录+写模式一律 deny，防止绕过修订账本。
@@ -77,7 +83,9 @@ export function runStaticToolGuards({
       };
     }
   }
-  // 服务端要害路径读守卫（2026-09-24 审计 H1/D3 收口，全权限模式生效）：
+  // 服务端路径读守卫（2026-09-24 审计 H1/D3 收口，2026-10-09 拍板②升级为 confine
+  // 系统级读边界：allowReadRoots（本人工作区/扩展目录）之外一律拒绝，不走审批、
+  // 任何权限模式不豁免；denyRoots 保留作纵深。confine 下 MSYS 盘符记法已归一）：
   // 审批门未覆盖的 Bash/Read 直读（cat 生产库、读 .deploy 部署目录、跨用户工作区）
   // 是注入渗出的主通道；字符串守卫是沙箱 denyRead 不可用时的兜底层。
   if (opts.sensitiveReadPolicy && opts.sensitiveReadPolicy.denyRoots.length > 0) {

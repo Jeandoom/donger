@@ -134,8 +134,9 @@ export class CodexAgentRunner implements AgentRunner {
     mkdirSync(skillsHome, { recursive: true });
 
     // execpolicy 静态规则（codex 加载 CODEX_HOME/rules/*.rules；冒烟实锤：danger-full-access 下仍生效）：
-    // shell git 守卫的 codex 侧等价物——缺省禁全部 git（与 canUseTool 守卫同口径）；
-    // agent 显式开启 shell git 时仅禁 push（决策点 ③A：openai 会话 push 一律 forbidden）。
+    // shell git 守卫的 codex 侧等价物——2026-10-09 拍板④缺省放开 shell git，仅禁
+    // push（决策点 ③A：openai 会话 push 一律 forbidden）；agent 显式关闭（false）
+    // 时禁全部 git。非 https 远程等恒拒形态由 canUseTool 守卫承担（execpolicy 不表达）。
     const rulesHome = join(codexHome, "rules");
     mkdirSync(rulesHome, { recursive: true });
     writeFileSync(

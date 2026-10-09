@@ -99,11 +99,11 @@ const CreateAgentShape = {
     .describe(
       "绑定的 git 仓库。三步：先选平台方言（github/gitee/jihulab，支持自建 host）→ 再给 HTTPS 地址（不收 SSH，无凭证内嵌；官方域名自动识别方言）→ 私有仓库配 credentialCode（kind=git 且 repoUrl 与本仓库地址一致的凭证模板）。绑定后 donger-git 工具（git_clone/git_pull/git_push 等）自动挂载",
     ),
-  /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具）；须与用户确认后再开 */
+  /** 允许 shell 直跑 git。2026-10-09 拍板④：缺省开启无需配置；显式 false 关闭 */
   gitAllowShellGit: z
     .boolean()
     .optional()
-    .describe("允许 shell git（默认关；开启后绕过工具守卫，git push 仍走审批门）"),
+    .describe("允许 shell git（缺省开。非 https 远程/宿主凭证栈/宿主配置写入恒拒，push 仍走审批门；设 false 关闭后只准走 donger-git 工具）"),
   mcpServers: z.array(McpServerConfigSchema).optional(),
 };
 const UpdateAgentShape = {
@@ -197,7 +197,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           scenario: a.scenario,
           credentials: a.credentials ?? [],
           gitRepositories: a.gitRepositories ?? [],
-          gitAllowShellGit: a.gitAllowShellGit ?? false,
+          gitAllowShellGit: a.gitAllowShellGit ?? true,
           mcpServers: a.mcpServers ?? [],
           defaultPermissionMode: "ask_before_change",
         });

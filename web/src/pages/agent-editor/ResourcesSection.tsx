@@ -129,14 +129,15 @@ export function ResourcesSection({
 
       <div className="flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive-soft/60 px-3.5 py-2.5">
         <Switch
-          checked={form.gitAllowShellGit ?? false}
+          checked={form.gitAllowShellGit ?? true}
           onCheckedChange={(v) => patch({ gitAllowShellGit: v })}
         />
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-[13px] font-semibold">允许 shell git（默认关闭）</span>
+          <span className="text-[13px] font-semibold">允许 shell git（默认开启）</span>
           <span className="text-[11px] leading-snug text-muted-foreground">
-            开启后 agent 可绕过 donger-git 工具直跑 git 命令；git push
-            仍会弹审批卡。除非明确需要，请保持关闭。
+            2026-10-09 拍板：所有 agent 缺省可直跑 git 命令（无需配置）。系统级约束恒生效：仅允许
+            https 远程+平台凭证，非 https 远程、宿主凭证栈（git credential）、宿主 git 配置写入一律拒绝；git
+            push 仍会弹审批卡。关闭后只准走 donger-git 工具。
           </span>
         </div>
       </div>

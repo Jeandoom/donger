@@ -121,3 +121,138 @@ describe("matchSensitiveRead", () => {
     expect(existing).toContain("保护路径");
   });
 });
+
+// 2026-10-09 拍板②（c385dc71 越权复盘）：读边界系统级升级——agent 只能读本人用户
+// 目录（allowReadRoots）内的内容，目录外一律拒绝（不走审批、权限模式不豁免）。
+describe("matchSensitiveRead confine 模式（系统级读边界）", () => {
+  const home = "D:\\deploy\\donger\\data\\workspace\\users\\u1";
+  const cwd = join(home, "agents", "a1", "workspace");
+  const confine = (
+    allow: string[] = [home],
+    deny: string[] = ["D:\\deploy\\donger\\data", "D:\\deploy\\donger"],
+  ) => ({
+    denyRoots: deny,
+    allowReadRoots: allow,
+    mode: "confine" as const,
+  });
+
+  it("用户目录外直读（D:\\git、他人主目录、盘根列举）→ 越界命中", () => {
+    for (const cmd of [
+      "cat D:\\git\\copilot-skills\\README.md",
+      "ls /c/Users/admin/.claude/projects",
+      "for base in /d/ /e/ /c/Users/admin; do find $base -maxdepth 3; done",
+    ]) {
+      const hit = matchSensitiveRead(cmd, cwd, confine());
+      expect(hit, cmd).toBeDefined();
+      expect(hit?.kind, cmd).toBe("outside-allowed");
+    }
+  });
+
+  it("本人目录内（含 MSYS 记法、.. 回退不出界）→ 放行", () => {
+    expect(
+      matchSensitiveRead(
+        "cat D:\\deploy\\donger\\data\\workspace\\users\\u1\\a.txt",
+        cwd,
+        confine(),
+      ),
+    ).toBeUndefined();
+    expect(
+      matchSensitiveRead("cat ../../../agents/a1/workspace/x.md", cwd, confine()),
+    ).toBeUndefined();
+    expect(matchSensitiveRead("grep -rn x ./notes.md", cwd, confine())).toBeUndefined();
+  });
+
+  it(".. 穿越出本人目录且出全部保护根 → 越界命中", () => {
+    // cwd=data\workspace\users\u1\agents\a1\workspace，八层回退到 D:\deploy
+    const hit = matchSensitiveRead("cat ..\\..\\..\\..\\..\\..\\..\\..\\git\\x.md", cwd, confine());
+    expect(hit).toBeDefined();
+    expect(hit?.kind).toBe("outside-allowed");
+  });
+
+  it("denyRoots 命中优先报「保护路径」（critical），目录外报「读取越界」", () => {
+    const critical = matchSensitiveRead("cat D:\\deploy\\donger\\.env", "C:\\w", confine());
+    if (critical?.kind !== "critical") throw new Error("应命中 critical");
+    expect(sensitiveReadDenyMessage(critical, true)).toContain("保护路径");
+    const outside = matchSensitiveRead("cat D:\\git\\x.md", "C:\\w", confine());
+    if (outside?.kind !== "outside-allowed") throw new Error("应命中 outside-allowed");
+    const msg = sensitiveReadDenyMessage(outside, true);
+    expect(msg).toContain("读取越界");
+    expect(msg).toContain("系统级限制");
+  });
+
+  it("KB 平台目录不在本人目录下 → 命中（kb_* 工具通道收口）", () => {
+    const hit = matchSensitiveRead(
+      "grep -rn x /d/deploy/donger/data/workspace/kb/65a3f6ad/memory",
+      cwd,
+      confine(),
+    );
+    expect(hit).toBeDefined();
+  });
+
+  it("MSYS 虚拟设备不误伤（2>/dev/null）；~/ 宿主 home 越界命中", () => {
+    expect(
+      matchSensitiveRead("grep -rn x ./a.md 2>/dev/null | head -3", cwd, confine()),
+    ).toBeUndefined();
+    expect(matchSensitiveRead("cat ~/.ssh/id_rsa", cwd, confine())).toBeDefined();
+  });
+
+  it("allow 为空时全拒（防御性装配错误不静默放行）", () => {
+    expect(matchSensitiveRead("cat ./notes.md", cwd, confine([]))).toBeDefined();
+  });
+
+  it("缺省 mode=critical 保持旧行为：目录外非要害路径放行", () => {
+    expect(
+      matchSensitiveRead("cat D:\\git\\x.md", "C:\\w", policy(["D:\\deploy\\donger\\data"])),
+    ).toBeUndefined();
+  });
+});
+
+// 2026-10-09 拍板①（同轮）：MSYS 盘符记法归一——Git Bash 的 /d/foo ≡ D:\foo，
+// Node resolve 曾把前者解析成 D:\d\foo 幻影路径致守卫比对全落空（c385dc71 实证：
+// Windows 记法 .env 被拦、MSYS 记法平台数据目录直读放行）。win32 专属行为。
+describe.skipIf(process.platform !== "win32")("matchSensitiveRead MSYS 记法归一（win32）", () => {
+  const deny = ["D:\\deploy\\donger\\data"];
+  const critical = (allow: string[] = []) => policy(deny, allow);
+
+  it("critical：MSYS 记法的要害目录直读 → 命中（c385dc71 回归锚点）", () => {
+    const hit = matchSensitiveRead(
+      "grep -rn x /d/deploy/donger/data/workspace/kb/65a3f6ad/",
+      "C:\\w",
+      critical(),
+    );
+    expect(hit).toBeDefined();
+    expect(hit?.kind).toBe("critical");
+  });
+
+  it("critical：MSYS 记法全盘列举（find /d/ /e/ /c/Users）→ 越出 deny 根不误报", () => {
+    // 盘根不在 denyRoots：critical 模式放行（收口由 confine 承担），但不得解析成幻影路径
+    expect(
+      matchSensitiveRead("for b in /d/ /e/; do find $b; done", "C:\\w", critical()),
+    ).toBeUndefined();
+  });
+
+  it("confine：MSYS 记法的本人目录引用放行（归一是 confine 可用的前置）", () => {
+    const home = "D:\\deploy\\donger\\data\\workspace\\users\\u1";
+    const p = { ...critical([home]), mode: "confine" as const };
+    expect(
+      matchSensitiveRead(
+        "cd /d/deploy/donger/data/workspace/users/u1/agents/a1/workspace && ls",
+        "C:\\w",
+        p,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("confine：MSYS 记法的目录外路径（/d/git、/c/Users/admin）→ 越界命中", () => {
+    const home = "D:\\deploy\\donger\\data\\workspace\\users\\u1";
+    const p = { ...critical([home]), mode: "confine" as const };
+    const hit = matchSensitiveRead("cat /d/git/copilot-skills/README.md", "C:\\w", p);
+    expect(hit).toBeDefined();
+    expect(hit?.resolved.toLowerCase()).toBe("d:/git/copilot-skills/readme.md");
+    expect(matchSensitiveRead("ls /c/Users/admin", "C:\\w", p)).toBeDefined();
+  });
+
+  it("UNC（//server/share）不做盘符改写", () => {
+    expect(matchSensitiveRead("ls //srv/share/x", "C:\\w", critical())).toBeUndefined();
+  });
+});

@@ -197,10 +197,12 @@ export const AgentSchema = z.object({
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,
   /**
-   * 允许 agent 在 shell 中直接执行 git 命令（默认 false=只准走 donger-git 工具；
-   * 开态下 git push 等仍走 deploy 审批门兜底）。
+   * 允许 agent 在 shell 中直接执行 git 命令。2026-10-09 拍板④：缺省 true（所有
+   * agent 无需配置即可 shell git）；前提约束=鉴权必须 https+平台系统凭证
+   * （matchUnsafeShellGit 恒拒非 https 远程/宿主凭证栈/宿主配置），push 仍走
+   * deploy force 门兜底。显式 false 保留为关闭开关（只准走 donger-git 工具）。
    */
-  gitAllowShellGit: z.boolean().default(false),
+  gitAllowShellGit: z.boolean().default(true),
   extensionDirectories: AgentExtensionDirectoriesSchema,
   /** 所属场景（builder 创建时选定；缺省 = 不做场景校验） */
   scenario: z.enum(SCENARIO_KEYS).optional(),

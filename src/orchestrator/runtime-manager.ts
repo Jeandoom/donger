@@ -180,7 +180,8 @@ export class RuntimeManager {
     }
     let allowedTools: string[] | undefined;
     let mcpServers: McpServerConfig[] | undefined;
-    let gitAllowShellGit = false;
+    // 2026-10-09 拍板④：缺省放开（无 agent 的闲聊会话同口径）；显式 false 才拦
+  let gitAllowShellGit = true;
     let extraPrompt: string | undefined = opts.systemPromptAppend;
     let additionalDirectories: string[] | undefined;
     let allowedWriteRoots: string[] | undefined;
@@ -207,7 +208,8 @@ export class RuntimeManager {
         );
         mcpServers = mergeConnectorMcpServers(mcpServers, connectors.servers);
       }
-      // shell git 守卫（防线 2）：全域缺省禁用，仅 agent 显式开启才放行
+      // shell git 守卫（防线 2）：2026-10-09 拍板④缺省放开，agent 显式 false 才拦
+      // （非 https 远程/宿主凭证栈等恒拒形态在 tool-call-guards 内不随此开关）
       gitAllowShellGit = a.gitAllowShellGit;
       if (a.systemPrompt) {
         // 在现有 extraPrompt（已含身份节与上游 append）之后追加，不整体重建
@@ -403,6 +405,10 @@ export class RuntimeManager {
                 ...(additionalDirectories ?? []),
                 ...(allowedWriteRoots ?? []),
               ],
+              // 2026-10-09 拍板②（c385dc71 越权复盘）：读边界系统级收口——本人
+              // 用户目录之外一律拒绝，不走审批、任何权限模式不豁免。denyRoots
+              // 保留作纵深（要害路径命中报「保护路径」，目录外报「读取越界」）。
+              mode: "confine",
             },
           }
         : {}),

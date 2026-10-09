@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GateRouter } from "../../src/domain/gate-router.js";
-import { matchesShellGit } from "../../src/domain/git-shell-guard.js";
+import { matchesShellGit, matchUnsafeShellGit } from "../../src/domain/git-shell-guard.js";
 import { createDefaultGates } from "../../src/orchestrator/default-gates.js";
 
 describe("matchesShellGit（shell git 守卫纯函数）", () => {
@@ -35,6 +35,50 @@ describe("matchesShellGit（shell git 守卫纯函数）", () => {
     ]) {
       expect(matchesShellGit(cmd), cmd).toBe(false);
     }
+  });
+});
+
+// 2026-10-09 拍板④：shell git 默认放开的前提约束——鉴权必须 https+平台系统凭证。
+// 系统级不可用形态在任何配置（含 gitAllowShellGit=true）下恒拒。
+describe("matchUnsafeShellGit（系统级恒拒形态）", () => {
+  it("credential：宿主凭证栈直读全形态命中（含 python subprocess 列表形态）", () => {
+    for (const cmd of [
+      "git credential fill",
+      'python -c "subprocess.run([\\"git\\",\\"credential\\",\\"fill\\"])"',
+      'python - << \'EOF\'\nsubprocess.run(["git", "credential", "fill"])',
+      "git -c x=y credential approve",
+      "git config credential.helper '!f'",
+    ]) {
+      expect(matchUnsafeShellGit(cmd), cmd).toContain("credential");
+    }
+    // 文件名/普通词不误伤
+    expect(matchUnsafeShellGit("cat docs/git-credential-guide.md")).toBeNull();
+    expect(matchUnsafeShellGit('git commit -m "fix credential bug"')).toBeNull();
+  });
+
+  it("config --global/--system：宿主 git 配置写入命中；仓库级 config 不拦", () => {
+    expect(matchUnsafeShellGit("git config --global user.name a")).toContain("config");
+    expect(matchUnsafeShellGit("git --git-dir x config --system core.fsmonitor '!cmd'")).toContain(
+      "config",
+    );
+    expect(matchUnsafeShellGit("git config user.name a")).toBeNull();
+  });
+
+  it("非 https 远程：scp 形/ssh://、git://、http:// 命中；https 放行", () => {
+    expect(matchUnsafeShellGit("git clone git@gitee.com:renkee/copilot-skills.git")).toContain(
+      "非 https",
+    );
+    expect(matchUnsafeShellGit("git ls-remote ssh://git@gitee.com/x.git")).toContain("非 https");
+    expect(matchUnsafeShellGit("git clone http://gitee.com/x.git")).toContain("非 https");
+    expect(
+      matchUnsafeShellGit("git ls-remote https://gitee.com/renkee/copilot-skills.git HEAD"),
+    ).toBeNull();
+  });
+
+  it("拍板④回归锚点：本地/https 形态不再拦（默认放开，push 走 deploy force 门）", () => {
+    // c385dc71 生产会话 2026-10-09 实际执行的两条命令
+    expect(matchUnsafeShellGit("cd /d/git/copilot-skills && git pull --ff-only")).toBeNull();
+    expect(matchUnsafeShellGit("git log --oneline -1; git config user.name")).toBeNull();
   });
 });
 
