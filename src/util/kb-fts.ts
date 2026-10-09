@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 
 /**
@@ -101,4 +103,45 @@ export function createKbFts(db: Database): KbFtsIndex {
       return rows;
     },
   };
+}
+
+/**
+ * 全量回填单库 FTS 索引（递归 .md，跳过隐藏文件与 assets/）。
+ * 用于目录内容先于索引产生的场景：复制库 cpSync、旧目录迁移并入、外部直改后的修复。
+ */
+export function ftsBackfillLibrary(
+  fts: { upsert(kbId: string, path: string, content: string): void },
+  kbId: string,
+  root: string,
+  relPrefix = "",
+): number {
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const name of entries) {
+    if (name.startsWith(".") || name === "assets") continue;
+    const full = join(root, name);
+    const rel = relPrefix === "" ? name : `${relPrefix}/${name}`;
+    let stat: ReturnType<typeof statSync>;
+    try {
+      stat = statSync(full);
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      count += ftsBackfillLibrary(fts, kbId, full, rel);
+    } else if (stat.isFile() && name.toLowerCase().endsWith(".md")) {
+      try {
+        fts.upsert(kbId, rel, readFileSync(full, "utf8"));
+        count++;
+      } catch {
+        // 单文件读取失败跳过，不阻断整体回填
+      }
+    }
+  }
+  return count;
 }

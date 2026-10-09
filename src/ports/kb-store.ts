@@ -62,5 +62,7 @@ export interface KbRevisionStore {
   listByKbIds(kbIds: readonly string[], limit: number, offset: number): Promise<KbRevision[]>;
   /** 审计页全量时间线（createdAt 降序） */
   listAll(query: KbRevisionListQuery): Promise<KbRevision[]>;
+  /** 单条修订（修订回滚用；含 beforeContent 快照） */
+  getById(kbId: string, revId: string): Promise<KbRevision | undefined>;
   countByKb(kbId: string): Promise<number>;
 }

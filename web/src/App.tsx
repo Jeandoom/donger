@@ -12,6 +12,7 @@ import { CredentialsPage } from "./pages/credentials/CredentialsPage";
 import { FeedbackPage } from "./pages/FeedbackPage";
 import { InvitesPage } from "./pages/InvitesPage";
 import { KbDetailPage } from "./pages/KbDetailPage";
+import { KbShareLandingPage } from "./pages/KbShareLandingPage";
 import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
@@ -44,6 +45,8 @@ export function App() {
         <Route path="/setup" element={<SetupPage />} />
         {/* 分享落地页（公开；登录后自动授权进入） */}
         <Route path="/share/:token" element={<ShareLandingPage />} />
+        {/* 知识库分享落地页（公开；登录后自动接受授权进入库详情） */}
+        <Route path="/kb-share/:token" element={<KbShareLandingPage />} />
         {/* 合并流程已废弃：旧链接重定向到登录页 */}
         <Route path="/login/merge" element={<Navigate to="/login" replace />} />
 

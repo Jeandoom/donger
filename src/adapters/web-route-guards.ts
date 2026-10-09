@@ -416,7 +416,14 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "DELETE", pattern: "/api/kb/:id", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/tree", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/entry", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/kb/:id/search", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/kb/:id/entries", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/revisions", access: { kind: "authenticated" } },
+    {
+      method: "POST",
+      pattern: "/api/kb/:id/revisions/:rid/rollback",
+      access: { kind: "authenticated" },
+    },
     { method: "GET", pattern: "/api/kb/:id/conversation", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/share", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/kb/:id/share", access: { kind: "authenticated" } },
@@ -496,6 +503,16 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/skills/packs/disable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/enable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/disable", access: { kind: "authenticated" } },
+    // 安装/更新任务化 + 卸载影响面 + SKILL.md 预览（2026-10 体验轮；归属校验在 handler）
+    { method: "POST", pattern: "/api/skills/jobs", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/skills/jobs/:id", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/skills/jobs/:id/cancel", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/skills/packs/:id/usage", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/skills/packs/:pid/skills/:name/doc",
+      access: { kind: "authenticated" },
+    },
 
     // ===== MCP 接入（个人令牌；spec 2026-09-24-mcp-auth-files-design）=====
     // /mcp 协议端点不在 /api 守卫面（自持 Bearer 接入令牌鉴权，fail-closed 在 handleMcpHttp）

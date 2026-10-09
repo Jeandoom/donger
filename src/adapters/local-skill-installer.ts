@@ -11,6 +11,7 @@ import type {
   InstallPasteReq,
   InstallUploadReq,
   SkillInstaller,
+  SkillInstallHooks,
 } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import { SkillInstallError } from "../util/errors.js";
@@ -39,25 +40,35 @@ export interface LocalSkillInstallerDeps {
 export class LocalSkillInstaller implements SkillInstaller {
   constructor(private readonly deps: LocalSkillInstallerDeps) {}
 
-  async installFromGit(userId: string, req: InstallGitReq): Promise<SkillPack> {
+  async installFromGit(
+    userId: string,
+    req: InstallGitReq,
+    hooks: SkillInstallHooks = {},
+  ): Promise<SkillPack> {
     const url = req.url.trim();
     validateGitSourceUrl(url, !!this.deps.allowLocalGitSource);
+    ensureActive(hooks);
     const credential = await this.resolveCredential(
       userId,
       req.credentialCode?.trim() || undefined,
       url,
     );
+    ensureActive(hooks);
     const slug = await this.deriveSlug(userId, req.slug ?? repoSlugFromUrl(url));
     const dir = this.userPackDir(userId, slug);
     try {
       // 参数数组直传 git，不经 shell；token 经临时 AskPass 注入，不进 URL/DB/审计
+      hooks.onStage?.("正在克隆仓库（私有仓库视网络状况，最长 120 秒）…");
       const result = await this.git(
         ["clone", "--depth", "1", ...(req.ref ? ["--branch", req.ref] : []), url, dir],
         credential,
+        hooks.signal,
       );
       if (result.code !== 0) {
         throw new SkillInstallError("GIT_CLONE_FAILED", gitFailureMessage(result, "拉取"));
       }
+      ensureActive(hooks);
+      hooks.onStage?.("正在解析技能清单…");
       this.ensurePluginManifest(dir, slug);
       const subPath = normalizeSubPath(req.subPath);
       const source: SkillPackSource = {
@@ -68,10 +79,14 @@ export class LocalSkillInstaller implements SkillInstaller {
         ...(req.credentialCode?.trim() ? { credentialCode: req.credentialCode.trim() } : {}),
       };
       const skillRoot = this.resolveSkillRoot(dir, source);
+      hooks.onStage?.("正在写入技能包…");
       return this.persistScanned(userId, slug, dir, source, false, undefined, skillRoot);
     } catch (e) {
       rmSync(dir, { recursive: true, force: true });
       if (e instanceof SkillInstallError) throw e;
+      if (isAbortError(e, hooks)) {
+        throw new SkillInstallError("CANCELLED", "安装已取消");
+      }
       throw new SkillInstallError("GIT_CLONE_FAILED", `git 安装失败: ${(e as Error).message}`);
     }
   }
@@ -113,7 +128,7 @@ export class LocalSkillInstaller implements SkillInstaller {
     await this.deps.packStore.deletePack(userId, packId);
   }
 
-  async update(userId: string, packId: string): Promise<SkillPack> {
+  async update(userId: string, packId: string, hooks: SkillInstallHooks = {}): Promise<SkillPack> {
     const pack = await this.deps.packStore.getPack(userId, packId);
     if (!pack) throw new SkillInstallError("PACK_NOT_FOUND", `pack 不存在: ${packId}`);
     if (pack.source.kind !== "git") {
@@ -125,13 +140,20 @@ export class LocalSkillInstaller implements SkillInstaller {
       pack.source.credentialCode,
       pack.source.url,
     );
+    ensureActive(hooks);
     try {
-      const result = await this.git(["-C", dir, "pull", "--ff-only"], credential);
+      hooks.onStage?.("正在拉取上游更新…");
+      const result = await this.git(["-C", dir, "pull", "--ff-only"], credential, hooks.signal);
       if (result.code !== 0) {
         throw new SkillInstallError("GIT_PULL_FAILED", gitFailureMessage(result, "更新"));
       }
+      ensureActive(hooks);
+      hooks.onStage?.("正在解析技能清单…");
     } catch (e) {
       if (e instanceof SkillInstallError) throw e;
+      if (isAbortError(e, hooks)) {
+        throw new SkillInstallError("CANCELLED", "更新已取消");
+      }
       throw new SkillInstallError("GIT_PULL_FAILED", `git pull 失败: ${(e as Error).message}`);
     }
     this.ensurePluginManifest(dir, pack.slug);
@@ -139,6 +161,7 @@ export class LocalSkillInstaller implements SkillInstaller {
       (await this.deps.packStore.listSkills(userId, pack.id)).map((s) => [s.name, s]),
     );
     const skillRoot = this.resolveSkillRoot(dir, pack.source);
+    hooks.onStage?.("正在写入技能包…");
     return this.persistScanned(
       userId,
       pack.slug,
@@ -225,8 +248,12 @@ export class LocalSkillInstaller implements SkillInstaller {
 
   // ---- 内部 ----
 
-  private git(args: string[], credential?: GitProcessCredential): Promise<GitProcessResult> {
-    return (this.deps.gitRunner ?? runGit)(args, credential, GIT_TIMEOUT_MS);
+  private git(
+    args: string[],
+    credential?: GitProcessCredential,
+    signal?: AbortSignal,
+  ): Promise<GitProcessResult> {
+    return (this.deps.gitRunner ?? runGit)(args, credential, GIT_TIMEOUT_MS, signal);
   }
 
   /**
@@ -489,5 +516,19 @@ function isInside(child: string, parent: string): boolean {
     (pathFromParent !== ".." &&
       !pathFromParent.startsWith(`..${sep}`) &&
       !isAbsolute(pathFromParent))
+  );
+}
+
+/** 阶段边界取消检查：signal 已 abort 即显性抛 CANCELLED（fail-fast，不做半截写入） */
+function ensureActive(hooks: SkillInstallHooks): void {
+  if (hooks.signal?.aborted) {
+    throw new SkillInstallError("CANCELLED", "操作已取消");
+  }
+}
+
+/** runGit 的 abort 拒约形态（runGitProcess reject "Git 操作已取消"）归一判定 */
+function isAbortError(e: unknown, hooks: SkillInstallHooks): boolean {
+  return (
+    hooks.signal?.aborted === true || (e as Error | undefined)?.message?.includes("已取消") === true
   );
 }

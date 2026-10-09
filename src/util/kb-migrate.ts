@@ -1,16 +1,9 @@
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { KbLibrary } from "../domain/kb.js";
 import type { KbLibraryStore } from "../ports/kb-store.js";
 import { kbRootDir } from "./kb-files.js";
+import { ftsBackfillLibrary } from "./kb-fts.js";
 
 export interface KbMigrateDeps {
   libraryStore: KbLibraryStore;
@@ -66,7 +59,7 @@ export async function migrateKnowledgeBases(deps: KbMigrateDeps): Promise<KbMigr
       renameSync(legacyDir, retired);
       // FTS 索引回填（R-A）：全量扫该库 .md（新库此时只有并入内容，成本低）
       if (deps.kbFts) {
-        ftsBackfill(deps.kbFts, personal.id, personalDir);
+        ftsBackfillLibrary(deps.kbFts, personal.id, personalDir);
       }
       result.mergedLegacy++;
       deps.log?.info(
@@ -88,40 +81,5 @@ function mergeLegacyDir(legacyDir: string, personalDir: string): void {
     const src = join(legacyDir, entry);
     const dest = join(personalDir, entry === "user" ? "memory" : entry);
     cpSync(src, dest, { recursive: true });
-  }
-}
-
-/** 递归回填 .md 文件的 FTS 索引（跳过隐藏与 assets） */
-function ftsBackfill(
-  fts: { upsert(kbId: string, path: string, content: string): void },
-  kbId: string,
-  root: string,
-  relPrefix = "",
-): void {
-  let entries: string[];
-  try {
-    entries = readdirSync(root);
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    if (name.startsWith(".") || name === "assets") continue;
-    const full = join(root, name);
-    const rel = relPrefix === "" ? name : `${relPrefix}/${name}`;
-    let stat: ReturnType<typeof statSync>;
-    try {
-      stat = statSync(full);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      ftsBackfill(fts, kbId, full, rel);
-    } else if (stat.isFile() && name.toLowerCase().endsWith(".md")) {
-      try {
-        fts.upsert(kbId, rel, readFileSync(full, "utf8"));
-      } catch {
-        // 单文件索引失败不阻断迁移
-      }
-    }
   }
 }

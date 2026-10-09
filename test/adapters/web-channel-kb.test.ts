@@ -14,6 +14,7 @@ import {
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import { kbRootDir } from "../../src/util/kb-files.js";
+import { createKbFts, migrateKbFts } from "../../src/util/kb-fts.js";
 
 /**
  * 知识库 API 契约（spec §7）：创建/查看/PATCH/删除（账本保留）/目录树/entry 读取/
@@ -49,6 +50,7 @@ async function startChannel(): Promise<number> {
   shares.migrate();
   revisions = new SqliteKbRevisionStore(db);
   revisions.migrate();
+  migrateKbFts(db);
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
@@ -62,6 +64,7 @@ async function startChannel(): Promise<number> {
     kbLibraryStore: libraries,
     kbShareStore: shares,
     kbRevisionStore: revisions,
+    kbFts: createKbFts(db),
   });
   web.onMessage(() => {});
   await web.ready();
@@ -392,5 +395,111 @@ describe("KB 会话（M2）", () => {
     expect(r.status).toBe(200);
     const stats = (await r.json()) as { total: number; zeroHit: number };
     expect(stats.total).toBe(0);
+  });
+});
+
+describe("KB 体验轮（站内搜索/上传导入/修订回滚）", () => {
+  it("上传 .md → 站内搜索命中 → 覆盖上传 → restorable → 回滚恢复前文", async () => {
+    const kb = await createKb(alice.token, "体验轮测试库");
+    const entriesPath = `/api/kb/${kb.id}/entries`;
+    // 上传导入
+    const up = await req(port, "POST", entriesPath, alice.token, {
+      path: "faq/退款.md",
+      content: "# 退款政策\n七天内可退款。",
+    });
+    expect(up.status).toBe(201);
+    // 站内搜索命中（FTS 已随上传同步）
+    const search = await req(
+      port,
+      "GET",
+      `/api/kb/${kb.id}/search?q=${encodeURIComponent("退款")}`,
+      alice.token,
+    );
+    expect(search.status).toBe(200);
+    const found = (await search.json()) as {
+      total: number;
+      hits: Array<{ path: string; line: number; snippet: string }>;
+    };
+    expect(found.total).toBeGreaterThanOrEqual(1);
+    expect(found.hits[0]?.path).toBe("faq/退款.md");
+    // 缺 q 400；非 manage 者上传 403；非 .md 400
+    expect((await req(port, "GET", `/api/kb/${kb.id}/search`, alice.token)).status).toBe(400);
+    expect(
+      (await req(port, "POST", entriesPath, bob.token, { path: "x.md", content: "y" })).status,
+    ).toBe(403);
+    expect(
+      (await req(port, "POST", entriesPath, alice.token, { path: "x.txt", content: "y" })).status,
+    ).toBe(400);
+    // 覆盖上传产生带快照的 update 修订
+    await req(port, "POST", entriesPath, alice.token, {
+      path: "faq/退款.md",
+      content: "# 退款政策\n十五天内可退款。",
+    });
+    const revsPath = `/api/kb/${kb.id}/revisions?path=${encodeURIComponent("faq/退款.md")}`;
+    const revs = (await (await req(port, "GET", revsPath, alice.token)).json()) as {
+      revisions: Array<{ id: string; action: string; restorable?: boolean }>;
+    };
+    const update = revs.revisions.find((r) => r.action === "update");
+    expect(update?.restorable).toBe(true);
+    // 回滚：内容恢复为上一版
+    const rb = await req(
+      port,
+      "POST",
+      `/api/kb/${kb.id}/revisions/${update?.id}/rollback`,
+      alice.token,
+    );
+    expect(rb.status).toBe(200);
+    const entry = (await (
+      await req(
+        port,
+        "GET",
+        `/api/kb/${kb.id}/entry?path=${encodeURIComponent("faq/退款.md")}`,
+        alice.token,
+      )
+    ).json()) as { content: string };
+    expect(entry.content).toContain("七天内可退款");
+    // 回滚也记账：最新修订是「回滚」summary 的 update
+    const revs2 = (await (await req(port, "GET", revsPath, alice.token)).json()) as {
+      revisions: Array<{ summary: string }>;
+    };
+    expect(revs2.revisions[0]?.summary).toContain("回滚");
+  });
+
+  it("duplicate 后副本可检索（FTS 回填修复）", async () => {
+    const kb = await createKb(alice.token, "回填源库");
+    await req(port, "POST", `/api/kb/${kb.id}/entries`, alice.token, {
+      path: "guide.md",
+      content: "独门秘籍内容段落",
+    });
+    const dup = await req(port, "POST", `/api/kb/${kb.id}/duplicate`, alice.token);
+    expect(dup.status).toBe(201);
+    const copy = (await dup.json()) as { id: string };
+    const search = await req(
+      port,
+      "GET",
+      `/api/kb/${copy.id}/search?q=${encodeURIComponent("独门秘籍")}`,
+      alice.token,
+    );
+    const found = (await search.json()) as { total: number };
+    expect(found.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it("无快照的修订不可回滚（409）", async () => {
+    const kb = await createKb(alice.token, "无快照库");
+    const revs = (await (
+      await req(port, "GET", `/api/kb/${kb.id}/revisions`, alice.token)
+    ).json()) as {
+      revisions: Array<{ id: string; path: string; restorable?: boolean }>;
+    };
+    // 建库的首条修订是骨架 index.md 的 create（无 beforeContent 快照）
+    const create = revs.revisions.find((r) => r.action === "create");
+    expect(create).toBeTruthy();
+    const rb = await req(
+      port,
+      "POST",
+      `/api/kb/${kb.id}/revisions/${create?.id}/rollback`,
+      alice.token,
+    );
+    expect([400, 409]).toContain(rb.status);
   });
 });

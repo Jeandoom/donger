@@ -177,6 +177,58 @@ describe("donger-kb 工具 v2（按库寻址，spec §8）", () => {
     expect(bad.content[0]?.text).toContain("重新 kb_read");
   });
 
+  it("kb_read 元数据行：小文件带 sha256 可作 expectedHash；截断带 next_offset 可分段续读", async () => {
+    const root = freshRoot();
+    const tools = kbToolDefinitions({ kbRoot: root });
+    const big = "全".repeat(50_000);
+    writeFileSync(join(root, "big.md"), big, "utf8");
+    const first = await findTool(tools, "kb_read").handler({ path: "big.md" });
+    const firstText = first.content[0]?.text ?? "";
+    expect(firstText).toContain("truncated=true");
+    expect(firstText).toContain("next_offset=32000");
+    const sha = /sha256=([0-9a-f]{64})/.exec(firstText)?.[1];
+    expect(sha).toBeTruthy();
+    const second = await findTool(tools, "kb_read").handler({
+      path: "big.md",
+      offset: 32_000,
+    });
+    const secondText = second.content[0]?.text ?? "";
+    expect(secondText).toContain("truncated=false");
+    // 分段拼回应等于原文（截断回写防护的读取侧前提）
+    const rejoined = firstText.split("\n\n---\n")[0] + secondText.split("\n\n---\n")[0];
+    expect(rejoined).toBe(big);
+    // 小文件：元数据行的 sha256 通过 kb_write 乐观锁
+    const small = await findTool(tools, "kb_read").handler({ path: "knowledges/faq/订单.md" });
+    const smallSha = /sha256=([0-9a-f]{64})/.exec(small.content[0]?.text ?? "")?.[1];
+    expect(smallSha).toBeTruthy();
+    const okWrite = await findTool(tools, "kb_write").handler({
+      path: "knowledges/faq/订单.md",
+      content: "# 订单\n更新后的退款说明。",
+      expectedHash: smallSha,
+    });
+    expect(okWrite.isError).toBeUndefined();
+  });
+
+  it("kb_write 超长文件守卫：不带 expectedHash 拒绝；携带正确 hash 放行", async () => {
+    const root = freshRoot();
+    const tools = kbToolDefinitions({ kbRoot: root });
+    writeFileSync(join(root, "big.md"), "旧".repeat(40_000), "utf8");
+    const noHash = await findTool(tools, "kb_write").handler({
+      path: "big.md",
+      content: "截断回写",
+    });
+    expect(noHash.isError).toBe(true);
+    expect(noHash.content[0]?.text).toContain("已拒绝");
+    const read = await findTool(tools, "kb_read").handler({ path: "big.md" });
+    const sha = /sha256=([0-9a-f]{64})/.exec(read.content[0]?.text ?? "")?.[1];
+    const withHash = await findTool(tools, "kb_write").handler({
+      path: "big.md",
+      content: "分段读取后的完整重写",
+      expectedHash: sha,
+    });
+    expect(withHash.isError).toBeUndefined();
+  });
+
   it("kb_delete 可写库删除+记账；只读库拒绝", async () => {
     const changes: Array<{ path: string; action: string }> = [];
     const tools = twoMountTools(async (e) => {

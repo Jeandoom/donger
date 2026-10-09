@@ -46,7 +46,23 @@ export interface KbRevisionDTO {
   beforeHash?: string;
   afterHash?: string;
   diffText?: string;
+  /** 服务端有 beforeContent 快照时为 true——「恢复到此次变更前」按钮可用性 */
+  restorable?: boolean;
   createdAt: string;
+}
+
+export interface KbSearchHitDTO {
+  kbId: string;
+  path: string;
+  line: number;
+  snippet: string;
+}
+
+export interface KbSearchResultDTO {
+  query: string;
+  total: number;
+  truncated: boolean;
+  hits: KbSearchHitDTO[];
 }
 
 export interface KbShareInfo {
@@ -126,11 +142,50 @@ export async function fetchKbEntry(id: string, path: string): Promise<string> {
   return body.content;
 }
 
-export async function fetchKbRevisions(id: string): Promise<KbRevisionDTO[]> {
-  const r = await apiFetch(`/api/kb/${id}/revisions`);
+export async function fetchKbRevisions(
+  id: string,
+  opts?: { path?: string },
+): Promise<KbRevisionDTO[]> {
+  const qs = opts?.path ? `?path=${encodeURIComponent(opts.path)}` : "";
+  const r = await apiFetch(`/api/kb/${id}/revisions${qs}`);
   if (!r.ok) throw new Error(`revisions ${r.status}`);
   const body = (await r.json()) as { revisions: KbRevisionDTO[] };
   return body.revisions;
+}
+
+/** 站内搜索（与 agent kb_search 同实现：FTS 优先 grep 兜底，行级命中） */
+export async function searchKb(
+  id: string,
+  query: string,
+  glob?: string,
+): Promise<KbSearchResultDTO> {
+  const params = new URLSearchParams({ q: query });
+  if (glob) params.set("glob", glob);
+  const r = await apiFetch(`/api/kb/${id}/search?${params.toString()}`);
+  if (!r.ok) throw new Error(await readErrorMessage(r, `search ${r.status}`));
+  return (await r.json()) as KbSearchResultDTO;
+}
+
+/** 页面上传 .md 导入（前端读文本后 JSON 提交；单文件 1MB） */
+export async function uploadKbEntry(
+  id: string,
+  path: string,
+  content: string,
+): Promise<{ ok: boolean; path: string }> {
+  const r = await apiFetch(`/api/kb/${id}/entries`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!r.ok) throw new Error(await readErrorMessage(r, `upload ${r.status}`));
+  return (await r.json()) as { ok: boolean; path: string };
+}
+
+/** 回滚：恢复某条修订变更前的内容（需服务端快照 restorable=true） */
+export async function rollbackKbRevision(id: string, revId: string): Promise<{ path: string }> {
+  const r = await apiFetch(`/api/kb/${id}/revisions/${revId}/rollback`, { method: "POST" });
+  if (!r.ok) throw new Error(await readErrorMessage(r, `rollback ${r.status}`));
+  return (await r.json()) as { path: string };
 }
 
 export async function fetchKbShare(id: string): Promise<KbShareInfo> {

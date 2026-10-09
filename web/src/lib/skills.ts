@@ -221,6 +221,92 @@ export async function updatePack(id: string): Promise<void> {
   });
 }
 
+// ---- 安装/更新任务化（2026-10 体验轮）：提交即返 jobId，轮询阶段/可取消 ----
+
+export type SkillJobOp = "install-git" | "install-upload" | "install-paste" | "update";
+
+export interface SkillJobView {
+  id: string;
+  kind: SkillJobOp;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  /** 人读阶段文案（如「正在克隆仓库…」） */
+  stage: string;
+  error?: string;
+  /** 后端 SkillInstallError.code（GIT_CLONE_FAILED / CREDENTIAL_TOKEN_MISSING / CANCELLED…） */
+  errorCode?: string;
+  packId?: string;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+}
+
+export async function startSkillJob(req: {
+  op: SkillJobOp;
+  source?: unknown;
+  id?: string;
+  filename?: string;
+  content?: string;
+}): Promise<{ jobId: string }> {
+  const res = await apiFetch("/api/skills/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) throw new Error((await safeErr(res)) ?? `start job ${res.status}`);
+  return (await res.json()) as { jobId: string };
+}
+
+export async function fetchSkillJob(jobId: string): Promise<SkillJobView> {
+  const res = await apiFetch(`/api/skills/jobs/${encodeURIComponent(jobId)}`);
+  if (!res.ok) throw new Error(`job ${res.status}`);
+  return (await res.json()) as SkillJobView;
+}
+
+export async function cancelSkillJob(jobId: string): Promise<void> {
+  const res = await apiFetch(`/api/skills/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+  if (!res.ok && res.status !== 404) throw new Error(`cancel ${res.status}`);
+}
+
+/** 轮询直至任务终结（done/failed/cancelled）；onTick 每次快照回调，用于展示阶段 */
+export async function waitSkillJob(
+  jobId: string,
+  onTick?: (job: SkillJobView) => void,
+  intervalMs = 1000,
+): Promise<SkillJobView> {
+  for (;;) {
+    const job = await fetchSkillJob(jobId);
+    onTick?.(job);
+    if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
+      return job;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+// ---- 卸载影响面 + SKILL.md 预览（2026-10 体验轮）----
+
+export interface PackUsageDTO {
+  packId: string;
+  agents: Array<{ id: string; name: string }>;
+}
+
+export async function fetchPackUsage(packId: string): Promise<PackUsageDTO> {
+  const res = await apiFetch(`/api/skills/packs/${encodeURIComponent(packId)}/usage`);
+  if (!res.ok) throw new Error(`usage ${res.status}`);
+  return (await res.json()) as PackUsageDTO;
+}
+
+export async function fetchSkillDoc(packId: string, skillName: string): Promise<string> {
+  const res = await apiFetch(
+    `/api/skills/packs/${encodeURIComponent(packId)}/skills/${encodeURIComponent(skillName)}/doc`,
+  );
+  if (!res.ok) throw new Error(`doc ${res.status}`);
+  const body = (await res.json()) as { content: string };
+  return body.content;
+}
+
 // ---- 用户技能仓库（自建技能 git 镜像同步）----
 
 export interface SkillRepoConfigDTO {

@@ -21,6 +21,7 @@ import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { DingTalkNotificationAdapter } from "./adapters/notif-dingtalk.js";
 import { WebhookNotificationAdapter } from "./adapters/notif-webhook.js";
 import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
+import { SkillJobRunner } from "./adapters/skill-jobs.js";
 import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
@@ -524,6 +525,7 @@ async function main(): Promise<void> {
     fileBrowser,
     skillPackStore,
     installer: skillInstaller,
+    skillJobs: new SkillJobRunner(skillInstaller, { skillRepoSync }),
     userSkillRepoStore,
     skillRepoSync,
     credentialSets,
@@ -537,6 +539,7 @@ async function main(): Promise<void> {
     kbLibraryStore,
     kbShareStore,
     kbRevisionStore,
+    kbFts,
     callbackRateLimitPerMin: cfg.callbackRateLimitPerMin,
     gitAccessGate,
     selfImproveGitRepository: selfImproveGitRepository,

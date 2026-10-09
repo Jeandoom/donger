@@ -228,6 +228,9 @@ import {
   sha256Text,
   writeKbEntry,
 } from "../util/kb-files.js";
+import type { KbFtsIndex } from "../util/kb-fts.js";
+import { ftsBackfillLibrary } from "../util/kb-fts.js";
+import { searchKbLibraries } from "../util/kb-search.js";
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
 import { ApiRouteGuard } from "./api-route-guard.js";
@@ -245,6 +248,7 @@ import {
   handleUpdate,
   type SkillApiDeps,
 } from "./skill-api.js";
+import type { SkillJobRunner } from "./skill-jobs.js";
 import {
   handleGetSkillRepo,
   handlePutSkillRepo,
@@ -255,6 +259,9 @@ import {
 import type { SkillRepoSyncService } from "./skill-repo-sync.js";
 import type { SystemKeyService } from "./system-key-service.js";
 import { buildWebRouteGuardSpecs } from "./web-route-guards.js";
+
+/** 页面上传单文件上限（字符）；与 kb_read 分段读上限、修订快照上限独立 */
+const KB_UPLOAD_MAX_CHARS = 1_000_000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -476,6 +483,8 @@ export interface WebChannelDeps {
   kbLibraryStore?: KbLibraryStore;
   kbShareStore?: KbShareStore;
   kbRevisionStore?: KbRevisionStore;
+  /** FTS 影子索引（站内搜索 + 复制库回填；缺省=搜索走 grep 兜底、复制不回填） */
+  kbFts?: KbFtsIndex;
   sessionStore?: SessionStore;
   /** MCP 接入令牌存储（spec 2026-09-24-mcp-auth-files-design；缺省=/mcp 端点与令牌 API 不可用） */
   mcpTokenStore?: McpTokenStore;
@@ -484,6 +493,8 @@ export interface WebChannelDeps {
   fileBrowser?: FileBrowser;
   skillPackStore?: SkillPackStore;
   installer?: SkillInstaller;
+  /** 技能安装/更新任务化（体验轮；缺省=任务端点 404，旧同步端点仍可用） */
+  skillJobs?: SkillJobRunner;
   /** 用户技能仓库配置存储 + 同步服务（缺省=技能仓库端点 404） */
   userSkillRepoStore?: UserSkillRepoStore;
   skillRepoSync?: SkillRepoSyncService;
@@ -4832,6 +4843,108 @@ export class WebChannel implements Channel {
       if ("error" in result) return this.json(res, { error: result.error }, 404);
       return this.json(res, { path: relPath, content: result.content });
     }
+    // GET /api/kb/:id/search?q=&glob= —— 站内搜索（体验轮新增；与 agent kb_search 同实现）
+    const kbSearchMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/search$/);
+    if (kbSearchMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbSearchMatch[1] ?? "";
+      if (!(await this.requireKbRead(kb, id, me, res))) return;
+      const q = this.extractQuery(url, "q") ?? "";
+      if (!q.trim()) return this.json(res, { error: "缺少检索词 q" }, 400);
+      const glob = this.extractQuery(url, "glob") ?? undefined;
+      const result = searchKbLibraries({
+        targets: [{ kbId: id, root: kbRootDir(this.workspaceDir, id) }],
+        query: q,
+        glob,
+        ftsSearch: this.deps.kbFts
+          ? (kbIds, query) => this.deps.kbFts?.search(kbIds, query) ?? []
+          : undefined,
+        limit: 50,
+      });
+      return this.json(res, { query: q, ...result });
+    }
+    // POST /api/kb/:id/entries —— 页面上传 .md 导入（体验轮新增；D4 内容维护仍走对话，
+    // 上传只是导入通道：写文件+记账+FTS 同步，与 kb_write 同一套卫生条件）
+    const kbUploadMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/entries$/);
+    if (kbUploadMatch && req.method === "POST") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbUploadMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+      const body = JSON.parse(await this.readBody(req)) as { path?: string; content?: string };
+      const relPath = typeof body.path === "string" ? body.path.trim() : "";
+      const content = typeof body.content === "string" ? body.content : "";
+      if (!relPath || !content) return this.json(res, { error: "path 与 content 必填" }, 400);
+      if (!relPath.toLowerCase().endsWith(".md"))
+        return this.json(res, { error: "仅支持导入 .md 文件" }, 400);
+      if (content.length > KB_UPLOAD_MAX_CHARS)
+        return this.json(res, { error: `单文件上限 ${KB_UPLOAD_MAX_CHARS} 字符` }, 413);
+      const root = kbRootDir(this.workspaceDir, id);
+      const existing = readKbEntry(root, relPath);
+      const before = "content" in existing ? existing.content : undefined;
+      try {
+        writeKbEntry(root, relPath, content);
+      } catch (e) {
+        return this.json(res, { error: (e as Error).message }, 400);
+      }
+      this.deps.kbFts?.upsert(id, relPath.replace(/\\/g, "/"), content);
+      await kb.revisions.record({
+        kbId: id,
+        path: relPath.replace(/\\/g, "/"),
+        action: before === undefined ? "create" : "update",
+        actorUserId: me,
+        actorKind: "manual",
+        beforeHash: before !== undefined ? sha256Text(before) : undefined,
+        afterHash: sha256Text(content),
+        diffText: before === undefined ? undefined : lineDiff(before, content),
+        ...(before !== undefined ? { beforeContent: before } : {}),
+        summary: "页面上传导入",
+      });
+      return this.json(res, { ok: true, path: relPath.replace(/\\/g, "/") }, 201);
+    }
+    // POST /api/kb/:id/revisions/:rid/rollback —— 恢复到该次变更前（体验轮新增；
+    // 数据源=beforeContent 快照；可管理口径；产生一条新 update 修订，账本线性可追溯）
+    const kbRollbackMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/revisions\/([\w-]+)\/rollback$/);
+    if (kbRollbackMatch && req.method === "POST") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbRollbackMatch[1] ?? "";
+      const revId = kbRollbackMatch[2] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+      const rev = await kb.revisions.getById(id, revId);
+      if (!rev) return this.json(res, { error: "修订不存在" }, 404);
+      if (!rev.path) return this.json(res, { error: "库级修订不支持回滚" }, 400);
+      if (!rev.beforeContent)
+        return this.json(res, { error: "该修订没有内容快照（可能超限或已过保留期）" }, 409);
+      const root = kbRootDir(this.workspaceDir, id);
+      const currentEntry = readKbEntry(root, rev.path);
+      const current = "content" in currentEntry ? currentEntry.content : undefined;
+      writeKbEntry(root, rev.path, rev.beforeContent);
+      this.deps.kbFts?.upsert(id, rev.path, rev.beforeContent);
+      await kb.revisions.record({
+        kbId: id,
+        path: rev.path,
+        action: "update",
+        actorUserId: me,
+        actorKind: "manual",
+        beforeHash: current !== undefined ? sha256Text(current) : undefined,
+        afterHash: sha256Text(rev.beforeContent),
+        diffText: current !== undefined ? lineDiff(current, rev.beforeContent) : undefined,
+        ...(current !== undefined ? { beforeContent: current } : {}),
+        summary: `回滚：恢复修订 ${rev.id.slice(0, 8)} 之前的内容`,
+      });
+      return this.json(res, { ok: true, path: rev.path });
+    }
     // GET /api/kb/:id/revisions —— 修订账本（被分享者可见：能读库即能看变更史）
     const kbRevMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/revisions$/);
     if (kbRevMatch && req.method === "GET") {
@@ -4848,7 +4961,14 @@ export class WebChannel implements Channel {
         limit: Number.isFinite(limit) ? limit : 100,
         offset: Number.isFinite(offset) ? offset : 0,
       });
-      return this.json(res, { revisions });
+      // beforeContent 不出网（体量）；以 restorable 布尔告知前端「恢复」按钮可用性
+      return this.json(res, {
+        revisions: revisions.map((r) => ({
+          ...r,
+          beforeContent: undefined,
+          restorable: !!r.beforeContent,
+        })),
+      });
     }
     // GET/POST /api/kb/:id/share —— 分享开关（canManage；personal/builtin 禁分享）
     const kbShareMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/share$/);
@@ -4976,6 +5096,11 @@ export class WebChannel implements Channel {
       const dstRoot = kbRootDir(this.workspaceDir, copy.id);
       ensureKbDir(dstRoot);
       if (existsSync(srcRoot)) cpSync(srcRoot, dstRoot, { recursive: true });
+      // FTS 回填（体验轮修复）：cpSync 只搬文件不搬索引——不回填则副本检索恒 0 命中，
+      // 且同会话其它库有命中时 grep 兜底不会触发（kb-tools 仅全 0 才兜底），副本内容搜不到
+      if (this.deps.kbFts) {
+        ftsBackfillLibrary(this.deps.kbFts, copy.id, dstRoot);
+      }
       await kb.revisions.record({
         kbId: copy.id,
         path: "",
@@ -5103,7 +5228,15 @@ export class WebChannel implements Channel {
       const all = await kb.libraries.listAll();
       const kbNames: Record<string, string> = {};
       for (const l of all) kbNames[l.id] = l.name;
-      return this.json(res, { revisions, kbNames });
+      // beforeContent 不出网（体量）；与库内修订端点同口径
+      return this.json(res, {
+        revisions: revisions.map((r) => ({
+          ...r,
+          beforeContent: undefined,
+          restorable: !!r.beforeContent,
+        })),
+        kbNames,
+      });
     }
 
     // GET /api/audit/kb-search-stats —— kb_search 0 命中率（R-E：检索质量信号，admin 口径）
@@ -6066,6 +6199,86 @@ export class WebChannel implements Channel {
       return true;
     }
     if (!deps) return false;
+    // POST /api/skills/jobs —— 安装/更新任务化（体验轮）：立即返回 jobId，前端轮询进度可取消
+    if (url === "/api/skills/jobs" && req.method === "POST") {
+      if (!this.deps.skillJobs) return notFound("技能任务通道 ");
+      const b = JSON.parse(await this.readBody(req)) as {
+        op?: string;
+        source?: Record<string, unknown>;
+        id?: string;
+        filename?: string;
+        content?: string;
+      };
+      const op = b.op;
+      if (
+        op !== "install-git" &&
+        op !== "install-upload" &&
+        op !== "install-paste" &&
+        op !== "update"
+      ) {
+        send({ status: 400, json: { error: `不支持的任务类型: ${op ?? "(缺省)"}` } });
+        return true;
+      }
+      try {
+        const jobId = this.deps.skillJobs.enqueue(uid, {
+          op,
+          source: b.source,
+          id: b.id,
+          filename: b.filename,
+          content: b.content,
+        });
+        send({ status: 201, json: { jobId } });
+      } catch (e) {
+        send({ status: 429, json: { error: (e as Error).message } });
+      }
+      return true;
+    }
+    // GET /api/skills/jobs/:id —— 任务状态轮询（阶段/结果/取消态）
+    const skillJobMatch = match(/^\/api\/skills\/jobs\/([\w-]+)$/);
+    if (skillJobMatch && req.method === "GET") {
+      if (!this.deps.skillJobs) return notFound("技能任务通道 ");
+      const job = this.deps.skillJobs.view(uid, skillJobMatch[1] ?? "");
+      if (!job) return notFound("任务 ");
+      send({ status: 200, json: job });
+      return true;
+    }
+    // POST /api/skills/jobs/:id/cancel —— 取消进行中任务（git 子进程 kill / 阶段边界中止）
+    const skillJobCancelMatch = match(/^\/api\/skills\/jobs\/([\w-]+)\/cancel$/);
+    if (skillJobCancelMatch && req.method === "POST") {
+      if (!this.deps.skillJobs) return notFound("技能任务通道 ");
+      const ok = this.deps.skillJobs.cancel(uid, skillJobCancelMatch[1] ?? "");
+      if (!ok) return notFound("任务 ");
+      send({ status: 200, json: { ok: true } });
+      return true;
+    }
+    // GET /api/skills/packs/:id/usage —— 卸载影响面（体验轮）：哪些 agent 引用了该包的技能
+    const packUsageMatch = match(/^\/api\/skills\/packs\/([\w-]+)\/usage$/);
+    if (packUsageMatch && req.method === "GET") {
+      const pack = await deps.packStore.getPack(uid, packUsageMatch[1] ?? "");
+      if (!pack) return notFound("技能包 ");
+      const agents = (await this.deps.agentStore?.listByOwner(uid)) ?? [];
+      const prefix = `${pack.name}:`;
+      const referencing = agents
+        .filter((a) => a.skills.some((s) => s.startsWith(prefix)))
+        .map((a) => ({ id: a.id, name: a.name }));
+      send({ status: 200, json: { packId: pack.id, agents: referencing } });
+      return true;
+    }
+    // GET /api/skills/packs/:pid/skills/:name/doc —— SKILL.md 预览（体验轮；agent 工具同源 readSkillDoc）
+    const skillDocMatch = match(/^\/api\/skills\/packs\/([\w-]+)\/skills\/([^/]+)\/doc$/);
+    if (skillDocMatch && req.method === "GET") {
+      try {
+        const content = await deps.installer.readSkillDoc(
+          uid,
+          decodeURIComponent(skillDocMatch[1] ?? ""),
+          decodeURIComponent(skillDocMatch[2] ?? ""),
+        );
+        send({ status: 200, json: { content } });
+      } catch (e) {
+        send({ status: 404, json: { error: (e as Error).message } });
+      }
+      return true;
+    }
     if (url === "/api/skills/packs" && req.method === "GET") {
       send(await handleListPacks(uid, {}, deps));
       return true;

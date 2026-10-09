@@ -19,13 +19,22 @@ export interface InstallPasteReq {
   description?: string;
 }
 
+/**
+ * 安装/更新过程钩子（任务化 UI，2026-10 体验轮）：阶段上报供进度展示；
+ * signal 触发即取消——git 子进程被 kill，阶段边界处显性抛 CANCELLED。
+ */
+export interface SkillInstallHooks {
+  onStage?(stage: string): void;
+  signal?: AbortSignal;
+}
+
 export interface SkillInstaller {
-  installFromGit(userId: string, req: InstallGitReq): Promise<SkillPack>;
+  installFromGit(userId: string, req: InstallGitReq, hooks?: SkillInstallHooks): Promise<SkillPack>;
   installFromUpload(userId: string, req: InstallUploadReq): Promise<SkillPack>;
   installFromPaste(userId: string, req: InstallPasteReq): Promise<SkillPack>;
   installBuiltin(userId: string, slug: string, absPath: string): Promise<SkillPack>;
   uninstall(userId: string, packId: string): Promise<void>;
-  update(userId: string, packId: string): Promise<SkillPack>;
+  update(userId: string, packId: string, hooks?: SkillInstallHooks): Promise<SkillPack>;
   /** 读取技能 SKILL.md 全文（builtin 只读可读；路径解析与归属校验由实现收口） */
   readSkillDoc(userId: string, packId: string, skillName: string): Promise<string>;
   /**

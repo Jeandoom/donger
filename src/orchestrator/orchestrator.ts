@@ -576,6 +576,8 @@ export class Orchestrator {
                 beforeHash: e.before !== undefined ? sha256Text(e.before) : undefined,
                 afterHash: e.after !== undefined ? sha256Text(e.after) : undefined,
                 ...(diff ? { diffText: diff } : {}),
+                // 变更前全文快照（store 侧 ≤200KB 落库）——修订页「恢复到此版之前」数据源
+                ...(e.before !== undefined ? { beforeContent: e.before } : {}),
                 summary: `对话维护（${p.conversation.title || "会话"}）`,
               });
             },

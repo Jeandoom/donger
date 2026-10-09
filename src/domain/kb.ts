@@ -71,6 +71,9 @@ export interface KbRevision {
   afterHash?: string;
   /** 自实现行级 diff（kb-diff.ts），截断 64KB；保留策略会清空旧行的该字段 */
   diffText?: string;
+  /** 变更前全文快照（≤200KB 才落库；保留策略会清空旧行）——修订回滚的数据源。
+   *  HTTP DTO 不直出本字段（体量），以 restorable 布尔替代。 */
+  beforeContent?: string;
   createdAt: string;
 }
 
@@ -86,4 +89,5 @@ export interface KbRevisionInput {
   beforeHash?: string;
   afterHash?: string;
   diffText?: string;
+  beforeContent?: string;
 }

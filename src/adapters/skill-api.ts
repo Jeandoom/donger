@@ -1,6 +1,7 @@
 import type { SkillPack } from "../domain/skill-pack.js";
 import type { InstallGitReq, InstallPasteReq, SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
+import { SkillInstallError } from "../util/errors.js";
 
 export interface SkillApiDeps {
   packStore: SkillPackStore;
@@ -60,7 +61,13 @@ export async function handleInstall(
       return { status: 400, json: { error: `不支持的来源: ${src.kind}` } };
     }
   } catch (e) {
-    return { status: 400, json: { error: (e as Error).message } };
+    return {
+      status: 400,
+      json: {
+        error: (e as Error).message,
+        code: e instanceof SkillInstallError ? e.code : undefined,
+      },
+    };
   }
   return { status: 200, json: { pack: await packView(d, userId, pack) } };
 }
@@ -76,7 +83,13 @@ export async function handleInstallUpload(
     d.skillRepoSync?.onChanged(userId);
     return { status: 200, json: { pack: await packView(d, userId, pack) } };
   } catch (e) {
-    return { status: 400, json: { error: (e as Error).message } };
+    return {
+      status: 400,
+      json: {
+        error: (e as Error).message,
+        code: e instanceof SkillInstallError ? e.code : undefined,
+      },
+    };
   }
 }
 
@@ -89,7 +102,13 @@ export async function handleUpdate(
     const pack = await d.installer.update(userId, body.id);
     return { status: 200, json: { pack: await packView(d, userId, pack) } };
   } catch (e) {
-    return { status: 400, json: { error: (e as Error).message } };
+    return {
+      status: 400,
+      json: {
+        error: (e as Error).message,
+        code: e instanceof SkillInstallError ? e.code : undefined,
+      },
+    };
   }
 }
 
@@ -123,6 +142,12 @@ export async function handleUninstall(
     d.skillRepoSync?.onChanged(userId);
     return { status: 200, json: { ok: true } };
   } catch (e) {
-    return { status: 400, json: { error: (e as Error).message } };
+    return {
+      status: 400,
+      json: {
+        error: (e as Error).message,
+        code: e instanceof SkillInstallError ? e.code : undefined,
+      },
+    };
   }
 }

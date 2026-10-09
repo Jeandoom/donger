@@ -22,6 +22,7 @@ import {
   type SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { searchKbLibraries } from "../util/kb-search.js";
 
 export type KbToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 const ok = (text: string): KbToolResult => ({ content: [{ type: "text", text }] });
@@ -141,16 +142,8 @@ function treeList(root: string, depth: number, prefix = ""): string[] {
   return lines;
 }
 
-/** glob 仅支持 * 与 **（映射为正则），非法字符按字面处理；用 matchAll 规避 hook 误报 */
-function globToRegExp(glob: string): RegExp {
-  const NUL = String.fromCharCode(0);
-  const escaped = glob
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, NUL)
-    .replace(/\*/g, "[^/]*")
-    .replaceAll(NUL, ".*");
-  return new RegExp(`^${escaped}$`, "i");
-}
+/** glob 仅支持 * 与 **（映射为正则），非法字符按字面处理 */
+// （globToRegExp 已抽至 util/kb-search.ts 共享——agent 工具面与 HTTP 站内搜索同实现）
 
 export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
   const { mounts, defaultKbId } = normalizeMounts(deps);
@@ -199,13 +192,26 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
     },
     {
       name: "kb_read",
-      description: "读取知识库文件内容（相对库根的路径；仅 .md）",
+      description:
+        "读取知识库文件内容（相对库根的路径；仅 .md）。返回原文，末尾附一行「[kb 元数据]」（total_chars/offset/returned_chars/truncated/sha256）。文件超过 32000 字符时截断返回，须用 offset 分段续读全文；截断内容禁止直接 kb_write 整写。",
       inputSchema: {
         kbId: z.string().optional().describe("库 ID（缺省=当前主库）"),
         path: z.string().min(1).describe("相对库根的路径，如 knowledges/faq/订单.md"),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("起始字符偏移（大文件分段续读；缺省 0，取自上次元数据行的 next_offset）"),
       },
       handler: async (args): Promise<KbToolResult> => {
-        const a = z.object({ kbId: z.string().optional(), path: z.string() }).parse(args);
+        const a = z
+          .object({
+            kbId: z.string().optional(),
+            path: z.string(),
+            offset: z.number().int().min(0).optional(),
+          })
+          .parse(args);
         const mount = resolveMount(a.kbId);
         if (!mount) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
         if (!a.path.toLowerCase().endsWith(".md")) return fail("仅支持读取 .md 文件");
@@ -214,11 +220,14 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         if (!ensureRealpathInside(target, mount.root)) return fail(`路径越界：${a.path}`);
         try {
           const content = readFileSync(target, "utf8");
-          return ok(
-            content.length > MAX_READ_CHARS
-              ? `${content.slice(0, MAX_READ_CHARS)}\n…（已截断，共 ${content.length} 字符）`
-              : content,
-          );
+          const hash = createHash("sha256").update(content, "utf8").digest("hex");
+          const offset = a.offset ?? 0;
+          const slice = content.slice(offset, offset + MAX_READ_CHARS);
+          const truncated = offset + slice.length < content.length;
+          const meta = truncated
+            ? `[kb 元数据] total_chars=${content.length} offset=${offset} returned_chars=${slice.length} truncated=true sha256=${hash} next_offset=${offset + slice.length}；请用 offset 续读剩余部分，禁止凭截断内容直接 kb_write 整写`
+            : `[kb 元数据] total_chars=${content.length} offset=${offset} returned_chars=${slice.length} truncated=false sha256=${hash}；sha256 可作 kb_write 的 expectedHash`;
+          return ok(`${slice}\n\n---\n${meta}`);
         } catch {
           return fail(`文件不存在或不可读：${a.path}（先用 kb_list 确认路径）`);
         }
@@ -248,105 +257,30 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
             ? mounts
             : [resolveMount(a.kbId) ?? undefined].filter((m): m is KbMount => !!m);
         if (targets.length === 0) return fail(`未知知识库：${a.kbId ?? "(缺省)"}`);
-        const globRe = a.glob ? globToRegExp(a.glob) : undefined;
-        const needle = a.ignoreCase === false ? a.query : a.query.toLowerCase();
-        const hits: Array<{ kbId: string; path: string; line: number; snippet: string }> = [];
-        const truncatedFlag = { value: false };
-
-        /** 行级定位：读文件原文，产出 {kbId,path,line,snippet}（R-B 溯源形态） */
-        const locateLines = (mount: KbMount, rel: string, full: string): void => {
-          if (hits.length >= MAX_SEARCH_HITS) {
-            truncatedFlag.value = true;
-            return;
-          }
-          let content: string;
-          try {
-            content = readFileSync(full, "utf8");
-          } catch {
-            return;
-          }
-          const lines = content.split(/\r?\n/);
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i] ?? "";
-            const hay = a.ignoreCase === false ? line : line.toLowerCase();
-            if (hay.includes(needle)) {
-              hits.push({
-                kbId: mount.kbId,
-                path: rel,
-                line: i + 1,
-                snippet: line.trim().slice(0, 200),
-              });
-              if (hits.length >= MAX_SEARCH_HITS) {
-                truncatedFlag.value = true;
-                return;
-              }
-            }
-          }
-        };
-
-        // FTS 优先（R-A 影子索引）：跳过不含关键词的文件，仅对命中文件做行级定位
-        if (deps.ftsSearch) {
-          const files = deps.ftsSearch(
-            targets.map((t) => t.kbId),
-            a.query,
-          );
-          for (const f of files) {
-            if (hits.length >= MAX_SEARCH_HITS) break;
-            const mount = targets.find((t) => t.kbId === f.kbId);
-            if (!mount) continue;
-            const base = f.path.split("/").pop() ?? "";
-            if (globRe && !globRe.test(f.path) && !globRe.test(base)) continue;
-            locateLines(mount, f.path, join(mount.root, ...f.path.split("/")));
-          }
-        }
-        // grep 兜底：FTS 未装配或 0 命中（含 FTS 与内容脱同步的场景）
-        if (hits.length === 0) {
-          const startedAt = Date.now();
-          const searchOne = (mount: KbMount, dir: string, depth: number): void => {
-            if (depth <= 0 || hits.length >= MAX_SEARCH_HITS) return;
-            if (Date.now() - startedAt > SEARCH_TIMEOUT_MS) return;
-            let entries: string[];
-            try {
-              entries = readdirSync(dir);
-            } catch {
-              return;
-            }
-            for (const entry of entries) {
-              if (hits.length >= MAX_SEARCH_HITS) return;
-              if (entry.startsWith(".")) continue;
-              const full = join(dir, entry);
-              let stat: ReturnType<typeof statSync>;
-              try {
-                stat = statSync(full);
-              } catch {
-                continue;
-              }
-              if (stat.isDirectory()) {
-                searchOne(mount, full, depth - 1);
-                continue;
-              }
-              if (!stat.isFile()) continue;
-              const rel = relative(mount.root, full).replace(/\\/g, "/");
-              if (globRe && !globRe.test(rel) && !globRe.test(entry)) continue;
-              locateLines(mount, rel, full);
-            }
-          };
-          for (const mount of targets) searchOne(mount, resolve(mount.root), 6);
-        }
-        const body = {
+        const result = searchKbLibraries({
+          targets: targets.map((t) => ({ kbId: t.kbId, root: t.root })),
           query: a.query,
-          kbId: a.kbId ?? "(default)",
-          total: hits.length,
-          truncated: truncatedFlag.value,
-          hits,
-        };
-        return ok(JSON.stringify(body));
+          glob: a.glob,
+          ignoreCase: a.ignoreCase,
+          ftsSearch: deps.ftsSearch,
+          limit: MAX_SEARCH_HITS,
+          timeoutMs: SEARCH_TIMEOUT_MS,
+        });
+        return ok(
+          JSON.stringify({
+            query: a.query,
+            kbId: a.kbId ?? "(default)",
+            total: result.total,
+            truncated: result.truncated,
+            hits: result.hits,
+          }),
+        );
       },
     },
     {
       name: "kb_write",
       description:
-        "写入知识库文件（整文件覆写；目录自动创建；仅可写库）。写入前须先 kb_read 取最新内容。内容须标注主题、来源与日期。",
+        "写入知识库文件（整文件覆写；目录自动创建；仅可写库）。写入前须先 kb_read 取最新内容；目标文件超过 32000 字符时必须携带 expectedHash（kb_read 元数据行的 sha256，且须先分段读取全文）。内容须标注主题、来源与日期。",
       inputSchema: {
         kbId: z.string().optional().describe("库 ID（缺省=当前主库）"),
         path: z.string().min(1).describe("相对库根的路径（仅 .md）"),
@@ -354,7 +288,9 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
         expectedHash: z
           .string()
           .optional()
-          .describe("修改前文件的 sha256（防并发覆盖；来自 kb_read 时可选返回）"),
+          .describe(
+            "修改前文件的 sha256（防并发覆盖与截断回写；来自 kb_read 元数据行，文件超过 32000 字符时必填）",
+          ),
       },
       handler: async (args): Promise<KbToolResult> => {
         const a = z
@@ -383,6 +319,13 @@ export function kbToolDefinitions(deps: KbToolsDeps): SdkMcpToolDefinition[] {
           if (actual !== a.expectedHash.toLowerCase()) {
             return fail("文件已被其他人修改（hash 不匹配），请重新 kb_read 后再写。");
           }
+        }
+        // 超长文件整写守卫：超过单次读取上限的文件，kb_read 必然截断——不带 expectedHash
+        // 的整写等于拿截断文本覆写全文（静默丢尾部），升级为显式报错并指路分段读取
+        if (before !== undefined && before.length > MAX_READ_CHARS && !a.expectedHash) {
+          return fail(
+            `目标文件共 ${before.length} 字符，超过单次读取上限 ${MAX_READ_CHARS}：未携带 expectedHash 的整写可能覆盖你未读到的内容，已拒绝。请先用 kb_read 的 offset 分段读取全文，确认后再携带元数据行中的 sha256 重试。`,
+          );
         }
         try {
           mkdirSync(dirname(target), { recursive: true });

@@ -11,6 +11,8 @@ import type {
 } from "../ports/kb-store.js";
 
 const REVISION_DIFF_KEEP = 50;
+/** 修订前全文快照上限（字符）：超过不落快照，该行回滚不可用 */
+const REVISION_SNAPSHOT_MAX_CHARS = 200_000;
 
 /**
  * 知识库三表 store（spec 2026-09-22-knowledge-base-design §6）：
@@ -310,6 +312,12 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
     `);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_kb_rev_kb ON kb_revisions(kbId, createdAt DESC)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_kb_rev_time ON kb_revisions(createdAt DESC)");
+    // 存量库补列（修订回滚快照；2026-10 体验轮）
+    try {
+      this.db.exec("ALTER TABLE kb_revisions ADD COLUMN beforeContent TEXT");
+    } catch {
+      // 列已存在
+    }
   }
 
   async record(input: KbRevisionInput): Promise<KbRevision> {
@@ -326,14 +334,17 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
       ...(input.beforeHash ? { beforeHash: input.beforeHash } : {}),
       ...(input.afterHash ? { afterHash: input.afterHash } : {}),
       ...(input.diffText ? { diffText: input.diffText } : {}),
+      ...(input.beforeContent && input.beforeContent.length <= REVISION_SNAPSHOT_MAX_CHARS
+        ? { beforeContent: input.beforeContent }
+        : {}),
       createdAt: new Date().toISOString(),
     };
     this.db.transaction(() => {
       this.db
         .prepare(
           `INSERT INTO kb_revisions
-           (id, kbId, path, action, actorUserId, actorKind, conversationId, taskId, summary, beforeHash, afterHash, diffText, createdAt)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           (id, kbId, path, action, actorUserId, actorKind, conversationId, taskId, summary, beforeHash, afterHash, diffText, beforeContent, createdAt)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           rev.id,
@@ -348,12 +359,13 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
           rev.beforeHash ?? null,
           rev.afterHash ?? null,
           rev.diffText ?? null,
+          rev.beforeContent ?? null,
           rev.createdAt,
         );
       // 保留策略（spec §6.1）：同 kbId+path 仅最近 N 条留 diff/summary，更早的置空（行与时间线保留）
       this.db
         .prepare(
-          `UPDATE kb_revisions SET diffText = NULL, summary = ''
+          `UPDATE kb_revisions SET diffText = NULL, summary = '', beforeContent = NULL
            WHERE kbId = ? AND path = ? AND id NOT IN (
              SELECT id FROM kb_revisions WHERE kbId = ? AND path = ? ORDER BY createdAt DESC, rowid DESC LIMIT ?
            )`,
@@ -417,6 +429,13 @@ export class SqliteKbRevisionStore implements KbRevisionStore {
       .get(kbId) as { n: number };
     return row.n;
   }
+
+  async getById(kbId: string, revId: string): Promise<KbRevision | undefined> {
+    const row = this.db
+      .prepare("SELECT * FROM kb_revisions WHERE kbId = ? AND id = ?")
+      .get(kbId, revId) as Record<string, unknown> | undefined;
+    return row ? rowToRevision(row) : undefined;
+  }
 }
 
 function rowToLibrary(row: Record<string, unknown>): KbLibrary {
@@ -456,6 +475,9 @@ function rowToRevision(row: Record<string, unknown>): KbRevision {
       ? { afterHash: row.afterHash }
       : {}),
     ...(typeof row.diffText === "string" && row.diffText !== "" ? { diffText: row.diffText } : {}),
+    ...(typeof row.beforeContent === "string" && row.beforeContent !== ""
+      ? { beforeContent: row.beforeContent }
+      : {}),
     createdAt: row.createdAt as string,
   };
 }
