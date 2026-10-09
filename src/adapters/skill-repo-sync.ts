@@ -6,8 +6,17 @@
 // push 强制 --no-verify 防 pre-push hook 触碰凭证；错误输出统一脱敏。
 // 可靠性：每用户串行队列；同步失败仅落 lastSyncStatus，不阻塞、不回滚本地技能。
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gitPatFromValues } from "../domain/credential.js";
 import type { SkillPack } from "../domain/skill-pack.js";
 import type { User } from "../domain/user.js";
@@ -133,12 +142,18 @@ export class SkillRepoSyncService {
 
       const workdir = await this.ensureWorktree(userId, cfg.repoUrl, cfg.branch, credential);
       const { packCount, skillCount } = await this.mirrorPacks(userId, workdir);
+      const warnings = scanSecretWarnings(join(workdir, "packs"));
+      const warningNote =
+        warnings.length > 0 ? `；脱敏告警 ${warnings.length} 条：${warnings.join("；")}` : "";
 
       await this.git(["-C", workdir, "-c", GIT_LONG_PATH, "add", "-A"]);
       const diff = await this.git(["-C", workdir, "diff", "--cached", "--quiet"]);
       if (diff.code === 0) {
         await this.recordStatus(userId, "ok", undefined);
-        return { ok: true, message: `无变更（${packCount} 个技能包已一致）` };
+        return {
+          ok: true,
+          message: `无变更（${packCount} 个技能包已一致）${warningNote}`,
+        };
       }
       await this.git([
         "-C",
@@ -150,7 +165,10 @@ export class SkillRepoSyncService {
       ]);
       await this.pushWithRetry(workdir, cfg.branch, credential);
       await this.recordStatus(userId, "ok", undefined);
-      return { ok: true, message: `已同步 ${packCount} 个技能包 / ${skillCount} 个技能` };
+      return {
+        ok: true,
+        message: `已同步 ${packCount} 个技能包 / ${skillCount} 个技能${warningNote}`,
+      };
     } catch (e) {
       const message = (e as Error).message;
       await this.recordStatus(userId, "failed", message);
@@ -241,6 +259,7 @@ export class SkillRepoSyncService {
       manifestPacks.push({
         slug: pack.slug,
         name: pack.name,
+        description: pack.description ?? "",
         enabled: pack.enabled,
         skills: metaSkills.map((s) => ({ name: s.name, enabled: s.enabled })),
       });
@@ -249,6 +268,27 @@ export class SkillRepoSyncService {
       join(workdir, "manifest.json"),
       // 不含生成时间戳：内容无变化时 diff 为空，避免每次同步产生空提交
       JSON.stringify({ source: "donger-skills", packs: manifestPacks }, null, 2),
+    );
+    // marketplace.json 派生（specs/2026-10-09-skills-git-hosting-design.md §3.2）：镜像仓库
+    // 双重身份——对外是标准 Claude Code marketplace，对内可按 packs/<slug> subPath 回装。
+    // 同样内容确定性，无时间戳。
+    const marketplaceDir = join(workdir, ".claude-plugin");
+    mkdirSync(marketplaceDir, { recursive: true });
+    writeFileSync(
+      join(marketplaceDir, "marketplace.json"),
+      JSON.stringify(
+        {
+          name: "donger-skills",
+          owner: { name: "donger" },
+          plugins: manifestPacks.map((p) => ({
+            name: p.slug,
+            source: `./packs/${p.slug}`,
+            description: p.description,
+          })),
+        },
+        null,
+        2,
+      ),
     );
     return { packCount: packs.length, skillCount };
   }
@@ -315,6 +355,82 @@ export class SkillRepoSyncService {
 /** 仅同步用户自建 pack：paste/upload 源；git 导入（上游已有历史）与 builtin（只读）不同步 */
 function isSyncablePack(pack: SkillPack): boolean {
   return !pack.builtin && (pack.source.kind === "paste" || pack.source.kind === "upload");
+}
+
+// ---- 脱敏扫描（specs §3.5）：入镜像前对文本做凭证字面量告警，warning 不阻断 ----
+
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/sk-[A-Za-z0-9_-]{16,}/, "OpenAI 风格 key"],
+  [/ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/, "GitHub PAT"],
+  [/glpat-[A-Za-z0-9_-]{16,}/, "GitLab PAT"],
+  [/\b[0-9a-f]{32}\b/, "32 位十六进制串（疑似 Gitee PAT）"],
+  [
+    /(?:access[_-]?token|api[_-]?key|secret|password|passwd)\s*[:=]\s*["'][^"'\s]{8,}["']/i,
+    "疑似明文凭证字段",
+  ],
+];
+
+const SCAN_TEXT_EXTS = new Set([
+  ".md",
+  ".py",
+  ".sh",
+  ".js",
+  ".ts",
+  ".json",
+  ".txt",
+  ".yaml",
+  ".yml",
+]);
+const SCAN_MAX_FILES = 400;
+const SCAN_MAX_BYTES = 256 * 1024;
+const SCAN_MAX_WARNINGS = 5;
+
+function scanSecretWarnings(packsDir: string): string[] {
+  if (!existsSync(packsDir)) return [];
+  const warnings: string[] = [];
+  let scanned = 0;
+  const walk = (dir: string): void => {
+    if (warnings.length >= SCAN_MAX_WARNINGS || scanned >= SCAN_MAX_FILES) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (warnings.length >= SCAN_MAX_WARNINGS || scanned >= SCAN_MAX_FILES) return;
+      const full = join(dir, entry);
+      let stat: ReturnType<typeof statSync>;
+      try {
+        stat = statSync(full);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) {
+        if (entry !== ".git" && entry !== ".donger-sdk-plugin" && entry !== "node_modules") {
+          walk(full);
+        }
+        continue;
+      }
+      if (!SCAN_TEXT_EXTS.has(extname(entry))) continue;
+      if (stat.size > SCAN_MAX_BYTES) continue;
+      scanned += 1;
+      let content: string;
+      try {
+        content = readFileSync(full, "utf8");
+      } catch {
+        continue;
+      }
+      for (const [pattern, label] of SECRET_PATTERNS) {
+        if (pattern.test(content)) {
+          warnings.push(`${relative(packsDir, full).replace(/\\/g, "/")}：${label}`);
+          break;
+        }
+      }
+    }
+  };
+  walk(packsDir);
+  return warnings;
 }
 
 function credentialMissingHint(code: string): string {

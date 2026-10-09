@@ -8,7 +8,10 @@ import {
   UserSkillRepoInputSchema,
 } from "../domain/user-skill-repo.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
+import type { SkillInstaller } from "../ports/skill-installer.js";
+import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
+import { SkillInstallError } from "../util/errors.js";
 import type { SkillRepoSyncOutcome } from "./skill-repo-sync.js";
 
 export interface SkillRepoApiDeps {
@@ -23,6 +26,9 @@ export interface SkillRepoApiDeps {
     syncNow(userId: string): Promise<SkillRepoSyncOutcome>;
     forget(userId: string): Promise<void>;
   };
+  /** 回装（specs/2026-10-09-skills-git-hosting-design.md §3.2）：仓库 → git 源 pack；缺省=回装不可用 */
+  packStore?: SkillPackStore;
+  installer?: SkillInstaller;
 }
 
 export interface ApiResult {
@@ -103,4 +109,77 @@ export async function handleSyncSkillRepo(
     status: 200,
     json: { ...outcome, repo: cfg ? toUserSkillRepoView(cfg) : null },
   };
+}
+
+const RepoInstallBodySchema = z.object({
+  slug: z.string().regex(/^[a-z0-9-]+$/, "slug 须为小写字母/数字/连字符"),
+  replace: z.boolean().optional(),
+});
+
+/**
+ * 回装（push 镜像的反向）：从个人技能仓库按 packs/<slug> 以 git 源安装。
+ * 语义=仅补缺 + 显式替换（拍板 D3）：本地同 slug 存在时默认 409，replace=true 且
+ * 本地为 paste/upload 源才先卸载再装（git/builtin 源有上游管理，拒绝覆盖）。
+ */
+export async function handleRepoInstall(
+  userId: string,
+  body: unknown,
+  d: SkillRepoApiDeps,
+): Promise<ApiResult> {
+  if (!d.packStore || !d.installer) {
+    return { status: 500, json: { error: "回装通道未装配（缺 packStore/installer）" } };
+  }
+  const parsed = RepoInstallBodySchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return { status: 400, json: { error: parsed.error.issues[0]?.message ?? "入参非法" } };
+  }
+  const { slug, replace } = parsed.data;
+  const cfg = await d.repoStore.get(userId);
+  if (!cfg) return { status: 400, json: { error: "未配置技能仓库" } };
+
+  const existing = await d.packStore.getPackBySlug(userId, slug);
+  if (existing && replace !== true) {
+    return {
+      status: 409,
+      json: {
+        error: `本地已存在同名技能包「${slug}」；确认替换请携带 replace=true`,
+        code: "PACK_EXISTS",
+      },
+    };
+  }
+  try {
+    if (existing) {
+      if (existing.builtin || existing.source.kind === "git") {
+        return {
+          status: 400,
+          json: { error: `「${slug}」由 ${existing.builtin ? "内置" : "git 上游"}管理，不可替换` },
+        };
+      }
+      await d.installer.uninstall(userId, existing.id);
+    }
+    const pack = await d.installer.installFromGit(userId, {
+      url: cfg.repoUrl,
+      ref: cfg.branch,
+      subPath: `packs/${slug}`,
+      credentialCode: cfg.credentialCode,
+      slug,
+    });
+    const skills = await d.packStore.listSkills(userId, pack.id);
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        replaced: Boolean(existing),
+        pack: { ...pack, skills },
+      },
+    };
+  } catch (e) {
+    return {
+      status: 400,
+      json: {
+        error: (e as Error).message,
+        code: e instanceof SkillInstallError ? e.code : undefined,
+      },
+    };
+  }
 }

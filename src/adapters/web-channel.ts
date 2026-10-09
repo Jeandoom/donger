@@ -239,8 +239,11 @@ import { handleMcpMessage } from "./mcp/rpc.js";
 import { buildMcpTools } from "./mcp/tools.js";
 import { MemoryRateLimiter } from "./memory-rate-limiter.js";
 import {
+  handleHostSkill,
   handleInstall,
+  handleInstallToAgent,
   handleInstallUpload,
+  handleInventory,
   handleListPacks,
   handleSetPackEnabled,
   handleSetSkillEnabled,
@@ -252,6 +255,7 @@ import type { SkillJobRunner } from "./skill-jobs.js";
 import {
   handleGetSkillRepo,
   handlePutSkillRepo,
+  handleRepoInstall,
   handleSyncSkillRepo,
   handleVerifySkillRepo,
   type SkillRepoApiDeps,
@@ -6067,6 +6071,11 @@ export class WebChannel implements Channel {
         send(await handleSyncSkillRepo(uid, {}, repoDeps));
         return true;
       }
+      // POST /api/skills/repo/install —— 回装：仓库 packs/<slug> → git 源 pack（仅补缺+显式替换）
+      if (basePath === "/api/skills/repo/install" && req.method === "POST") {
+        send(await handleRepoInstall(uid, JSON.parse(await this.readBody(req)), repoDeps));
+        return true;
+      }
       send({ status: 404, json: { error: "路由不存在" } });
       return true;
     }
@@ -6283,6 +6292,21 @@ export class WebChannel implements Channel {
       send(await handleListPacks(uid, {}, deps));
       return true;
     }
+    // GET /api/skills/inventory —— 全量清单：packs ∪ agent 工作区 ∪ 托管标记
+    if (url === "/api/skills/inventory" && req.method === "GET") {
+      send(await handleInventory(uid, {}, deps));
+      return true;
+    }
+    // POST /api/skills/agent-install —— 安装技能到 agent 工作区（.agents/skills）
+    if (url === "/api/skills/agent-install" && req.method === "POST") {
+      send(await handleInstallToAgent(uid, JSON.parse(await this.readBody(req)), deps));
+      return true;
+    }
+    // POST /api/skills/host —— 提升托管：工作区技能 → user paste 包 → 自动镜像 push
+    if (url === "/api/skills/host" && req.method === "POST") {
+      send(await handleHostSkill(uid, JSON.parse(await this.readBody(req)), deps));
+      return true;
+    }
     if (url === "/api/skills/packs/install" && req.method === "POST") {
       send(await handleInstall(uid, JSON.parse(await this.readBody(req)), deps));
       return true;
@@ -6326,14 +6350,27 @@ export class WebChannel implements Channel {
   private skillDeps(): SkillApiDeps | null {
     const { skillPackStore, installer } = this.deps;
     if (!skillPackStore || !installer) return null;
-    return { packStore: skillPackStore, installer, skillRepoSync: this.deps.skillRepoSync };
+    return {
+      packStore: skillPackStore,
+      installer,
+      skillRepoSync: this.deps.skillRepoSync,
+      agentStore: this.deps.agentStore,
+      getHomeDir: async (userId) => (await this.deps.userStore?.get(userId))?.homeDir ?? "",
+    };
   }
 
   /** 组装技能仓库 API 依赖；缺省返回 null（路由回 404）。 */
   private skillRepoDeps(): SkillRepoApiDeps | null {
-    const { userSkillRepoStore, skillRepoSync, credentialSets } = this.deps;
+    const { userSkillRepoStore, skillRepoSync, credentialSets, skillPackStore, installer } =
+      this.deps;
     if (!userSkillRepoStore || !skillRepoSync) return null;
-    return { repoStore: userSkillRepoStore, sync: skillRepoSync, credentialSets };
+    return {
+      repoStore: userSkillRepoStore,
+      sync: skillRepoSync,
+      credentialSets,
+      packStore: skillPackStore,
+      installer,
+    };
   }
 
   /** GET /api/files/tree?scope=user|runtime|extension[&conversationId=] */

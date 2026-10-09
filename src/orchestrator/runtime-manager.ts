@@ -17,6 +17,7 @@ import type { CapabilitySet, RuntimeContext, TranscriptRef } from "../domain/run
 import { auditAgentSkillAvailability, resolvePackDirectory } from "../domain/skill-availability.js";
 import type { PackSkill, SkillPack } from "../domain/skill-pack.js";
 import { resolveActiveSkills } from "../domain/skill-resolution.js";
+import { scanSkillPack } from "../domain/skill-scan.js";
 import { UNTRUSTED_DATA_PREAMBLE, wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
 import type { RunOptions } from "../ports/agent-runner.js";
@@ -34,7 +35,7 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { TranscriptStore } from "../ports/transcript-store.js";
 import { seedBuiltinPacksIfAbsent } from "../util/builtin-skills.js";
-import { materializeSharedSkillPlugin } from "../util/sdk-plugin-layout.js";
+import { ensureSdkPluginLayout, materializeSharedSkillPlugin } from "../util/sdk-plugin-layout.js";
 import { ensureRuntimeDir } from "../util/workspace.js";
 
 export interface RuntimeManagerConfig {
@@ -244,6 +245,15 @@ export class RuntimeManager {
     const runtimeDir = opts.agent
       ? ensureRuntimeDir(user.homeDir, "agents", opts.agent.id, "workspace")
       : ensureRuntimeDir(user.homeDir, "sessions", conversation.id, "workspace");
+    // —— agent 级技能（workspace/.agents/skills，specs/2026-10-09-skills-git-hosting-design.md
+    //    §3.3）：拍板 D2 恒可用——适配为 agent-skills plugin（ensureSdkPluginLayout 生成标准
+    //    布局）加入 pluginPaths，claude 原生直挂、codex 物化器自动消费；白名单追加
+    //    agent-skills:*（agent.skills 显式白名单只约束 pack 技能，不裁自己的工作区）。
+    //    zcode 引擎消费随技能物化 spike（G5 遗留）。
+    const agentWorkspaceSkills = opts.agent
+      ? this.materializeAgentWorkspaceSkills(runtimeDir)
+      : undefined;
+    if (agentWorkspaceSkills) skills = [...skills, ...agentWorkspaceSkills.whitelist];
     const pluginPaths = [
       ...resolved.pluginPaths,
       ...(opts.agent && opts.sharedAgentSkillOwner
@@ -254,6 +264,7 @@ export class RuntimeManager {
             opts.sharedAgentSkillOwner,
           )
         : []),
+      ...(agentWorkspaceSkills ? [agentWorkspaceSkills.pluginPath] : []),
     ];
     // 插件共享运行库（<plugin>/scripts，如 copilot-skills 的 credentials 包）→
     // PYTHONPATH 注入清单；存在才注入，交给 runner 并 env（specs/2026-09-12-copilot-skills-packaging.md）
@@ -542,6 +553,29 @@ export class RuntimeManager {
       if (materialized) paths.push(materialized);
     }
     return paths;
+  }
+
+  /** agent 级技能适配（specs/2026-10-09-skills-git-hosting-design.md §3.3）：
+   *  无目录/无技能返回 undefined；适配产物经 marker 幂等复用，不重复复制。 */
+  private materializeAgentWorkspaceSkills(runtimeDir: string):
+    | {
+        pluginPath: string;
+        whitelist: string[];
+      }
+    | undefined {
+    const dir = join(runtimeDir, ".agents", "skills");
+    if (!existsSync(dir)) return undefined;
+    let names: string[];
+    try {
+      names = scanSkillPack(dir).skills.map((s) => s.name);
+    } catch {
+      return undefined;
+    }
+    if (names.length === 0) return undefined;
+    return {
+      pluginPath: ensureSdkPluginLayout(dir, "agent-skills"),
+      whitelist: names.map((name) => `agent-skills:${name}`),
+    };
   }
 
   /**

@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   createSdkMcpServer,
   type McpSdkServerConfigWithInstance,
@@ -39,6 +41,8 @@ export interface PlatformToolsDeps {
   conversationId?: string;
   /** 用户技能仓库同步（write_skill/update_skill 落盘后镜像到用户 git 仓库）；缺省=不同步 */
   skillRepoSync?: { onChanged(userId: string): void };
+  /** write_skill target=agent 的落点（<homeDir>/agents/<agentId>/workspace/.agents/skills）；缺省=agent 级写入不可用 */
+  agentWorkspaceSkillsDir?: string;
   /** finish_builder 成功解绑后回调（orchestrator 借此安排原任务自动重派） */
   onBuilderFinish?: () => void;
 }
@@ -123,6 +127,12 @@ const WriteSkillShape = {
     .min(1)
     .describe("SKILL.md 全文，含 --- frontmatter ---（name/description 与本参数一致）"),
   slug: z.string().optional().describe("pack slug（缺省用技能名；冲突自动加 -2 后缀）"),
+  target: z
+    .enum(["user", "agent"])
+    .optional()
+    .describe(
+      "落点：user=用户级技能包（缺省，入 git 托管镜像）；agent=本 agent 工作区 .agents/skills（仅本 agent 可用，不入镜像）",
+    ),
 };
 const SkillRefShape = {
   pack: z.string().min(1).describe("pack slug（list_skills 返回的 pack 字段）"),
@@ -250,10 +260,24 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
     {
       name: "write_skill",
       description:
-        "写入一个技能（SKILL.md 全文，含 frontmatter name/description）。写入操作，会弹审批卡确认。",
+        "写入一个技能（SKILL.md 全文，含 frontmatter name/description）。target=agent 时写入本 agent 工作区（仅本 agent 可用）；缺省写入用户级技能包并纳入 git 托管镜像。写入操作，会弹审批卡确认。",
       inputSchema: WriteSkillShape,
       handler: async (args): Promise<ToolResult> => {
         const a = z.object(WriteSkillShape).parse(args);
+        if (a.target === "agent") {
+          if (!deps.agentWorkspaceSkillsDir) {
+            return fail("agent 级落点不可用（缺少工作区目录配置）");
+          }
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(a.name)) {
+            return fail(`技能名非法（仅字母/数字/点/连字符/下划线）: ${a.name}`);
+          }
+          const skillDir = join(deps.agentWorkspaceSkillsDir, a.name);
+          mkdirSync(skillDir, { recursive: true });
+          writeFileSync(join(skillDir, "SKILL.md"), a.content, "utf8");
+          return ok(
+            `已写入本 agent 工作区技能 ${a.name}（.agents/skills/${a.name}/SKILL.md；下次会话生效）`,
+          );
+        }
         const pack = await deps.installer.installFromPaste(deps.user.id, {
           content: a.content,
           slug: a.slug,

@@ -1,4 +1,6 @@
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Agent, AgentInput } from "../../src/domain/agent.js";
 import type { Conversation } from "../../src/domain/conversation.js";
@@ -332,6 +334,39 @@ describe("平台工具", () => {
     expect(r.isError).toBeUndefined();
     expect(calls[0]?.userId).toBe(USER.id);
     expect(calls[0]?.req).toMatchObject({ name: "x-execute", description: "d" });
+  });
+
+  it("write_skill target=agent：写本 agent 工作区 .agents/skills，不触 pack 安装", async () => {
+    const store = mockAgentStore();
+    const calls: Array<{ userId: string; req: unknown }> = [];
+    const installer: SkillInstaller = {
+      ...INSTALLER,
+      installFromPaste: async (userId, req) => {
+        calls.push({ userId, req });
+        return INSTALLER.installFromPaste(userId, req);
+      },
+    };
+    const wsSkills = join(mkdtempSync(join(tmpdir(), "ptools-ws-")), ".agents", "skills");
+    const deps: Deps = { ...baseDeps(store), installer, agentWorkspaceSkillsDir: wsSkills };
+    const r = await findTool(deps, "write_skill").handler({
+      name: "ws-execute",
+      description: "d",
+      content: "---\nname: ws-execute\n---\n正文",
+      target: "agent",
+    });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]?.text).toContain(".agents/skills/ws-execute");
+    expect(existsSync(join(wsSkills, "ws-execute", "SKILL.md"))).toBe(true);
+    expect(calls).toHaveLength(0);
+
+    const illegal = await findTool(deps, "write_skill").handler({
+      name: "../escape",
+      description: "d",
+      content: "---\nname: x\n---\n",
+      target: "agent",
+    });
+    expect(illegal.isError).toBe(true);
+    expect(illegal.content[0]?.text).toContain("非法");
   });
 
   it("create_agent：tools 参数落库并回显；缺省 all", async () => {

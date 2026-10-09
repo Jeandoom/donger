@@ -670,6 +670,10 @@ export class Orchestrator {
           skillRepoSync: this.deps.skillRepoSync,
           conversationStore: this.deps.conversationStore,
           conversationId: p.conversation.id,
+          // write_skill target=agent 落点（与 runtime-manager ensureRuntimeDir 同构）
+          agentWorkspaceSkillsDir: p.agent
+            ? join(p.user.homeDir, "agents", p.agent.id, "workspace", ".agents", "skills")
+            : undefined,
           onBuilderFinish: () => this.builderFinished.add(p.conversation.id),
         }),
       };

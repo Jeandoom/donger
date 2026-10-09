@@ -503,6 +503,11 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/skills/packs/disable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/enable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/skills/disable", access: { kind: "authenticated" } },
+    // 全量清单/agent 级落点/提升托管（specs/2026-10-09-skills-git-hosting-design.md；归属校验在 handler）
+    { method: "GET", pattern: "/api/skills/inventory", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/skills/agent-install", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/skills/host", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/skills/repo/install", access: { kind: "authenticated" } },
     // 安装/更新任务化 + 卸载影响面 + SKILL.md 预览（2026-10 体验轮；归属校验在 handler）
     { method: "POST", pattern: "/api/skills/jobs", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/skills/jobs/:id", access: { kind: "authenticated" } },

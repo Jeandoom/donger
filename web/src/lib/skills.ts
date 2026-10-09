@@ -396,3 +396,80 @@ export function credentialStatus(pack: {
   }
   return { configured, missing };
 }
+
+// ---- 全量清单 / agent 级落点 / 提升托管 / 回装（specs/2026-10-09-skills-git-hosting-design.md）----
+
+export interface SkillInventoryRecordDTO {
+  id: string;
+  origin: "pack" | "agent";
+  packSource?: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  packId?: string;
+  packSlug?: string;
+  agentId?: string;
+  agentName?: string;
+  hosted: boolean;
+  updatedAt?: string;
+}
+
+export interface SkillInventoryDTO {
+  records: SkillInventoryRecordDTO[];
+  repo: { configured: boolean; hostedSlugs: string[] };
+}
+
+export async function fetchSkillInventory(): Promise<SkillInventoryDTO> {
+  const res = await apiFetch("/api/skills/inventory");
+  if (!res.ok) throw new Error(`inventory ${res.status}`);
+  return (await res.json()) as SkillInventoryDTO;
+}
+
+export async function installSkillToAgent(body: {
+  agentId: string;
+  from: { kind: "pack"; packId: string; skill: string } | { kind: "content"; content: string };
+  overwrite?: boolean;
+}): Promise<{ installed: { agentId: string; name: string; id: string } }> {
+  const res = await apiFetch("/api/skills/agent-install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok)
+    throw Object.assign(new Error(String(data.error ?? `install ${res.status}`)), {
+      code: data.code,
+    });
+  return data as never;
+}
+
+export async function hostSkill(
+  agentId: string,
+  skill: string,
+): Promise<{ action: string; packSlug: string }> {
+  const res = await apiFetch("/api/skills/host", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, skill }),
+  });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(String(data.error ?? `host ${res.status}`));
+  return data as never;
+}
+
+export async function repoInstallSkill(
+  slug: string,
+  replace?: boolean,
+): Promise<{ replaced: boolean }> {
+  const res = await apiFetch("/api/skills/repo/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug, replace }),
+  });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok)
+    throw Object.assign(new Error(String(data.error ?? `repo install ${res.status}`)), {
+      code: data.code,
+    });
+  return data as never;
+}

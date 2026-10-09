@@ -299,6 +299,42 @@ describe("RuntimeManager", () => {
     expect(runOptions.skills).toEqual(["demo:alpha"]);
   });
 
+  it("prepare：agent 工作区 .agents/skills → agent-skills plugin 进 pluginPaths，白名单追加（specs/2026-10-09-skills-git-hosting-design.md §3.3）", async () => {
+    const userHome = join(ws, "users", "u1");
+    const skillsDir = join(userHome, "agents", "a1", "workspace", ".agents", "skills", "ops-check");
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(
+      join(skillsDir, "SKILL.md"),
+      "---\nname: ops-check\ndescription: 工作区技能\n---\n正文",
+    );
+    const conv = baseConv({ agentId: "a1" });
+    const m = makeMgr(fakeConvStore([conv]));
+    const { runOptions } = await m.prepare(baseUser(userHome), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        systemPrompt: "",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        createdAt: "",
+        updatedAt: "",
+      },
+    });
+    expect(runOptions.skills).toContain("agent-skills:ops-check");
+    const generated = runOptions.pluginPaths.find((p) => p.includes(".donger-sdk-plugin"));
+    expect(generated).toBeTruthy();
+    expect(existsSync(join(generated ?? "", ".claude-plugin", "plugin.json"))).toBe(true);
+    // 无 agent 的会话不受影响
+    const plain = await makeMgr(fakeConvStore([baseConv()])).prepare(
+      baseUser(userHome),
+      baseConv(),
+      {},
+    );
+    expect(plain.runOptions.skills).not.toContain("agent-skills:ops-check");
+  });
+
   it("prepare：续接会话(有 sdkSessionId)产出 resume", async () => {
     const conv = baseConv({ sdkSessionId: "sdk-xyz" });
     const m = makeMgr(fakeConvStore([conv]));

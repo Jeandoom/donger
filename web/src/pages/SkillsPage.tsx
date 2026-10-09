@@ -22,6 +22,7 @@ import { Segmented } from "../components/ui/segmented";
 import { Select } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
+import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
   cancelSkillJob,
@@ -30,8 +31,14 @@ import {
   fetchPacks,
   fetchPackUsage,
   fetchSkillDoc,
+  fetchSkillInventory,
   fetchSkillRepo,
+  hostSkill,
+  installSkillToAgent,
   type PackUsageDTO,
+  repoInstallSkill,
+  type SkillInventoryDTO,
+  type SkillInventoryRecordDTO,
   type SkillJobView,
   type SkillPackDTO,
   type SkillRepoConfigDTO,
@@ -158,6 +165,13 @@ export function SkillsPage() {
   const [syncTip, setSyncTip] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyError, setBusyError] = useState<string | null>(null);
+  // 全量清单/agent 级落点/托管（specs/2026-10-09-skills-git-hosting-design.md）
+  const [inventory, setInventory] = useState<SkillInventoryDTO | null>(null);
+  const [agents, setAgents] = useState<AgentListDTO[]>([]);
+  const [installFor, setInstallFor] = useState<SkillInventoryRecordDTO | null>(null);
+  const [installAgentId, setInstallAgentId] = useState("");
+  const [hostTip, setHostTip] = useState<{ ok: boolean; text: string } | null>(null);
+  const [repoInstallSlug, setRepoInstallSlug] = useState("");
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -171,6 +185,10 @@ export function SkillsPage() {
     } finally {
       setLoading(false);
     }
+    // 全量清单失败不阻塞主列表（后端未装配时优雅降级隐藏该区块）
+    fetchSkillInventory()
+      .then(setInventory)
+      .catch(() => setInventory(null));
   }, []);
 
   useEffect(() => {
@@ -201,6 +219,85 @@ export function SkillsPage() {
       setSyncTip({ ok: false, text: (e as Error).message });
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const openInstallPicker = async (record: SkillInventoryRecordDTO) => {
+    setInstallFor(record);
+    setInstallAgentId("");
+    if (agents.length === 0) {
+      try {
+        setAgents(await fetchAgents());
+      } catch {
+        setAgents([]);
+      }
+    }
+  };
+
+  const runInstallToAgent = async (overwrite: boolean) => {
+    if (!installFor || !installAgentId || !installFor.packId) return;
+    setBusy(true);
+    setBusyError(null);
+    try {
+      await installSkillToAgent({
+        agentId: installAgentId,
+        from: { kind: "pack", packId: installFor.packId, skill: installFor.name },
+        overwrite: overwrite || undefined,
+      });
+      setInstallFor(null);
+      await reload();
+    } catch (e) {
+      const err = e as Error & { code?: string };
+      if (err.code === "SKILL_EXISTS" && !overwrite) {
+        if (window.confirm(`该 agent 已有同名技能「${installFor.name}」，确定覆盖？`)) {
+          await runInstallToAgent(true);
+        }
+      } else {
+        setBusyError(err.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runHost = async (record: SkillInventoryRecordDTO) => {
+    if (!record.agentId) return;
+    setBusy(true);
+    setHostTip(null);
+    setBusyError(null);
+    try {
+      const r = await hostSkill(record.agentId, record.name);
+      setHostTip({
+        ok: true,
+        text: `已${r.action === "created" ? "创建" : "更新"}托管包「${r.packSlug}」，正在推送到 git 仓库`,
+      });
+      await reload();
+    } catch (e) {
+      setHostTip({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runRepoInstall = async (replace: boolean) => {
+    const slug = repoInstallSlug.trim();
+    if (!slug) return;
+    setBusy(true);
+    setBusyError(null);
+    try {
+      const r = await repoInstallSkill(slug, replace || undefined);
+      setSyncTip({ ok: true, text: `已回装「${slug}」${r.replaced ? "（替换原包）" : ""}` });
+      setRepoInstallSlug("");
+      await reload();
+    } catch (e) {
+      const err = e as Error & { code?: string };
+      if (err.code === "PACK_EXISTS" && !replace) {
+        if (window.confirm(`本地已存在「${slug}」，确定替换？`)) await runRepoInstall(true);
+      } else {
+        setBusyError(err.message);
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -250,6 +347,20 @@ export function SkillsPage() {
             </span>
           )}
           <span className="flex-1" />
+          <Input
+            className="h-8 w-36"
+            placeholder="回装 slug"
+            value={repoInstallSlug}
+            onChange={(e) => setRepoInstallSlug(e.target.value)}
+            aria-label="回装技能包 slug"
+          />
+          <Button
+            variant="secondary"
+            disabled={syncing || busy || !repoInstallSlug.trim()}
+            onClick={() => void runRepoInstall(false)}
+          >
+            回装
+          </Button>
           <Button variant="secondary" onClick={runSync} disabled={syncing}>
             <RefreshCw aria-hidden="true" size={14} className={cn(syncing && "animate-spin")} />
             {syncing ? "同步中…" : "立即同步"}
@@ -275,6 +386,75 @@ export function SkillsPage() {
         <div className="mb-3 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
           {busyError}
         </div>
+      )}
+      {hostTip && (
+        <div
+          className={cn(
+            "mb-3 rounded-lg px-3 py-2 text-sm",
+            hostTip.ok ? "bg-success-soft text-success" : "bg-destructive-soft text-destructive",
+          )}
+        >
+          {hostTip.text}
+        </div>
+      )}
+      {inventory && inventory.records.length > 0 && (
+        <Card className="mb-3 p-3">
+          <div className="mb-1 flex items-baseline gap-2">
+            <span className="text-sm font-medium">全部技能</span>
+            <span className="text-xs text-muted-foreground">
+              {inventory.records.length} 项 · 含 agent 工作区与 git 托管状态
+            </span>
+          </div>
+          <div className="divide-y divide-border">
+            {inventory.records.map((r) => (
+              <div
+                key={`${r.origin}:${r.id}:${r.agentId ?? ""}`}
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2 text-sm"
+              >
+                <span className="font-medium">{r.name}</span>
+                {r.origin === "pack" ? (
+                  <Badge>{originLabel(r.packSource)}</Badge>
+                ) : (
+                  <Badge tone="info">agent 工作区</Badge>
+                )}
+                {r.origin === "agent" && r.agentName && (
+                  <span className="text-xs text-muted-foreground">@{r.agentName}</span>
+                )}
+                {r.origin === "pack" && r.packSlug && (
+                  <span className="font-mono text-xs text-muted-foreground">{r.packSlug}</span>
+                )}
+                {r.origin === "pack" && !r.enabled && <Badge tone="warning">已停用</Badge>}
+                {r.hosted && <Badge tone="success">已托管</Badge>}
+                <span
+                  className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+                  title={r.description}
+                >
+                  {r.description}
+                </span>
+                {r.origin === "pack" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void openInstallPicker(r)}
+                  >
+                    安装到 agent
+                  </Button>
+                )}
+                {r.origin === "agent" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void runHost(r)}
+                  >
+                    提升托管
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
       )}
       {loadError && (
         <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">
@@ -329,8 +509,66 @@ export function SkillsPage() {
           }}
         />
       )}
+      {installFor && (
+        <DialogShell
+          title={`安装「${installFor.name}」到 agent`}
+          subtitle="复制到该 agent 的工作区技能目录（.agents/skills），仅该 agent 会话可用；同名技能需确认覆盖"
+          onClose={() => setInstallFor(null)}
+          ariaLabel="安装到 agent"
+          footer={
+            <>
+              <span className="flex-1" />
+              <Button variant="secondary" size="sm" onClick={() => setInstallFor(null)}>
+                取消
+              </Button>
+              <Button
+                size="sm"
+                disabled={busy || !installAgentId}
+                onClick={() => void runInstallToAgent(false)}
+              >
+                安装
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-2">
+            {agents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">没有可选 agent（先创建智能体）</p>
+            ) : (
+              <Select
+                value={installAgentId}
+                onChange={(e) => setInstallAgentId(e.target.value)}
+                aria-label="选择 agent"
+              >
+                <option value="">选择 agent…</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
+        </DialogShell>
+      )}
     </div>
   );
+}
+
+/** pack 来源徽章文案 */
+function originLabel(source?: string): string {
+  switch (source) {
+    case "git":
+      return "git 包";
+    case "paste":
+      return "自建";
+    case "upload":
+      return "上传";
+    case "builtin":
+      return "内置";
+    default:
+      return "技能包";
+  }
 }
 
 /** 无凭证内嵌的 HTTPS 地址（与后端 UserSkillRepoInputSchema 同规的浅校验） */
