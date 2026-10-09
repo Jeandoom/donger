@@ -162,7 +162,7 @@ export class CodexAgentRunner implements AgentRunner {
     this.bridge.registerUpstream(upstreamToken, upstream);
 
     // —— MCP 装配（M2）——
-    // in-process 平台工具台（platform/git/kb/audit）：桥上挂 Streamable HTTP 端点给 codex，
+    // in-process 平台工具台（platform/git/host/kb/audit）：桥上挂 Streamable HTTP 端点给 codex，
     // 审批门命中在桥内静态拒绝（决策点 ①A）。连接器 stdio/http mcpServers：headers 凭证经
     // env_http_headers 注入（值只进 env，不进 argv 防 --config 泄漏面）。
     const mcpServerConfigs: Record<string, unknown> = {};
@@ -171,6 +171,7 @@ export class CodexAgentRunner implements AgentRunner {
     for (const sdkTools of [
       opts.platformTools,
       opts.gitPlatformTools,
+      opts.hostTools,
       opts.kbTools,
       opts.auditTools,
     ]) {

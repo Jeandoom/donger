@@ -1,10 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { LLMConfig } from "../domain/llm-config.js";
+import type { AgentPermissionMode } from "../domain/permission-mode.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
+import { type McpGateCheck, McpHttpBridge } from "./mcp-http-bridge.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
 import {
   defaultZcodeConnectionFactory,
@@ -27,12 +31,28 @@ import {
  *   （只读，ZCode 对写操作内部 deny）；恒不使用 yolo/auto。
  * - 用户 GLM key 以个人 provider 配置物化进用户工作区隔离目录，轮末删除；
  *   状态目录（HOME/DATA_BASE_DIR/SESSION_DB_PATH）全部重定向，不碰真实 ~/.zcode。
- * - M2 不挂载 donger MCP（platform/git/kb/audit）：依赖这些工具的 agent 暂不可用
- *   ZCode 引擎（spec §7 遗留）。
+ * - MCP 挂载（对齐 codex M2 + 部署运维轮 hostTools）：进程内平台工具台
+ *   （platform/git/host/kb/audit）经共享 McpHttpBridge 以 Streamable HTTP 形态
+ *   喂给 session/create 原生 mcpServers 参数；连接器 stdio/http 原样透传。
+ *   审批门在桥级静态拒绝（force 门任何模式、非 force 门 ask 模式；full_access
+ *   豁免非 force 门——与 claude canUseTool 同语义）。
+ * - 平台技能（opts.skills）未物化进 ZCode 引擎（codex 有 materializeWhitelistedSkills
+ *   先例，ZCode 侧技能发现路径待实证）——声明技能的 agent 暂不可用 ZCode 引擎跑技能。
  */
 
 /** 会话内 provider 注册 id（provider_config.json 物化时使用，modelSelection 引用） */
 const DONGER_ZCODE_PROVIDER_ID = "donger-glm";
+
+/** session/create mcpServers 参数元素（CLI 协议解析形状：stdio 走 command 分支、
+ *  其余走 {type,url,headers} 分支；env/headers 均为键值对数组） */
+type ZcodeSessionMcpServer =
+  | {
+      name: string;
+      command: string;
+      args?: string[];
+      env: Array<{ name: string; value: string }>;
+    }
+  | { name: string; type: string; url: string; headers: Array<{ name: string; value: string }> };
 
 /** 自定义模型必须显式 reasoningLevel（实测缺失报 invalid_model_request），且档位词表
  *  按模型而异（glm-5.3-flash 实测 high ✓ / enabled ✗；glm-4.6 实测 enabled ✓ / high ✗）。
@@ -101,6 +121,22 @@ export function resolveToolDenylist(allowedTools: string[] | undefined): string[
   return denied.length > 0 ? [...denied] : undefined;
 }
 
+/** MCP 桥级审批门语义（共享 McpHttpBridge 的 gateCheck 注入）：命中审批门的工具在桥内
+ *  静态拒绝——zcode 会话内的 requestPermission 通道是否覆盖 MCP 工具未经实证，
+ *  fail-closed 优先。分流与平台铁律对齐：force 门任何权限模式不豁免；非 force 门
+ *  full_access 放行（与 claude canUseTool 同语义），ask 模式拒绝。 */
+export function createMcpGateCheck(
+  gates: GateRouter,
+  permissionMode?: () => AgentPermissionMode,
+): McpGateCheck {
+  return (tool, input) => {
+    const gated = gates.match(tool, input);
+    if (!gated) return undefined;
+    if (permissionMode?.() === "full_access" && !gated.force) return undefined;
+    return gated;
+  };
+}
+
 export class ZcodeAgentRunner implements AgentRunner {
   /** 等用户作答 AskUserQuestion 的任务（看门狗豁免判定；与 claude runner 同模式） */
   private readonly pendingUserInputs = new Set<string>();
@@ -108,6 +144,8 @@ export class ZcodeAgentRunner implements AgentRunner {
   constructor(
     private readonly gates: GateRouter,
     private readonly clientFactory: ZcodeConnectionFactory = defaultZcodeConnectionFactory,
+    /** 共享 MCP HTTP 桥（进程内工具台 → session/create mcpServers；测试可注入） */
+    private readonly bridge: McpHttpBridge = new McpHttpBridge("ZCode"),
   ) {}
 
   isAwaitingUserInput(taskId: string): boolean {
@@ -145,6 +183,12 @@ export class ZcodeAgentRunner implements AgentRunner {
 
     const mode = resolveZcodeMode(opts.allowedTools);
     const denylist = resolveToolDenylist(opts.allowedTools);
+
+    // —— MCP 装配：进程内工具台经共享 HTTP 桥挂载 + 连接器透传（per-run token 鉴权，
+    //    轮末卸载）。session/create 原生消费 mcpServers 参数（CLI 协议运行时日志
+    //    zcode_protocol.create_record.mcp_config 实证 paramMcpServerCount）。 ——
+    const mcpRunToken = randomUUID();
+    const sessionMcpServers = await this.materializeSessionMcpServers(opts, mcpRunToken);
 
     const env: Record<string, string | undefined> = {
       ...process.env,
@@ -190,6 +234,7 @@ export class ZcodeAgentRunner implements AgentRunner {
         workspace: { workspacePath: cwd, workspaceKey: cwd },
         mode,
         ...(denylist ? { toolDenylist: denylist } : {}),
+        ...(sessionMcpServers.length > 0 ? { mcpServers: sessionMcpServers } : {}),
       });
       const sessionId = created.session?.sessionId ?? "";
       if (!sessionId) throw new Error("ZCode session/create 未返回 sessionId");
@@ -234,7 +279,8 @@ export class ZcodeAgentRunner implements AgentRunner {
             workspaceRoot: opts.workspaceRoot,
             capabilityVersion: opts.capabilityVersion,
             credentialKeys: Object.keys(opts.credentialsEnv ?? {}),
-            note: "zcode 引擎：审批门=反向权限请求（全功能）、AskUserQuestion 桥接、MCP 未挂载",
+            mcpServers: sessionMcpServers.map((s) => s.name),
+            note: "zcode 引擎：审批门=反向权限请求（全功能）+桥级静态拒绝（force 门恒拒/非 force 门 ask 拒/full_access 豁免）、AskUserQuestion 桥接、MCP=HTTP 桥挂载+连接器透传、平台技能未物化（遗留）",
           },
         }),
       });
@@ -314,6 +360,10 @@ export class ZcodeAgentRunner implements AgentRunner {
       };
     } finally {
       connection?.close();
+      // MCP 挂载轮末卸载（per-run token；URL 失效即不可达，桥实例存续供下一轮复用）
+      await this.bridge.unmountAllMcp(mcpRunToken).catch(() => {
+        // 卸载失败不掩盖主流程
+      });
       // 凭证不落盘残留：provider 配置（含明文 key）轮末即删；状态目录留待 resume 复用
       try {
         if (existsSync(providerConfigPath)) rmSync(providerConfigPath, { force: true });
@@ -460,6 +510,51 @@ export class ZcodeAgentRunner implements AgentRunner {
     } finally {
       this.pendingUserInputs.delete(task.id);
     }
+  }
+
+  /** MCP 装配：五台进程内工具台（platform/git/host/kb/audit）经共享 HTTP 桥挂载
+   *  （桥级审批门静态拒绝见 createMcpGateCheck）；连接器 stdio/http 原样透传。
+   *  env/headers 必须是 [{name,value}] 数组——协议解析对缺失字段直接 .map 崩。 */
+  private async materializeSessionMcpServers(
+    opts: RunOptions,
+    runToken: string,
+  ): Promise<ZcodeSessionMcpServer[]> {
+    const gateCheck = createMcpGateCheck(this.gates, opts.permissionMode);
+    const servers: ZcodeSessionMcpServer[] = [];
+    for (const sdkTools of [
+      opts.platformTools,
+      opts.gitPlatformTools,
+      opts.hostTools,
+      opts.kbTools,
+      opts.auditTools,
+    ]) {
+      if (!sdkTools) continue;
+      const url = await this.bridge.mountMcp(
+        runToken,
+        sdkTools.name,
+        sdkTools.instance as never,
+        gateCheck,
+      );
+      servers.push({ name: sdkTools.name, type: "http", url, headers: [] });
+    }
+    for (const server of (opts.mcpServers ?? []) as McpServerConfig[]) {
+      if (server.type === "stdio" && server.command) {
+        servers.push({
+          name: server.name,
+          command: server.command,
+          ...(server.args?.length ? { args: server.args } : {}),
+          env: Object.entries(server.env ?? {}).map(([name, value]) => ({ name, value })),
+        });
+      } else if (server.url) {
+        servers.push({
+          name: server.name,
+          type: server.type,
+          url: server.url,
+          headers: Object.entries(server.headers ?? {}).map(([name, value]) => ({ name, value })),
+        });
+      }
+    }
+    return servers;
   }
 }
 

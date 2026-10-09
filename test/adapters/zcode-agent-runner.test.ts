@@ -2,7 +2,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { McpHttpBridge } from "../../src/adapters/mcp-http-bridge.js";
 import {
+  createMcpGateCheck,
   resolveToolDenylist,
   resolveZcodeMode,
   writeProviderConfig,
@@ -609,5 +611,93 @@ describe("ZcodeAgentRunner", () => {
       "providerModelRules",
       "manualProviderModelRules",
     ]);
+  });
+
+  it("MCP 桥级门语义：force 门任何模式拒、非 force 门 full_access 豁免、未命中放行", () => {
+    const gates = makeGates([
+      { gateId: "host-ops", toolName: "mcp__donger-host__exec", force: true },
+      { gateId: "authoring", toolName: "mcp__donger-platform__create_asset", force: false },
+    ]);
+    const ask = createMcpGateCheck(gates, () => "ask_before_change");
+    const full = createMcpGateCheck(gates, () => "full_access");
+    expect(ask("mcp__donger-host__exec", {})).toEqual({ gateId: "host-ops", force: true });
+    // force 门 full_access 不豁免（平台铁律）
+    expect(full("mcp__donger-host__exec", {})).toEqual({ gateId: "host-ops", force: true });
+    expect(ask("mcp__donger-platform__create_asset", {})).toEqual({
+      gateId: "authoring",
+      force: false,
+    });
+    // 非 force 门 full_access 豁免（与 claude canUseTool 同语义）
+    expect(full("mcp__donger-platform__create_asset", {})).toBeUndefined();
+    // 无门工具（kb_write 等）桥不拦——静态守卫在权限回调层
+    expect(ask("mcp__donger-kb__kb_write", {})).toBeUndefined();
+  });
+
+  it("MCP 装配：进程内工具台经 HTTP 桥挂载 + 连接器透传，轮末按 run-token 卸载", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    server.eventsAfterSend = [completedEvent("done")];
+    const { factory } = factoryFor(server);
+    const bridge = new McpHttpBridge("ZCode");
+    const fakeSdkTools = (name: string) =>
+      ({ name, instance: { connect: async () => {} } }) as never;
+    const runner = new ZcodeAgentRunner(makeGates([]), factory, bridge);
+    const opts = baseOpts({
+      kbTools: fakeSdkTools("donger-kb"),
+      hostTools: fakeSdkTools("donger-host"),
+      mcpServers: [
+        {
+          name: "conn-stdio",
+          type: "stdio",
+          command: "node",
+          args: ["srv.js"],
+          env: { TOKEN: "t1" },
+        },
+        {
+          name: "conn-http",
+          type: "http",
+          url: "https://mcp.example.com/mcp",
+          headers: { Authorization: "Bearer x" },
+        },
+      ],
+    });
+
+    await collect(runner.run(task, opts, async () => ({ approved: true })));
+
+    const create = server.request("session/create");
+    const mcp = create?.mcpServers as Array<Record<string, unknown>>;
+    expect(mcp).toHaveLength(4);
+    const kb = mcp.find((s) => s.name === "donger-kb");
+    expect(kb?.type).toBe("http");
+    expect(String(kb?.url)).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/.+\/donger-kb$/);
+    expect(mcp.find((s) => s.name === "donger-host")).toBeTruthy();
+    // 连接器透传为协议解析形状（env/headers 键值对数组）
+    expect(mcp.find((s) => s.name === "conn-stdio")).toEqual({
+      name: "conn-stdio",
+      command: "node",
+      args: ["srv.js"],
+      env: [{ name: "TOKEN", value: "t1" }],
+    });
+    expect(mcp.find((s) => s.name === "conn-http")).toEqual({
+      name: "conn-http",
+      type: "http",
+      url: "https://mcp.example.com/mcp",
+      headers: [{ name: "Authorization", value: "Bearer x" }],
+    });
+    // 轮末卸载（per-run token）
+    expect(bridge.mcpMountCountForTests()).toBe(0);
+  });
+
+  it("无工具台无连接器时 create 不带 mcpServers 键（白名单 agent 零开销路径不变）", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    server.eventsAfterSend = [completedEvent("done")];
+    const { factory } = factoryFor(server);
+    const runner = new ZcodeAgentRunner(makeGates([]), factory);
+
+    await collect(runner.run(task, baseOpts(), async () => ({ approved: true })));
+
+    const create = server.request("session/create");
+    expect(create?.mcpServers).toBeUndefined();
   });
 });

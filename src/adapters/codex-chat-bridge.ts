@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { McpGateCheck, McpServerLike } from "./mcp-http-bridge.js";
+import { McpHttpBridge, readBody } from "./mcp-http-bridge.js";
 
 /**
  * 内置 Responses↔Chat 协议桥（specs/2026-09-21-codex-openai-runner-design.md §7.0 修正）。
@@ -10,10 +11,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
  * 进程内起一个 127.0.0.1 专属 HTTP 端点，把 codex 发出的 Responses 请求翻译成上游
  * chat/completions（SSE 双向翻译），使任意 OpenAI 协议端点可被 codex 引擎消费。
  *
- * 同一端点第二职责（M2）：把 donger 的 in-process 平台工具台（platform/git/kb/audit，
- * Claude SDK 专属形态）以 Streamable HTTP MCP server 形态挂载给 codex，路径含 run-token
- * 鉴权；审批门命中（git-write/authoring/deploy 的 MCP 写工具）在桥内静态拒绝——openai
- * 会话无交互审批通道（决策点 ①A fail-closed）。
+ * 同一端点第二职责（M2）：把 donger 的 in-process 平台工具台以 Streamable HTTP MCP
+ * server 形态挂载给 codex——实现抽在共享的 McpHttpBridge（zcode 引擎同款复用），
+ * 本桥持有一个 "OpenAI" 文案标识的实例做委托；审批门命中在桥内静态拒绝（决策点 ①A
+ * fail-closed）。
  *
  * 安全红利：上游 baseUrl/key 只注册在桥内（内存 Map），经 env_http_headers 引用的
  * run-token 仅用于鉴权——上游凭证不进 codex 子进程 env，不落 agent 可达面（防线 1）。
@@ -26,26 +27,9 @@ export interface ChatUpstreamConfig {
   model: string;
 }
 
-/** in-process MCP server 实例的最小结构面（Claude SDK createSdkMcpServer 产物即满足） */
-export interface McpServerLike {
-  connect(transport: unknown): Promise<void>;
-  close?(): Promise<void>;
-}
+/** in-process MCP server 实例与审批门检查回调的类型面（实现上移共享桥后原位再导出） */
+export type { McpGateCheck, McpServerLike } from "./mcp-http-bridge.js";
 
-/** 审批门检查回调：返回命中的 gateId/force 或 undefined（复用 GateRouter.match 语义） */
-export type McpGateCheck = (
-  tool: string,
-  input: Record<string, unknown>,
-) => { gateId: string; force?: boolean } | undefined;
-
-interface McpMount {
-  runToken: string;
-  serverName: string;
-  transport: StreamableHTTPServerTransport;
-  gateCheck?: McpGateCheck;
-}
-
-const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const BRIDGE_AUTH_HEADER = "x-donger-bridge";
 
 // —— 请求翻译：Responses → chat/completions ——
@@ -410,7 +394,8 @@ export class CodexChatBridge {
   private server: Server | null = null;
   private startPromise: Promise<number> | null = null;
   private readonly upstreams = new Map<string, ChatUpstreamConfig>();
-  private readonly mcpMounts = new Map<string, McpMount>();
+  /** MCP 挂载委托给共享桥（engineLabel 用于静态拒绝文案） */
+  private readonly mcpBridge = new McpHttpBridge("OpenAI");
 
   /** 懒启动：绑定 127.0.0.1 随机端口，返回端口号（幂等） */
   ensureStarted(): Promise<number> {
@@ -464,52 +449,30 @@ export class CodexChatBridge {
    * 把 in-process MCP server 实例挂载为 Streamable HTTP MCP 端点（stateless 模式），
    * 路径含 run-token 鉴权。返回给 codex config.mcp_servers 用的完整 URL。
    */
-  async mountMcp(
+  mountMcp(
     runToken: string,
     serverName: string,
     instance: McpServerLike,
     gateCheck?: McpGateCheck,
   ): Promise<string> {
-    const port = await this.ensureStarted();
-    // stateful 会话模式：initialize 发 mcp-session-id，后续请求凭会话路由
-    //（stateless 模式要求每请求新建 transport+实例，per-run 挂载不适用）
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableJsonResponse: true,
-    });
-    await instance.connect(transport as never);
-    this.mcpMounts.set(mcpMountKey(runToken, serverName), {
-      runToken,
-      serverName,
-      transport,
-      gateCheck,
-    });
-    return `http://127.0.0.1:${port}/mcp/${runToken}/${serverName}`;
+    return this.mcpBridge.mountMcp(runToken, serverName, instance, gateCheck);
   }
 
   /** 运行结束卸载该 run 的全部挂载（transport 关闭；实例为 per-run 构造，随后自然 GC） */
-  async unmountAllMcp(runToken: string): Promise<void> {
-    for (const [key, mount] of [...this.mcpMounts.entries()]) {
-      if (mount.runToken !== runToken) continue;
-      this.mcpMounts.delete(key);
-      try {
-        await mount.transport.close();
-      } catch {
-        // 已断开/重复关闭忽略
-      }
-    }
+  unmountAllMcp(runToken: string): Promise<void> {
+    return this.mcpBridge.unmountAllMcp(runToken);
   }
 
   mcpMountCountForTests(): number {
-    return this.mcpMounts.size;
+    return this.mcpBridge.mcpMountCountForTests();
   }
 
   async close(): Promise<void> {
+    await this.mcpBridge.close();
     const server = this.server;
     this.server = null;
     this.startPromise = null;
     this.upstreams.clear();
-    for (const key of [...this.mcpMounts.keys()]) this.mcpMounts.delete(key);
     if (!server) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -520,10 +483,6 @@ export class CodexChatBridge {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url ?? "";
-    if (url.startsWith("/mcp/")) {
-      await this.handleMcp(req, res, url);
-      return;
-    }
     if (req.method !== "POST" || !url.endsWith("/responses")) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "not found" } }));
@@ -626,66 +585,6 @@ export class CodexChatBridge {
     for (const event of translator.finish()) writeSse(res, event);
     res.end();
   }
-
-  /** MCP 挂载请求处理：审批门拦截 tools/call，其余透传 StreamableHTTP transport */
-  private async handleMcp(req: IncomingMessage, res: ServerResponse, url: string): Promise<void> {
-    // /mcp/<runToken>/<serverName>
-    const rest = url.slice("/mcp/".length);
-    const slash = rest.indexOf("/");
-    const runToken = slash > 0 ? rest.slice(0, slash) : "";
-    const serverName = slash > 0 ? decodeURIComponent(rest.slice(slash + 1)) : "";
-    const mount = this.mcpMounts.get(mcpMountKey(runToken, serverName));
-    if (!mount) {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "mcp mount not found" } }));
-      return;
-    }
-
-    if (req.method !== "POST") {
-      // stateless 模式无服务端主动推送：GET/DELETE 交 transport 处理（其会回 405）
-      await mount.transport.handleRequest(req, res).catch(() => {});
-      return;
-    }
-
-    const body = await readBody(req);
-    let parsed: JsonRecord;
-    try {
-      parsed = JSON.parse(body.toString("utf8")) as JsonRecord;
-    } catch {
-      res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "invalid json body" } }));
-      return;
-    }
-
-    // 审批门静态拒绝（决策点 ①A）：git-write/authoring 等写工具在 openai 会话无人工通道
-    if (parsed.method === "tools/call" && mount.gateCheck) {
-      const params = (parsed.params ?? {}) as JsonRecord;
-      const toolName = typeof params.name === "string" ? params.name : "";
-      const args = (params.arguments ?? {}) as Record<string, unknown>;
-      const gated = mount.gateCheck(`mcp__${mount.serverName}__${toolName}`, args);
-      if (gated) {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: parsed.id ?? null,
-            result: {
-              content: [
-                {
-                  type: "text",
-                  text: `操作被拒绝：${gated.gateId} 门要求人工审批，OpenAI 引擎会话无交互审批通道（fail-closed）。如需执行请在 Claude 引擎会话中完成。`,
-                },
-              ],
-              isError: true,
-            },
-          }),
-        );
-        return;
-      }
-    }
-
-    await mount.transport.handleRequest(req, res, parsed).catch(() => {});
-  }
 }
 
 /** 只回分类信息 + 截断后的上游错误摘要（不透传完整 body，防内网信息回显） */
@@ -699,18 +598,6 @@ function sanitizeUpstreamError(status: number, detail: string): string {
     if (detail) message += `：${detail.slice(0, 200)}`;
   }
   return message.slice(0, 500);
-}
-
-async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    total += buf.length;
-    if (total > MAX_BODY_BYTES) throw new Error("request body too large");
-    chunks.push(buf);
-  }
-  return Buffer.concat(chunks);
 }
 
 function writeSse(res: ServerResponse, payload: JsonRecord): void {
@@ -739,8 +626,4 @@ export class SseDataParser {
       newline = this.buffer.indexOf("\n");
     }
   }
-}
-
-function mcpMountKey(runToken: string, serverName: string): string {
-  return `${runToken}/${serverName}`;
 }
