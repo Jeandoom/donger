@@ -1,24 +1,20 @@
 import { z } from "zod";
 
-// name 会拼进运行目录路径（loop-runner join(workspaceRoot, name, runId)）：
-// 禁路径分隔符、.. 与首尾点空格，防 mkdirSync 落到工作区之外
-const isSafeWorkflowName = (v: string): boolean =>
-  v.length >= 1 &&
-  v.length <= 64 &&
-  !/[\\/:*?"<>|]/.test(v) &&
-  !v.includes("..") &&
-  !/^[\s.]/.test(v) &&
-  !/[\s.]$/.test(v);
-
 export const WorkflowSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
-  name: z.string().refine(isSafeWorkflowName, "name 不可包含路径分隔符、.. 或首尾点空格（≤64 字）"),
+  name: z.string().min(1).max(64),
   description: z.string().optional(),
-  triggerId: z.string(),
+  /** 订阅的事件（原 triggerId；spec 2026-10-09-events-workflows-refactor-design §3.2） */
+  eventId: z.string(),
   agentId: z.string(),
   promptTemplate: z.string().default("{{triggerOutput}}"),
-  outputSubdir: z.string().default("outputs/"),
+  /** 启用态（原 Loop.enabled；loops 模块已移除） */
+  enabled: z.boolean().default(false),
+  // —— 运行态（原 Loop 运行字段收编）——
+  lastRunId: z.string().nullable().optional(),
+  lastRunAt: z.string().nullable().optional(),
+  lastError: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -28,15 +24,14 @@ export const WorkflowInputSchema = WorkflowSchema.omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  enabled: true,
+  lastRunId: true,
+  lastRunAt: true,
+  lastError: true,
 });
-// ponytail: z.input 让带 .default() 的字段（promptTemplate/outputSubdir）在输入类型里可选
+// ponytail: z.input 让带 .default() 的字段（promptTemplate）在输入类型里可选
 export type WorkflowInput = z.input<typeof WorkflowInputSchema>;
 
 export function parseWorkflowInput(raw: unknown): WorkflowInput {
   return WorkflowInputSchema.parse(raw);
-}
-
-/** 把 trigger 抓取到的内容包装成 agent 的 user message。 */
-export function renderPromptTemplate(template: string, triggerOutput: string): string {
-  return template.replaceAll("{{triggerOutput}}", triggerOutput);
 }

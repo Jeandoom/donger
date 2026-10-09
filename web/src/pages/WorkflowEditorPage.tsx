@@ -1,30 +1,78 @@
-import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { RefreshCw, Square } from "lucide-react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
 import { useDirtyGuard } from "../components/ui/dirty-guard";
 import { FormField, FormSection } from "../components/ui/form-section";
 import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { Select } from "../components/ui/select";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { apiFetch } from "../lib/auth";
+import { eventNameLabel, runStatusLabel, runStatusTone } from "../lib/runStatus";
 
-interface Trigger {
+type EventType = "system" | "schedule" | "call";
+
+interface EventOption {
   id: string;
   name: string;
-  type: "scheduler" | "hook";
+  type: EventType;
 }
 
 interface WorkflowDTO {
   id: string;
   name: string;
   description?: string;
-  triggerId: string;
+  eventId: string;
   agentId: string;
   promptTemplate?: string;
-  outputSubdir?: string;
+  enabled: boolean;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+}
+
+interface RunStats {
+  total: number;
+  queued: number;
+  running: number;
+  success: number;
+  failed: number;
+  stopped: number;
+  avgDurationMs: number | null;
+}
+
+interface RunDTO {
+  id: string;
+  status: "queued" | "running" | "success" | "failed" | "stopped";
+  eventName: string;
+  context?: string | null;
+  renderedPrompt?: string | null;
+  conversationId?: string | null;
+  error?: string | null;
+  queuedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+/** 各事件类型的提示词可用变量（与后端 buildPromptVars 契约一致） */
+const VAR_BASE = ["triggerOutput", "firedAt", "eventName"];
+function varsForEvent(type: EventType | undefined): string[] {
+  const vars = [...VAR_BASE];
+  if (type === "call") vars.push("query", "data");
+  return vars;
+}
+
+function durationText(startedAt?: string | null, finishedAt?: string | null): string {
+  if (!startedAt) return "—";
+  const end = finishedAt ? Date.parse(finishedAt) : Date.now();
+  const ms = Math.max(0, end - Date.parse(startedAt));
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
 export function WorkflowEditorPage() {
@@ -32,11 +80,11 @@ export function WorkflowEditorPage() {
   const nav = useNavigate();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [triggerId, setTriggerId] = useState("");
+  const [eventId, setEventId] = useState("");
   const [agentId, setAgentId] = useState("");
   const [promptTemplate, setPromptTemplate] = useState("{{triggerOutput}}");
-  const [outputSubdir, setOutputSubdir] = useState("outputs/");
-  const [triggers, setTriggers] = useState<Trigger[]>([]);
+  const [enabled, setEnabled] = useState(false);
+  const [events, setEvents] = useState<EventOption[]>([]);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [refsTick, setRefsTick] = useState(0);
@@ -45,15 +93,16 @@ export function WorkflowEditorPage() {
   const [loaded, setLoaded] = useState(!id);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const snapshot = JSON.stringify({
-    name,
-    description,
-    triggerId,
-    agentId,
-    promptTemplate,
-    outputSubdir,
-  });
+  // 执行记录
+  const [stats, setStats] = useState<RunStats | null>(null);
+  const [runs, setRuns] = useState<RunDTO[]>([]);
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
+  const [runningNow, setRunningNow] = useState(false);
+  const [canShowRecords, setCanShowRecords] = useState(Boolean(id));
+
+  const snapshot = JSON.stringify({ name, description, eventId, agentId, promptTemplate });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
     if (loaded && pristineRef.current === null) pristineRef.current = snapshot;
@@ -61,19 +110,19 @@ export function WorkflowEditorPage() {
   const dirty = pristineRef.current !== null && snapshot !== pristineRef.current;
   const { attempt, dialog } = useDirtyGuard(dirty && !saving);
 
-  // Trigger / Agent 下拉选项；失败显式可重试（原 .catch(() => []) 会把失败伪装成空列表）
+  // 事件 / Agent 下拉选项；失败显式可重试
   // biome-ignore lint/correctness/useExhaustiveDependencies: refsTick 仅用于手动重试时触发重新加载
   useEffect(() => {
     let cancelled = false;
     setRefsError(null);
     void (async () => {
       try {
-        const [tr, ag] = await Promise.all([
-          apiFetch("/api/triggers").then((r) => r.json() as Promise<{ triggers?: Trigger[] }>),
+        const [ev, ag] = await Promise.all([
+          apiFetch("/api/events").then((r) => r.json() as Promise<{ events?: EventOption[] }>),
           fetchAgents(),
         ]);
         if (cancelled) return;
-        setTriggers(tr.triggers ?? []);
+        setEvents(ev.events ?? []);
         setAgents(ag);
       } catch (e) {
         if (!cancelled) setRefsError((e as Error).message);
@@ -94,10 +143,10 @@ export function WorkflowEditorPage() {
       const w = (await r.json()) as WorkflowDTO;
       setName(w.name);
       setDescription(w.description ?? "");
-      setTriggerId(w.triggerId);
+      setEventId(w.eventId);
       setAgentId(w.agentId);
       if (w.promptTemplate) setPromptTemplate(w.promptTemplate);
-      if (w.outputSubdir) setOutputSubdir(w.outputSubdir);
+      setEnabled(w.enabled);
       setLoaded(true);
       pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
     } catch (e) {
@@ -111,14 +160,45 @@ export function WorkflowEditorPage() {
     void load();
   }, [load]);
 
+  const refreshRuns = useCallback(async () => {
+    if (!id) return;
+    try {
+      const [sr, rr] = await Promise.all([
+        apiFetch(`/api/workflows/${id}/runs/stats`),
+        apiFetch(`/api/workflows/${id}/runs?limit=50`),
+      ]);
+      if (sr.ok) setStats((await sr.json()) as RunStats);
+      if (rr.ok) {
+        const d = (await rr.json()) as { runs?: RunDTO[] };
+        setRuns(d.runs ?? []);
+      }
+    } catch {
+      // 记录面刷新失败不打断编辑
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!canShowRecords) return;
+    void refreshRuns();
+  }, [canShowRecords, refreshRuns]);
+
+  // 存在 queued/running 行时 3s 轮询，静止即停
+  useEffect(() => {
+    if (!canShowRecords) return;
+    const active = runs.some((r) => r.status === "queued" || r.status === "running");
+    if (!active) return;
+    const t = setInterval(() => void refreshRuns(), 3000);
+    return () => clearInterval(t);
+  }, [runs, canShowRecords, refreshRuns]);
+
   const save = async () => {
     setError(null);
     if (!name.trim()) {
       setError("请填写名称");
       return;
     }
-    if (!triggerId) {
-      setError("请选择 Trigger");
+    if (!eventId) {
+      setError("请选择订阅的事件");
       return;
     }
     if (!agentId) {
@@ -134,14 +214,20 @@ export function WorkflowEditorPage() {
         body: JSON.stringify({
           name,
           description: description || undefined,
-          triggerId,
+          eventId,
           agentId,
           promptTemplate,
-          outputSubdir,
         }),
       });
       if (r.ok) {
-        nav("/workflows");
+        const saved = (await r.json()) as WorkflowDTO;
+        if (!id) {
+          nav(`/workflows/${saved.id}`);
+          return;
+        }
+        setNotice("已保存");
+        setCanShowRecords(true);
+        void refreshRuns();
         return;
       }
       let msg = await r.text();
@@ -156,6 +242,51 @@ export function WorkflowEditorPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleEnabled = async (next: boolean) => {
+    if (!id) {
+      setNotice("先保存后再启用");
+      return;
+    }
+    setEnabled(next);
+    const r = await apiFetch(`/api/workflows/${id}/${next ? "enable" : "disable"}`, {
+      method: "POST",
+    });
+    if (!r.ok) {
+      setNotice(`操作失败：HTTP ${r.status}`);
+      setEnabled(!next);
+    }
+  };
+
+  const runNow = async () => {
+    if (!id) {
+      setNotice("先保存后再运行");
+      return;
+    }
+    setRunningNow(true);
+    try {
+      const r = await apiFetch(`/api/workflows/${id}/run`, { method: "POST" });
+      if (!r.ok) {
+        const body = await r.text();
+        setNotice(`运行失败：${r.status} ${body}`);
+      } else {
+        setNotice("已触发，执行记录稍后刷新");
+        void refreshRuns();
+      }
+    } finally {
+      setRunningNow(false);
+    }
+  };
+
+  const stopRun = async (rid: string) => {
+    if (!id) return;
+    const r = await apiFetch(`/api/workflows/${id}/runs/${rid}/stop`, { method: "POST" });
+    if (!r.ok) {
+      setNotice(`停止失败：HTTP ${r.status}`);
+      return;
+    }
+    void refreshRuns();
   };
 
   if (loading) {
@@ -186,14 +317,23 @@ export function WorkflowEditorPage() {
     );
   }
 
+  const selectedEvent = events.find((e) => e.id === eventId);
+  const vars = varsForEvent(selectedEvent?.type);
+
   return (
     <div className="mx-auto max-w-2xl flex-1 flex-col gap-5 overflow-y-auto p-7">
       <PageHeader
         className="mb-5"
         title={id ? "编辑工作流" : "新建工作流"}
-        description="触发器命中后驱动智能体执行一次任务"
+        description="订阅事件命中后驱动智能体执行一次任务；每次执行都是一条独立会话"
         actions={
           <>
+            {id && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                启用
+                <Switch checked={enabled} onCheckedChange={(v) => void toggleEnabled(v)} />
+              </div>
+            )}
             <Button variant="secondary" onClick={() => attempt(() => nav("/workflows"))}>
               取消
             </Button>
@@ -206,6 +346,11 @@ export function WorkflowEditorPage() {
       {error && (
         <div className="rounded-lg bg-destructive-soft px-3 py-2.5 text-sm text-destructive">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-lg bg-success-soft px-3 py-2.5 text-sm text-success">
+          {notice}
         </div>
       )}
 
@@ -230,7 +375,7 @@ export function WorkflowEditorPage() {
         id="wf-sec-run"
         no="2"
         title="执行配置"
-        description="触发来源、执行智能体与提示词模板"
+        description="订阅事件、执行智能体与提示词模板"
       >
         {refsError ? (
           <button
@@ -238,18 +383,28 @@ export function WorkflowEditorPage() {
             className="w-fit rounded-lg border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive-soft"
             onClick={() => setRefsTick((t) => t + 1)}
           >
-            Trigger / Agent 列表加载失败，点击重试
+            事件 / Agent 列表加载失败，点击重试
           </button>
         ) : (
           <>
-            <FormField label="Trigger" required>
-              <Select value={triggerId} onChange={(e) => setTriggerId(e.target.value)}>
+            <FormField label="订阅事件" required>
+              <Select value={eventId} onChange={(e) => setEventId(e.target.value)}>
                 <option value="">— 选择 —</option>
-                {triggers.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}（{t.type}）
-                  </option>
-                ))}
+                {(["schedule", "call", "system"] as const).map((group) => {
+                  const items = events.filter((e) => e.type === group);
+                  if (!items.length) return null;
+                  const label =
+                    group === "schedule" ? "定时事件" : group === "call" ? "调用事件" : "系统默认";
+                  return (
+                    <optgroup key={group} label={label}>
+                      {items.map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
               </Select>
             </FormField>
             <FormField label="Agent" required>
@@ -269,7 +424,17 @@ export function WorkflowEditorPage() {
           label="Prompt 模板"
           hint={
             <>
-              <code>{`{{triggerOutput}}`}</code> 会被替换为 trigger 抓取的内容
+              可引用事件携带的上下文变量（点击插入）：
+              {vars.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  className="mx-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs hover:bg-primary-soft hover:text-primary"
+                  onClick={() => setPromptTemplate((t) => `${t}{{${v}}}`)}
+                >
+                  {`{{${v}}}`}
+                </button>
+              ))}
             </>
           }
         >
@@ -280,11 +445,128 @@ export function WorkflowEditorPage() {
             onChange={(e) => setPromptTemplate(e.target.value)}
           />
         </FormField>
-        <FormField label="输出子目录">
-          <Input mono value={outputSubdir} onChange={(e) => setOutputSubdir(e.target.value)} />
-        </FormField>
       </FormSection>
+
+      {canShowRecords && (
+        <FormSection
+          id="wf-sec-runs"
+          no="3"
+          title="执行记录"
+          description="每次执行一条记录（永久保留）；点开可看输入与完整对话"
+          actions={
+            <Button variant="secondary" size="sm" onClick={() => void runNow()} disabled={runningNow}>
+              {runningNow ? "触发中…" : "立即运行一轮"}
+            </Button>
+          }
+        >
+          {stats && (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <StatCard label="总轮次" value={String(stats.total)} tone="text-primary" />
+              <StatCard label="成功" value={String(stats.success)} tone="text-success" />
+              <StatCard label="失败" value={String(stats.failed)} tone="text-destructive" />
+              <StatCard
+                label="平均耗时"
+                value={stats.avgDurationMs == null ? "—" : `${(stats.avgDurationMs / 1000).toFixed(1)}s`}
+                tone="text-muted-foreground"
+              />
+            </div>
+          )}
+          <div className="overflow-hidden rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">入队时间</th>
+                  <th className="px-3 py-2 font-medium">状态</th>
+                  <th className="px-3 py-2 font-medium">耗时</th>
+                  <th className="px-3 py-2 font-medium">来源</th>
+                  <th className="px-3 py-2 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => (
+                  <Fragment key={r.id}>
+                    <tr
+                      className="cursor-pointer border-t border-border hover:bg-muted/40"
+                      onClick={() => setExpandedRun((cur) => (cur === r.id ? null : r.id))}
+                    >
+                      <td className="px-3 py-2">{new Date(r.queuedAt).toLocaleString()}</td>
+                      <td className="px-3 py-2">
+                        <Badge tone={runStatusTone(r.status)}>{runStatusLabel(r.status)}</Badge>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {durationText(r.startedAt, r.finishedAt)}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {eventNameLabel(r.eventName)}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <span
+                          className="inline-flex items-center gap-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {r.conversationId && (
+                            <a
+                              href={`/?conv=${r.conversationId}`}
+                              className="text-xs text-primary hover:underline"
+                            >
+                              查看对话
+                            </a>
+                          )}
+                          {(r.status === "running" || r.status === "queued") && (
+                            <Button variant="ghost" size="sm" onClick={() => void stopRun(r.id)}>
+                              <Square aria-hidden="true" size={12} />
+                              停止
+                            </Button>
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                    {expandedRun === r.id && (
+                      <tr className="border-t border-border bg-muted/30">
+                        <td colSpan={5} className="p-3">
+                          {r.error && (
+                            <div className="mb-2 text-sm text-destructive">
+                              <strong>失败原因：</strong>
+                              {r.error}
+                            </div>
+                          )}
+                          <div className="mb-1 text-xs text-muted-foreground">
+                            事件上下文（triggerOutput）：
+                          </div>
+                          <pre className="max-h-40 overflow-auto rounded-lg bg-card p-2.5 text-xs">
+                            {r.context ?? ""}
+                          </pre>
+                          <div className="mb-1 mt-2 text-xs text-muted-foreground">
+                            渲染后 Prompt：
+                          </div>
+                          <pre className="max-h-48 overflow-auto rounded-lg bg-card p-2.5 text-xs">
+                            {r.renderedPrompt ?? ""}
+                          </pre>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+            {!runs.length ? (
+              <div className="p-8 text-center text-sm text-muted-foreground">
+                还没有执行记录（保存并启用后由事件触发，或点「立即运行一轮」）
+              </div>
+            ) : null}
+          </div>
+        </FormSection>
+      )}
       {dialog}
     </div>
+  );
+}
+
+function StatCard(props: { label: string; value: string; tone: string }) {
+  return (
+    <Card className="flex flex-col gap-1 p-3">
+      <span className={`text-lg font-bold leading-6 ${props.tone}`}>{props.value}</span>
+      <span className="text-xs text-muted-foreground">{props.label}</span>
+    </Card>
   );
 }

@@ -1882,7 +1882,7 @@ describe("WebChannel /api/agents 分享", () => {
   });
 });
 
-describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () => {
+describe("WebChannel 自动化模块 API (/api/events|workflows|runs)", () => {
   let web: WebChannel;
   let db: Database.Database;
 
@@ -1891,7 +1891,7 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     db?.close();
   });
 
-  async function startWorkflowChannel(): Promise<{
+  async function startAutomationChannel(): Promise<{
     port: number;
     token: string;
     token2: string;
@@ -1909,32 +1909,33 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     const { token } = await sessionStore.create(user1.id);
     const { token: token2 } = await sessionStore.create(user2.id);
 
-    const { SqliteTriggerStore } = await import("../../src/adapters/sqlite-trigger-store.js");
+    const { SqliteEventStore } = await import("../../src/adapters/sqlite-event-store.js");
     const { SqliteWorkflowStore } = await import("../../src/adapters/sqlite-workflow-store.js");
-    const { SqliteLoopStore } = await import("../../src/adapters/sqlite-loop-store.js");
-    const triggerStore = new SqliteTriggerStore(db);
-    triggerStore.migrate();
+    const { SqliteWorkflowRunStore } = await import(
+      "../../src/adapters/sqlite-workflow-run-store.js"
+    );
+    const { SqliteEventFiringStore } = await import(
+      "../../src/adapters/sqlite-event-firing-store.js"
+    );
+    const eventStore = new SqliteEventStore(db);
+    eventStore.migrate();
     const workflowStore = new SqliteWorkflowStore(db);
     workflowStore.migrate();
-    const loopStore = new SqliteLoopStore(db);
-    loopStore.migrate();
+    const runStore = new SqliteWorkflowRunStore(db);
+    runStore.migrate();
+    const firingStore = new SqliteEventFiringStore(db);
+    firingStore.migrate();
 
     const tmp = mkdtempSync(join(tmpdir(), "web-wf-"));
-    // ponytail: 最小 loopRunner mock —— 测试只走 /run 校验路径，fire/testTrigger 不会真正被调用
-    const loopRunner = {
-      fire: vi.fn().mockResolvedValue(undefined),
-      testTrigger: vi.fn().mockResolvedValue({ matched: true, sourceOutput: "x" }),
-      pump: vi.fn(),
-    } as unknown as import("../../src/orchestrator/loop-runner.js").LoopRunner;
     web = new WebChannel({
       port: 0,
       workspaceDir: tmp,
       sessionStore,
       userStore,
-      triggerStore,
+      eventStore,
       workflowStore,
-      loopStore,
-      loopRunner,
+      workflowRunStore: runStore,
+      eventFiringStore: firingStore,
     });
     web.onMessage(() => {});
     await web.ready();
@@ -1943,63 +1944,62 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     return { port, token, token2 };
   }
 
-  it("trigger / workflow / loop 全链路 CRUD + 删除保护", async () => {
-    const { port, token } = await startWorkflowChannel();
+  it("event / workflow 全链路 CRUD + 删除保护 + 启停", async () => {
+    const { port, token } = await startAutomationChannel();
     const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-    // trigger CREATE
-    const triggerRes = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+    // event CREATE（有条件定时）
+    const eventRes = await fetch(`http://127.0.0.1:${port}/api/events`, {
       method: "POST",
       headers: auth,
       body: JSON.stringify({
         name: "T1",
-        type: "scheduler",
-        scheduler: {
+        type: "schedule",
+        schedule: {
           cron: "0 9 * * *",
+          mode: "conditional",
           source: { type: "http", url: "https://example.com", method: "GET" },
           matcher: { kind: "always" },
         },
       }),
     });
-    expect(triggerRes.status).toBe(201);
-    const trigger = (await triggerRes.json()) as { id: string };
-    expect(trigger.id).toBeTruthy();
+    expect(eventRes.status).toBe(201);
+    const event = (await eventRes.json()) as { id: string };
+    expect(event.id).toBeTruthy();
 
-    // trigger LIST
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/triggers`, { headers: auth });
+    // event LIST
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/events`, { headers: auth });
     expect(listRes.status).toBe(200);
-    const list = (await listRes.json()) as { triggers: { id: string }[] };
-    expect(list.triggers).toHaveLength(1);
+    const list = (await listRes.json()) as {
+      events: Array<{ id: string; subscriberCount: number }>;
+    };
+    expect(list.events).toHaveLength(1);
+    expect(list.events[0]?.subscriberCount).toBe(0);
 
-    // workflow CREATE（引用上面的 trigger）
+    // workflow CREATE（订阅上面的 event）
     const wfRes = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ name: "W1", triggerId: trigger.id, agentId: "a1" }),
+      body: JSON.stringify({ name: "W1", eventId: event.id, agentId: "a1" }),
     });
     expect(wfRes.status).toBe(201);
-    const workflow = (await wfRes.json()) as { id: string; promptTemplate: string };
+    const workflow = (await wfRes.json()) as {
+      id: string;
+      promptTemplate: string;
+      enabled: boolean;
+    };
     expect(workflow.promptTemplate).toBe("{{triggerOutput}}"); // 默认值生效
+    expect(workflow.enabled).toBe(false);
 
-    // trigger DELETE 因被 workflow 引用 → 409
-    const delConflict = await fetch(`http://127.0.0.1:${port}/api/triggers/${trigger.id}`, {
+    // event DELETE 因被 workflow 订阅 → 409
+    const delConflict = await fetch(`http://127.0.0.1:${port}/api/events/${event.id}`, {
       method: "DELETE",
       headers: auth,
     });
     expect(delConflict.status).toBe(409);
 
-    // loop CREATE（引用 workflow）
-    const loopRes = await fetch(`http://127.0.0.1:${port}/api/loops`, {
-      method: "POST",
-      headers: auth,
-      body: JSON.stringify({ name: "L1", workflowId: workflow.id }),
-    });
-    expect(loopRes.status).toBe(201);
-    const loop = (await loopRes.json()) as { id: string; enabled: boolean };
-    expect(loop.enabled).toBe(false); // 默认值
-
-    // loop enable
-    const enableRes = await fetch(`http://127.0.0.1:${port}/api/loops/${loop.id}/enable`, {
+    // workflow enable
+    const enableRes = await fetch(`http://127.0.0.1:${port}/api/workflows/${workflow.id}/enable`, {
       method: "POST",
       headers: auth,
     });
@@ -2007,40 +2007,43 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     const enabled = (await enableRes.json()) as { enabled: boolean };
     expect(enabled.enabled).toBe(true);
 
-    // hook 入口未装配 → 404 "hooks disabled"
-    const hookRes = await fetch(`http://127.0.0.1:${port}/hooks/anything`, {
-      method: "POST",
-    });
+    // 订阅计数刷新
+    const list2 = await fetch(`http://127.0.0.1:${port}/api/events`, { headers: auth });
+    const list2Body = (await list2.json()) as { events: Array<{ subscriberCount: number }> };
+    expect(list2Body.events[0]?.subscriberCount).toBe(1);
+
+    // call 入口未装配 → 404 "hooks disabled"
+    const hookRes = await fetch(`http://127.0.0.1:${port}/hooks/anything`, { method: "POST" });
     expect(hookRes.status).toBe(404);
   });
 
-  it("跨用户访问 trigger / workflow / loop → 404（防越权 + 防存在性泄露）", async () => {
-    const { port, token, token2 } = await startWorkflowChannel();
+  it("跨用户访问 event / workflow / runs → 404（防越权 + 防存在性泄露）", async () => {
+    const { port, token, token2 } = await startAutomationChannel();
     const authA = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
     const authB = { Authorization: `Bearer ${token2}`, "Content-Type": "application/json" };
 
-    // 用户 A 建一个 trigger
-    const trig = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+    const ev = await fetch(`http://127.0.0.1:${port}/api/events`, {
       method: "POST",
       headers: authA,
       body: JSON.stringify({
-        name: "T-priv",
-        type: "scheduler",
-        scheduler: {
+        name: "E-priv",
+        type: "schedule",
+        schedule: {
           cron: "0 9 * * *",
+          mode: "conditional",
           source: { type: "http", url: "https://example.com", method: "GET" },
           matcher: { kind: "always" },
         },
       }),
     });
-    const trigJson = (await trig.json()) as { id: string };
+    const evJson = (await ev.json()) as { id: string };
 
-    // 用户 B 用同样 body 但 ownerId 会被服务端覆盖；尝试读、改、删 A 的 trigger
     const cases = [
-      ["GET", `/api/triggers/${trigJson.id}`, null],
-      ["PUT", `/api/triggers/${trigJson.id}`, { name: "hijack" }],
-      ["DELETE", `/api/triggers/${trigJson.id}`, null],
-      ["POST", `/api/triggers/${trigJson.id}/test`, null],
+      ["GET", `/api/events/${evJson.id}`, null],
+      ["PUT", `/api/events/${evJson.id}`, { name: "hijack" }],
+      ["DELETE", `/api/events/${evJson.id}`, null],
+      ["POST", `/api/events/${evJson.id}/test`, null],
+      ["GET", `/api/events/${evJson.id}/firings`, null],
     ] as const;
     for (const [method, path, body] of cases) {
       const res = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -2051,27 +2054,20 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
       expect(res.status).toBe(404);
     }
 
-    // 用户 A 建 workflow + loop，B 跨用户访问也应 404
     const wf = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
       method: "POST",
       headers: authA,
-      body: JSON.stringify({ name: "W-priv", triggerId: trigJson.id, agentId: "a1" }),
+      body: JSON.stringify({ name: "W-priv", eventId: evJson.id, agentId: "a1" }),
     });
     const wfJson = (await wf.json()) as { id: string };
-    const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
-      method: "POST",
-      headers: authA,
-      body: JSON.stringify({ name: "L-priv", workflowId: wfJson.id }),
-    });
-    const loopJson = (await loop.json()) as { id: string };
 
     for (const [method, path, body] of [
       ["GET", `/api/workflows/${wfJson.id}`, null],
       ["PUT", `/api/workflows/${wfJson.id}`, { name: "hijack" }],
       ["DELETE", `/api/workflows/${wfJson.id}`, null],
-      ["GET", `/api/loops/${loopJson.id}`, null],
-      ["PUT", `/api/loops/${loopJson.id}`, { name: "hijack" }],
-      ["DELETE", `/api/loops/${loopJson.id}`, null],
+      ["GET", `/api/workflows/${wfJson.id}/runs`, null],
+      ["GET", `/api/workflows/${wfJson.id}/runs/stats`, null],
+      ["POST", `/api/workflows/${wfJson.id}/run`, null],
     ] as const) {
       const res = await fetch(`http://127.0.0.1:${port}${path}`, {
         method,
@@ -2082,69 +2078,39 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     }
   });
 
-  it("/api/loops/:id/run 在 workflow 无 trigger 时返回 400（非 500）", async () => {
-    const { port, token } = await startWorkflowChannel();
+  it("workflow 引用空 eventId → 400（引用校验前移到创建）", async () => {
+    const { port, token } = await startAutomationChannel();
     const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-
-    // 建 workflow 故意不绑 trigger，再建 loop 引用它
-    // 注意：workflow create 不强制要求 triggerId 非空（zod schema 仅 .string()）
     const wf = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ name: "no-trig", triggerId: "", agentId: "a1" }),
+      body: JSON.stringify({ name: "no-event", eventId: "", agentId: "a1" }),
     });
-    // triggerId 为空字符串，schema 应拒绝；如果 schema 接受，则走 /run 校验路径
-    if (wf.status === 201) {
-      const wfJson = (await wf.json()) as { id: string; triggerId: string };
-      const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
-        method: "POST",
-        headers: auth,
-        body: JSON.stringify({ name: "L", workflowId: wfJson.id }),
-      });
-      const loopJson = (await loop.json()) as { id: string };
-      const run = await fetch(`http://127.0.0.1:${port}/api/loops/${loopJson.id}/run`, {
-        method: "POST",
-        headers: auth,
-      });
-      expect(run.status).toBe(400);
-      const body = (await run.json()) as { error: string };
-      expect(body.error).toMatch(/trigger/);
-    }
+    expect(wf.status).toBe(400);
+    const body = (await wf.json()) as { error?: string };
+    expect(JSON.stringify(body)).toMatch(/订阅的事件/);
   });
 
-  it("/api/loops/:id/runs 列出历史 run", async () => {
-    const { port, token } = await startWorkflowChannel();
+  it("/api/workflows/:id/runs 列出历史 run（空数组）", async () => {
+    const { port, token } = await startAutomationChannel();
     const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-    // loop 引用校验（2026-09-24 审计收口）：workflowId 必须指向本人 workflow——
-    // 先建真实 trigger + workflow，再建 loop，查 runs 应为空数组
-    const trigger = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+    const ev = await fetch(`http://127.0.0.1:${port}/api/events`, {
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        name: "T",
-        type: "hook",
-        hook: {
-          path: "/hooks/runs-test",
-          responseStatus: 200,
-          responseBody: "",
-          matcher: { kind: "always" },
-        },
+        name: "E",
+        type: "schedule",
+        schedule: { cron: "0 9 * * *", mode: "unconditional" },
       }),
     });
-    const triggerJson = (await trigger.json()) as { id: string };
+    const evJson = (await ev.json()) as { id: string };
     const wf = await fetch(`http://127.0.0.1:${port}/api/workflows`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ name: "W", triggerId: triggerJson.id, agentId: "a1" }),
+      body: JSON.stringify({ name: "W", eventId: evJson.id, agentId: "a1" }),
     });
     const wfJson = (await wf.json()) as { id: string };
-    const loop = await fetch(`http://127.0.0.1:${port}/api/loops`, {
-      method: "POST",
-      headers: auth,
-      body: JSON.stringify({ name: "L", workflowId: wfJson.id }),
-    });
-    const loopJson = (await loop.json()) as { id: string };
-    const runs = await fetch(`http://127.0.0.1:${port}/api/loops/${loopJson.id}/runs`, {
+    const runs = await fetch(`http://127.0.0.1:${port}/api/workflows/${wfJson.id}/runs`, {
       headers: auth,
     });
     expect(runs.status).toBe(200);
@@ -2152,10 +2118,10 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     expect(body.runs).toEqual([]);
   });
 
-  it("POST /api/triggers 畸形 JSON body → 400 (I4: SyntaxError → 400)", async () => {
-    const { port, token } = await startWorkflowChannel();
+  it("POST /api/events 畸形 JSON body → 400 (SyntaxError → 400)", async () => {
+    const { port, token } = await startAutomationChannel();
     const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-    const res = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/events`, {
       method: "POST",
       headers: auth,
       body: "{not valid json",
@@ -2163,11 +2129,10 @@ describe("WebChannel 工作流模块 CRUD (/api/triggers|workflows|loops)", () =
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/triggers 缺必填字段 → 400 (ZodError → 400)", async () => {
-    const { port, token } = await startWorkflowChannel();
+  it("POST /api/events 缺必填字段 → 400 (ZodError → 400)", async () => {
+    const { port, token } = await startAutomationChannel();
     const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-    // 合法 JSON 但缺 name/type/scheduler
-    const res = await fetch(`http://127.0.0.1:${port}/api/triggers`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/events`, {
       method: "POST",
       headers: auth,
       body: JSON.stringify({ unrelated: "field" }),

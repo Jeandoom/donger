@@ -8,9 +8,9 @@ import type { AgentPermissionMode } from "../domain/permission-mode.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
+import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
 import { type McpGateCheck, McpHttpBridge } from "./mcp-http-bridge.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
-import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
 import {
   defaultZcodeConnectionFactory,
   type ZcodeConnection,

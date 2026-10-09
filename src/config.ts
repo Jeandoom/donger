@@ -101,9 +101,8 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
   // 触发事件队列单 loop pending 上限（超出落 dropped+告警；防 DoS 显式边界）
-  TRIGGER_QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(10_000).default(200),
-  // git 触发器轮询间隔毫秒（DONGER_GIT_WATCH_INTERVAL_MS；spec 2026-09-30-deploy-ops-loop-design §6）
-  DONGER_GIT_WATCH_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(120_000),
+  /** 事件触发全局队列容量（D6 拍板默认 10）；超出时该次执行直接失败 */
+  TRIGGER_QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(10_000).default(10),
   // .env 不承载任何代理凭证（凭证走用户凭证集 + type=http 连接器；历史 app-proxy 已随应用模块移除）。
 });
 
@@ -193,10 +192,8 @@ export interface AppConfig {
   gitAllowPrivateHosts: boolean;
   /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
   triggerAllowPrivateNet: boolean;
-  /** 触发事件队列单 loop pending 上限（TRIGGER_QUEUE_MAX_PENDING，默认 200） */
+  /** 事件触发全局队列容量（TRIGGER_QUEUE_MAX_PENDING，默认 10；spec D6） */
   triggerQueueMaxPending: number;
-  /** git 触发器轮询间隔毫秒（DONGER_GIT_WATCH_INTERVAL_MS，默认 120s） */
-  gitWatchIntervalMs: number;
   /** 智能体回调链接发起限流（次/分钟/token） */
   callbackRateLimitPerMin: number;
   /** LLM 流停摆看门狗阈值（毫秒；0=关闭） */
@@ -256,7 +253,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
     triggerAllowPrivateNet: e.TRIGGER_ALLOW_PRIVATE_NET,
     triggerQueueMaxPending: e.TRIGGER_QUEUE_MAX_PENDING,
-    gitWatchIntervalMs: e.DONGER_GIT_WATCH_INTERVAL_MS,
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,

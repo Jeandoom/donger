@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateMatcher } from "../../src/domain/trigger-matcher.js";
+import { evaluateMatcher } from "../../src/domain/event-matcher.js";
 
 const ctx = (body: string, httpStatus = 200, headers: Record<string, string> = {}) => ({
   body,

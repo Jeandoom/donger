@@ -1,52 +1,80 @@
 import { describe, expect, it } from "vitest";
-import { LoopRunSchema, LoopSchema } from "../../src/domain/loop.js";
-import { TriggerSchema } from "../../src/domain/trigger.js";
+import { EventSchema } from "../../src/domain/event.js";
 import { WorkflowSchema } from "../../src/domain/workflow.js";
+import { WorkflowRunSchema, WorkflowRunStatusSchema } from "../../src/domain/workflow-run.js";
 
-describe("trigger schema", () => {
-  it("parses scheduler trigger with http source + jsonPathGt matcher", () => {
-    const t = TriggerSchema.parse({
-      id: "t1",
+describe("event schema", () => {
+  it("parses conditional schedule event with jsonPathGt matcher", () => {
+    const e = EventSchema.parse({
+      id: "e1",
       ownerId: "u1",
       name: "每分钟探活",
-      type: "scheduler",
-      scheduler: {
+      type: "schedule",
+      schedule: {
         cron: "* * * * *",
+        mode: "conditional",
         source: { type: "http", url: "https://x", method: "GET" },
         matcher: { kind: "jsonPathGt", path: "$.count", value: 10 },
       },
       createdAt: "2026-07-29T00:00:00Z",
       updatedAt: "2026-07-29T00:00:00Z",
     });
-    expect(t.type).toBe("scheduler");
-    expect(t.scheduler?.matcher.kind).toBe("jsonPathGt");
+    expect(e.type).toBe("schedule");
+    expect(e.schedule?.matcher?.kind).toBe("jsonPathGt");
   });
 
-  it("parses hook trigger with bodyFieldEq matcher", () => {
-    const t = TriggerSchema.parse({
-      id: "t2",
+  it("parses unconditional schedule event without source/matcher", () => {
+    const e = EventSchema.parse({
+      id: "e2",
       ownerId: "u1",
-      name: "钉钉事件",
-      type: "hook",
-      hook: {
-        path: "/hooks/dingtalk",
+      name: "每天早报",
+      type: "schedule",
+      schedule: { cron: "0 9 * * *", mode: "unconditional" },
+      createdAt: "2026-07-29T00:00:00Z",
+      updatedAt: "2026-07-29T00:00:00Z",
+    });
+    expect(e.schedule?.mode).toBe("unconditional");
+    expect(e.schedule?.source).toBeUndefined();
+  });
+
+  it("rejects conditional schedule without source/matcher", () => {
+    expect(() =>
+      EventSchema.parse({
+        id: "x",
+        ownerId: "u1",
+        name: "x",
+        type: "schedule",
+        schedule: { cron: "* * * * *", mode: "conditional" },
+        createdAt: "x",
+        updatedAt: "x",
+      }),
+    ).toThrow();
+  });
+
+  it("parses call event and rejects missing type config", () => {
+    const e = EventSchema.parse({
+      id: "e3",
+      ownerId: "u1",
+      name: "工单回调",
+      type: "call",
+      call: {
+        path: "/hooks/abcdef01",
+        methods: ["GET", "POST"],
         responseStatus: 200,
         responseBody: "success",
-        matcher: { kind: "bodyFieldEq", field: "type", value: "issue" },
+        matcher: { kind: "always" },
       },
       createdAt: "2026-07-29T00:00:00Z",
       updatedAt: "2026-07-29T00:00:00Z",
     });
-    expect(t.hook?.path).toBe("/hooks/dingtalk");
-  });
+    expect(e.call?.path).toBe("/hooks/abcdef01");
 
-  it("rejects trigger without matching type config", () => {
     expect(() =>
-      TriggerSchema.parse({
-        id: "x",
+      EventSchema.parse({
+        id: "y",
         ownerId: "u1",
-        name: "x",
-        type: "scheduler",
+        name: "y",
+        type: "system",
         createdAt: "x",
         updatedAt: "x",
       }),
@@ -55,45 +83,43 @@ describe("trigger schema", () => {
 });
 
 describe("workflow schema", () => {
-  it("parses with defaults for promptTemplate and outputSubdir", () => {
+  it("parses with defaults for promptTemplate/enabled（outputSubdir 已移除）", () => {
     const w = WorkflowSchema.parse({
       id: "w1",
       ownerId: "u1",
       name: "抓取总结",
-      triggerId: "t1",
+      eventId: "e1",
       agentId: "a1",
       createdAt: "2026-07-29T00:00:00Z",
       updatedAt: "2026-07-29T00:00:00Z",
     });
     expect(w.promptTemplate).toBe("{{triggerOutput}}");
-    expect(w.outputSubdir).toBe("outputs/");
+    expect(w.enabled).toBe(false);
+    expect("outputSubdir" in w).toBe(false);
   });
 });
 
-describe("loop schema", () => {
-  it("parses minimal loop with default tags and enabled=false", () => {
-    const l = LoopSchema.parse({
-      id: "l1",
-      ownerId: "u1",
-      name: "晨报",
+describe("workflow run schema", () => {
+  it("parses queued run with queue fields", () => {
+    const r = WorkflowRunSchema.parse({
+      id: "r1",
       workflowId: "w1",
-      createdAt: "2026-07-29T00:00:00Z",
-      updatedAt: "2026-07-29T00:00:00Z",
+      eventId: "e1",
+      eventName: "schedule",
+      status: "queued",
+      queuedAt: "2026-07-29T00:00:00Z",
     });
-    expect(l.enabled).toBe(false);
-    expect(l.tags).toEqual([]);
+    expect(r.status).toBe("queued");
+    expect(r.conversationId ?? null).toBeNull();
   });
 
-  it("parses loop run", () => {
-    const r = LoopRunSchema.parse({
-      id: "r1",
-      loopId: "l1",
-      workflowId: "w1",
-      triggerId: "t1",
-      agentId: "a1",
-      status: "running",
-      startedAt: "2026-07-29T00:00:00Z",
-    });
-    expect(r.status).toBe("running");
+  it("status enum carries queued/running/success/failed/stopped", () => {
+    expect([...WorkflowRunStatusSchema.options]).toEqual([
+      "queued",
+      "running",
+      "success",
+      "failed",
+      "stopped",
+    ]);
   });
 });

@@ -9,15 +9,13 @@ import { afterAll, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteAgentShareStore } from "../../src/adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "../../src/adapters/sqlite-agent-store.js";
-import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
-import { SqliteTriggerQueueStore } from "../../src/adapters/sqlite-trigger-queue-store.js";
-import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
+import { SqliteEventStore } from "../../src/adapters/sqlite-event-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
 import { toAuditEvent } from "../../src/domain/audit.js";
+import { TriggerMatcherSchema } from "../../src/domain/event-matcher.js";
 import { isPrivateNetHost, validateTriggerHttpUrl } from "../../src/domain/net-target.js";
-import { TriggerMatcherSchema } from "../../src/domain/trigger.js";
-import { LoopRunner } from "../../src/orchestrator/loop-runner.js";
+import { probeEventSource } from "../../src/orchestrator/event-source-probe.js";
 import { createSecretCipher } from "../../src/util/secret-cipher.js";
 
 const logger = pino({ level: "silent" });
@@ -139,72 +137,52 @@ describe("分享移除即轮换 token（M-B：被移除者不得凭旧链接重�
   });
 });
 
-describe("trigger source 收口（H10/H11）", () => {
-  function makeRunner(allowPrivateNet = false): {
-    runner: LoopRunner;
-    stores: ReturnType<typeof makeStores>;
-    workspaceRoot: string;
-  } {
+describe("事件源收口（H10/H11，probeEventSource）", () => {
+  it("file source 工作区外路径 → 拒绝（任意文件读收口）", async () => {
     const db = new Database(":memory:");
     dbs.push(db);
-    const stores = makeStores(db);
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "sec-ws-"));
-    const queue = new SqliteTriggerQueueStore(db);
-    queue.migrate();
-    const runner = new LoopRunner({
-      loopStore: stores.loops,
-      workflowStore: stores.workflows,
-      triggerStore: stores.triggers,
-      orchestrator: { handleMessage: async () => undefined },
-      workspaceRoot,
-      channelId: "sec",
-      logger,
-      queue,
-      allowPrivateNet,
-    });
-    return { runner, stores, workspaceRoot };
-  }
-  function makeStores(db: Database.Database) {
-    const loops = new SqliteLoopStore(db);
-    loops.migrate();
-    const workflows = new SqliteWorkflowStore(db);
-    workflows.migrate();
-    const triggers = new SqliteTriggerStore(db);
-    triggers.migrate();
-    return { loops, workflows, triggers };
-  }
-
-  it("file source 工作区外路径 → 拒绝（任意文件读收口）", async () => {
-    const { runner } = makeRunner();
-    const t = await runner.deps.triggerStore.create({
+    const events = new SqliteEventStore(db);
+    events.migrate();
+    const e = await events.create({
       ownerId: "u1",
       name: "T",
-      type: "scheduler",
-      scheduler: {
+      type: "schedule",
+      schedule: {
         cron: "* * * * *",
+        mode: "conditional",
         source: { type: "file", path: "../../../etc/passwd" },
         matcher: { kind: "always" },
       },
     });
-    const r = await runner.testTrigger(t.id);
+    const r = await probeEventSource(e, {
+      workspaceRoot: mkdtempSync(join(tmpdir(), "sec-ws-")),
+      gateByMatcher: true,
+    });
     expect(r.matched).toBe(false);
     expect(r.error).toContain("工作区");
     expect(r.sourceOutput).toBe("");
   });
 
-  it("http source 内网目标默认拒绝，公网形态校验通过", async () => {
-    const { runner } = makeRunner(false);
-    const t = await runner.deps.triggerStore.create({
+  it("http source 内网目标默认拒绝", async () => {
+    const db = new Database(":memory:");
+    dbs.push(db);
+    const events = new SqliteEventStore(db);
+    events.migrate();
+    const e = await events.create({
       ownerId: "u1",
       name: "T2",
-      type: "scheduler",
-      scheduler: {
+      type: "schedule",
+      schedule: {
         cron: "* * * * *",
+        mode: "conditional",
         source: { type: "http", url: "http://169.254.169.254/latest/meta-data/", method: "GET" },
         matcher: { kind: "always" },
       },
     });
-    const r = await runner.testTrigger(t.id);
+    const r = await probeEventSource(e, {
+      workspaceRoot: mkdtempSync(join(tmpdir(), "sec-ws-")),
+      gateByMatcher: true,
+    });
     expect(r.matched).toBe(false);
     expect(r.error).toContain("被拒绝");
   });
