@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -699,5 +699,44 @@ describe("ZcodeAgentRunner", () => {
 
     const create = server.request("session/create");
     expect(create?.mcpServers).toBeUndefined();
+  });
+
+  it("平台技能物化：白名单 → HOME/.zcode/skills（ZCode 用户级发现根），每轮整根重建防残留（G5）", async () => {
+    newWorkDir();
+    const server = new FakeZcodeServer();
+    server.eventsAfterSend = [completedEvent("done")];
+    const { factory } = factoryFor(server);
+    const runner = new ZcodeAgentRunner(makeGates([]), factory);
+    // pack 形态 plugin 目录（plugin.json name=demo + skills/alpha/SKILL.md）
+    const packDir = join(tmpWork.dir, "pack-demo");
+    mkdirSync(join(packDir, ".claude-plugin"), { recursive: true });
+    mkdirSync(join(packDir, "skills", "alpha"), { recursive: true });
+    writeFileSync(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "demo", version: "0.1.0" }),
+    );
+    writeFileSync(
+      join(packDir, "skills", "alpha", "SKILL.md"),
+      "---\nname: alpha\ndescription: 演示技能\n---\n正文",
+    );
+    // 上一轮残留：本轮白名单外的旧技能目录
+    const skillsRoot = join(tmpWork.dir, ".zcode-home", "home", ".zcode", "skills");
+    mkdirSync(join(skillsRoot, "stale"), { recursive: true });
+    writeFileSync(join(skillsRoot, "stale", "SKILL.md"), "---\nname: stale\n---\n");
+
+    await collect(
+      runner.run(
+        task,
+        baseOpts({ skills: ["demo:alpha"], pluginPaths: [packDir] }),
+        async () => ({ approved: true }),
+      ),
+    );
+
+    expect(existsSync(join(skillsRoot, "alpha", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(skillsRoot, "stale"))).toBe(false);
+    // 未勾选白名单时不物化（目录不建立）
+    newWorkDir();
+    await collect(runner.run(task, baseOpts(), async () => ({ approved: true })));
+    expect(existsSync(join(tmpWork.dir, ".zcode-home", "home", ".zcode", "skills"))).toBe(false);
   });
 });

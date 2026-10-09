@@ -10,6 +10,7 @@ import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/type
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { type McpGateCheck, McpHttpBridge } from "./mcp-http-bridge.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
+import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
 import {
   defaultZcodeConnectionFactory,
   type ZcodeConnection,
@@ -36,8 +37,9 @@ import {
  *   喂给 session/create 原生 mcpServers 参数；连接器 stdio/http 原样透传。
  *   审批门在桥级静态拒绝（force 门任何模式、非 force 门 ask 模式；full_access
  *   豁免非 force 门——与 claude canUseTool 同语义）。
- * - 平台技能（opts.skills）未物化进 ZCode 引擎（codex 有 materializeWhitelistedSkills
- *   先例，ZCode 侧技能发现路径待实证）——声明技能的 agent 暂不可用 ZCode 引擎跑技能。
+ * - 平台技能物化（G5 收口）：白名单技能每轮物化到 <重定向HOME>/.zcode/skills（ZCode
+ *   用户级发现根，bundle resolveDefaultSkillRoots 实证）；agent 级技能（workspace/
+ *   .agents/skills）由项目级发现根原生读取，零改动。
  */
 
 /** 会话内 provider 注册 id（provider_config.json 物化时使用，modelSelection 引用） */
@@ -172,6 +174,16 @@ export class ZcodeAgentRunner implements AgentRunner {
     mkdirSync(homeDir, { recursive: true });
     mkdirSync(dataDir, { recursive: true });
 
+    // —— 平台技能物化（G5 收口，specs/2026-10-09-skills-git-hosting-design.md）：
+    //    ZCode 技能发现根（bundle 实证 resolveDefaultSkillRoots）：用户级 <HOME>/.zcode/skills
+    //    与 <HOME>/.agents/skills（HOME 已重定向 → 每用户隔离，机器技能不可见）；项目级
+    //    <workspace>/.agents/skills（agent 级技能原生发现，零改动）。pack 技能在此按白名单
+    //    物化（与 codex CODEX_HOME 同一物化器），每轮整根重建防白名单变更残留。
+    //    注意 description>1024 字符的技能会被 CLI 整体丢弃（官方文档硬约束）。
+    const zcodeSkillsDir = join(homeDir, ".zcode", "skills");
+    rmSync(zcodeSkillsDir, { recursive: true, force: true });
+    materializeWhitelistedSkills(opts.skills ?? [], opts.pluginPaths ?? [], zcodeSkillsDir);
+
     // —— GLM key 物化：个人 provider 注册（api-key 明文进配置文件，finally 删除）。
     //    ZCODE_{BUILTIN,PERSONAL}_PROVIDER_CONFIG_FILE 必须成对显式：builtin 侧要求
     //    完整 release 结构，CLI 相对候选在不同安装布局下位置不同，靠探测定位
@@ -280,7 +292,7 @@ export class ZcodeAgentRunner implements AgentRunner {
             capabilityVersion: opts.capabilityVersion,
             credentialKeys: Object.keys(opts.credentialsEnv ?? {}),
             mcpServers: sessionMcpServers.map((s) => s.name),
-            note: "zcode 引擎：审批门=反向权限请求（全功能）+桥级静态拒绝（force 门恒拒/非 force 门 ask 拒/full_access 豁免）、AskUserQuestion 桥接、MCP=HTTP 桥挂载+连接器透传、平台技能未物化（遗留）",
+            note: "zcode 引擎：审批门=反向权限请求（全功能）+桥级静态拒绝（force 门恒拒/非 force 门 ask 拒/full_access 豁免）、AskUserQuestion 桥接、MCP=HTTP 桥挂载+连接器透传、平台技能=白名单物化至 HOME/.zcode/skills、agent 级技能=workspace/.agents/skills 原生发现",
           },
         }),
       });

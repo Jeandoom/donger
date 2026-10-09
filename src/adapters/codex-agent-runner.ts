@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { Codex } from "@openai/codex-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { LLMConfig } from "../domain/llm-config.js";
-import { scanSkillPack } from "../domain/skill-scan.js";
 import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
+import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
 import type { ChatUpstreamConfig, CodexChatBridge } from "./codex-chat-bridge.js";
 
 /**
@@ -465,60 +465,6 @@ function itemToToolOutcome(item: CodexItemLike):
  * 复制到 CODEX_HOME/skills（codex 原生技能目录）。pack 名取插件 plugin.json，
  * 技能目录按 scanSkillPack 的 frontmatter name 匹配（生成布局目录名可能被去重改名）。
  */
-export function materializeWhitelistedSkills(
-  skills: string[],
-  pluginPaths: string[],
-  skillsHome: string,
-): void {
-  if (skills.length === 0 || pluginPaths.length === 0) return;
-  const wanted = new Map<string, Set<string>>();
-  for (const id of skills) {
-    const sep = id.indexOf(":");
-    if (sep <= 0 || sep === id.length - 1) continue;
-    const packName = id.slice(0, sep);
-    const skillName = id.slice(sep + 1);
-    const set = wanted.get(packName) ?? new Set<string>();
-    set.add(skillName);
-    wanted.set(packName, set);
-  }
-  if (wanted.size === 0) return;
-
-  for (const pluginPath of pluginPaths) {
-    if (!existsSync(pluginPath)) continue;
-    const packName = readPluginName(pluginPath);
-    const selected = packName ? wanted.get(packName) : undefined;
-    if (!selected || selected.size === 0) continue;
-    let scanned: ReturnType<typeof scanSkillPack>;
-    try {
-      scanned = scanSkillPack(pluginPath);
-    } catch {
-      continue;
-    }
-    for (const skill of scanned.skills) {
-      if (!selected.has(skill.name)) continue;
-      const sourceDir = join(pluginPath, skill.relativePath, "..");
-      const target = join(skillsHome, skill.name);
-      rmSync(target, { recursive: true, force: true });
-      try {
-        cpSync(sourceDir, target, { recursive: true });
-      } catch {
-        // 单技能物化失败不阻断运行（codex 缺该技能仅能力降级）
-      }
-    }
-  }
-}
-
-function readPluginName(pluginPath: string): string | undefined {
-  const marker = join(pluginPath, ".claude-plugin", "plugin.json");
-  if (!existsSync(marker)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(marker, "utf8")) as { name?: string };
-    return typeof parsed.name === "string" ? parsed.name : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function serializeJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2) ?? String(value);
