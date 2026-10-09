@@ -725,11 +725,9 @@ describe("ZcodeAgentRunner", () => {
     writeFileSync(join(skillsRoot, "stale", "SKILL.md"), "---\nname: stale\n---\n");
 
     await collect(
-      runner.run(
-        task,
-        baseOpts({ skills: ["demo:alpha"], pluginPaths: [packDir] }),
-        async () => ({ approved: true }),
-      ),
+      runner.run(task, baseOpts({ skills: ["demo:alpha"], pluginPaths: [packDir] }), async () => ({
+        approved: true,
+      })),
     );
 
     expect(existsSync(join(skillsRoot, "alpha", "SKILL.md"))).toBe(true);

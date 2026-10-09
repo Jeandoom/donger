@@ -47,8 +47,7 @@ const mainEntries: LeafItem[] = [
   { to: "/agents", label: "智能体", icon: Bot },
   { to: "/kb", label: "知识库", icon: KbIcon },
   { to: "/workflows", label: "工作流", icon: Workflow },
-  { to: "/triggers", label: "触发器", icon: Zap },
-  { to: "/loops", label: "LOOPs", icon: Repeat },
+  { to: "/events", label: "事件", icon: Zap },
   { to: "/skills", label: "技能", icon: Sparkles },
   { to: "/connectors", label: "连接器", icon: Plug },
 ];

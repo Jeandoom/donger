@@ -53,6 +53,7 @@ import {
   parseCredentialCode,
   withKindKeySpecs,
 } from "../domain/credential.js";
+import { type Event, generateCallPath, parseEventInput } from "../domain/event.js";
 import { buildFeedbackCreatedPayload } from "../domain/event-payloads.js";
 import {
   AgentExtensionDirectoriesInputSchema,
@@ -95,7 +96,6 @@ import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-p
 import type { LLMConfig } from "../domain/llm-config.js";
 import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
 import { resolveLlmOptions } from "../domain/llm-selection.js";
-import { type Loop, parseLoopInput } from "../domain/loop.js";
 import {
   CONVERSATION_MENTION_ALL_ID,
   conversationMarkerLabel,
@@ -132,7 +132,6 @@ import {
 import { validateAgentAgainstPreset } from "../domain/scenario-preset.js";
 import { auditAgentSkillAvailability } from "../domain/skill-availability.js";
 import type { SkillPackSource } from "../domain/skill-pack.js";
-import { parseTriggerInput, type Trigger } from "../domain/trigger.js";
 import {
   type ApprovalCard,
   type IncomingMessage,
@@ -150,16 +149,15 @@ import {
   UserLlmProviderInputSchema,
 } from "../domain/user-llm-provider.js";
 import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
+import type { WorkflowRun } from "../domain/workflow-run.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
 import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "../orchestrator/auditor-agent.js";
-import type { EventTriggerDispatcher } from "../orchestrator/event-trigger-dispatcher.js";
+import { buildManualContext, probeEventSource } from "../orchestrator/event-source-probe.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
-import type { HookRegistry } from "../orchestrator/hook-registry.js";
 import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
-import type { LoopRunner } from "../orchestrator/loop-runner.js";
 import type { NotificationService } from "../orchestrator/notification-service.js";
 import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
@@ -185,13 +183,14 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
+import type { EventFiringStore } from "../ports/event-firing-store.js";
+import type { EventStore } from "../ports/event-store.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
 import type { InviteStore } from "../ports/invite-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
-import type { LoopStore } from "../ports/loop-store.js";
 import type { McpTokenStore } from "../ports/mcp-token-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { ModuleConfigStore } from "../ports/module-config-store.js";
@@ -201,11 +200,10 @@ import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
 import type { SystemEventStore } from "../ports/system-event-store.js";
 import type { TaskStore } from "../ports/task-store.js";
-import type { TriggerQueueStore } from "../ports/trigger-queue-store.js";
-import type { TriggerStore } from "../ports/trigger-store.js";
 import type { UsageStore } from "../ports/usage-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import type { UserStore } from "../ports/user-store.js";
+import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import {
   ForbiddenError,
@@ -524,17 +522,30 @@ export interface WebChannelDeps {
   gitAccessGate?: GitAccessGate;
   /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库） */
   selfImproveGitRepository?: AgentGitRepository;
-  /** 工作流模块（M14+M15+M6）—— 缺省=不支持 */
-  triggerStore?: TriggerStore;
+  /** 自动化模块（事件/工作流，spec 2026-10-09-events-workflows-refactor-design）—— 缺省=不支持 */
+  eventStore?: EventStore;
   workflowStore?: WorkflowStore;
-  loopStore?: LoopStore;
-  loopRunner?: LoopRunner;
+  workflowRunStore?: WorkflowRunStore;
+  eventFiringStore?: EventFiringStore;
   scheduler?: SchedulerService;
-  hookRegistry?: HookRegistry;
-  /** 进程内事件触发分发（feedback.created）；缺省=事件不触发 */
-  eventTriggers?: EventTriggerDispatcher;
-  /** 触发事件队列（loop 详情 queuedCount/删除级联清理）；缺省=相应能力关闭 */
-  triggerQueue?: TriggerQueueStore;
+  /** 调用事件入口（/hooks/* 免认证通道） */
+  callEndpoint?: {
+    handle(req: {
+      method?: string;
+      url?: string;
+      headers: Record<string, string>;
+      body: string;
+    }): Promise<{ status: number; body: string }>;
+  };
+  /** 统一触发管线（手动运行/停止执行；fire 由分发器内部走） */
+  eventDispatcher?: {
+    manualRun(workflowId: string, ctx: { payload: string }): Promise<WorkflowRun>;
+    stopRun(workflowId: string, runId: string): Promise<WorkflowRun>;
+  };
+  /** 进程内系统事件分发（feedback.created）；缺省=事件不触发 */
+  systemEvents?: { dispatch(eventName: string, payload: string): Promise<void> };
+  /** 事件源探测参数（/test 端点；SSRF/工作区收口参数） */
+  eventProbe?: { allowPrivateNet?: boolean; workspaceRoot: string };
   /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
   /** 会话权限模式切换回调（PATCH 即时通知 orchestrator 内存 registry）；缺省=仅落库，下轮生效 */
@@ -3787,7 +3798,7 @@ export class WebChannel implements Channel {
       this.adoptFeedbackAttachments(typeof body.key === "string" ? body.key : "", feedback.id);
       // 事件触发分发（spec 2026-09-28-event-trigger-feedback-design）：fail-open，
       // 触发器/队列任何异常不影响反馈提交；payload 契约见 domain/event-payloads
-      if (this.deps.eventTriggers) {
+      if (this.deps.systemEvents) {
         const submitterName = (await this.deps.userStore?.get(uid))?.name ?? uid;
         const payload = buildFeedbackCreatedPayload({
           id: feedback.id,
@@ -3799,7 +3810,7 @@ export class WebChannel implements Channel {
           imageCount: images.length,
           createdAt: now,
         });
-        void this.deps.eventTriggers
+        void this.deps.systemEvents
           .dispatch("feedback.created", payload)
           .catch((e) => console.error("[web-channel] 反馈事件触发分发失败", e));
       }
@@ -5385,12 +5396,12 @@ export class WebChannel implements Channel {
   }
 
   /** 工作流模块资源所有权校验：不存在或不属于该用户均抛 NotFoundError（避免存在性泄露）。 */
-  private async requireOwnedTrigger(id: string, uid: string): Promise<Trigger> {
-    const t = await this.deps.triggerStore?.get(id);
-    if (!t?.ownerId || t.ownerId !== uid) {
-      throw new NotFoundError("NOT_FOUND", "trigger 不存在");
+  private async requireOwnedEvent(id: string, uid: string): Promise<Event> {
+    const e = await this.deps.eventStore?.get(id);
+    if (!e?.ownerId || e.ownerId !== uid) {
+      throw new NotFoundError("NOT_FOUND", "事件不存在");
     }
-    return t;
+    return e;
   }
 
   private async requireOwnedWorkflow(id: string, uid: string): Promise<Workflow> {
@@ -5401,27 +5412,18 @@ export class WebChannel implements Channel {
     return w;
   }
 
-  private async requireOwnedLoop(id: string, uid: string): Promise<Loop> {
-    const l = await this.deps.loopStore?.get(id);
-    if (!l?.ownerId || l.ownerId !== uid) throw new NotFoundError("NOT_FOUND", "loop 不存在");
-    return l;
-  }
-
   /**
-   * workflow 引用校验：trigger 必须本人所有（触发器不可共享）；agent 必须本人可使用
-   * （自有或被分享启用）。零校验时 loop 可借他人 workflow 携带的 agent/trigger 装备运行
-   * （2026-09-24 审计）。
+   * workflow 引用校验：事件必须本人所有（事件不可共享）；agent 必须本人可使用
+   * （自有或被分享启用）。零校验时执行可借他人 workflow 携带的 agent/事件装备运行
+   * （2026-09-24 审计，语义沿用）。
    */
   private async assertWorkflowRefsUsable(
-    input: Pick<Workflow, "triggerId" | "agentId">,
+    input: Pick<Workflow, "eventId" | "agentId">,
     uid: string,
   ): Promise<void> {
-    const trigger = await this.deps.triggerStore?.get(input.triggerId);
-    if (!trigger || trigger.ownerId !== uid) {
-      throw new ValidationError(
-        "TRIGGER_REF_INVALID",
-        "workflow 引用的 trigger 不存在或非本人所有",
-      );
+    const event = await this.deps.eventStore?.get(input.eventId);
+    if (!event || event.ownerId !== uid) {
+      throw new ValidationError("EVENT_REF_INVALID", "workflow 订阅的事件不存在或非本人所有");
     }
     if (this.deps.agentStore) {
       const agent = await this.deps.agentStore.get(input.agentId);
@@ -5434,17 +5436,6 @@ export class WebChannel implements Channel {
       if (!canUseAgent(agent, { id: uid, role: "user" }, granted)) {
         throw new ValidationError("AGENT_REF_INVALID", "workflow 引用的 agent 不可用");
       }
-    }
-  }
-
-  /** loop 引用校验：workflowId 必须指向本人 workflow。 */
-  private async assertLoopWorkflowUsable(
-    input: Pick<Loop, "workflowId">,
-    uid: string,
-  ): Promise<void> {
-    const wf = await this.deps.workflowStore?.get(input.workflowId);
-    if (!wf || wf.ownerId !== uid) {
-      throw new ValidationError("WORKFLOW_REF_INVALID", "loop 引用的 workflow 不存在或非本人所有");
     }
   }
 
@@ -5789,9 +5780,9 @@ export class WebChannel implements Channel {
     }
   }
 
-  /** POST /hooks/<slug> —— Hook 触发器入口，免认证。 */
+  /** GET|POST /hooks/<随机路径> —— 调用事件入口，免认证（外部系统回调；D2/D3）。 */
   private async handleHook(req: HttpRequest, res: ServerResponse): Promise<void> {
-    if (!this.deps.hookRegistry) {
+    if (!this.deps.callEndpoint) {
       res.writeHead(404);
       res.end("hooks disabled");
       return;
@@ -5802,7 +5793,7 @@ export class WebChannel implements Channel {
       if (typeof v === "string") headers[k] = v;
       else if (Array.isArray(v)) headers[k] = v.join(",");
     }
-    const result = await this.deps.hookRegistry.handle({
+    const result = await this.deps.callEndpoint.handle({
       method: req.method,
       url: req.url,
       headers,
@@ -5813,7 +5804,8 @@ export class WebChannel implements Channel {
   }
 
   /**
-   * 工作流模块 API（triggers / workflows / loops）。命中返回 true。
+   * 自动化模块 API（events / workflows，spec 2026-10-09-events-workflows-refactor-design §8）。
+   * 命中返回 true。事件三分法（system/schedule/call）+ 工作流订阅 + 触发/执行记录。
    * ponytail: 单文件聚合所有 CRUD 路由，避免拆多文件多 handler。
    */
   private async handleWorkflowApi(
@@ -5822,99 +5814,109 @@ export class WebChannel implements Channel {
     res: ServerResponse,
   ): Promise<boolean> {
     const pathname = url.split("?")[0] ?? url;
-    const ts = this.deps.triggerStore;
+    const es = this.deps.eventStore;
     const ws = this.deps.workflowStore;
-    const ls = this.deps.loopStore;
-    // 三者全缺省直接放行（路由不适用）
-    if (!ts && !ws && !ls) return false;
+    const rs = this.deps.workflowRunStore;
+    const fs = this.deps.eventFiringStore;
+    // 二者全缺省直接放行（路由不适用）
+    if (!es && !ws) return false;
     const uid = this.requireRequestUser(req);
+    const queryOf = () => new URL(url, "http://localhost").searchParams;
 
-    // ===== Triggers =====
-    if (pathname === "/api/triggers" && req.method === "GET") {
-      this.json(res, { triggers: await ts?.listByOwner(uid) });
+    // ===== Events =====
+    if (pathname === "/api/events" && req.method === "GET") {
+      const events = (await es?.listByOwner(uid)) ?? [];
+      const counts = (await ws?.countEnabledByEvent()) ?? new Map<string, number>();
+      this.json(res, {
+        events: events.map((e) => ({ ...e, subscriberCount: counts.get(e.id) ?? 0 })),
+      });
       return true;
     }
-    if (pathname === "/api/triggers" && req.method === "POST") {
+    if (pathname === "/api/events" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      // event 触发器 admin-only：事件 payload 含全体用户反馈正文，放开 member 即跨用户泄漏
-      //（spec 2026-09-28-event-trigger-feedback-design §6）
-      if (body.type === "event") {
-        if (this.currentViewer(req).role !== "admin") {
-          throw new ForbiddenError("EVENT_TRIGGER_ADMIN_ONLY", "事件触发器仅管理员可创建");
-        }
+      // system 事件 admin-only：事件 payload 含全体用户反馈正文，放开 member 即跨用户泄漏
+      //（语义沿 spec 2026-09-28-event-trigger-feedback-design §6）
+      if (body.type === "system" && this.currentViewer(req).role !== "admin") {
+        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "系统事件仅管理员可创建");
       }
-      // hook 触发器缺省 path 时服务端生成不可猜随机 slug（规格 M4）：
-      // 未认证触发通道（hook-registry 按 hook.path 匹配）的防扫描收敛；
-      // 显式提供 path（任一层）保持向后兼容（存量 webhook 不迁移），另一层继承同值
-      if (body.type === "hook") {
-        const hookCfg = body.hook as Record<string, unknown> | undefined;
-        const topGiven = typeof body.path === "string";
-        const hookGiven = !!hookCfg && typeof hookCfg.path === "string";
-        if (!topGiven && !hookGiven) {
-          const generated = `/hooks/${randomBytes(8).toString("hex")}`;
-          body.path = generated;
-          if (hookCfg) hookCfg.path = generated;
-        } else if (topGiven && hookCfg && !hookGiven) {
-          hookCfg.path = body.path as string;
-        } else if (!topGiven && hookCfg && hookGiven) {
-          body.path = hookCfg.path as string;
-        }
-        // hook path 全局唯一：显式 path 抢注他人存量 webhook = 劫持其外部回调数据
-        const hookPath = (hookCfg?.path ?? body.path) as string | undefined;
-        if (hookPath && (await ts?.findByHookPath(hookPath))) {
-          throw new ValidationError("HOOK_PATH_TAKEN", `hook 路径已被占用: ${hookPath}`);
-        }
+      const input = parseEventInput(body);
+      // call path 服务端生成（D2）：每事件独立随机路径，客户端不可指定
+      if (input.type === "call" && input.call) {
+        input.call = { ...input.call, path: generateCallPath() };
       }
-      const created = await ts?.create(parseTriggerInput({ ...body, ownerId: uid }));
+      const created = await es?.create({ ...input, ownerId: uid });
+      await this.deps.scheduler?.refreshByEvent(created?.id ?? "");
       this.json(res, created, 201);
       return true;
     }
-    let m = pathname.match(/^\/api\/triggers\/([\w-]+)$/);
+    let m = pathname.match(/^\/api\/events\/([\w-]+)$/);
     if (m && req.method === "GET") {
-      this.json(res, await this.requireOwnedTrigger(m[1] ?? "", uid));
+      this.json(res, await this.requireOwnedEvent(m[1] ?? "", uid));
       return true;
     }
     if (m && req.method === "PUT") {
-      // PUT = 全量替换：parseTriggerInput 要求完整对象（name/type/scheduler|hook 等），缺字段返回 400。
-      // store.update 签名虽为 Partial<>，但 HTTP 层强制客户端发全量；如需部分更新请新增 PATCH 路由。
-      const existing = await this.requireOwnedTrigger(m[1] ?? "", uid);
+      // PUT = 全量替换：parseEventInput 要求完整对象（name/type + 对应配置）。
+      const existing = await this.requireOwnedEvent(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      // event 触发器 admin-only（同 POST）；存量非 event 触发器也不许被改成 event
-      if (body.type === "event" || existing.type === "event") {
-        if (this.currentViewer(req).role !== "admin") {
-          throw new ForbiddenError("EVENT_TRIGGER_ADMIN_ONLY", "事件触发器仅管理员可编辑");
-        }
+      if (
+        (existing.type === "system" || body.type === "system") &&
+        this.currentViewer(req).role !== "admin"
+      ) {
+        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "系统事件仅管理员可编辑");
       }
-      const parsed = parseTriggerInput({ ...body, ownerId: uid });
-      // hook path 全局唯一（排除自身）：防改路径撞上他人存量 webhook
-      if (parsed.type === "hook" && parsed.hook) {
-        const existing = await ts?.findByHookPath(parsed.hook.path);
-        if (existing && existing.id !== m[1]) {
-          throw new ValidationError("HOOK_PATH_TAKEN", `hook 路径已被占用: ${parsed.hook.path}`);
-        }
+      const parsed = parseEventInput(body);
+      // call path 服务端所有（D2）：更新不换路径，外部回调地址稳定
+      if (parsed.type === "call" && parsed.call) {
+        parsed.call = { ...parsed.call, path: existing.call?.path ?? generateCallPath() };
       }
-      const updated = await ts?.update(m[1] ?? "", parsed);
-      // ponytail: trigger cron 可能变更，刷新所有引用此 trigger 的 enabled loops
-      await this.deps.scheduler?.refreshByTrigger(m[1] ?? "");
+      const updated = await es?.update(m[1] ?? "", parsed);
+      await this.deps.scheduler?.refreshByEvent(m[1] ?? "");
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
-      await this.requireOwnedTrigger(m[1] ?? "", uid);
-      const count = (await ts?.countWorkflowsReferencing(m[1] ?? "")) ?? 0;
+      const event = await this.requireOwnedEvent(m[1] ?? "", uid);
+      const count = (await ws?.countByEventId(event.id)) ?? 0;
       if (count > 0) {
-        this.json(res, { error: `被 ${count} 个 workflow 引用，无法删除` }, 409);
+        this.json(res, { error: `被 ${count} 个 workflow 订阅，无法删除` }, 409);
         return true;
       }
-      await ts?.delete(m[1] ?? "");
+      await es?.delete(event.id);
+      this.deps.scheduler?.unregister(event.id);
       this.json(res, { ok: true });
       return true;
     }
-    m = pathname.match(/^\/api\/triggers\/([\w-]+)\/test$/);
-    if (m && req.method === "POST" && this.deps.loopRunner) {
-      await this.requireOwnedTrigger(m[1] ?? "", uid);
-      const result = await this.deps.loopRunner.testTrigger(m[1] ?? "");
-      this.json(res, result);
+    m = pathname.match(/^\/api\/events\/([\w-]+)\/test$/);
+    if (m && req.method === "POST") {
+      const event = await this.requireOwnedEvent(m[1] ?? "", uid);
+      const probe = await probeEventSource(event, {
+        allowPrivateNet: this.deps.eventProbe?.allowPrivateNet,
+        workspaceRoot: this.deps.eventProbe?.workspaceRoot ?? "",
+        gateByMatcher: true,
+      });
+      this.json(res, probe);
+      return true;
+    }
+    m = pathname.match(/^\/api\/events\/([\w-]+)\/firings$/);
+    if (m && req.method === "GET") {
+      const event = await this.requireOwnedEvent(m[1] ?? "", uid);
+      const q = queryOf();
+      const firings =
+        (await fs?.listByEvent(event.id, {
+          limit: Math.min(Number(q.get("limit") ?? 50) || 50, 200),
+          before: q.get("before") ?? undefined,
+        })) ?? [];
+      this.json(res, { firings });
+      return true;
+    }
+    m = pathname.match(/^\/api\/events\/([\w-]+)\/firings\/([\w-]+)$/);
+    if (m && req.method === "GET") {
+      const event = await this.requireOwnedEvent(m[1] ?? "", uid);
+      const firing = await fs?.get(m[2] ?? "");
+      if (!firing || firing.eventId !== event.id) {
+        throw new NotFoundError("NOT_FOUND", "触发记录不存在");
+      }
+      this.json(res, { ...firing, runs: (await rs?.listByFiring(firing.id)) ?? [] });
       return true;
     }
 
@@ -5928,6 +5930,7 @@ export class WebChannel implements Channel {
       const input = parseWorkflowInput({ ...body, ownerId: uid });
       await this.assertWorkflowRefsUsable(input, uid);
       const created = await ws?.create(input);
+      await this.deps.scheduler?.refreshByEvent(created?.eventId ?? "");
       this.json(res, created, 201);
       return true;
     }
@@ -5937,97 +5940,88 @@ export class WebChannel implements Channel {
       return true;
     }
     if (m && req.method === "PUT") {
-      // PUT = 全量替换：parseWorkflowInput 要求完整对象（name/triggerId/agentId 等）。
-      await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      // PUT = 全量替换：parseWorkflowInput 要求完整对象（name/eventId/agentId 等）。
+      const existing = await this.requireOwnedWorkflow(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
       const input = parseWorkflowInput({ ...body, ownerId: uid });
       await this.assertWorkflowRefsUsable(input, uid);
       const updated = await ws?.update(m[1] ?? "", input);
+      // 订阅事件变更时两侧调度都刷新（旧事件可能因此无人订阅 → 注销 cron）
+      if (existing.eventId !== updated?.eventId) {
+        await this.deps.scheduler?.refreshByEvent(existing.eventId);
+      }
+      await this.deps.scheduler?.refreshByEvent(updated?.eventId ?? "");
       this.json(res, updated);
       return true;
     }
     if (m && req.method === "DELETE") {
-      await this.requireOwnedWorkflow(m[1] ?? "", uid);
-      await ws?.delete(m[1] ?? "");
+      const existing = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      await ws?.delete(existing.id);
+      await rs?.deleteByWorkflow(existing.id);
+      await this.deps.scheduler?.refreshByEvent(existing.eventId);
       this.json(res, { ok: true });
       return true;
     }
-
-    // ===== Loops =====
-    if (pathname === "/api/loops" && req.method === "GET") {
-      this.json(res, { loops: await ls?.listByOwner(uid) });
-      return true;
-    }
-    if (pathname === "/api/loops" && req.method === "POST") {
-      const body = JSON.parse(await this.readBody(req));
-      const input = parseLoopInput({ ...body, ownerId: uid });
-      await this.assertLoopWorkflowUsable(input, uid);
-      const created = await ls?.create(input);
-      this.json(res, created, 201);
-      return true;
-    }
-    m = pathname.match(/^\/api\/loops\/([\w-]+)$/);
-    if (m && req.method === "GET") {
-      const loop = await this.requireOwnedLoop(m[1] ?? "", uid);
-      // 详情附队列深度（排队中 N 条；触发队列未装配=不展示）
-      const queuedCount = this.deps.triggerQueue
-        ? await this.deps.triggerQueue.countPending(m[1] ?? "")
-        : undefined;
-      this.json(res, { ...loop, queuedCount });
-      return true;
-    }
-    if (m && req.method === "PUT") {
-      // PUT = 全量替换：parseLoopInput 要求完整对象（name/workflowId 等）。
-      await this.requireOwnedLoop(m[1] ?? "", uid);
-      const body = JSON.parse(await this.readBody(req));
-      const input = parseLoopInput({ ...body, ownerId: uid });
-      await this.assertLoopWorkflowUsable(input, uid);
-      const updated = await ls?.update(m[1] ?? "", input);
-      this.json(res, updated);
-      return true;
-    }
-    if (m && req.method === "DELETE") {
-      await this.requireOwnedLoop(m[1] ?? "", uid);
-      await ls?.delete(m[1] ?? "");
-      // 级联清触发队列：孤儿 pending 行会被重启恢复无主泵取
-      await this.deps.triggerQueue?.deleteByLoop(m[1] ?? "");
-      this.json(res, { ok: true });
-      return true;
-    }
-    m = pathname.match(/^\/api\/loops\/([\w-]+)\/(enable|disable)$/);
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/(enable|disable)$/);
     if (m && req.method === "POST") {
-      // requireOwnedLoop 兼做属主校验（副作用），返回值此处不需要
-      await this.requireOwnedLoop(m[1] ?? "", uid);
-      const enabled = m[2] === "enable";
-      const updated = await ls?.setEnabled(m[1] ?? "", enabled);
-      // 启停时同步调度器
-      if (this.deps.scheduler && updated) {
-        if (enabled) await this.deps.scheduler.register(updated);
-        else this.deps.scheduler.unregister(updated.id);
-      }
-      // 重新启用时抽触发队列积压（停用期间入队的事件此刻交付）
-      if (enabled) this.deps.loopRunner?.pump(m[1] ?? "");
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      const updated = await ws?.setEnabled(wf.id, m[2] === "enable");
+      await this.deps.scheduler?.refreshByEvent(updated?.eventId ?? "");
       this.json(res, updated);
       return true;
     }
-    m = pathname.match(/^\/api\/loops\/([\w-]+)\/run$/);
-    if (m && req.method === "POST" && this.deps.loopRunner) {
-      // 手动触发：取 workflow 关联的 trigger 一次性测试+fire
-      const loop = await this.requireOwnedLoop(m[1] ?? "", uid);
-      const wf = loop.workflowId ? await ws?.get(loop.workflowId) : undefined;
-      if (!wf?.triggerId) {
-        throw new ValidationError("WORKFLOW_NO_TRIGGER", "workflow 未配置 trigger");
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/run$/);
+    if (m && req.method === "POST") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      const event = wf.eventId ? await es?.get(wf.eventId) : undefined;
+      let payload = buildManualContext(event);
+      // 有条件定时手动运行：现场抓一次源作为上下文（抓失败回退定时样例上下文）
+      if (event?.type === "schedule" && event.schedule?.source) {
+        const probe = await probeEventSource(event, {
+          allowPrivateNet: this.deps.eventProbe?.allowPrivateNet,
+          workspaceRoot: this.deps.eventProbe?.workspaceRoot ?? "",
+          gateByMatcher: false,
+        });
+        if (probe.sourceOutput) payload = probe.sourceOutput;
       }
-      const result = await this.deps.loopRunner.testTrigger(wf.triggerId);
-      await this.deps.loopRunner.fire(loop.id, result.sourceOutput);
-      this.json(res, { ok: true, matched: result.matched, sourceOutput: result.sourceOutput });
+      const run = (await this.deps.eventDispatcher?.manualRun(wf.id, { payload })) ?? null;
+      this.json(res, { ok: true, run });
       return true;
     }
-    m = pathname.match(/^\/api\/loops\/([\w-]+)\/runs$/);
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs$/);
     if (m && req.method === "GET") {
-      await this.requireOwnedLoop(m[1] ?? "", uid);
-      const runs = await ls?.listRuns(m[1] ?? "", { limit: 50 });
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      const q = queryOf();
+      const runs =
+        (await rs?.listRuns(wf.id, {
+          limit: Math.min(Number(q.get("limit") ?? 50) || 50, 200),
+          before: q.get("before") ?? undefined,
+          status: (q.get("status") ?? undefined) as WorkflowRun["status"] | undefined,
+        })) ?? [];
       this.json(res, { runs });
+      return true;
+    }
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs\/stats$/);
+    if (m && req.method === "GET") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      this.json(res, (await rs?.stats(wf.id)) ?? null);
+      return true;
+    }
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs\/([\w-]+)$/);
+    if (m && req.method === "GET") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      const run = await rs?.getRun(m[2] ?? "");
+      if (!run || run.workflowId !== wf.id) {
+        throw new NotFoundError("NOT_FOUND", "执行记录不存在");
+      }
+      this.json(res, run);
+      return true;
+    }
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs\/([\w-]+)\/stop$/);
+    if (m && req.method === "POST") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      const run = await this.deps.eventDispatcher?.stopRun(wf.id, m[2] ?? "");
+      this.json(res, run);
       return true;
     }
     return false;

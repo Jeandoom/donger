@@ -16,8 +16,6 @@ import { KbShareLandingPage } from "./pages/KbShareLandingPage";
 import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
-import { LoopDetailPage } from "./pages/LoopDetailPage";
-import { LoopsPage } from "./pages/LoopsPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { NotificationPage } from "./pages/NotificationPage";
 import { ProxyPage } from "./pages/ProxyPage";
@@ -25,10 +23,10 @@ import { RegisterPage } from "./pages/RegisterPage";
 import { SetupPage } from "./pages/SetupPage";
 import { ShareLandingPage } from "./pages/ShareLandingPage";
 import { SkillsPage } from "./pages/SkillsPage";
-import { TriggerEditorPage } from "./pages/TriggerEditorPage";
-import { TriggersPage } from "./pages/TriggersPage";
 import { UserProfilePage } from "./pages/UserProfilePage";
 import { WorkflowEditorPage } from "./pages/WorkflowEditorPage";
+import { EventEditorPage } from "./pages/EventEditorPage";
+import { EventsPage } from "./pages/EventsPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 
 export function App() {
@@ -64,11 +62,13 @@ export function App() {
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/workflows/new" element={<WorkflowEditorPage />} />
             <Route path="/workflows/:id" element={<WorkflowEditorPage />} />
-            <Route path="/triggers" element={<TriggersPage />} />
-            <Route path="/triggers/new" element={<TriggerEditorPage />} />
-            <Route path="/triggers/:id" element={<TriggerEditorPage />} />
-            <Route path="/loops" element={<LoopsPage />} />
-            <Route path="/loops/:id" element={<LoopDetailPage />} />
+            {/* 触发器→事件改名 + loops 模块移除（spec 2026-10-09-events-workflows-refactor-design）；
+                旧深链重定向事件页 */}
+            <Route path="/events" element={<EventsPage />} />
+            <Route path="/events/new" element={<EventEditorPage />} />
+            <Route path="/events/:id" element={<EventEditorPage />} />
+            <Route path="/triggers" element={<Navigate to="/events" replace />} />
+            <Route path="/loops" element={<Navigate to="/workflows" replace />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
             {/* v3 模型合并：主机=凭证（kind=host），独立页退役；旧深链重定向凭证页 */}

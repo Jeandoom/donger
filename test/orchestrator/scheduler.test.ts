@@ -1,214 +1,151 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import pino from "pino";
-import { describe, expect, it, vi } from "vitest";
-import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
-import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SqliteEventStore } from "../../src/adapters/sqlite-event-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
-import type { LoopRunner } from "../../src/orchestrator/loop-runner.js";
 import { SchedulerService } from "../../src/orchestrator/scheduler.js";
 
 const logger = pino({ level: "silent" });
 
-function setup() {
-  const db = new Database(":memory:");
-  const triggerStore = new SqliteTriggerStore(db);
-  triggerStore.migrate();
-  const workflowStore = new SqliteWorkflowStore(db);
-  workflowStore.migrate();
-  const loopStore = new SqliteLoopStore(db);
-  loopStore.migrate();
-  const loopRunner = {
-    fire: vi.fn().mockResolvedValue(undefined),
-    testTrigger: vi.fn().mockResolvedValue({ matched: true, sourceOutput: "x" }),
-  } as unknown as LoopRunner;
-  const scheduler = new SchedulerService({
-    loopStore,
-    workflowStore,
-    triggerStore,
-    loopRunner,
-    logger,
-  });
-  return { db, triggerStore, workflowStore, loopStore, scheduler, loopRunner };
-}
-
 describe("SchedulerService", () => {
-  it("restore registers all enabled scheduler loops", async () => {
-    const s = setup();
-    const t = await s.triggerStore.create({
-      ownerId: "u1",
-      name: "T",
-      type: "scheduler",
-      scheduler: {
-        cron: "* * * * *",
-        source: { type: "file", path: "/x" },
-        matcher: { kind: "always" },
-      },
+  let db: Database.Database;
+  let eventStore: SqliteEventStore;
+  let workflowStore: SqliteWorkflowStore;
+  let dispatcher: { fire: ReturnType<typeof vi.fn> };
+  let scheduler: SchedulerService;
+  let workspaceRoot: string;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    eventStore = new SqliteEventStore(db);
+    eventStore.migrate();
+    workflowStore = new SqliteWorkflowStore(db);
+    workflowStore.migrate();
+    dispatcher = { fire: vi.fn().mockResolvedValue(undefined) };
+    workspaceRoot = mkdtempSync(join(tmpdir(), "sched-test-"));
+    scheduler = new SchedulerService({
+      eventStore,
+      workflowStore,
+      dispatcher: dispatcher as never,
+      logger,
+      workspaceRoot,
     });
-    const w = await s.workflowStore.create({
-      ownerId: "u1",
-      name: "W",
-      triggerId: t.id,
-      agentId: "a1",
-    });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.loopStore.setEnabled(l.id, true);
-    await s.scheduler.restore();
-    expect(s.scheduler.size()).toBe(1);
-    s.scheduler.stopAll();
   });
 
-  it("register/unregister toggles", async () => {
-    const s = setup();
-    const t = await s.triggerStore.create({
+  it("无 enabled 订阅者不注册；注册后 nextRunAt 可算", async () => {
+    const e = await eventStore.create({
       ownerId: "u1",
-      name: "T",
-      type: "scheduler",
-      scheduler: {
-        cron: "* * * * *",
-        source: { type: "file", path: "/x" },
-        matcher: { kind: "always" },
-      },
+      name: "早报",
+      type: "schedule",
+      schedule: { cron: "0 9 * * *", mode: "unconditional" },
     });
-    const w = await s.workflowStore.create({
+    await scheduler.register(e);
+    expect(scheduler.size()).toBe(0);
+
+    const wf = await workflowStore.create({
       ownerId: "u1",
       name: "W",
-      triggerId: t.id,
+      eventId: e.id,
       agentId: "a1",
     });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.scheduler.register(l);
-    // register 是异步 resolve cron expr，需要微任务
-    await new Promise((res) => setImmediate(res));
-    expect(s.scheduler.size()).toBe(1);
-    s.scheduler.unregister(l.id);
-    expect(s.scheduler.size()).toBe(0);
+    await workflowStore.setEnabled(wf.id, true);
+    await scheduler.refreshByEvent(e.id);
+    expect(scheduler.size()).toBe(1);
   });
 
-  it("hook trigger loops are NOT registered in scheduler", async () => {
-    const s = setup();
-    const t = await s.triggerStore.create({
+  it("unconditional tick 到点直接 fire（payload 携带 firedAt）", async () => {
+    const e = await eventStore.create({
       ownerId: "u1",
-      name: "T",
-      type: "hook",
-      hook: {
-        path: "/hooks/x",
-        responseStatus: 200,
-        responseBody: "",
-        matcher: { kind: "always" },
-      },
+      name: "早报",
+      type: "schedule",
+      schedule: { cron: "0 9 * * *", mode: "unconditional" },
     });
-    const w = await s.workflowStore.create({
+    const wf = await workflowStore.create({
       ownerId: "u1",
       name: "W",
-      triggerId: t.id,
+      eventId: e.id,
       agentId: "a1",
     });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.loopStore.setEnabled(l.id, true);
-    await s.scheduler.restore();
-    expect(s.scheduler.size()).toBe(0);
+    await workflowStore.setEnabled(wf.id, true);
+    await (scheduler as unknown as { tick(id: string): Promise<void> }).tick(e.id);
+    expect(dispatcher.fire).toHaveBeenCalledTimes(1);
+    const [eventId, ctx, source] = dispatcher.fire.mock.calls[0] as [
+      string,
+      { payload: string },
+      string,
+    ];
+    expect(eventId).toBe(e.id);
+    expect(source).toBe("schedule");
+    const payload = JSON.parse(ctx.payload) as { event: string; firedAt: string };
+    expect(payload.event).toBe("timer");
+    expect(payload.firedAt).toBeTruthy();
   });
 
-  it("invalid cron skips registration", async () => {
-    const s = setup();
-    const t = await s.triggerStore.create({
+  it("conditional tick：抓工作区内文件源 + matcher 判定，命中才 fire", async () => {
+    writeFileSync(join(workspaceRoot, "src.txt"), "hello foo world");
+    const e = await eventStore.create({
       ownerId: "u1",
-      name: "T",
-      type: "scheduler",
-      scheduler: {
-        cron: "not a cron",
-        source: { type: "file", path: "/x" },
-        matcher: { kind: "always" },
+      name: "探活",
+      type: "schedule",
+      schedule: {
+        cron: "* * * * *",
+        mode: "conditional",
+        source: { type: "file", path: "src.txt" },
+        matcher: { kind: "bodyContains", keyword: "foo" },
       },
     });
-    const w = await s.workflowStore.create({
+    const wf = await workflowStore.create({
       ownerId: "u1",
       name: "W",
-      triggerId: t.id,
+      eventId: e.id,
       agentId: "a1",
     });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.loopStore.setEnabled(l.id, true);
-    await s.scheduler.restore();
-    expect(s.scheduler.size()).toBe(0);
+    await workflowStore.setEnabled(wf.id, true);
+    await (scheduler as unknown as { tick(id: string): Promise<void> }).tick(e.id);
+    expect(dispatcher.fire).toHaveBeenCalledTimes(1);
+    const [, ctx] = dispatcher.fire.mock.calls[0] as [string, { payload: string }];
+    expect(ctx.payload).toContain("foo");
+
+    // 未命中：不 fire
+    const e2 = await eventStore.create({
+      ownerId: "u1",
+      name: "探活2",
+      type: "schedule",
+      schedule: {
+        cron: "* * * * *",
+        mode: "conditional",
+        source: { type: "file", path: "src.txt" },
+        matcher: { kind: "bodyContains", keyword: "absent" },
+      },
+    });
+    await workflowStore.create({ ownerId: "u1", name: "W2", eventId: e2.id, agentId: "a1" });
+    const wf2 = (await workflowStore.listByOwner("u1")).find((w) => w.eventId === e2.id)!;
+    await workflowStore.setEnabled(wf2.id, true);
+    await (scheduler as unknown as { tick(id: string): Promise<void> }).tick(e2.id);
+    expect(dispatcher.fire).toHaveBeenCalledTimes(1);
   });
 
-  it("register 幂等刷新：重复 register 不增长 size", async () => {
-    const s = setup();
-    const t = await s.triggerStore.create({
+  it("订阅者停用后 refreshByEvent 注销 cron", async () => {
+    const e = await eventStore.create({
       ownerId: "u1",
-      name: "T",
-      type: "scheduler",
-      scheduler: {
-        cron: "* * * * *",
-        source: { type: "file", path: "/x" },
-        matcher: { kind: "always" },
-      },
+      name: "早报",
+      type: "schedule",
+      schedule: { cron: "0 9 * * *", mode: "unconditional" },
     });
-    const w = await s.workflowStore.create({
+    const wf = await workflowStore.create({
       ownerId: "u1",
       name: "W",
-      triggerId: t.id,
+      eventId: e.id,
       agentId: "a1",
     });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.scheduler.register(l);
-    await new Promise((res) => setImmediate(res));
-    expect(s.scheduler.size()).toBe(1);
-    // 重复 register：先 unregister 旧的，再建新的，size 仍为 1
-    await s.scheduler.register(l);
-    await new Promise((res) => setImmediate(res));
-    expect(s.scheduler.size()).toBe(1);
-    s.scheduler.stopAll();
-  });
-
-  it("refreshByTrigger 仅刷新引用该 trigger 的 enabled loops", async () => {
-    const s = setup();
-    const t = await s.triggerStore.create({
-      ownerId: "u1",
-      name: "T",
-      type: "scheduler",
-      scheduler: {
-        cron: "* * * * *",
-        source: { type: "file", path: "/x" },
-        matcher: { kind: "always" },
-      },
-    });
-    const tOther = await s.triggerStore.create({
-      ownerId: "u1",
-      name: "T2",
-      type: "scheduler",
-      scheduler: {
-        cron: "* * * * *",
-        source: { type: "file", path: "/y" },
-        matcher: { kind: "always" },
-      },
-    });
-    const w = await s.workflowStore.create({
-      ownerId: "u1",
-      name: "W",
-      triggerId: t.id,
-      agentId: "a1",
-    });
-    const wOther = await s.workflowStore.create({
-      ownerId: "u1",
-      name: "W2",
-      triggerId: tOther.id,
-      agentId: "a1",
-    });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    const lOther = await s.loopStore.create({
-      ownerId: "u1",
-      name: "L2",
-      workflowId: wOther.id,
-    });
-    await s.loopStore.setEnabled(l.id, true);
-    await s.loopStore.setEnabled(lOther.id, true);
-    await s.scheduler.restore();
-    expect(s.scheduler.size()).toBe(2);
-    // refreshByTrigger(t) 应只刷新 l，不影响 lOther；size 保持
-    await s.scheduler.refreshByTrigger(t.id);
-    expect(s.scheduler.size()).toBe(2);
-    s.scheduler.stopAll();
+    await workflowStore.setEnabled(wf.id, true);
+    await scheduler.refreshByEvent(e.id);
+    expect(scheduler.size()).toBe(1);
+    await workflowStore.setEnabled(wf.id, false);
+    await scheduler.refreshByEvent(e.id);
+    expect(scheduler.size()).toBe(0);
   });
 });

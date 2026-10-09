@@ -7,15 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { DingTalkNotificationAdapter } from "../../src/adapters/notif-dingtalk.js";
 import { WebhookNotificationAdapter } from "../../src/adapters/notif-webhook.js";
+import { SqliteEventFiringStore } from "../../src/adapters/sqlite-event-firing-store.js";
+import { SqliteEventStore } from "../../src/adapters/sqlite-event-store.js";
 import { SqliteFeedbackStore } from "../../src/adapters/sqlite-feedback-store.js";
-import { SqliteLoopStore } from "../../src/adapters/sqlite-loop-store.js";
 import { SqliteNotificationStore } from "../../src/adapters/sqlite-notification-store.js";
-import { SqliteTriggerQueueStore } from "../../src/adapters/sqlite-trigger-queue-store.js";
-import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
+import { SqliteWorkflowRunStore } from "../../src/adapters/sqlite-workflow-run-store.js";
 import { SqliteWorkflowStore } from "../../src/adapters/sqlite-workflow-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
-import { LoopRunner } from "../../src/orchestrator/loop-runner.js";
+import { EventDispatcher } from "../../src/orchestrator/event-dispatcher.js";
 import { NotificationService } from "../../src/orchestrator/notification-service.js";
 import type {
   NotificationChannelAdapter,
@@ -432,98 +432,95 @@ describe("通知 Web API", () => {
   });
 });
 
-// ===== loop-runner 发出点（无人值守结果 → 站内信）=====
+// ===== EventDispatcher 发出点（无人值守结果 → 站内信）=====
 
-function setupLoopRunner(handleMessage: (msg: unknown) => Promise<string | undefined>) {
+function setupDispatcher(handleMessage: (msg: unknown) => Promise<string | undefined>) {
   const db = new Database(":memory:");
-  const triggerStore = new SqliteTriggerStore(db);
-  triggerStore.migrate();
+  const eventStore = new SqliteEventStore(db);
+  eventStore.migrate();
   const workflowStore = new SqliteWorkflowStore(db);
   workflowStore.migrate();
-  const loopStore = new SqliteLoopStore(db);
-  loopStore.migrate();
+  const runStore = new SqliteWorkflowRunStore(db);
+  runStore.migrate();
+  const firingStore = new SqliteEventFiringStore(db);
+  firingStore.migrate();
   const notificationStore = new SqliteNotificationStore(db);
   notificationStore.migrate();
   const notifications = new NotificationService({ store: notificationStore });
-  const workspaceRoot = mkdtempSync(join(tmpdir(), "loop-notify-"));
-  const queue = new SqliteTriggerQueueStore(db);
-  queue.migrate();
-  const runner = new LoopRunner({
-    loopStore,
+  const dispatcher = new EventDispatcher({
+    eventStore,
     workflowStore,
-    triggerStore,
+    runStore,
+    firingStore,
     orchestrator: { handleMessage },
-    workspaceRoot,
-    channelId: "web",
+    conversationStore: { createWithAgent: async () => ({ id: "conv-1" }) },
     logger,
-    queue,
     notifications,
+    maxQueuePending: 10,
   });
-  return { db, triggerStore, workflowStore, loopStore, notifications, runner, workspaceRoot };
+  return { db, eventStore, workflowStore, runStore, notifications, dispatcher };
 }
 
-describe("LoopRunner 通知收编", () => {
-  it("运行成功 → loop.run_succeeded 站内信（属主收件，带 loop 深链）", async () => {
-    const s = setupLoopRunner(vi.fn().mockResolvedValue("conv-1"));
-    const t = await s.triggerStore.create({
+describe("EventDispatcher 通知收编", () => {
+  it("运行成功 → loop.run_succeeded 站内信（属主收件，带工作流深链）", async () => {
+    const s = setupDispatcher(vi.fn().mockResolvedValue("conv-1"));
+    const e = await s.eventStore.create({
       ownerId: "u1",
-      name: "T",
-      type: "hook",
-      hook: {
-        path: "/hooks/n1",
-        responseStatus: 200,
-        responseBody: "ok",
-        matcher: { kind: "always" },
-      },
+      name: "E",
+      type: "schedule",
+      schedule: { cron: "0 9 * * *", mode: "unconditional" },
     });
     const w = await s.workflowStore.create({
       ownerId: "u1",
       name: "W",
-      triggerId: t.id,
+      eventId: e.id,
       agentId: "a1",
       promptTemplate: "do: {{triggerOutput}}",
     });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.runner.fire(l.id, "hello");
-    // notify 是 fire-and-forget：跨宏任务边界等异步落库完成
+    await s.workflowStore.setEnabled(w.id, true);
+    await s.dispatcher.manualRun(w.id, { payload: "hello" });
+    // 泵异步执行：轮询至 success 后等通知落库
+    for (let i = 0; i < 100; i++) {
+      const run = (await s.runStore.listRuns(w.id))[0];
+      if (run?.status === "success") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     await new Promise((resolve) => setImmediate(resolve));
     const list = await s.notifications.list("u1", { limit: 10, offset: 0 });
     expect(list.total).toBe(1);
     expect(list.items[0]?.event).toBe("loop.run_succeeded");
-    expect(list.items[0]?.link).toBe(`/loops/${l.id}`);
+    expect(list.items[0]?.link).toBe(`/workflows/${w.id}`);
     s.db.close();
-    rmSync(s.workspaceRoot, { recursive: true, force: true });
   });
 
   it("运行失败 → loop.run_failed 站内信（critical）", async () => {
-    const s = setupLoopRunner(vi.fn().mockRejectedValue(new Error("boom")));
-    const t = await s.triggerStore.create({
+    const s = setupDispatcher(vi.fn().mockRejectedValue(new Error("boom")));
+    const e = await s.eventStore.create({
       ownerId: "u1",
-      name: "T",
-      type: "hook",
-      hook: {
-        path: "/hooks/n2",
-        responseStatus: 200,
-        responseBody: "ok",
-        matcher: { kind: "always" },
-      },
+      name: "E",
+      type: "schedule",
+      schedule: { cron: "0 9 * * *", mode: "unconditional" },
     });
     const w = await s.workflowStore.create({
       ownerId: "u1",
       name: "W",
-      triggerId: t.id,
+      eventId: e.id,
       agentId: "a1",
       promptTemplate: "do",
     });
-    const l = await s.loopStore.create({ ownerId: "u1", name: "L", workflowId: w.id });
-    await s.runner.fire(l.id, "hello");
+    await s.workflowStore.setEnabled(w.id, true);
+    await s.dispatcher.manualRun(w.id, { payload: "hello" });
+    for (let i = 0; i < 100; i++) {
+      const run = (await s.runStore.listRuns(w.id))[0];
+      if (run?.status === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     await new Promise((resolve) => setImmediate(resolve));
     const list = await s.notifications.list("u1", { limit: 10, offset: 0 });
     expect(list.items[0]?.event).toBe("loop.run_failed");
     expect(list.items[0]?.severity).toBe("critical");
     expect(list.items[0]?.body).toContain("boom");
     s.db.close();
-    rmSync(s.workspaceRoot, { recursive: true, force: true });
   });
 });
 

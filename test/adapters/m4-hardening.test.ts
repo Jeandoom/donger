@@ -5,8 +5,8 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JwtSessionStore } from "../../src/adapters/jwt-session-store.js";
 import { SqliteConversationStore } from "../../src/adapters/sqlite-conversation-store.js";
+import { SqliteEventStore } from "../../src/adapters/sqlite-event-store.js";
 import { SqliteInviteStore } from "../../src/adapters/sqlite-invite-store.js";
-import { SqliteTriggerStore } from "../../src/adapters/sqlite-trigger-store.js";
 import { SqliteUserStore } from "../../src/adapters/sqlite-user-store.js";
 import { WebChannel } from "../../src/adapters/web-channel.js";
 import { createTestModuleConfigStore } from "../util/module-config-test-helper.js";
@@ -34,8 +34,8 @@ async function startChannel(): Promise<number> {
   convs.migrate();
   const inviteStore = new SqliteInviteStore(db);
   inviteStore.migrate();
-  const triggers = new SqliteTriggerStore(db);
-  triggers.migrate();
+  const events = new SqliteEventStore(db);
+  events.migrate();
   web = new WebChannel({
     port: 0,
     host: "127.0.0.1",
@@ -44,7 +44,7 @@ async function startChannel(): Promise<number> {
     userStore,
     conversationStore: convs,
     inviteStore,
-    triggerStore: triggers,
+    eventStore: events,
     moduleConfigStore: createTestModuleConfigStore(db, {
       signupAllowedDomains: ["example.com"],
     }),
@@ -124,43 +124,30 @@ describe("一次性登录 code（规格 M4：token 不进 URL）", () => {
   });
 });
 
-describe("hooks path 随机化（规格 M4：未认证触发通道防扫描）", () => {
-  it("hook 类型缺省 path → 服务端生成不可猜随机 slug；显式 path 保持", async () => {
+describe("调用事件 path 服务端强制随机（spec D2：每事件独立路径，客户端不可指定）", () => {
+  it("POST /api/events type=call → 服务端生成随机 slug；显式 path 被忽略", async () => {
     const port = await startChannel();
-    const { token } = await registerAndVerify(port, "hooker@example.com");
+    const { token } = await registerAndVerify(port, "caller@example.com");
     const created = await post(
       port,
-      "/api/triggers",
+      "/api/events",
       {
         name: "auto",
-        type: "hook",
-        hook: { matcher: { kind: "always" }, responseStatus: 200, responseBody: "ok" },
+        type: "call",
+        call: {
+          path: "/hooks/i-tried-to-pick-this",
+          methods: ["GET", "POST"],
+          responseStatus: 200,
+          responseBody: "ok",
+          matcher: { kind: "always" },
+        },
       },
       token,
     );
     expect(created.status).toBe(201);
-    const auto = (await created.json()) as { path?: string; hook?: { path: string } };
-    // 未认证触发匹配走 hook.path（hook-registry 按 $.hook.path 查询）
-    expect(auto.hook?.path).toMatch(/^\/hooks\/[0-9a-f]{16}$/);
-    if (typeof auto.path === "string") expect(auto.path).toMatch(/^\/hooks\/[0-9a-f]{16}$/);
-
-    const explicit = await post(
-      port,
-      "/api/triggers",
-      {
-        name: "manual",
-        type: "hook",
-        path: "/hooks/my-legacy-webhook",
-        hook: { matcher: { kind: "always" }, responseStatus: 200, responseBody: "ok" },
-      },
-      token,
-    );
-    expect(explicit.status).toBe(201);
-    const manual = (await explicit.json()) as {
-      path?: string;
-      hook?: { path: string };
-    };
-    expect(manual.hook?.path).toBe("/hooks/my-legacy-webhook");
+    const body = (await created.json()) as { call?: { path: string } };
+    expect(body.call?.path).toMatch(/^\/hooks\/[0-9a-f]{16}$/);
+    expect(body.call?.path).not.toBe("/hooks/i-tried-to-pick-this");
   });
 });
 

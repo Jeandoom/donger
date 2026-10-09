@@ -103,7 +103,9 @@ const CreateAgentShape = {
   gitAllowShellGit: z
     .boolean()
     .optional()
-    .describe("允许 shell git（缺省开。非 https 远程/宿主凭证栈/宿主配置写入恒拒，push 仍走审批门；设 false 关闭后只准走 donger-git 工具）"),
+    .describe(
+      "允许 shell git（缺省开。非 https 远程/宿主凭证栈/宿主配置写入恒拒，push 仍走审批门；设 false 关闭后只准走 donger-git 工具）",
+    ),
   mcpServers: z.array(McpServerConfigSchema).optional(),
 };
 const UpdateAgentShape = {

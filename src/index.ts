@@ -12,7 +12,6 @@ import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
 import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
-import { createGitPlatformApiResolver } from "./adapters/git-platform-api-resolver.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
@@ -31,6 +30,8 @@ import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
+import { SqliteEventFiringStore } from "./adapters/sqlite-event-firing-store.js";
+import { SqliteEventStore } from "./adapters/sqlite-event-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import {
@@ -39,7 +40,6 @@ import {
   SqliteKbShareStore,
 } from "./adapters/sqlite-kb-store.js";
 import { SqliteLlmProviderStore } from "./adapters/sqlite-llm-provider-store.js";
-import { SqliteLoopStore } from "./adapters/sqlite-loop-store.js";
 import { SqliteMcpTokenStore } from "./adapters/sqlite-mcp-token-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
@@ -48,11 +48,10 @@ import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
 import { SqliteTranscriptStore } from "./adapters/sqlite-transcript-store.js";
-import { SqliteTriggerQueueStore } from "./adapters/sqlite-trigger-queue-store.js";
-import { SqliteTriggerStore } from "./adapters/sqlite-trigger-store.js";
 import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
+import { SqliteWorkflowRunStore } from "./adapters/sqlite-workflow-run-store.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { createSsh2CommandRunner } from "./adapters/ssh2-command-runner.js";
 import { resolveSystemKeySeed, SystemKeyService } from "./adapters/system-key-service.js";
@@ -61,17 +60,16 @@ import { ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
 import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
+import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
-import { EventTriggerDispatcher } from "./orchestrator/event-trigger-dispatcher.js";
+import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
-import { GitWatcher } from "./orchestrator/git-watcher.js";
-import { HookRegistry } from "./orchestrator/hook-registry.js";
-import { LoopRunner } from "./orchestrator/loop-runner.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
+import { SystemEventDispatcher } from "./orchestrator/system-event-dispatcher.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
@@ -433,15 +431,16 @@ async function main(): Promise<void> {
     }
   }
 
-  // 工作流模块 stores（trigger / workflow / loop）
-  const triggerStore = new SqliteTriggerStore(db);
-  triggerStore.migrate();
-  const triggerQueueStore = new SqliteTriggerQueueStore(db);
-  triggerQueueStore.migrate();
+  // 自动化模块 stores（event / workflow / run / firing；迁移顺序有约束，spec §9：
+  // event 吸收 triggers → workflow 吸收 loops → run 搬运 loop_runs+trigger_queue 并收尾 DROP）
+  const eventStore = new SqliteEventStore(db);
+  eventStore.migrate();
   const workflowStore = new SqliteWorkflowStore(db);
   workflowStore.migrate();
-  const loopStore = new SqliteLoopStore(db);
-  loopStore.migrate();
+  const workflowRunStore = new SqliteWorkflowRunStore(db);
+  workflowRunStore.migrate();
+  const eventFiringStore = new SqliteEventFiringStore(db);
+  eventFiringStore.migrate();
 
   // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好 + 站外通道
   const notificationStore = new SqliteNotificationStore(db, secretCipher);
@@ -546,9 +545,10 @@ async function main(): Promise<void> {
     publicBaseUrl: cfg.publicBaseUrl,
     inviteStore,
     trustProxy: cfg.trustProxy,
-    triggerStore,
+    eventStore,
     workflowStore,
-    loopStore,
+    workflowRunStore,
+    eventFiringStore,
     notificationService,
     agentMeta: {
       presets: cfg.agentLlmPresets,
@@ -565,66 +565,54 @@ async function main(): Promise<void> {
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
   orchestrators.set("web", webOrch);
 
-  // 工作流运行时：loopRunner / scheduler / hookRegistry（依赖 webOrch，构造后回填 webChannel.deps）
-  const loopRunner = new LoopRunner({
-    loopStore,
+  // 自动化运行时：统一触发管线（eventDispatcher）+ 三分发器（依赖 webOrch，构造后回填
+  // webChannel.deps；spec 2026-10-09-events-workflows-refactor-design §4）
+  const eventDispatcher = new EventDispatcher({
+    eventStore,
     workflowStore,
-    triggerStore,
+    runStore: workflowRunStore,
+    firingStore: eventFiringStore,
     orchestrator: webOrch,
-    workspaceRoot: cfg.workspaceDir,
-    channelId: "web",
+    conversationStore: conversationStore,
+    canceller: webChannel,
     logger: log,
-    queue: triggerQueueStore,
     maxQueuePending: cfg.triggerQueueMaxPending,
-    allowPrivateNet: cfg.triggerAllowPrivateNet,
     notifications: notificationService,
   });
-  // git 触发器看护（v2：出站轮询 git 触发器分支 HEAD，新提交 fire 绑定 Loop——
-  // agent 驱动部署自动化；平台不依赖任何 git 平台 webhook）
-  const gitWatcher = new GitWatcher({
-    triggerStore,
-    workflowStore,
-    loopStore,
-    loopRunner,
-    credentialSets,
-    platformApis: createGitPlatformApiResolver(),
-    logger: log,
-    intervalMs: cfg.gitWatchIntervalMs,
-  });
   const scheduler = new SchedulerService({
-    loopStore,
+    eventStore,
     workflowStore,
-    triggerStore,
-    loopRunner,
+    dispatcher: eventDispatcher,
+    logger: log,
+    allowPrivateNet: cfg.triggerAllowPrivateNet,
+    workspaceRoot: cfg.workspaceDir,
+  });
+  const callEndpoint = new CallEndpoint({
+    eventStore,
+    dispatcher: eventDispatcher,
     logger: log,
   });
-  const hookRegistry = new HookRegistry({
-    triggerStore,
-    loopStore,
-    workflowStore,
-    loopRunner,
-    logger: log,
-  });
-  // 进程内事件触发分发（feedback.created 等；发射方=web-channel 反馈创建，fail-open）
-  const eventTriggers = new EventTriggerDispatcher({
-    triggerStore,
-    loopStore,
-    workflowStore,
-    loopRunner,
+  // 进程内系统事件分发（feedback.created 等；发射方=web-channel 反馈创建，fail-open）
+  const systemEvents = new SystemEventDispatcher({
+    eventStore,
+    dispatcher: eventDispatcher,
     logger: log,
   });
   // 应用管家制（spec §6）：orchestrator 的 app 工具事件晚绑定到 dispatcher
   eventEmitRef.current = (eventName, payload) => {
-    void eventTriggers
+    void systemEvents
       .dispatch(eventName, payload)
       .catch((e: Error) => log.error({ eventName, err: e.message }, "app event dispatch failed"));
   };
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
-  webChannelDeps.loopRunner = loopRunner;
   webChannelDeps.scheduler = scheduler;
-  webChannelDeps.hookRegistry = hookRegistry;
-  webChannelDeps.eventTriggers = eventTriggers;
-  webChannelDeps.triggerQueue = triggerQueueStore;
+  webChannelDeps.callEndpoint = callEndpoint;
+  webChannelDeps.eventDispatcher = eventDispatcher;
+  webChannelDeps.systemEvents = systemEvents;
+  webChannelDeps.eventProbe = {
+    allowPrivateNet: cfg.triggerAllowPrivateNet,
+    workspaceRoot: cfg.workspaceDir,
+  };
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
   webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
@@ -642,16 +630,14 @@ async function main(): Promise<void> {
     }
   };
   await scheduler.restore();
-  gitWatcher.start();
-  // 触发事件队列恢复：崩溃遗留 running→pending 重投 + 抽积压 + 清理终态行
-  await loopRunner.restoreQueue();
-  log.info({ enabledLoops: scheduler.size() }, "scheduler 已恢复");
+  // 执行队列恢复：崩溃遗留 running→queued 重投（at-least-once）+ 抽积压；记录永久保留（D5）
+  await eventDispatcher.restore();
+  log.info({ scheduledEvents: scheduler.size() }, "scheduler 已恢复");
 
   // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
   const shutdown = async (signal: string) => {
     log.info({ signal }, "关闭中");
     scheduler.stopAll();
-    gitWatcher.stop();
     // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
     await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);
     await Promise.race([webChannel.stop(), new Promise((resolve) => setTimeout(resolve, 500))]);

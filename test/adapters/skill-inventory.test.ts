@@ -261,7 +261,9 @@ describe("skill inventory / agent 级落点 / 托管闭环", () => {
     expect((r.json as { code?: string }).code).toBe("PACK_NOT_HOSTABLE");
   });
 
-  it("回装：镜像 push 后从仓库以 git 源装回；已存在默认 409、replace 守卫", { timeout: 30_000 }, async () => {
+  it("回装：镜像 push 后从仓库以 git 源装回；已存在默认 409、replace 守卫", {
+    timeout: 30_000,
+  }, async () => {
     await repoStore.upsert("u1", {
       repoUrl: remoteUrl,
       credentialCode: "gitee-pat",

@@ -181,7 +181,7 @@ export class RuntimeManager {
     let allowedTools: string[] | undefined;
     let mcpServers: McpServerConfig[] | undefined;
     // 2026-10-09 拍板④：缺省放开（无 agent 的闲聊会话同口径）；显式 false 才拦
-  let gitAllowShellGit = true;
+    let gitAllowShellGit = true;
     let extraPrompt: string | undefined = opts.systemPromptAppend;
     let additionalDirectories: string[] | undefined;
     let allowedWriteRoots: string[] | undefined;

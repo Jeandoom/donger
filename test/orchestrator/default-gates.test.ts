@@ -62,10 +62,10 @@ describe("createDefaultGates", () => {
         command: "python -c \"p = r'D:\\deploy\\donger\\data\\账单.xlsx'; print(p)\"",
       }),
     ).toBeUndefined();
-    expect(g.match("Bash", { command: "cat D:\\deploy\\donger\\logs\\runner-x.out.log" })).toBeUndefined();
     expect(
-      g.match("Bash", { command: "cat D:\\deploy\\donger\\data\\donger.db" }),
+      g.match("Bash", { command: "cat D:\\deploy\\donger\\logs\\runner-x.out.log" }),
     ).toBeUndefined();
+    expect(g.match("Bash", { command: "cat D:\\deploy\\donger\\data\\donger.db" })).toBeUndefined();
     // D:/deploy 正斜杠形态仍命中：前置 / 的豁免会连带放过 ./deploy.sh 真部署脚本，
     // 取舍上保持拦截（fail-safe），git-bash 风格路径偶发审批可接受
     expect(g.match("Bash", { command: "ls D:/deploy/donger/data" })?.gateId).toBe("deploy");
