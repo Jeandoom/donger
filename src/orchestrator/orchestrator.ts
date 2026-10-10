@@ -508,9 +508,29 @@ export class Orchestrator {
     modelRef?: string;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
+    // host_exec 只读白名单（2026-10-10 拍板）：除门侧放行外，把清单注入系统提示——
+    // LLM 每轮自由发挥命令形态（实测 || true / ps / curl -w 组合），不告知则前缀清单
+    // 永远追不完；告知后 agent 在清单内组命令，未命中段落才落审批门（人工兜底）。
+    const hostAllowlist = p.agent?.hostExecAllowlist ?? [];
+    const systemPromptAppend =
+      hostAllowlist.length > 0
+        ? [
+            p.memoryAppend,
+            [
+              "## 远程主机命令白名单",
+              "在远程主机（host_exec）执行命令时，以下列前缀开头的命令段会免审批直接执行；",
+              "组合命令的每个分号/管道/&&分段都必须以这些前缀开头，任何未列出的段落会弹出人工审批卡。",
+              "请把健康检查类命令组合在这些前缀内；确需其他命令时照常执行（会等待人工审批）。",
+              "",
+              ...hostAllowlist.map((pfx) => `- ${pfx}`),
+            ].join("\n"),
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        : p.memoryAppend;
     const prepareOnce = async (recoverResume = true): Promise<RunOptions> => {
       const { context, runOptions } = await this.deps.runtimeMgr.prepare(p.user, p.conversation, {
-        systemPromptAppend: p.memoryAppend,
+        systemPromptAppend,
         abortSignal: p.runController.signal,
         agent: p.agent,
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
@@ -521,9 +541,8 @@ export class Orchestrator {
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
       base = { ...base, permissionMode: () => this.effectivePermissionMode(p.conversation.id) };
-      // agent 级 host_exec 只读白名单（2026-10-10 拍板）：命中且无逃逸结构免 host-ops 审批门；
+      // agent 级 host_exec 只读白名单：命中且无逃逸结构免 host-ops 审批门；
       // 判定收窄在钩子内（工具名+命令域函数），runner 侧不解释语义
-      const hostAllowlist = p.agent?.hostExecAllowlist ?? [];
       if (hostAllowlist.length > 0) {
         base = {
           ...base,
