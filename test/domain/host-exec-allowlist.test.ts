@@ -69,4 +69,18 @@ describe("matchesHostExecAllowlist", () => {
   it("URL 查询串含 & 时保守回审批（不误放）", () => {
     expect(matchesHostExecAllowlist("curl -s 'http://x/a?b=1&c=2'", READ_ONLY)).toBe(false);
   });
+
+  it("引号内的 | 不误拆段（grep -iE 'a|b' 形态放行）", () => {
+    expect(
+      matchesHostExecAllowlist(
+        'journalctl -u stock | grep -iE "error|critical" | tail -5',
+        READ_ONLY,
+      ),
+    ).toBe(true);
+    expect(matchesHostExecAllowlist("grep -iE 'a|b' /var/log/syslog", ["grep"])).toBe(true);
+  });
+
+  it("引号内的命令替换仍拒绝", () => {
+    expect(matchesHostExecAllowlist('echo "$(cat /etc/shadow)"', ["echo"])).toBe(false);
+  });
 });

@@ -34,11 +34,14 @@ function splitShellSegments(command: string): string[] {
 export function matchesHostExecAllowlist(command: string, patterns: string[]): boolean {
   const prefixes = patterns.map((p) => p.trim()).filter((p) => p.length > 0);
   if (prefixes.length === 0 || command.trim().length === 0) return false;
+  // 替换/重定向在原文上判定（引号内的 $( 也算）；
+  // 引号串（grep -iE 'a|b' 这类模式参数）剥掉后再切段，避免模式里的 | 被误拆成段
   const cleaned = command.replace(NULL_REDIRECT, " ");
   if (COMMAND_SUBSTITUTION.test(cleaned)) return false;
   if (PROCESS_SUBSTITUTION.test(cleaned)) return false;
   if (OUTPUT_REDIRECT.test(cleaned)) return false;
-  const segments = splitShellSegments(cleaned);
+  const unquoted = cleaned.replace(/'[^']*'|"[^"]*"/g, " Q ");
+  const segments = splitShellSegments(unquoted);
   if (segments.length === 0) return false;
   return segments.every((seg) => prefixes.some((pre) => seg.startsWith(pre)));
 }
