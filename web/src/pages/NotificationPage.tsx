@@ -1,6 +1,7 @@
 import { BellOff, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -29,6 +30,15 @@ import { cn } from "../lib/utils";
 
 const PAGE_SIZE = 50;
 
+/** 左侧导航三分区：通知列表 / 订阅偏好 / 投递地址 */
+type NotificationTab = "inbox" | "prefs" | "addresses";
+
+const NAV_TABS: Array<{ id: NotificationTab; label: string }> = [
+  { id: "inbox", label: "通知" },
+  { id: "prefs", label: "订阅" },
+  { id: "addresses", label: "推送" },
+];
+
 const CHANNEL_COLUMNS: Array<{ id: NotificationChannel; label: string; hint: string }> = [
   { id: "inapp", label: "站内信", hint: "站内通知中心" },
   { id: "dingtalk", label: "钉钉", hint: "需绑定钉钉地址" },
@@ -37,10 +47,12 @@ const CHANNEL_COLUMNS: Array<{ id: NotificationChannel; label: string; hint: str
 
 export function NotificationPage() {
   const navigate = useNavigate();
+  const [tab, setTab] = useState<NotificationTab>("inbox");
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [total, setTotal] = useState(0);
   const [unread, setUnread] = useState(0);
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  // 默认未读视图：进页面先看没读过的
+  const [unreadOnly, setUnreadOnly] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<NotificationPrefGroup[]>([]);
@@ -129,28 +141,90 @@ export function NotificationPage() {
 
   return (
     // Shell 根是 h-[100dvh] overflow-hidden：页面必须自带滚动容器，否则内容溢出即被裁剪且无法滑动
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col gap-4 overflow-y-auto p-4">
-      <PageHeader
-        title="通知"
-        description="站内信中心与订阅偏好：任务结果、循环运行、系统提醒、反馈回复统一在此触达"
-      />
+    <div className="flex h-full w-full overflow-hidden">
+      {/* 桌面：左侧分区导航 */}
+      <nav className="hidden w-48 shrink-0 flex-col gap-1 border-r border-border bg-card/60 p-4 md:flex">
+        <p className="px-3 pb-1 text-[11px] font-semibold text-muted-foreground/70">通知中心</p>
+        {NAV_TABS.map((t) => {
+          const active = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] transition-colors",
+                active
+                  ? "bg-primary-soft font-semibold text-primary"
+                  : "text-foreground hover:bg-muted",
+              )}
+            >
+              {t.label}
+              <span className="flex-1" />
+              {t.id === "inbox" && unread > 0 ? <Badge tone="primary">{unread}</Badge> : null}
+            </button>
+          );
+        })}
+      </nav>
 
-      <InboxCard
-        items={items}
-        total={total}
-        unread={unread}
-        unreadOnly={unreadOnly}
-        loading={loading}
-        loadError={loadError}
-        onSwitchTab={(v) => setUnreadOnly(v)}
-        onOpen={openItem}
-        onMarkAll={markAll}
-        onLoadMore={() => load(items.length, true)}
-      />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* 移动端：横向分区 chips */}
+        <nav className="no-scrollbar sticky top-0 z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card/95 px-4 py-2 backdrop-blur md:hidden">
+          {NAV_TABS.map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  "shrink-0 rounded-full px-3 py-1 text-xs transition-colors",
+                  active
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-foreground hover:opacity-80",
+                )}
+              >
+                {t.label}
+                {t.id === "inbox" && unread > 0 ? (
+                  <span className="ml-1 font-semibold">{unread}</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </nav>
 
-      <PrefsCard prefs={prefs} error={prefError} onToggle={togglePref} />
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+            <PageHeader
+              title="通知"
+              description="通知列表、订阅偏好与投递地址：任务结果、循环运行、系统提醒、反馈回复统一在此触达"
+            />
 
-      <AddressBookCard addresses={addresses} onChanged={reloadAddresses} />
+            {tab === "inbox" ? (
+              <InboxCard
+                items={items}
+                total={total}
+                unread={unread}
+                unreadOnly={unreadOnly}
+                loading={loading}
+                loadError={loadError}
+                onSwitchTab={(v) => setUnreadOnly(v)}
+                onOpen={openItem}
+                onMarkAll={markAll}
+                onLoadMore={() => load(items.length, true)}
+              />
+            ) : null}
+
+            {tab === "prefs" ? (
+              <PrefsCard prefs={prefs} error={prefError} onToggle={togglePref} />
+            ) : null}
+
+            {tab === "addresses" ? (
+              <AddressBookCard addresses={addresses} onChanged={reloadAddresses} />
+            ) : null}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -176,21 +250,21 @@ function InboxCard(props: {
             type="button"
             className={cn(
               "min-h-8 rounded-lg px-2.5 transition-colors",
-              !unreadOnly ? "bg-accent font-medium" : "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => props.onSwitchTab(false)}
-          >
-            全部
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "min-h-8 rounded-lg px-2.5 transition-colors",
               unreadOnly ? "bg-accent font-medium" : "text-muted-foreground hover:text-foreground",
             )}
             onClick={() => props.onSwitchTab(true)}
           >
             未读{unread > 0 ? ` (${unread})` : ""}
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "min-h-8 rounded-lg px-2.5 transition-colors",
+              !unreadOnly ? "bg-accent font-medium" : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => props.onSwitchTab(false)}
+          >
+            全部
           </button>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
