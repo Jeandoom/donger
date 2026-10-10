@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { WorkflowRunRecords } from "../components/AutomationRecords";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -15,17 +16,6 @@ interface Workflow {
   eventId: string;
   agentId: string;
   enabled: boolean;
-  lastRunAt?: string | null;
-  lastError?: string | null;
-}
-
-function relativeTime(iso?: string | null): string {
-  if (!iso) return "从未运行";
-  const diff = Date.now() - Date.parse(iso);
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return new Date(iso).toLocaleDateString();
 }
 
 export function WorkflowsPage() {
@@ -98,12 +88,6 @@ export function WorkflowsPage() {
               <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
                 {w.description || "—"}
               </p>
-              <div className="text-xs text-muted-foreground">
-                最近执行：{relativeTime(w.lastRunAt)}
-                {w.lastError ? (
-                  <span className="ml-1 text-destructive">（失败：{w.lastError.slice(0, 60)}）</span>
-                ) : null}
-              </div>
               <div className="mt-auto flex items-center justify-between">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   启用
@@ -120,6 +104,7 @@ export function WorkflowsPage() {
                   </Button>
                 </div>
               </div>
+              <WorkflowRunRecords workflowId={w.id} />
             </Card>
           ))}
         </div>

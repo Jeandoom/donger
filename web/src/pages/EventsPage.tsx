@@ -1,6 +1,6 @@
-import { Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { EventFiringRecords } from "../components/AutomationRecords";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -14,7 +14,6 @@ interface EventDTO {
   id: string;
   name: string;
   type: EventType;
-  lastFiredAt?: string | null;
   nextRunAt?: string | null;
   subscriberCount?: number;
 }
@@ -34,14 +33,23 @@ const TYPE_TONE: Record<EventType, "primary" | "info" | "success"> = {
 export function EventsPage() {
   const nav = useNavigate();
   const [items, setItems] = useState<EventDTO[]>([]);
+  const [workflowNames, setWorkflowNames] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<EventDTO | null>(null);
 
   const refresh = useCallback(() => {
-    apiFetch("/api/events")
-      .then((r) => r.json() as Promise<{ events?: EventDTO[] }>)
-      .then((d) => setItems(d.events ?? []))
+    // workflowNames 供触发详情展示扇出轮次的工作流名称（同属主列表，一次取全）
+    void Promise.all([
+      apiFetch("/api/events").then((r) => r.json() as Promise<{ events?: EventDTO[] }>),
+      apiFetch("/api/workflows").then(
+        (r) => r.json() as Promise<{ workflows?: Array<{ id: string; name: string }> }>,
+      ),
+    ])
+      .then(([ev, wf]) => {
+        setItems(ev.events ?? []);
+        setWorkflowNames(new Map((wf.workflows ?? []).map((w) => [w.id, w.name])));
+      })
       .catch(() => setItems([]))
       .finally(() => setLoading(false));
   }, []);
@@ -76,60 +84,38 @@ export function EventsPage() {
       {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : null}
 
       {items.length ? (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
-                  <th className="px-4 py-2.5 font-medium">名称</th>
-                  <th className="px-4 py-2.5 font-medium">类型</th>
-                  <th className="px-4 py-2.5 font-medium">订阅工作流</th>
-                  <th className="px-4 py-2.5 font-medium">最近触发</th>
-                  <th className="px-4 py-2.5 font-medium">下次触发</th>
-                  <th className="px-4 py-2.5 text-right font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((e) => (
-                  <tr key={e.id} className="border-t border-border hover:bg-muted/40">
-                    <td className="px-4 py-3">
-                      <Link to={`/events/${e.id}`} className="font-medium hover:underline">
-                        {e.name}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge tone={TYPE_TONE[e.type]}>{TYPE_LABEL[e.type]}</Badge>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{e.subscriberCount ?? 0}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {e.lastFiredAt ? new Date(e.lastFiredAt).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {e.nextRunAt ? new Date(e.nextRunAt).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-1.5">
-                        <Link to={`/events/${e.id}`}>
-                          <Button variant="secondary" size="sm">
-                            编辑
-                          </Button>
-                        </Link>
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          onClick={() => setPendingDelete(e)}
-                          aria-label={`删除 ${e.name}`}
-                        >
-                          <Trash2 aria-hidden="true" size={14} />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {items.map((e) => (
+            <Card key={e.id} className="flex flex-col gap-2.5 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <Link
+                  to={`/events/${e.id}`}
+                  className="truncate text-sm font-semibold hover:underline"
+                >
+                  {e.name}
+                </Link>
+                <Badge tone={TYPE_TONE[e.type]}>{TYPE_LABEL[e.type]}</Badge>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                订阅工作流 {e.subscriberCount ?? 0} 个
+                {e.nextRunAt ? (
+                  <span className="ml-1">· 下次触发 {new Date(e.nextRunAt).toLocaleString()}</span>
+                ) : null}
+              </div>
+              <div className="mt-auto flex items-center justify-end gap-1.5">
+                <Link to={`/events/${e.id}`}>
+                  <Button variant="secondary" size="sm">
+                    编辑
+                  </Button>
+                </Link>
+                <Button variant="danger" size="sm" onClick={() => setPendingDelete(e)}>
+                  删除
+                </Button>
+              </div>
+              <EventFiringRecords eventId={e.id} workflowNames={workflowNames} />
+            </Card>
+          ))}
+        </div>
       ) : (
         !loading && (
           <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
