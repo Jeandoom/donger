@@ -59,6 +59,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
       this.db.exec("UPDATE workflows SET eventId = triggerId");
       this.db.exec("ALTER TABLE workflows DROP COLUMN outputSubdir");
     }
+    // 旧表遗留的 triggerId 列（NOT NULL 无默认）若仍在表上，新 INSERT（列清单不含它）
+    // 会撞 NOT NULL 约束。上一版迁移只加列未删列，半迁移存量库 eventId 已在、进不了
+    // legacy 分支——故按「列是否存在」幂等摘除，新旧两态都覆盖。
+    const hasTriggerId = (
+      this.db.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).some((c) => c.name === "triggerId");
+    if (hasTriggerId) {
+      // DROP COLUMN 对被索引的列会报错，先摘旧 trigger 索引
+      this.db.exec("DROP INDEX IF EXISTS idx_workflows_trigger");
+      this.db.exec("ALTER TABLE workflows DROP COLUMN triggerId");
+    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_workflows_owner ON workflows(ownerId)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_workflows_event ON workflows(eventId)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_workflows_agent ON workflows(agentId)");

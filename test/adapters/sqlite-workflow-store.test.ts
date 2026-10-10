@@ -71,7 +71,7 @@ describe("SqliteWorkflowStore", () => {
 
   it("存量库迁移：triggerId→eventId、吸收 loops 启用态与运行态、悬空订阅停用", async () => {
     const legacy = new Database(":memory:");
-    // 旧 schema（workflows 无 eventId；有 outputSubdir/triggerId）
+    // 旧 schema（workflows 无 eventId；有 outputSubdir/triggerId 及 trigger 索引）
     legacy.exec(`
       CREATE TABLE workflows (
         id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
@@ -79,6 +79,7 @@ describe("SqliteWorkflowStore", () => {
         promptTemplate TEXT NOT NULL, outputSubdir TEXT NOT NULL,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
       );
+      CREATE INDEX idx_workflows_trigger ON workflows(triggerId);
       CREATE TABLE loops (
         id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL,
         workflowId TEXT NOT NULL, enabled INTEGER NOT NULL,
@@ -124,5 +125,46 @@ describe("SqliteWorkflowStore", () => {
     const w2 = await store.get("w2");
     expect(w2?.eventId).toBe("t-git");
     expect(w2?.enabled).toBe(false);
+    // 旧列/旧索引摘净，迁移后可直接新建（NOT NULL 约束不复现）
+    const cols = (legacy.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(cols).not.toContain("triggerId");
+    expect(cols).not.toContain("outputSubdir");
+    const idx = (legacy.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='workflows'").all() as Array<{ name: string }>).map((i) => i.name);
+    expect(idx).not.toContain("idx_workflows_trigger");
+    await expect(store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" })).resolves.toBeTruthy();
+  });
+
+  it("半迁移存量库：eventId 已在但 triggerId(NOT NULL) 未删——再次迁移幂等摘列，create 不撞约束", async () => {
+    // 复现生产灾难态：上一版迁移只加列未删列，legacy 分支此后永不进入
+    const half = new Database(":memory:");
+    half.exec(`
+      CREATE TABLE workflows (
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+        triggerId TEXT NOT NULL, agentId TEXT NOT NULL,
+        promptTemplate TEXT NOT NULL,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+        eventId TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0,
+        lastRunId TEXT, lastRunAt TEXT, lastError TEXT
+      );
+      CREATE INDEX idx_workflows_trigger ON workflows(triggerId);
+    `);
+    half
+      .prepare(
+        "INSERT INTO workflows (id, ownerId, name, description, triggerId, agentId, promptTemplate, createdAt, updatedAt, eventId) VALUES (?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run("w1", "u1", "存量", null, "e1", "a1", "{{triggerOutput}}", "now", "now", "e1");
+
+    const store = new SqliteWorkflowStore(half);
+    store.migrate();
+
+    const cols = (half.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(cols).not.toContain("triggerId");
+    // 已回填的 eventId 不被覆盖
+    expect((await store.get("w1"))?.eventId).toBe("e1");
+    await expect(store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" })).resolves.toBeTruthy();
   });
 });
