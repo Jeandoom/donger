@@ -42,6 +42,10 @@ export function ToolsPermsSection({
 }) {
   const [toolQuery, setToolQuery] = useState("");
   const [mcpAdvancedOpen, setMcpAdvancedOpen] = useState(false);
+  // host_exec 白名单的文本态（每行一条前缀）；编辑器装载后一次性初始化，行解析即时入 form
+  const [hostAllowText, setHostAllowText] = useState(() =>
+    (form.hostExecAllowlist ?? []).join("\n"),
+  );
 
   const filteredTools = useMemo(() => {
     const q = toolQuery.trim().toLowerCase();
@@ -115,6 +119,28 @@ export function ToolsPermsSection({
             description="跳过审批卡直接执行（deploy/push 等高危操作不再询问），需谨慎"
           />
         </div>
+      </FormField>
+
+      <FormField
+        label="远程主机只读命令白名单"
+        hint="host_exec 命中前缀且无组合/替换/重定向（>/dev/null 除外）时免审批自动执行；其余命令仍弹审批卡。每行一条前缀，留空=全部需审批"
+      >
+        <Textarea
+          mono
+          rows={4}
+          value={hostAllowText}
+          onChange={(e) => {
+            setHostAllowText(e.target.value);
+            patch({
+              hostExecAllowlist: e.target.value
+                .split(/\r?\n/)
+                .map((s) => s.trim())
+                .filter(Boolean),
+            });
+          }}
+          placeholder={"systemctl is-active\nsystemctl show\ncurl -s\njournalctl -u"}
+          spellCheck={false}
+        />
       </FormField>
 
       <FormField

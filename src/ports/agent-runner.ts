@@ -49,6 +49,12 @@ export interface RunOptions {
    * full_access 时命中审批门的调用直接放行；白名单/写边界/shell git 守卫不受影响。
    */
   permissionMode?: () => AgentPermissionMode;
+  /**
+   * 审批门放行钩子（agent 级白名单，2026-10-10 拍板）：返回 true 则该次命中门的调用
+   * 免审批放行（含 force 门）。判定范围由 orchestrator 侧实现收窄（当前仅 host_exec
+   * 前缀白名单命中，domain/host-exec-allowlist.ts）；runner 只透传，不做领域解释。
+   */
+  gateAllowCheck?: (toolName: string, input: Record<string, unknown>) => boolean;
   /** 透传 SDK mcpServers（已解密） */
   mcpServers?: McpServerConfig[];
   /** 插件共享运行库目录（<plugin>/scripts，存在才注入）：

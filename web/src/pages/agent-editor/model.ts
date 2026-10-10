@@ -17,6 +17,7 @@ export const emptyAgent: AgentEditorForm = {
   extensionDirectories: [],
   scenario: undefined,
   gitAllowShellGit: false,
+  hostExecAllowlist: [],
   defaultPermissionMode: "ask_before_change",
   conversationScope: { enabled: false, agentIds: [] },
   knowledgeBaseIds: [],

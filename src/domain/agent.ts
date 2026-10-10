@@ -203,6 +203,12 @@ export const AgentSchema = z.object({
    * deploy force 门兜底。显式 false 保留为关闭开关（只准走 donger-git 工具）。
    */
   gitAllowShellGit: z.boolean().default(true),
+  /**
+   * host_exec 只读命令白名单（agent 级，前缀条目；2026-10-10 拍板）：命中且无逃逸
+   * 结构（组合段全命中/无命令替换/无输出重定向，除 >/dev/null）自动放行 host-ops
+   * 审批门，其余命令仍走审批。判定=domain/host-exec-allowlist.ts。缺省/空=全拦截。
+   */
+  hostExecAllowlist: z.array(z.string()).optional(),
   extensionDirectories: AgentExtensionDirectoriesSchema,
   /** 所属场景（builder 创建时选定；缺省 = 不做场景校验） */
   scenario: z.enum(SCENARIO_KEYS).optional(),

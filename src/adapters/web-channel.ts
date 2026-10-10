@@ -7393,6 +7393,7 @@ export class WebChannel implements Channel {
       // 编辑器需要的完整配置字段：漏传会让表单读到 undefined，保存时把默认值覆盖回库
       scenario: a.scenario,
       gitAllowShellGit: a.gitAllowShellGit,
+      hostExecAllowlist: a.hostExecAllowlist ?? [],
       defaultPermissionMode: a.defaultPermissionMode,
       version: a.version,
       conversationScope: a.conversationScope,

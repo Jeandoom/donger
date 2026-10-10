@@ -146,6 +146,10 @@ export class ClaudeAgentRunner implements AgentRunner {
           if (!gated) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
           }
+          // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄
+          if (opts.gateAllowCheck?.(toolName, input)) {
+            return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
+          }
           // 完全权限模式：命中审批门的调用直接放行（每次调用现取，轮内切换立即生效）。
           // 只跳过审批门——白名单/写入边界/shell git 守卫/只读豁免在到达此处前已生效。
           // force 门例外：full_access 不豁免（git-write/deploy/authoring 仍走审批，

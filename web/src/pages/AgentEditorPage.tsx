@@ -128,6 +128,7 @@ export function AgentEditorPage() {
             extensionDirectories: a.extensionDirectories ?? [],
             scenario: a.scenario,
             gitAllowShellGit: a.gitAllowShellGit ?? false,
+            hostExecAllowlist: a.hostExecAllowlist ?? [],
             defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
             conversationScope: a.conversationScope ?? { enabled: false, agentIds: [] },
             // KB 三字段此前漏装：编辑器看不到存量绑定/自动学习开关，一动勾选即把存量绑定清空

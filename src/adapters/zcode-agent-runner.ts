@@ -130,10 +130,13 @@ export function resolveToolDenylist(allowedTools: string[] | undefined): string[
 export function createMcpGateCheck(
   gates: GateRouter,
   permissionMode?: () => AgentPermissionMode,
+  gateAllowCheck?: (toolName: string, input: Record<string, unknown>) => boolean,
 ): McpGateCheck {
   return (tool, input) => {
     const gated = gates.match(tool, input);
     if (!gated) return undefined;
+    // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄
+    if (gateAllowCheck?.(tool, input)) return undefined;
     if (permissionMode?.() === "full_access" && !gated.force) return undefined;
     return gated;
   };
@@ -449,6 +452,11 @@ export class ZcodeAgentRunner implements AgentRunner {
     const gated = this.gates.match(toolName, input);
     if (!gated) return { decision: "allow" };
 
+    // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄
+    if (opts.gateAllowCheck?.(toolName, input)) {
+      return { decision: "allow" };
+    }
+
     // full_access 豁免审批门（force 门例外，与 claude 同语义）
     if (opts.permissionMode?.() === "full_access" && !gated.force) {
       return { decision: "allow" };
@@ -531,7 +539,7 @@ export class ZcodeAgentRunner implements AgentRunner {
     opts: RunOptions,
     runToken: string,
   ): Promise<ZcodeSessionMcpServer[]> {
-    const gateCheck = createMcpGateCheck(this.gates, opts.permissionMode);
+    const gateCheck = createMcpGateCheck(this.gates, opts.permissionMode, opts.gateAllowCheck);
     const servers: ZcodeSessionMcpServer[] = [];
     for (const sdkTools of [
       opts.platformTools,

@@ -181,7 +181,9 @@ export class CodexAgentRunner implements AgentRunner {
         upstreamToken,
         sdkTools.name,
         sdkTools.instance as never,
-        (tool, args) => this.gates.match(tool, args),
+        // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄
+        (tool, args) =>
+          opts.gateAllowCheck?.(tool, args) ? undefined : this.gates.match(tool, args),
       );
       mcpServerConfigs[sdkTools.name] = { url };
     }

@@ -72,6 +72,8 @@ export interface AgentDTO {
   scenario?: "code-dev" | "kb-qa" | "research" | "ops";
   /** 允许 shell 直跑 git（默认 false=只准走 donger-git 工具） */
   gitAllowShellGit?: boolean;
+  /** host_exec 只读命令白名单（前缀条目；命中且无逃逸结构免 host-ops 审批门） */
+  hostExecAllowlist?: string[];
   /** 会话资源范围（% 会话引用；缺省 = 功能未开启） */
   conversationScope?: AgentConversationScopeDTO;
   /** 绑定的知识库 id（弱引用；可读即可绑定，被分享库只读挂载） */

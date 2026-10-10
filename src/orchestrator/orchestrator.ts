@@ -11,6 +11,7 @@ import {
 } from "../domain/conversation-title.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import { matchesHostExecAllowlist } from "../domain/host-exec-allowlist.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
@@ -520,6 +521,18 @@ export class Orchestrator {
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
       base = { ...base, permissionMode: () => this.effectivePermissionMode(p.conversation.id) };
+      // agent 级 host_exec 只读白名单（2026-10-10 拍板）：命中且无逃逸结构免 host-ops 审批门；
+      // 判定收窄在钩子内（工具名+命令域函数），runner 侧不解释语义
+      const hostAllowlist = p.agent?.hostExecAllowlist ?? [];
+      if (hostAllowlist.length > 0) {
+        base = {
+          ...base,
+          gateAllowCheck: (toolName, input) =>
+            toolName === "mcp__donger-host__host_exec" &&
+            typeof input.command === "string" &&
+            matchesHostExecAllowlist(input.command, hostAllowlist),
+        };
+      }
       // 知识库挂载清单（spec §8）：会话绑定库 ∪ agent 绑定库 ∪ 个人库兜底（kbId 缺省=个人库，
       // 存量白名单/场景词表行为连续）；写经 onChange 落 kb_revisions；可写库根传 runner 做 Bash 写守卫（§9）
       const { mounts: kbMounts, defaultKbId: kbDefault } = await this.resolveKbMounts(
