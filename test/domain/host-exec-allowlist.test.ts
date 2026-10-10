@@ -66,16 +66,20 @@ describe("matchesHostExecAllowlist", () => {
     );
   });
 
-  it("URL 查询串含 & 时保守回审批（不误放）", () => {
-    expect(matchesHostExecAllowlist("curl -s 'http://x/a?b=1&c=2'", READ_ONLY)).toBe(false);
+  it("URL 查询串含 &：引号内不拆段放行，裸 & 保守回审批", () => {
+    // 引号内的 & 不是 shell 操作符（剥引号后不拆段）
+    expect(matchesHostExecAllowlist("curl -s 'http://x/a?b=1&c=2'", ["curl -s"])).toBe(true);
+    // 裸 & 按组合符切段，第二段不命中 → 回审批
+    expect(matchesHostExecAllowlist("curl -s http://x/a?b=1&c=2", ["curl -s"])).toBe(false);
   });
 
   it("引号内的 | 不误拆段（grep -iE 'a|b' 形态放行）", () => {
     expect(
-      matchesHostExecAllowlist(
-        'journalctl -u stock | grep -iE "error|critical" | tail -5',
-        READ_ONLY,
-      ),
+      matchesHostExecAllowlist('journalctl -u stock | grep -iE "error|critical" | tail -5', [
+        "journalctl -u",
+        "grep",
+        "tail",
+      ]),
     ).toBe(true);
     expect(matchesHostExecAllowlist("grep -iE 'a|b' /var/log/syslog", ["grep"])).toBe(true);
   });
