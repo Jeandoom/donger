@@ -4,6 +4,7 @@ import type {
   ChatState,
   ConversationSummary,
   MessageDelivery,
+  PendingApproval,
   PendingQuestion,
   SSEEvent,
   TurnPart,
@@ -27,6 +28,7 @@ export type ChatAction =
   | { type: "clear_question" }
   | { type: "clear_eviction" }
   | { type: "set_pending_question"; question: PendingQuestion | null }
+  | { type: "set_pending_approval"; approval: PendingApproval | null }
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
   | { type: "new_conversation"; conversation: ConversationSummary }
@@ -202,6 +204,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, evictionNotice: null };
     case "set_pending_question":
       return { ...state, pendingQuestion: action.question };
+    case "set_pending_approval":
+      return { ...state, pendingApproval: action.approval };
     case "ws":
       return applyWsOut(state, action.msg);
     case "set_conversations":
@@ -223,6 +227,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         isGenerating: false,
         stage: null,
         pendingQuestion: null,
+        pendingApproval: null,
         loadingMessages: !isDraft && action.conversationId !== null,
       };
     }

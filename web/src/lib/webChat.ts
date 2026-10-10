@@ -332,6 +332,24 @@ export function useWebChat() {
               : { question: null },
           )
           .catch(() => ({ question: null })),
+        // 挂起审批：刷新/切换后恢复锚定卡片（任务正卡在人工审批门时）
+        apiFetch(`/api/conversations/${conversationId}/pending-approval`, {
+          headers: authHeaders,
+          signal: controller.signal,
+        })
+          .then((response) =>
+            response.ok
+              ? (response.json() as Promise<{
+                  approval: {
+                    approvalId: string;
+                    gateId: string;
+                    title: string;
+                    summary: string;
+                  } | null;
+                }>)
+              : { approval: null },
+          )
+          .catch(() => ({ approval: null })),
         // 可选模型集（agent 范围/用户配置决定）；失败降级为空（隐藏选择器即可，不打断会话）
         apiFetch(`/api/conversations/${conversationId}/llm-options`, {
           headers: authHeaders,
@@ -344,10 +362,21 @@ export function useWebChat() {
           )
           .catch(() => ({ options: [], current: "" })),
       ])
-        .then(([messages, { events }, { question }, llmOpts]) => {
+        .then(([messages, { events }, { question }, { approval }, llmOpts]) => {
           if (messagesRequestRef.current === controller) {
             dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events) });
             dispatch({ type: "set_pending_question", question: question ?? null });
+            dispatch({
+              type: "set_pending_approval",
+              approval: approval
+                ? {
+                    respondId: approval.approvalId,
+                    gateId: approval.gateId,
+                    title: approval.title,
+                    summary: approval.summary,
+                  }
+                : null,
+            });
             setLlmOptions(llmOpts);
             // 恢复上次选择；不在当前可选集（配置已变）则回落首项
             const restored =

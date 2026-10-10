@@ -48,6 +48,8 @@ interface RunStats {
 interface RunDTO {
   id: string;
   status: "queued" | "running" | "success" | "failed" | "stopped";
+  /** 派生标记：running 且会话任务正卡在人工审批门（后端按任务状态计算，不入库） */
+  awaitingApproval?: boolean;
   eventName: string;
   context?: string | null;
   renderedPrompt?: string | null;
@@ -349,9 +351,7 @@ export function WorkflowEditorPage() {
         </div>
       )}
       {notice && (
-        <div className="rounded-lg bg-success-soft px-3 py-2.5 text-sm text-success">
-          {notice}
-        </div>
+        <div className="rounded-lg bg-success-soft px-3 py-2.5 text-sm text-success">{notice}</div>
       )}
 
       <FormSection id="wf-sec-basic" no="1" title="基础信息">
@@ -454,7 +454,12 @@ export function WorkflowEditorPage() {
           title="执行记录"
           description="每次执行一条记录（永久保留）；点开可看输入与完整对话"
           actions={
-            <Button variant="secondary" size="sm" onClick={() => void runNow()} disabled={runningNow}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void runNow()}
+              disabled={runningNow}
+            >
               {runningNow ? "触发中…" : "立即运行一轮"}
             </Button>
           }
@@ -466,7 +471,9 @@ export function WorkflowEditorPage() {
               <StatCard label="失败" value={String(stats.failed)} tone="text-destructive" />
               <StatCard
                 label="平均耗时"
-                value={stats.avgDurationMs == null ? "—" : `${(stats.avgDurationMs / 1000).toFixed(1)}s`}
+                value={
+                  stats.avgDurationMs == null ? "—" : `${(stats.avgDurationMs / 1000).toFixed(1)}s`
+                }
                 tone="text-muted-foreground"
               />
             </div>
@@ -491,7 +498,11 @@ export function WorkflowEditorPage() {
                     >
                       <td className="px-3 py-2">{new Date(r.queuedAt).toLocaleString()}</td>
                       <td className="px-3 py-2">
-                        <Badge tone={runStatusTone(r.status)}>{runStatusLabel(r.status)}</Badge>
+                        {r.status === "running" && r.awaitingApproval ? (
+                          <Badge tone="warning">等待审批</Badge>
+                        ) : (
+                          <Badge tone={runStatusTone(r.status)}>{runStatusLabel(r.status)}</Badge>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">
                         {durationText(r.startedAt, r.finishedAt)}
@@ -524,6 +535,19 @@ export function WorkflowEditorPage() {
                     {expandedRun === r.id && (
                       <tr className="border-t border-border bg-muted/30">
                         <td colSpan={5} className="p-3">
+                          {r.status === "running" && r.awaitingApproval && (
+                            <div className="mb-2 text-sm text-warning-foreground">
+                              <strong>该轮正等待人工审批</strong>
+                              {r.conversationId && (
+                                <>
+                                  {" — "}
+                                  <a href={`/?conv=${r.conversationId}`} className="underline">
+                                    去对话处理
+                                  </a>
+                                </>
+                              )}
+                            </div>
+                          )}
                           {r.error && (
                             <div className="mb-2 text-sm text-destructive">
                               <strong>失败原因：</strong>

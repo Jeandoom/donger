@@ -126,6 +126,59 @@ describe("makeApprovalResolver", () => {
     });
     expect(ch.state.card?.title).toBe("审批门：deploy");
   });
+
+  it("装配 notifications+ownerId 时发 approval.requested 站内信（离线用户兜底；回归锁定 2026-10-10）", async () => {
+    const store = new InMemoryTaskStore();
+    await store.create({ ...baseTask, status: "running" });
+    const ch = fakeChannel({ approved: true });
+    const intents: Array<{ event: string; recipients: unknown; title: string; body: string }> = [];
+    const notifications = {
+      notify: async (intent: {
+        event: string;
+        recipients: unknown;
+        title: string;
+        body: string;
+      }) => {
+        intents.push(intent);
+      },
+    };
+    const resolver = makeApprovalResolver(
+      store,
+      ch,
+      "th",
+      new GateRouter(),
+      undefined,
+      notifications as never,
+      "user-1",
+    );
+    await resolver({
+      taskId: "t1",
+      gateId: "host-ops",
+      tool: "mcp__donger-host__host_exec",
+      toolUseId: "tu",
+      input: {},
+      summary: "远程执行 systemctl is-active",
+    });
+    expect(intents).toHaveLength(1);
+    expect(intents[0]?.event).toBe("approval.requested");
+    expect(intents[0]?.recipients).toEqual([{ kind: "user", userId: "user-1" }]);
+  });
+
+  it("未装配 notifications（旧调用形态）不发通知不报错", async () => {
+    const store = new InMemoryTaskStore();
+    await store.create({ ...baseTask, status: "running" });
+    const ch = fakeChannel({ approved: true });
+    const resolver = makeApprovalResolver(store, ch, "th", new GateRouter());
+    const decision = await resolver({
+      taskId: "t1",
+      gateId: "deploy",
+      tool: "Bash",
+      toolUseId: "tu",
+      input: {},
+      summary: "部署",
+    });
+    expect(decision.approved).toBe(true);
+  });
 });
 
 describe("makeQuestionResolver", () => {

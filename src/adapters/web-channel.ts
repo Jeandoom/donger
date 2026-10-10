@@ -277,6 +277,17 @@ function latestConversationFor<T extends { agentId: string; updatedAt: string }>
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
 
+/** 工作流执行记录加挂审批派生标记：running 且其会话任务正卡在人工审批门（队列状态机不动） */
+function decorateRunAwaiting<T extends { status: string; conversationId?: string | null }>(
+  run: T,
+  awaitingThreadIds: Set<string>,
+): T & { awaitingApproval: boolean } {
+  return {
+    ...run,
+    awaitingApproval: run.status === "running" && awaitingThreadIds.has(run.conversationId ?? ""),
+  };
+}
+
 /** JSON-RPC over HTTP 响应解析：application/json 直取；text/event-stream 从 data: 行找匹配 id 的信封 */
 export function extractRpcResult(body: string, id: number): Record<string, unknown> | undefined {
   const candidates: unknown[] = [];
@@ -902,6 +913,9 @@ export class WebChannel implements Channel {
       // 这里返回一个占位 Promise，实际响应由 HTTP 处理器调用 resolve
       this.pendingApprovalResolves.set(approvalId, {
         conversationId: threadId,
+        gateId: card.gateId,
+        title: card.title,
+        summary: card.summary,
         resolve: (result) => {
           this.approvalStreams.delete(approvalId);
           resolve(result);
@@ -935,11 +949,14 @@ export class WebChannel implements Channel {
     this.broadcastToConversation(conversationId, { type: "eviction_notice", ...info });
   }
 
-  /** 存储审批响应的 resolve 函数（带会话归属，供 owner 校验） */
+  /** 存储审批响应的 resolve 函数（带会话归属与卡片信息，供 owner 校验与刷新恢复） */
   private readonly pendingApprovalResolves = new Map<
     string,
     {
       conversationId: string;
+      gateId: string;
+      title: string;
+      summary: string;
       resolve: (result: {
         approved: boolean;
         reason?: string;
@@ -948,6 +965,35 @@ export class WebChannel implements Channel {
       }) => void;
     }
   >();
+
+  /**
+   * 会话当前挂起审批（GET pending-approval 用）：刷新/换端后据此恢复锚定审批卡。
+   * 属主判定由 routeGuard 执行，与 pending-question 同模式。
+   */
+  getPendingApproval(
+    conversationId: string,
+  ): { approvalId: string; gateId: string; title: string; summary: string } | null {
+    for (const [approvalId, pending] of this.pendingApprovalResolves) {
+      if (pending.conversationId === conversationId) {
+        return {
+          approvalId,
+          gateId: pending.gateId,
+          title: pending.title,
+          summary: pending.summary,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 正卡在人工审批门的会话集合（awaiting_approval 任务的 threadId）。
+   * 审批任务全库通常个位数，一次 listByStatus 足够；执行记录列表据此加派生标记。
+   */
+  private async awaitingApprovalThreadIds(): Promise<Set<string>> {
+    const tasks = (await this.deps.taskStore?.listByStatus("awaiting_approval")) ?? [];
+    return new Set(tasks.map((t) => t.threadId));
+  }
 
   /** AskUserQuestion 待作答 resolve（key=reqId；带会话归属供 owner 校验） */
   private readonly pendingQuestionResolves = new Map<
@@ -3356,6 +3402,14 @@ export class WebChannel implements Channel {
       const conversationId = pendingQMatch[1] ?? "";
       const pending = this.getPendingQuestion(conversationId);
       this.json(res, { question: pending });
+      return;
+    }
+
+    // GET /api/conversations/:id/pending-approval — 挂起审批（刷新后恢复锚定卡片；属主判定由 routeGuard 执行）
+    const pendingAMatch = url.match(/^\/api\/conversations\/([\w-]+)\/pending-approval$/);
+    if (pendingAMatch && req.method === "GET") {
+      const conversationId = pendingAMatch[1] ?? "";
+      this.json(res, { approval: this.getPendingApproval(conversationId) });
       return;
     }
 
@@ -5998,7 +6052,10 @@ export class WebChannel implements Channel {
           before: q.get("before") ?? undefined,
           status: (q.get("status") ?? undefined) as WorkflowRun["status"] | undefined,
         })) ?? [];
-      this.json(res, { runs });
+      const awaiting = await this.awaitingApprovalThreadIds();
+      this.json(res, {
+        runs: runs.map((r) => decorateRunAwaiting(r, awaiting)),
+      });
       return true;
     }
     m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs\/stats$/);
@@ -6014,7 +6071,8 @@ export class WebChannel implements Channel {
       if (!run || run.workflowId !== wf.id) {
         throw new NotFoundError("NOT_FOUND", "执行记录不存在");
       }
-      this.json(res, run);
+      const awaiting = await this.awaitingApprovalThreadIds();
+      this.json(res, decorateRunAwaiting(run, awaiting));
       return true;
     }
     m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs\/([\w-]+)\/stop$/);

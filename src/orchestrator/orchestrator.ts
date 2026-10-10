@@ -706,6 +706,8 @@ export class Orchestrator {
       p.threadId,
       gates,
       this.deps.commentStore,
+      this.deps.notificationService,
+      p.user.id,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
     const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);

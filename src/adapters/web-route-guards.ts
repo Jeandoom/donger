@@ -176,6 +176,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "owner", resource: "conversation" },
       ...ownerConversation,
     },
+    {
+      method: "GET",
+      pattern: "/api/conversations/:id/pending-approval",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
     // 上传的会话 id 在 query（threadId），属主校验在 resolveAttachmentDir 内执行
     { method: "POST", pattern: "/api/upload", access: { kind: "authenticated" } },
 
