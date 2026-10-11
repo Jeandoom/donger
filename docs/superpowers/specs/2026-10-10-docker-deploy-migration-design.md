@@ -210,3 +210,23 @@ scripts/m0-wal-stress.cjs       docs/deploy-docker.md
 
 - **真切换完成**：`--execute` 一次通过（中途 taskkill `//F` 被 `MSYS_NO_PATHCONV=1` 原样传入被拒，修复为单斜杠后重跑），容器 5s 健康。冒烟：claude/zcode 真轮均回复成功；数据对账一致；测试数据已清理。备份任务计划 `donger-docker-backup`（03:30 每日）安装+首备实测通过。镜像 tag=`donger:20261011-1857`，代码推双远端 0e09d8f。
 - **homedb 连接回归（切换后首个事件，已修复）**：会话 7d31ef7f 检查部署时 ssh-homedb 六次握手超时。根因=**Docker NAT 出站不走 OpenVPN 隧道路由**（目标 192.168.1.103 在 VPN 后：宿主 17ms 连上 vs 容器永久超时；容器到宿主双 IP/路由器均正常，唯独 VPN 网段不可达）。修复=宿主 portproxy `10.9.101.78:2222→192.168.1.103:22` + `ssh-homedb` 凭证值改指宿主转发（API PUT 合并语义，认证材料无损）；agent 端到端验证拿到目标机真实 uptime。次级发现：`homedb.jeandom.com` 全靠 Windows hosts 钉值解析（路由器 DNS 为 NXDOMAIN）；会话中 agent 对凭证值的更新（→.101）是真实的但目标 IP 本身错误（.101 无 sshd），hosts 表不参与端点解析（端点在凭证值里）。
+
+### 8.5 生产 e2e 验证记录（2026-10-12 凌晨）
+
+通道：MCP send_message + SSE 审批卡 + HTTP respond（沿用 deploy-ops 轮），适配容器化 DB 路径，脚本 `.tmp/e2e-prod-docker.mjs` 系。
+
+| 项 | 结果 |
+|---|---|
+| MCP 通道（dgk_ 令牌/initialize/tools-call，11 工具面） | ✅ |
+| host 只读链路（hosts_list/host_status 免审批） | ✅ 真实回传 Ubuntu 22.04/磁盘 16%/ClickHouse 等服务状态 |
+| **审批卡 E2E**（SSE 抓卡→HTTP 批准→远端执行→结果回传） | ✅ 写命令先被写边界正确拦截，相对路径重试弹卡、批准后执行成功 |
+| host_exec 只读白名单 | ✅ `echo`/`systemctl is-active` 均免审批直执行 |
+| github 连通 | ✅ 容器内 `git ls-remote github` 走挂载 gitconfig 成功，直连 TLS 也通（Allow LAN 顾虑解除） |
+| KB 通道 | ✅ list_knowledge_bases + search_knowledge_base 直调命中真实库内容 |
+| 附件通道 | ✅ 上传落规范容器路径 + agent Read 原样回传标记（首次走裸会话被调度器转 Agent Builder，agent 会话才是正确形态） |
+| **定时工作流自然触发** | ✅ 23:00 `stock-analysis运维` 按调度真实触发（触发/泵/agent/汇报全链路；当次因下述回归失败，属凭证问题非平台问题） |
+| restart 韧性 | ✅ SIGTERM 优雅关闭→5s 健康→scheduler 还原→数据一致→**既有会话引擎续轮成功**（会话内定时任务不跨重启=既定语义） |
+
+**事件：凭证值被改回直连导致回归**。首轮 e2e 失败排查发现 `ssh-homedb` 凭证值在 22:44 被改回 `192.168.1.103:22` 直连（凭证页无审计留痕，疑手工"纠正"），22:45 与 23:00 两次巡检因此全部失败。已重新 PUT portproxy 端点，并把警示写进凭证别名（「容器必经宿主portproxy 10.9.101.78:2222，直连IP必超时勿改」）。**铁律：该凭证 host/port 指向宿主 portproxy，改回直连 IP 必然复发**。
+
+清理：5 个验证会话、9 个临时 JWT（revoked_tokens）、13 个 e2e 命名 MCP 令牌已删，生产余 85 会话全为真实数据。待外部确认项：邮箱/GitHub/钉钉 OAuth 真实外网回调。
