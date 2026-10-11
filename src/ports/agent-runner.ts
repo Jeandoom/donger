@@ -25,6 +25,14 @@ export interface RunOptions {
   resume?: string;
   /** 写入边界：写入路径必须落在此目录内（该用户工作区） */
   workspaceRoot?: string;
+  /**
+   * 引擎状态隔离根（spec 2026-10-10-agent-security-kernel-design INV-3b/引擎隔离层）：
+   * <workspaceDir>/engine-state/<userId>。claude 引擎经 CLAUDE_CONFIG_DIR 重定向到此，
+   * 宿主 ~/.claude（settings.json allow 规则/hooks/plugins/全平台会话转录池）不再渗入
+   * 会话；该根落在 confine 读边界之外（user.homeDir 外），agent 不可读引擎状态
+   * （含 apiKeyHelper 凭证文件与转录 JSONL）。zcode 引擎已有 .zcode-home 同款隔离。
+   */
+  engineStateRoot?: string;
   /** SDK cwd 之外允许访问的扩展目录。 */
   additionalDirectories?: string[];
   /** workspaceRoot 之外允许 direct write tools 写入的目录。 */

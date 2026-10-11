@@ -96,6 +96,9 @@ export function matchSensitiveRead(
   const confine = policy.mode === "confine";
   if (policy.denyRoots.length === 0 && !confine) return undefined;
   for (const token of tokenize(raw)) {
+    // 纯标点/孤立转义片段跳过（JSON 序列化 blob 扫描会切出孤立反斜杠一类噪声，
+    // resolve 后成盘根幻影路径——只产生误报不产生防御，2026-10-11 实测）
+    if (/^[\\.,;:!?'"]+$/.test(token)) continue;
     // 只对像路径的 token 做解析（含分隔符、盘符、~、.. 段）；纯命令词（cat/git）跳过
     const looksPath =
       /[\\/]/.test(token) ||

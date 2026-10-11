@@ -6,6 +6,8 @@ import type { GateRouter } from "../domain/gate-router.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { AgentPermissionMode } from "../domain/permission-mode.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
+import { classifyShellDecision } from "../domain/shell-decision.js";
+import { matchSensitiveRead, sensitiveReadDenyMessage } from "../domain/sensitive-read-guard.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
@@ -106,8 +108,13 @@ const ZCODE_BUILTIN_TOOL_NAMES = [
 const WRITE_CAPABLE_TOOLS = new Set(["Bash", "Write", "Edit", "NotebookEdit"]);
 
 /** 会话模式解析：白名单全只读 → plan（ZCode 对写操作内部 deny，宿主等不到请求）；
- *  否则 build（只读直通，高危/副作用发 requestPermission）。恒不使用 yolo/auto。 */
-export function resolveZcodeMode(allowedTools: string[] | undefined): "plan" | "build" {
+ *  否则 build（只读直通，高危/副作用发 requestPermission）。恒不使用 yolo/auto。
+ *  逃生门 DONGER_ZCODE_MODE：显式覆盖下发值（M1.5 实验「default=只读工具也发
+ *  requestPermission」定案用；宿主 handlePermissionRequest 对安全调用自动放行，
+ *  越权/管线命中才拦，因此全询问形态无人工审批增量）。 */
+export function resolveZcodeMode(allowedTools: string[] | undefined): string {
+  const override = process.env.DONGER_ZCODE_MODE?.trim();
+  if (override) return override;
   if (allowedTools && !allowedTools.some((tool) => WRITE_CAPABLE_TOOLS.has(tool))) {
     return "plan";
   }
@@ -205,11 +212,37 @@ export class ZcodeAgentRunner implements AgentRunner {
     const mcpRunToken = randomUUID();
     const sessionMcpServers = await this.materializeSessionMcpServers(opts, mcpRunToken);
 
+    // env 白名单（INV-3b/引擎隔离层，与 claude runner SAFE_ENV_KEYS 同口径）：
+    // 告别 {...process.env} 展开——服务进程 dotenv 注入的平台密钥（钉钉/Jenkins/运维
+    // 凭证等）不进入 ZCode 子进程及其 Bash 工具环境（探针 2026-10-10 B4 实锤泄漏）。
+    // ZCode 侧模型 key 走配置文件，进程 env 本就不携带 LLM 凭证。
+    const runnerEnv: Record<string, string | undefined> = {};
+    for (const key of [
+      "ALLUSERSPROFILE",
+      "APPDATA",
+      "COMSPEC",
+      "LOCALAPPDATA",
+      "NUMBER_OF_PROCESSORS",
+      "OS",
+      "PATH",
+      "PATHEXT",
+      "PROCESSOR_ARCHITECTURE",
+      "PROGRAMDATA",
+      "PROGRAMFILES",
+      "SYSTEMDRIVE",
+      "SYSTEMROOT",
+      "TEMP",
+      "TMP",
+      "USERDOMAIN",
+      "USERNAME",
+      "WINDIR",
+    ]) {
+      const value = process.env[key];
+      if (value) runnerEnv[key] = value;
+    }
     const env: Record<string, string | undefined> = {
-      ...process.env,
-      // 状态目录全隔离（实测 HOME/USERPROFILE 重定向覆盖 logging/rollout/exec）；
-      // 脱敏沿用平台口径：系统 LLM key 对子进程不可见——ZCode 侧模型 key 走配置文件，
-      // 进程 env 不携带任何 LLM 凭证
+      ...runnerEnv,
+      // 状态目录全隔离（实测 HOME/USERPROFILE 重定向覆盖 logging/rollout/exec）
       HOME: homeDir,
       USERPROFILE: homeDir,
       ZCODE_DATA_BASE_DIR: dataDir,
@@ -440,6 +473,25 @@ export class ZcodeAgentRunner implements AgentRunner {
     const denial = runStaticToolGuards({ toolName, input, opts });
     if (denial) return deny(denial.message);
 
+    // 工具入参 JSON 全文敏感读扫描（与 claude hook 同款兜底）：Grep/Glob 等
+    // 只读工具的 path 类参数不进 Bash/Read 守卫判定面，序列化后统一过 confine
+    if (opts.sensitiveReadPolicy) {
+      const hit = matchSensitiveRead(JSON.stringify(input), opts.cwd, opts.sensitiveReadPolicy);
+      if (hit) return deny(sensitiveReadDenyMessage(hit, existsSync(hit.resolved)));
+    }
+
+    // 解码管线强制审批（INV-6/INV-10，与 claude canUseTool 同语义）：任何权限模式
+    // （含 full_access）都进审批卡；gateId 用合成 "shell-decision"。
+    // 注：zcode 引擎「只读直通」形态不进本处理器（探针 2026-10-10 实锤直通旁路），
+    // 该面由引擎侧 hook/trustGrant 方案收口（M1 已知缺口，审计对账留痕缓解）。
+    if (
+      toolName === "Bash" &&
+      typeof input.command === "string" &&
+      classifyShellDecision(input.command) === "needs-approval"
+    ) {
+      return this.resolveShellDecisionApproval(task, resolver, params, input, String(input.command));
+    }
+
     // 只读命令豁免审批门（与 claude 同口径）：三项全净才豁免
     const shellClass =
       toolName === "Bash" && typeof input.command === "string"
@@ -478,6 +530,32 @@ export class ZcodeAgentRunner implements AgentRunner {
       });
     } catch (err) {
       return deny(err instanceof Error ? err.message : "审批流程异常");
+    }
+    return decision.approved
+      ? { decision: "allow" }
+      : { decision: "deny", reason: decision.reason ?? "审批未通过" };
+  }
+
+  /** 解码管线强制审批（gateId 合成 "shell-decision"）：非门调用也要过审批卡 */
+  private async resolveShellDecisionApproval(
+    task: Task,
+    resolver: ApprovalResolver,
+    params: Record<string, unknown>,
+    input: Record<string, unknown>,
+    summary: string,
+  ): Promise<unknown> {
+    let decision: { approved: boolean; reason?: string };
+    try {
+      decision = await resolver({
+        taskId: task.id,
+        gateId: "shell-decision",
+        tool: "Bash",
+        toolUseId: typeof params.toolCallId === "string" ? params.toolCallId : "",
+        input,
+        summary,
+      });
+    } catch (err) {
+      return { decision: "deny", reason: err instanceof Error ? err.message : "审批流程异常" };
     }
     return decision.approved
       ? { decision: "allow" }

@@ -380,6 +380,14 @@ export class RuntimeManager {
       if (recovered) resumeSessionId = recovered.sessionId;
     }
 
+    // 引擎状态隔离根（spec 2026-10-10-agent-security-kernel-design 引擎隔离层）：
+    // <workspaceDir>/engine-state/<userId>——落在 confine 读边界之外（user.homeDir 外），
+    // agent 不可读引擎状态（claude 凭证文件/转录 JSONL、zcode provider 配置）。
+    const engineStateRoot = join(this.deps.config.workspaceDir, "engine-state", user.id);
+    const configuredDenyRoots = this.deps.config.sensitivePaths ?? [];
+    // denyRoots 追加引擎状态根（纵深：命中报「保护路径」；confine 的 outside-allowed 已先挡）
+    const denyRoots = [...configuredDenyRoots, engineStateRoot];
+
     const runOptions: RunOptions = {
       cwd: runtimeDir,
       skills,
@@ -389,16 +397,17 @@ export class RuntimeManager {
       abortSignal: opts.abortSignal,
       resume: idleTooLong || sdkTypeMismatch ? undefined : resumeSessionId,
       workspaceRoot: user.homeDir,
+      engineStateRoot,
       additionalDirectories,
       allowedWriteRoots,
       readOnlyRoots,
       sessionStore,
       capabilityVersion: 1,
       credentialsEnv,
-      ...(this.deps.config.sensitivePaths?.length
+      ...(denyRoots.length > 1
         ? {
             sensitiveReadPolicy: {
-              denyRoots: this.deps.config.sensitivePaths,
+              denyRoots,
               // allow 优先于 deny：用户自己的工作区/扩展目录即使落在平台根之下也可读
               allowReadRoots: [
                 resolve(user.homeDir),

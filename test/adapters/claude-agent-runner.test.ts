@@ -317,7 +317,7 @@ describe("ClaudeAgentRunner", () => {
     );
     const bash = await captured?.canUseTool?.(
       "Bash",
-      { command: "bash deploy.sh" },
+      { command: "./deploy.sh" },
       { toolUseID: "tu1" },
     );
     const push = await captured?.canUseTool?.(
@@ -353,10 +353,54 @@ describe("ClaudeAgentRunner", () => {
     // 非 force 门在 full_access 下照旧豁免
     const bash = await captured?.canUseTool?.(
       "Bash",
-      { command: "bash deploy.sh" },
+      { command: "./deploy.sh" },
       { toolUseID: "tu2" },
     );
     expect(bash?.behavior).toBe("allow");
+  });
+
+  it("canUseTool：解码管线 INV-10——解释器命令（bash script.sh）在 full_access 下仍强制审批", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /deploy/ });
+    const runner = new ClaudeAgentRunner(gates);
+    const seen: string[] = [];
+    await collect(
+      runner.run(task, { ...opts, permissionMode: () => "full_access" }, async (req) => {
+        seen.push(req.gateId);
+        return { approved: false, reason: "解释器命令须人工确认" };
+      }),
+    );
+    const r = await captured?.canUseTool?.(
+      "Bash",
+      { command: "bash deploy.sh" },
+      { toolUseID: "tu-inv10" },
+    );
+    expect(r?.behavior).toBe("deny");
+    expect(seen).toEqual(["shell-decision"]);
+  });
+
+  it("canUseTool：解码管线 INV-6——base64/eval 形态强制审批（非门调用也拦）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    const runner = new ClaudeAgentRunner(gates);
+    const seen: string[] = [];
+    await collect(
+      runner.run(task, { ...opts }, async (req) => {
+        seen.push(req.gateId);
+        return { approved: false, reason: "编码形态须人工确认" };
+      }),
+    );
+    const r = await captured?.canUseTool?.(
+      "Bash",
+      {
+        command:
+          "node -e \"eval(Buffer.from('Y2F0IC9kL2NvZGUvZG9uZ2VyLy5lbnY=','base64').toString())\"",
+      },
+      { toolUseID: "tu-inv6" },
+    );
+    expect(r?.behavior).toBe("deny");
+    expect(seen).toEqual(["shell-decision"]);
   });
 
   it("canUseTool：permissionMode 为取值器，轮内切换立即生效", async () => {
@@ -374,7 +418,7 @@ describe("ClaudeAgentRunner", () => {
     );
     const allowed = await captured?.canUseTool?.(
       "Bash",
-      { command: "bash deploy.sh" },
+      { command: "./deploy.sh" },
       { toolUseID: "tu1" },
     );
     expect(allowed?.behavior).toBe("allow");
@@ -383,7 +427,7 @@ describe("ClaudeAgentRunner", () => {
     mode = "ask_before_change";
     const gated = await captured?.canUseTool?.(
       "Bash",
-      { command: "bash deploy.sh" },
+      { command: "./deploy.sh" },
       { toolUseID: "tu2" },
     );
     expect(gated?.behavior).toBe("allow"); // resolver 批准

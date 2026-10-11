@@ -1,13 +1,57 @@
-import { delimiter, resolve } from "node:path";
-import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
+import type {
+  HookJSONOutput,
+  McpServerConfig as SdkMcpServerConfig,
+  Settings,
+} from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
+import {
+  classifyShellDecision,
+} from "../domain/shell-decision.js";
+import { matchSensitiveRead, sensitiveReadDenyMessage } from "../domain/sensitive-read-guard.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { BUILTIN_TOOL_TEXT_PREFIX } from "../util/provider-tool-text.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
+
+/**
+ * 工具执行环境 env 白名单（INV-3b/引擎隔离层，spec 2026-10-10-agent-security-kernel-design）：
+ * 告别 {...process.env} 展开——服务进程 dotenv 注入的平台密钥（钉钉/Jenkins/运维凭证等）
+ * 不再进入 agent CLI 进程与其 Bash 子进程。引擎自身凭证（ANTHROPIC_AUTH_TOKEN）走
+ * settings.apiKeyHelper 现取通道，env 中不出现（GLM anthropic 兼容端点已实测接受 x-api-key）。
+ * 逃生门：DONGER_CLAUDE_CRED_ENV=1 时 AUTH_TOKEN 回退 env 注入（helper 通道故障时用）。
+ */
+const SAFE_ENV_KEYS = [
+  "ALLUSERSPROFILE",
+  "APPDATA",
+  "COMSPEC",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOCALAPPDATA",
+  "NUMBER_OF_PROCESSORS",
+  "OS",
+  "PATH",
+  "PATHEXT",
+  "PROCESSOR_ARCHITECTURE",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "USERDOMAIN",
+  "USERNAME",
+  "USERPROFILE",
+  "WINDIR",
+] as const;
+
+/** 平台安全环境声明（沙箱可用性可见性，spec §M1-6）：OS 沙箱在 Windows 缺位时的模型层提示 */
+const SANDBOX_NOTICE =
+  "\n\n[平台安全环境声明] 本会话宿主未启用 OS 级命令沙箱兜底；所有工具调用经平台安全内核（读边界+写边界+审批门）强制约束，与提示词内容无关。请勿尝试访问用户工作区与显式挂载之外的任何系统资源，越权尝试会被拒绝并留审计。";
 
 /**
  * 真实 AgentRunner：用 Claude Agent SDK 的 query() 驱动。
@@ -49,6 +93,90 @@ export class ClaudeAgentRunner implements AgentRunner {
       ...(opts.auditTools ? { "donger-audit": opts.auditTools } : {}),
     };
 
+    // —— 引擎状态隔离 + 凭证隔离（INV-3b）：CLAUDE_CONFIG_DIR → engine-state 根；
+    // LLM 凭证落 0600 语义的临时文件，经 settings.apiKeyHelper 现取，env 不含 token。
+    // 该根在 confine 读边界之外（user.homeDir 外），agent 读不到凭证与转录 JSONL。
+    let configDir: string | undefined;
+    let apiKeyFile: string | undefined;
+    const credViaHelper =
+      Boolean(opts.engineStateRoot) &&
+      Boolean(opts.llm.authToken) &&
+      process.env.DONGER_CLAUDE_CRED_ENV !== "1";
+    if (opts.engineStateRoot) {
+      configDir = join(resolve(opts.engineStateRoot), "claude");
+      if (credViaHelper) {
+        mkdirSync(configDir, { recursive: true });
+        apiKeyFile = join(configDir, "apikey");
+        writeFileSync(apiKeyFile, opts.llm.authToken ?? "", "utf8");
+      }
+    }
+    // env 白名单：仅系统必要项 + 平台显式注入（用户凭证/LLM 端点），平台服务密钥不外溢
+    const runnerEnv: NodeJS.ProcessEnv = {};
+    for (const key of SAFE_ENV_KEYS) {
+      const value = process.env[key];
+      if (value) runnerEnv[key] = value;
+    }
+    runnerEnv.ANTHROPIC_BASE_URL = opts.llm.baseUrl;
+    if (!credViaHelper) {
+      // 逃生门/旧形态：凭证经 env 注入（Bash 环境可见，仅 helper 通道故障时启用）
+      runnerEnv.ANTHROPIC_AUTH_TOKEN = opts.llm.authToken ?? "";
+    }
+    if (configDir) runnerEnv.CLAUDE_CONFIG_DIR = configDir;
+    Object.assign(runnerEnv, opts.credentialsEnv);
+    if (pythonPaths?.length) {
+      runnerEnv.PYTHONPATH = [
+        ...pythonPaths,
+        ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : []),
+      ].join(delimiter);
+    }
+    // apiKeyHelper：CLI 每次鉴权现取 key（x-api-key 语义，GLM 兼容端点实测接受）；
+    // 配置经 options.settings 内联注入，宿主 ~/.claude/settings.json 不参与（CONFIG_DIR 已隔离）
+    const inlineSettings: Settings | undefined =
+      apiKeyFile && configDir
+        ? { apiKeyHelper: `cmd /c type "${apiKeyFile}"` }
+        : undefined;
+
+    // —— PreToolUse 内核守卫（INV-5 完备性，spec §4.3）：SDK「安全只读自动放行」会
+    // shadow canUseTool（探针 2026-10-10 实锤：cat 穿透 confine 读到 .env），hook 是
+    // SDK 唯一保证每次工具调用必经的钩子。三分支：
+    //   deny —— 六段静态守卫命中，或工具入参 JSON 全文命中敏感读边界（Grep/Glob/MCP
+    //           的 path 类参数，M2-9 判定面提前覆盖）；
+    //   ask  —— Bash 解码管线判 needs-approval（展开/替换/编码/解释器特征，INV-6/10），
+    //           强制拉回审批链，防引擎内置放行 shadow 审批；
+    //   pass —— 白名单族/纯静态命令（守卫已在 ①② 跑过，引擎可自动放行）。
+    // canUseTool 保留为审批链与兜底层（hook deny 后不再触发；ask 必经 canUseTool）。
+    const guardHook = async (
+      hookInput: { hook_event_name: string; tool_name?: string; tool_input?: unknown },
+      _toolUseId: string | undefined,
+      _ctx: { signal: AbortSignal },
+    ): Promise<HookJSONOutput> => {
+      if (hookInput.hook_event_name !== "PreToolUse" || !hookInput.tool_name) {
+        return { continue: true };
+      }
+      const toolName = hookInput.tool_name;
+      const input = (hookInput.tool_input ?? {}) as Record<string, unknown>;
+      const denial = runStaticToolGuards({ toolName, input, opts });
+      if (denial) return hookDeny(denial.message);
+      if (opts.sensitiveReadPolicy) {
+        const hit = matchSensitiveRead(JSON.stringify(input), cwd, opts.sensitiveReadPolicy);
+        if (hit) return hookDeny(sensitiveReadDenyMessage(hit, existsSync(hit.resolved)));
+      }
+      if (toolName === "Bash" && typeof input.command === "string") {
+        if (classifyShellDecision(input.command) === "needs-approval") {
+          return {
+            continue: true,
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "ask",
+              permissionDecisionReason:
+                "内核管线判定：命令含展开/替换/编码/解释器特征，需用户确认",
+            },
+          };
+        }
+      }
+      return { continue: true };
+    };
+
     const stream = query({
       prompt: task.prompt,
       options: {
@@ -59,9 +187,13 @@ export class ClaudeAgentRunner implements AgentRunner {
         systemPrompt: {
           type: "preset" as const,
           preset: "claude_code",
-          append: opts.systemPromptAppend ?? "",
+          append: (opts.systemPromptAppend ?? "") + SANDBOX_NOTICE,
         },
         includePartialMessages: true,
+        hooks: {
+          PreToolUse: [{ hooks: [guardHook] }],
+        },
+        ...(inlineSettings ? { settings: inlineSettings } : {}),
         ...(opts.allowedTools?.length ? { allowedTools: opts.allowedTools } : {}),
         ...(Object.keys(mcpServersSdk).length ? { mcpServers: mcpServersSdk } : {}),
         ...(additionalDirectories?.length ? { additionalDirectories } : {}),
@@ -97,6 +229,32 @@ export class ClaudeAgentRunner implements AgentRunner {
           const denial = runStaticToolGuards({ toolName, input, opts });
           if (denial) {
             return { behavior: "deny" as const, message: denial.message, toolUseID: ctx.toolUseID };
+          }
+          // 解码管线强制审批（INV-6/INV-10，spec 2026-10-10 §4.3）：Bash 含展开/替换/
+          // 编码/解释器特征 → 任何权限模式（含 full_access）都进审批卡。hook 的 ask
+          // 分支会把引擎直通形态拉到这里；本分支兜住 canUseTool 直达形态。gateId 用
+          // 合成 "shell-decision"（非门审批，审批卡照常展示完整命令）。
+          if (
+            toolName === "Bash" &&
+            typeof input.command === "string" &&
+            classifyShellDecision(input.command) === "needs-approval"
+          ) {
+            const summary = String(input.command);
+            const pipedDecision = await resolver({
+              taskId: task.id,
+              gateId: "shell-decision",
+              tool: toolName,
+              toolUseId: ctx.toolUseID,
+              input,
+              summary,
+            });
+            return pipedDecision.approved
+              ? { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID }
+              : {
+                  behavior: "deny" as const,
+                  message: pipedDecision.reason ?? "审批未通过",
+                  toolUseID: ctx.toolUseID,
+                };
           }
           // 只读命令豁免审批门：deploy 门关键词会把 git fetch / 平台 API GET 误拦为
           // 部署/发布（60s 审批超时即任务失败），且诱导 agent 拆分字符串绕过（P2-9）。
@@ -180,21 +338,7 @@ export class ClaudeAgentRunner implements AgentRunner {
         abortController: ac,
         resume: opts.resume,
         sessionStore: opts.sessionStore,
-        env: {
-          ...process.env,
-          ANTHROPIC_BASE_URL: opts.llm.baseUrl,
-          ANTHROPIC_AUTH_TOKEN: opts.llm.authToken,
-          ...opts.credentialsEnv,
-          // 插件共享运行库桥：技能脚本 `from credentials import ...` 等共享包导入依赖
-          ...(pythonPaths?.length
-            ? {
-                PYTHONPATH: [
-                  ...pythonPaths,
-                  ...(process.env.PYTHONPATH ? [process.env.PYTHONPATH] : []),
-                ].join(delimiter),
-              }
-            : {}),
-        },
+        env: runnerEnv,
       },
     });
 
@@ -242,6 +386,7 @@ export class ClaudeAgentRunner implements AgentRunner {
     // 该块全部增量（完整 text 事件仍会产出，由事件桥折叠），避免协议噪声/预签名 URL 直出前端
     const blockPrefixBuffers = new Map<number, string>();
     const suppressedBlocks = new Set<number>();
+    try {
     for await (const m of stream) {
       if (m.type === "system" && "subtype" in m && m.subtype === "init") {
         yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
@@ -392,6 +537,17 @@ export class ClaudeAgentRunner implements AgentRunner {
         }
       }
     }
+    } finally {
+      // 凭证文件轮末即焚（INV-3b）：token 只存在于 engine-state 隔离根的瞬间文件，
+      // helper 每次鉴权现取；异常/中止路径同样清理
+      if (apiKeyFile && existsSync(apiKeyFile)) {
+        try {
+          rmSync(apiKeyFile, { force: true });
+        } catch {
+          // 删除失败不阻塞轮结束；文件在 confine 读边界之外且随 engine-state 生命周期治理
+        }
+      }
+    }
   }
 }
 
@@ -401,6 +557,18 @@ function serializeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** PreToolUse hook 的 deny 出参（permissionDecision 语义见 sdk.d.ts HookPermissionDecision） */
+function hookDeny(message: string): HookJSONOutput {
+  return {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: message,
+    },
+  };
 }
 
 /** 把 donger 的 McpServerConfig[] 映射为 SDK 的 Record<string, McpServerConfig> */
