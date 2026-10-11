@@ -205,3 +205,8 @@ scripts/m0-wal-stress.cjs       docs/deploy-docker.md
 ### 8.3 待办（真切换 = 纯运维动作）
 
 `scripts/docker-migrate.sh --execute --image donger:<ts>`（D3 低峰窗口）→ M3 冒烟清单（OAuth/钉钉回调、zcode/codex 真轮、审批 E2E、触发器、内置技能 delta、github 代理连通）→ 旧目录冻结两周后退役。
+
+### 8.4 真切换记录与后续事件（2026-10-11）
+
+- **真切换完成**：`--execute` 一次通过（中途 taskkill `//F` 被 `MSYS_NO_PATHCONV=1` 原样传入被拒，修复为单斜杠后重跑），容器 5s 健康。冒烟：claude/zcode 真轮均回复成功；数据对账一致；测试数据已清理。备份任务计划 `donger-docker-backup`（03:30 每日）安装+首备实测通过。镜像 tag=`donger:20261011-1857`，代码推双远端 0e09d8f。
+- **homedb 连接回归（切换后首个事件，已修复）**：会话 7d31ef7f 检查部署时 ssh-homedb 六次握手超时。根因=**Docker NAT 出站不走 OpenVPN 隧道路由**（目标 192.168.1.103 在 VPN 后：宿主 17ms 连上 vs 容器永久超时；容器到宿主双 IP/路由器均正常，唯独 VPN 网段不可达）。修复=宿主 portproxy `10.9.101.78:2222→192.168.1.103:22` + `ssh-homedb` 凭证值改指宿主转发（API PUT 合并语义，认证材料无损）；agent 端到端验证拿到目标机真实 uptime。次级发现：`homedb.jeandom.com` 全靠 Windows hosts 钉值解析（路由器 DNS 为 NXDOMAIN）；会话中 agent 对凭证值的更新（→.101）是真实的但目标 IP 本身错误（.101 无 sshd），hosts 表不参与端点解析（端点在凭证值里）。

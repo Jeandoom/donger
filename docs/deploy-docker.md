@@ -87,6 +87,9 @@ host_exec 白名单语义：agent 的「本机」= 容器文件系统；查宿�
 
 ## 已知行为 delta 与限制
 
+- **VPN 内网主机不可达（homedb 事件 2026-10-11）**：Docker Desktop(WSL2) 的 NAT 出站不走 OpenVPN 隧道路由——容器内到 VPN 后面网段（如 192.168.1.x）TCP 全超时，宿主直发正常。现用宿主 portproxy 解决：
+  `netsh interface portproxy` `10.9.101.78:2222 → 192.168.1.103:22`（重启持久）；`ssh-homedb` 凭证值已改 host=10.9.101.78/port=2222。
+  维护口径：目标机换 IP/换端口 → 改 portproxy（管理员）+ 凭证页改 host/port 两处；宿主 LAN IP 变化（DHCP）→ 同步改这两处。新增 VPN 内网目标 → 照此模式加新 portproxy。
 - **内置技能首次真实生效**（D6）：`BUILTIN_SKILLS_DIR=/app/skills`，仓库 7 技能可见（生产裸机时代该目录解析到不存在的 `data/repos/skills`）。不想要则把 donger.env 里 BUILTIN_SKILLS_DIR 指向空目录。
 - zcode 桌面插件（computer-use/browser-use 等）内含 win32 原生依赖（sharp/koffi），容器内对应 plugin 能力降级；核心对话/MCP/技能不受影响（app-server 启动+会话迁移实证通过）。
 - zcode CLI 更新随 ZCode 桌面端：重跑备料 + 重建镜像。
