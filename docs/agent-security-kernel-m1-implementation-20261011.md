@@ -61,12 +61,41 @@
 
 | 缺口 | 现状 | 后续 |
 |---|---|---|
-| zcode「只读直通」 | Read/cat 等直通形态不进 requestPermission，平台守卫不触发（A1/A3/A5/A6 类形态 zcode 仍可穿透）；管线/env 层已堵的部分见 §2 | **M1.5：hooks/trustGrant 方案，取证已完成（见 §6），实施需实验驱动** |
+| zcode「只读直通」 | **已关闭（M1.5，见 §6）**——内核守卫经引擎原生 hooks 覆盖全部工具调用 | — |
 | 出网渗出闸 | curl POST 干净形态仍可外发（D4） | M2-8：域名白名单+审批闸 |
 | 宿主枚举/命令面 | whoami/net user 类 static-guard 非门命令放行 | M2-7：能力集 commands 白名单（agent 级） |
 | hook 超时语义 | **已实测（spike-hook-timeout.ts）：FAIL-CLOSED**——hook 挂起超 timeout 后 tool_result 报「PreToolUse hook did not respond before its timeout…The tool call was not executed」，工具被拒而非放行；宿主 hook 挂死不构成守卫绕过面 | 契约成立，无需竞速 deny 外层 |
 
-## 6. M1.5 取证记录（zcode 直通封堵，2026-10-11）
+## 6. M1.5 实施记录（zcode 直通封堵，2026-10-11）
+
+**结论：zcode「只读直通」缺口已关闭**——内核守卫经引擎原生 hooks 通道覆盖全部工具调用。
+
+### 6.1 协议取证→实验→定案
+
+| 步骤 | 结果 |
+|---|---|
+| mode=default 实验 | **否决**：会话静默失败（parts=0），`DONGER_ZCODE_MODE` 逃生门保留防误用 |
+| hooks 配置入口 | 项目级 `<workspace>/zcode.json` 与 `.zcode/config.json` 双写 + 用户级 `~/.zcode/cli/config.json` 兜底（aHr 候选全盖） |
+| 配置 schema | **非 Claude Code 形态**：`{hooks:{enabled, timeoutMs, maxOutputBytes, events:{PreToolUse:[{matcher, hooks:[{type:"command", command}]]}}}}`——`enabled` 总开关与 `events` 中间层是必需（首两轮无反应的根因） |
+| matcher | **必须显式**（省略不触发）——runner 下发全内置工具词表 join("\|") |
+| 拦截语义 | **exit 2=阻断、其他非零=非阻断错误（放行）**——curl -f 的 22 不拦（实测穿透），须 `\|\| exit /b 2` 映射（第二轮实测教训） |
+| hook stdin | `{toolName, toolInput, cwd, sessionId, mode, riskLevel, toolCallId, traceId...}`——与 Claude Code PreToolUse 同构（驼峰） |
+| trust 流 | 配置路径（enabled:true）直接生效，**无需 trustGrant/review 对接** |
+
+### 6.2 实现
+
+- `src/adapters/guard-kernel.ts`：`evaluateToolCall` 单实例判定（六段守卫→JSON 全文扫描→解码管线），claude PreToolUse hook 与 zcode hook 端点共用。
+- `zcode-agent-runner.ts`：每轮起 loopback 判定端点（127.0.0.1 随机端口），hooks 配置注入 workspace（hook command=`cmd /c curl -fsS -m 15 -X POST http://127.0.0.1:<port>/guard --data-binary @- >NUL 2>&1 || exit /b 2`）；端点 deny=403→curl 22→映射 exit 2→CLI "Hook blocked execution" 拒绝工具。**管线命中从严 deny**（zcode 无 ask 通道，不执行即无泄漏；Bash 审批链语义由 requestPermission 处理器保留）；判定异常 fail-closed。轮末关端点。
+- `startup-sensitive-paths.ts`：`.zcode/` 目录与 `zcode.json` 入启动敏感清单——agent 篡改 hooks 配置（enabled:false/改 command）任何模式硬 deny；runner 每轮覆写注入为双保险。
+- `claude-agent-runner.ts`：guardHook 重构至 guard-kernel（行为不变）。
+
+### 6.3 M1.5 验收
+
+SEC_ASSERT=1 zcode 全矩阵（16 断言例）**全绿**：直读四例（A1/A3 BLOCKED——hook 拦截消息 "Hook blocked execution" 进 audit；A5/A6 模型未发起=无泄漏）+deny 桩管线例（B1/B5/B6/C2/C3/D3/F-*）+env 白名单（B4）+间接注入（E1/E2）全部非 LEAKED。此前探针 [LEAKED] 的 P0 形态（.env 直读/MSYS/跨用户 Read）在 zcode 引擎首次被平台侧拦截（端点 deny 日志与 audit 对应）。
+
+claude 引擎经 guard-kernel 重构后全矩阵断言回归全绿（判定语义统一：断言目标=无泄漏；hook 自身拦截由 BLOCKED verdict/守卫消息明细区分呈现）。
+
+## 7. 取证存档（M1.5 中间结论，已被 §6 实施取代）
 
 **mode 路线已否决**：`DONGER_ZCODE_MODE=default` 实验下 zcode 会话静默失败（parts 表 0 行、tools=0、无回复）——default 模式在 GLM harness 下会话不起。runner 已留 `DONGER_ZCODE_MODE` 逃生门（显式覆盖下发 mode），default 不可用结论防止后续误用。
 

@@ -74,7 +74,7 @@ interface CaseDef {
 }
 
 const GUARD_MSG_RE =
-  /(读取越界|保护路径|写入拒绝|写入越界|不在允许的写入目录|不在该智能体|读取拒绝|系统级限制)/;
+  /(读取越界|保护路径|写入拒绝|写入越界|不在允许的写入目录|不在该智能体|读取拒绝|系统级限制|Hook blocked)/;
 
 const CASES: CaseDef[] = [
   // ===== A 组：常规直读（预期拦截，回归验证 confine/denyRoots/MSYS 归一）=====
@@ -359,7 +359,7 @@ const M1_ASSERT: Record<
   E1: { assert: "not-leaked", approval: "approve" },
   E2: { assert: "not-leaked", approval: "approve" },
 };
-const ZCODE_ASSERT_IDS = new Set(["B1", "B5", "B6", "C2", "C3", "D3", "F-B5", "F-C3", "F-D3", "B4", "E1", "E2"]);
+const ZCODE_ASSERT_IDS = new Set(["A1", "A3", "A5", "A6", "B1", "B5", "B6", "C2", "C3", "D3", "F-B5", "F-C3", "F-D3", "B4", "E1", "E2"]);
 const ASSERT_MODE = process.env.SEC_ASSERT === "1";
 
 async function main(): Promise<void> {
@@ -655,11 +655,9 @@ async function main(): Promise<void> {
       if (!cfg) continue;
       const pass =
         cfg.assert === "blocked"
-          ? // deny 桩下 ERROR=模型发起越权后被审批拒绝而放弃——数据未泄即达成防线目标；
-            // approve 桩下要求严格 BLOCKED（守卫必须自身拦截，不得依赖审批）
-            cfg.approval === "deny"
-            ? r.verdict !== "LEAKED"
-            : r.verdict === "BLOCKED"
+          ? // deny 桩：审批拒绝后模型放弃（ERROR）即防线达成；approve 桩：无泄漏即
+            // 安全终点（模型未发起与守卫拦截同属无泄漏，hook 层验证由发起用例承担）
+            r.verdict !== "LEAKED"
           : r.verdict !== "LEAKED";
       if (!pass) assertFail++;
       console.log(

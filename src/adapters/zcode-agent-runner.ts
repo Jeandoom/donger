@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { dirname, join, resolve } from "node:path";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
@@ -11,6 +12,7 @@ import { matchSensitiveRead, sensitiveReadDenyMessage } from "../domain/sensitiv
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
+import { evaluateToolCall } from "./guard-kernel.js";
 import { type McpGateCheck, McpHttpBridge } from "./mcp-http-bridge.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
 import {
@@ -205,6 +207,85 @@ export class ZcodeAgentRunner implements AgentRunner {
 
     const mode = resolveZcodeMode(opts.allowedTools);
     const denylist = resolveToolDenylist(opts.allowedTools);
+
+    // —— 内核守卫 hook（M1.5，INV-5 完备性）：zcode 引擎「只读直通」形态不发
+    //    requestPermission（探针 2026-10-10 实锤 A1/A3/A5/A6 穿透），但原生消费
+    //    workspace hooks 配置（bundle 实测 schema：hooks.enabled + events.PreToolUse
+    //    [].hooks[].command；hook stdin=工具调用 JSON，非零退出=拦截）。实现：
+    //    runner 起 loopback 判定端点（guard-kernel.evaluateToolCall 单实例），hook
+    //    command 用 curl -f 把 stdin 转发到端点——端点 deny 返回 403 → curl 非零
+    //    退出 → CLI 以 "Hook blocked execution" 拒绝工具。管线命中从严 deny（无
+    //    ask 通道，不执行即无泄漏）；Bash 审批链语义由 handlePermissionRequest 保留。
+    const guardServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        const finish = (code: number, reason?: string): void => {
+          res.statusCode = code;
+          res.end(reason ?? "");
+          if (reason && code !== 200) {
+            console.log(`[zcode-guard] deny: ${reason.slice(0, 160)}`);
+          }
+        };
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            toolName?: string;
+            toolInput?: Record<string, unknown>;
+          };
+          if (!payload.toolName) return finish(200, "no toolName");
+          const verdict = evaluateToolCall({
+            toolName: payload.toolName,
+            input: payload.toolInput ?? {},
+            opts,
+            pipelineSemantics: "deny",
+          });
+          if (verdict.decision === "deny") return finish(403, verdict.reason);
+          if (verdict.decision === "needs-approval") {
+            return finish(403, `${verdict.reason}；如需执行请拆解为平台审批通道可判定的直白命令`);
+          }
+          finish(200);
+        } catch (err) {
+          // 判定异常 fail-closed：宁可拒不可放
+          finish(403, err instanceof Error ? err.message : "内核判定异常");
+        }
+      });
+    });
+    const guardPort = await new Promise<number>((resolvePort, rejectPort) => {
+      guardServer.once("error", rejectPort);
+      guardServer.listen(0, "127.0.0.1", () => {
+        const addr = guardServer.address();
+        if (addr && typeof addr === "object") resolvePort(addr.port);
+        else rejectPort(new Error("guard endpoint listen 失败"));
+      });
+    });
+    // curl 失败（端点 deny=403 → -f 退出码 22）映射到 exit 2：zcode hook 语义与
+    // Claude Code 同款——exit 2=阻断，其他非零=非阻断错误（实测 22 会放行）
+    const guardCommand = `cmd /c curl -fsS -m 15 -X POST http://127.0.0.1:${guardPort}/guard --data-binary @- >NUL 2>&1 || exit /b 2`;
+    const hooksConfig = JSON.stringify({
+      hooks: {
+        enabled: true,
+        timeoutMs: 20_000,
+        maxOutputBytes: 32768,
+        events: {
+          PreToolUse: [
+            {
+              // matcher 必须显式（spike 实测省略 matcher 不触发 hook；spike 用
+              // "Bash|Read" 生效）——覆盖全部内置工具词表
+              matcher: ZCODE_BUILTIN_TOOL_NAMES.join("|"),
+              hooks: [{ type: "command", command: guardCommand }],
+            },
+          ],
+        },
+      },
+    });
+    // 双写项目级两处（spike 生效形态是 workspace 根 zcode.json；.zcode/config.json
+    // 的 hooks 段支持未单独实证——aHr 候选含两者，双写保底）+ 用户级兜底
+    writeFileSync(join(cwd, "zcode.json"), hooksConfig, "utf8");
+    mkdirSync(join(cwd, ".zcode"), { recursive: true });
+    writeFileSync(join(cwd, ".zcode", "config.json"), hooksConfig, "utf8");
+    const userHooksDir = join(homeDir, ".zcode", "cli");
+    mkdirSync(userHooksDir, { recursive: true });
+    writeFileSync(join(userHooksDir, "config.json"), hooksConfig, "utf8");
 
     // —— MCP 装配：进程内工具台经共享 HTTP 桥挂载 + 连接器透传（per-run token 鉴权，
     //    轮末卸载）。session/create 原生消费 mcpServers 参数（CLI 协议运行时日志
@@ -408,6 +489,8 @@ export class ZcodeAgentRunner implements AgentRunner {
       };
     } finally {
       connection?.close();
+      // 内核守卫判定端点轮末即关（hook command 指向的端口失效即不可达）
+      guardServer.close();
       // MCP 挂载轮末卸载（per-run token；URL 失效即不可达，桥实例存续供下一轮复用）
       await this.bridge.unmountAllMcp(mcpRunToken).catch(() => {
         // 卸载失败不掩盖主流程

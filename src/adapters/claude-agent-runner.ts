@@ -9,13 +9,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
-import {
-  classifyShellDecision,
-} from "../domain/shell-decision.js";
-import { matchSensitiveRead, sensitiveReadDenyMessage } from "../domain/sensitive-read-guard.js";
+import { classifyShellDecision } from "../domain/shell-decision.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { BUILTIN_TOOL_TEXT_PREFIX } from "../util/provider-tool-text.js";
+import { evaluateToolCall } from "./guard-kernel.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
 
 /**
@@ -138,12 +136,9 @@ export class ClaudeAgentRunner implements AgentRunner {
 
     // —— PreToolUse 内核守卫（INV-5 完备性，spec §4.3）：SDK「安全只读自动放行」会
     // shadow canUseTool（探针 2026-10-10 实锤：cat 穿透 confine 读到 .env），hook 是
-    // SDK 唯一保证每次工具调用必经的钩子。三分支：
-    //   deny —— 六段静态守卫命中，或工具入参 JSON 全文命中敏感读边界（Grep/Glob/MCP
-    //           的 path 类参数，M2-9 判定面提前覆盖）；
-    //   ask  —— Bash 解码管线判 needs-approval（展开/替换/编码/解释器特征，INV-6/10），
-    //           强制拉回审批链，防引擎内置放行 shadow 审批；
-    //   pass —— 白名单族/纯静态命令（守卫已在 ①② 跑过，引擎可自动放行）。
+    // SDK 唯一保证每次工具调用必经的钩子。判定逻辑在 guard-kernel.evaluateToolCall
+    // （与 zcode hook 端点共用单实例）：deny=守卫命中；needs-approval=管线命中转
+    // hook ask 强拉审批链；allow=白名单族/纯静态（守卫已跑，引擎可自动放行）。
     // canUseTool 保留为审批链与兜底层（hook deny 后不再触发；ask 必经 canUseTool）。
     const guardHook = async (
       hookInput: { hook_event_name: string; tool_name?: string; tool_input?: unknown },
@@ -155,24 +150,17 @@ export class ClaudeAgentRunner implements AgentRunner {
       }
       const toolName = hookInput.tool_name;
       const input = (hookInput.tool_input ?? {}) as Record<string, unknown>;
-      const denial = runStaticToolGuards({ toolName, input, opts });
-      if (denial) return hookDeny(denial.message);
-      if (opts.sensitiveReadPolicy) {
-        const hit = matchSensitiveRead(JSON.stringify(input), cwd, opts.sensitiveReadPolicy);
-        if (hit) return hookDeny(sensitiveReadDenyMessage(hit, existsSync(hit.resolved)));
-      }
-      if (toolName === "Bash" && typeof input.command === "string") {
-        if (classifyShellDecision(input.command) === "needs-approval") {
-          return {
-            continue: true,
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "ask",
-              permissionDecisionReason:
-                "内核管线判定：命令含展开/替换/编码/解释器特征，需用户确认",
-            },
-          };
-        }
+      const verdict = evaluateToolCall({ toolName, input, opts, pipelineSemantics: "ask" });
+      if (verdict.decision === "deny") return hookDeny(verdict.reason ?? "守卫拒绝");
+      if (verdict.decision === "needs-approval") {
+        return {
+          continue: true,
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "ask",
+            permissionDecisionReason: `${verdict.reason}，需用户确认`,
+          },
+        };
       }
       return { continue: true };
     };
