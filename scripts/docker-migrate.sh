@@ -35,7 +35,8 @@ if [[ "$MODE" == "execute" ]]; then
   pid=$(port_pid "$PORT")
   if [[ -n "${pid:-}" ]]; then
     echo "== 停止占用 $PORT 的旧生产进程 PID=$pid"
-    taskkill //F //PID "$pid"; sleep 2
+    # 本脚本 MSYS_NO_PATHCONV=1：taskkill 旗标必须单斜杠（//F 会原样传入被拒）
+    taskkill /F /PID "$pid"; sleep 2
   else
     echo "== $PORT 无监听进程，跳过停止"
   fi
