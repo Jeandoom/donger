@@ -1,0 +1,16 @@
+{
+  "id": "mcp-servers",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "agent",
+  "title": "MCP 服务器（agent 级）",
+  "description": "智能体自配 stdio/http MCP 服务器的装配",
+  "requires": [],
+  "contributes": {
+    "agentConfigFields": [
+      "mcpServers"
+    ]
+  }
+}

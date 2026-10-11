@@ -107,6 +107,12 @@ export interface OrchestratorDeps {
   credentialSets: CredentialSetStore;
   /** SSH 命令通道（spec 2026-09-30-deploy-ops-loop-design §6 模型合并：主机=凭证）；装配后挂载 donger-host 工具 */
   sshRunner?: SshCommandRunner;
+  /**
+   * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
+   * 缺省视为全部启用。消费点：host-exec 停用 → 不挂载 donger-host 工具、
+   * 不注入白名单提示词节、gateAllowCheck 不装配。
+   */
+  isPluginEnabled?: (pluginId: string) => boolean;
   /** 智能体存储（M13；缺省=不支持显式 agent，会话 agentId 必须为空） */
   agentStore?: AgentStore;
   /** 智能体分享/授权存储 */
@@ -511,7 +517,9 @@ export class Orchestrator {
     // host_exec 只读白名单（2026-10-10 拍板）：除门侧放行外，把清单注入系统提示——
     // LLM 每轮自由发挥命令形态（实测 || true / ps / curl -w 组合），不告知则前缀清单
     // 永远追不完；告知后 agent 在清单内组命令，未命中段落才落审批门（人工兜底）。
-    const hostAllowlist = p.agent?.hostExecAllowlist ?? [];
+    // 插件 gate（M2）：host-exec 停用 → 三处（提示词节/gateAllowCheck/工具挂载）全不装配
+    const hostExecEnabled = this.deps.isPluginEnabled?.("host-exec") ?? true;
+    const hostAllowlist = hostExecEnabled ? (p.agent?.hostExecAllowlist ?? []) : [];
     const systemPromptAppend =
       hostAllowlist.length > 0
         ? [
@@ -661,7 +669,8 @@ export class Orchestrator {
       // 远程主机工具（donger-host v3）：主机=凭证（kind=host）——admin 或名下有已填值
       // 的 host 凭证时挂载（spec 2026-09-30-deploy-ops-loop-design §6 模型合并）。
       // 主机登记制——工具每次调用按凭证 code 再校验；写操作由 host-ops force 门拦审批
-      if (this.deps.sshRunner) {
+      // 插件 gate（M2）：host-exec 停用 → 工具不挂载（fail-closed，探针不可达）
+      if (this.deps.sshRunner && hostExecEnabled) {
         const viewer = {
           id: p.user.id,
           role: p.user.role === "admin" ? ("admin" as const) : ("user" as const),

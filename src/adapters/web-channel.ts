@@ -129,6 +129,7 @@ import {
   AgentPermissionModeSchema,
   resolvePermissionMode,
 } from "../domain/permission-mode.js";
+import type { PluginSnapshot, PluginView } from "../domain/plugin.js";
 import { validateAgentAgainstPreset } from "../domain/scenario-preset.js";
 import { auditAgentSkillAvailability } from "../domain/skill-availability.js";
 import type { SkillPackSource } from "../domain/skill-pack.js";
@@ -471,6 +472,13 @@ function skillPackSourceLabel(source: SkillPackSource): string {
   }
 }
 
+/** 插件装载器窄接口（PluginHost 结构满足；测试可注入 stub） */
+export interface PluginHostApi {
+  snapshot(): PluginSnapshot | undefined;
+  list(): Promise<PluginView[]>;
+  setEnabled(id: string, enabled: boolean): Promise<{ ok: boolean; blockers: string[] }>;
+}
+
 export interface WebChannelDeps {
   port: number;
   /** 监听地址（默认 0.0.0.0=全网卡；设 127.0.0.1 仅本机） */
@@ -584,6 +592,26 @@ export interface WebChannelDeps {
   trustProxy?: boolean;
   /** web 前端根目录（默认 <repo>/web）；测试可指向临时目录 */
   webRoot?: string;
+  /**
+   * 插件装载器（specs/2026-10-11-plugin-system-design.md；缺省=插件端点不可用/快照按空集 fail-open）。
+   * 供管理面与导航/编辑器快照过滤消费。
+   */
+  pluginHost?: PluginHostApi;
+  /** 引擎运行时服务（工件安装/冒烟/解析链状态；缺省=引擎端点 503） */
+  engineRuntimeService?: EngineRuntimeApi;
+}
+
+/** 引擎运行时服务窄接口（EngineRuntimeService 结构满足；测试可注入 stub） */
+export interface EngineRuntimeApi {
+  status(): Promise<{
+    runtimes: unknown[];
+    resolution: Record<string, { path: string; pinned: boolean; source: string }>;
+  }>;
+  install(
+    sdkType: string,
+    input: { sourceKind: "discover" | "remote" | "local"; sourceRef?: string; sha256?: string },
+  ): Promise<{ ok: boolean; error?: string; record?: unknown }>;
+  smoke(sdkType: string): Promise<{ ok: boolean; version?: string; error?: string }>;
 }
 
 /**
@@ -2554,6 +2582,99 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // GET /api/admin/plugins —— 插件注册表全量清单（admin；specs/2026-10-11-plugin-system-design.md §3）
+    if (url.split("?")[0] === "/api/admin/plugins" && req.method === "GET") {
+      if (!this.deps.pluginHost) return this.json(res, { error: "服务未启用" }, 503);
+      return this.json(res, { plugins: await this.deps.pluginHost.list() });
+    }
+
+    // GET /api/plugins/snapshot —— 导航/编辑器过滤数据源（登录即可读；缺省按空集 fail-open=全启用）
+    if (url.split("?")[0] === "/api/plugins/snapshot" && req.method === "GET") {
+      const snap =
+        this.deps.pluginHost?.snapshot() ??
+        ({ plugins: [], generatedAt: new Date().toISOString() } satisfies PluginSnapshot);
+      return this.json(res, snap);
+    }
+
+    // ===== 插件/引擎治理写路径（admin；M1=引擎启停与工件安装，能力启停随 M2 开放）=====
+    const pluginApiPathname = url.split("?")[0] ?? "";
+    const pluginEnabledMatch = pluginApiPathname.match(
+      /^\/api\/admin\/plugins\/([\w.-]+)\/enabled$/,
+    );
+    if (pluginEnabledMatch && req.method === "PUT") {
+      if (!this.deps.pluginHost) return this.json(res, { error: "服务未启用" }, 503);
+      const body = JSON.parse(await this.readBody(req)) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") {
+        return this.json(res, { error: "enabled 须为布尔值" }, 400);
+      }
+      const pluginId = pluginEnabledMatch[1]!;
+      // M1/M2 启放范围：引擎三件 + 能力六模块；其余（skills/credentials 等）启停语义
+      // 未实现，显性 409 防静默无效开关
+      const M2_TOGGLEABLE = new Set([
+        "mcp-servers",
+        "connectors",
+        "host-exec",
+        "channel.dingtalk",
+        "workflows",
+        "event-sources",
+      ]);
+      if (!pluginId.startsWith("engine.") && !M2_TOGGLEABLE.has(pluginId)) {
+        return this.json(res, { error: "该模块的启停操作将随后续版本开放" }, 409);
+      }
+      const outcome = await this.deps.pluginHost.setEnabled(pluginId, body.enabled);
+      if (!outcome.ok) return this.json(res, { error: outcome.blockers.join("；") }, 409);
+      const viewer = this.currentViewer(req);
+      const actor = await this.deps.userStore?.get(viewer.id);
+      await this.deps.systemEventStore?.record({
+        type: "plugin_enabled_changed",
+        actorId: viewer.id,
+        actorName: actor?.name ?? viewer.id,
+        detail: `${actor?.name ?? viewer.id} ${body.enabled ? "启用" : "停用"}了插件 ${pluginId}`,
+      });
+      return this.json(res, { ok: true });
+    }
+
+    // GET /api/admin/engine-runtimes —— 引擎工件状态+解析链现状（admin）
+    if (pluginApiPathname === "/api/admin/engine-runtimes" && req.method === "GET") {
+      if (!this.deps.engineRuntimeService) return this.json(res, { error: "服务未启用" }, 503);
+      return this.json(res, await this.deps.engineRuntimeService.status());
+    }
+    const engineInstallMatch = pluginApiPathname.match(
+      /^\/api\/admin\/engine-runtimes\/([\w.-]+)\/install$/,
+    );
+    if (engineInstallMatch && req.method === "POST") {
+      if (!this.deps.engineRuntimeService) return this.json(res, { error: "服务未启用" }, 503);
+      const sdkType = engineInstallMatch[1]!;
+      const body = JSON.parse(await this.readBody(req)) as {
+        sourceKind?: unknown;
+        sourceRef?: unknown;
+        sha256?: unknown;
+      };
+      if (
+        body.sourceKind !== "discover" &&
+        body.sourceKind !== "remote" &&
+        body.sourceKind !== "local"
+      ) {
+        return this.json(res, { error: "sourceKind 须为 discover/remote/local" }, 400);
+      }
+      const result = await this.deps.engineRuntimeService.install(sdkType, {
+        sourceKind: body.sourceKind,
+        ...(typeof body.sourceRef === "string" ? { sourceRef: body.sourceRef } : {}),
+        ...(typeof body.sha256 === "string" ? { sha256: body.sha256 } : {}),
+      });
+      if (!result.ok) return this.json(res, { error: result.error }, 400);
+      return this.json(res, { runtime: result.record });
+    }
+    const engineSmokeMatch = pluginApiPathname.match(
+      /^\/api\/admin\/engine-runtimes\/([\w.-]+)\/smoke$/,
+    );
+    if (engineSmokeMatch && req.method === "POST") {
+      if (!this.deps.engineRuntimeService) return this.json(res, { error: "服务未启用" }, 503);
+      const result = await this.deps.engineRuntimeService.smoke(engineSmokeMatch[1]!);
+      if (!result.ok) return this.json(res, { error: result.error }, 400);
+      return this.json(res, { ok: true, version: result.version });
+    }
+
     // GET /api/admin/email-verifications —— pending/过期账号及验证链接（admin；方案 B 转交数据源）
     if (url.split("?")[0] === "/api/admin/email-verifications" && req.method === "GET") {
       if (!this.deps.userStore) return this.json(res, { error: "服务未启用" }, 503);
@@ -2617,6 +2738,9 @@ export class WebChannel implements Channel {
 
     // PUT /api/admin/auth-configs/dingtalk —— 保存+机器人通道运行时生效；清空保存=停用
     if (url.split("?")[0] === "/api/admin/auth-configs/dingtalk" && req.method === "PUT") {
+      // 插件 gate（M2）：channel.dingtalk 停用 → 配置写 409（通道本身已在组合根摘除）
+      const dingtalkBlocked = this.pluginDisabledMsg("channel.dingtalk");
+      if (dingtalkBlocked) return this.json(res, { error: dingtalkBlocked }, 409);
       if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
       let body: {
         appKey?: unknown;
@@ -5506,6 +5630,20 @@ export class WebChannel implements Channel {
     res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
   }
 
+  /**
+   * 插件停用判定（M2 写路径 409；specs/2026-10-11-plugin-system-design.md §9.6）：
+   * 指定能力模块已停用 → 返回指引文案；启用/未装配插件系统/行缺失 → null（fail-open）。
+   * 拍板②：读照常、写 409。
+   */
+  private pluginDisabledMsg(id: string): string | null {
+    const snap = this.deps.pluginHost?.snapshot();
+    if (!snap) return null;
+    const row = snap.plugins.find((p) => p.id === id);
+    return row && !row.enabled
+      ? `插件「${row.title}」已停用：请在插件页启用后再操作`
+      : null;
+  }
+
   // ---------------------------------------------------------------------------
   // 连接器（HTTP MCP 注册表）
   // ---------------------------------------------------------------------------
@@ -5518,6 +5656,15 @@ export class WebChannel implements Channel {
     const cstore = this.connectorStore;
     if (!cstore) return false;
     const basePath = url.split("?")[0] ?? url;
+    // 插件 gate（M2）：connectors 停用 → 写操作（含出站探活）409，GET 照常
+    if (req.method !== "GET") {
+      const blocked = this.pluginDisabledMsg("connectors");
+      if (blocked) {
+        res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: blocked }));
+        return true;
+      }
+    }
     const uid = this.requireRequestUser(req);
     const send = (r: { status: number; json: unknown }) => {
       res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
@@ -5874,6 +6021,15 @@ export class WebChannel implements Channel {
     const fs = this.deps.eventFiringStore;
     // 二者全缺省直接放行（路由不适用）
     if (!es && !ws) return false;
+    // 插件 gate（M2）：workflows 停用 → 写操作 409（GET 照常；触发管线在组合根已不恢复）
+    if (req.method !== "GET") {
+      const blocked = this.pluginDisabledMsg("workflows");
+      if (blocked) {
+        res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: blocked }));
+        return true;
+      }
+    }
     const uid = this.requireRequestUser(req);
     const queryOf = () => new URL(url, "http://localhost").searchParams;
 

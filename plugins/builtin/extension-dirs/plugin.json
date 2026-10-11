@@ -1,0 +1,16 @@
+{
+  "id": "extension-dirs",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "扩展目录",
+  "description": "SDK 扩展目录挂载（仅登记）",
+  "requires": [],
+  "contributes": {
+    "agentConfigFields": [
+      "extensionDirectories"
+    ]
+  }
+}

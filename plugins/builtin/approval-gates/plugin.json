@@ -1,0 +1,18 @@
+{
+  "id": "approval-gates",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "审批门与权限模式",
+  "description": "变更前问询/强制问询/完全访问三档权限模式与部署审批门（安全内核，不可停用）",
+  "requires": [
+    "tools"
+  ],
+  "contributes": {
+    "agentConfigFields": [
+      "defaultPermissionMode"
+    ]
+  }
+}

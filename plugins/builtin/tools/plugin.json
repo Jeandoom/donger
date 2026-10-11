@@ -1,0 +1,16 @@
+{
+  "id": "tools",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "工具面",
+  "description": "工具白名单与核心工具完备性校验（安全内核组成部分，不可停用）",
+  "requires": [],
+  "contributes": {
+    "agentConfigFields": [
+      "tools"
+    ]
+  }
+}

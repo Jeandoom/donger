@@ -86,6 +86,12 @@ interface RuntimeManagerDeps {
   builtinSkillsDir: string;
   repositoryMaterializer?: RepositoryMaterializer;
   extensionDirectoryResolver?: ExtensionDirectoryResolver;
+  /**
+   * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
+   * 缺省视为全部启用（fail-open，底账异常不放大为功能瘫痪）。
+   * 消费点：mcp-servers/connectors 停用 → agent.mcpServers 不合并、连接器注入跳过。
+   */
+  isPluginEnabled?: (pluginId: string) => boolean;
 }
 
 /**
@@ -198,15 +204,23 @@ export class RuntimeManager {
       // agent 指定 skills 时直接用；否则沿用 Pack 白名单
       if (a.skills.length > 0) skills = a.skills;
       allowedTools = a.tools.mode === "whitelist" ? a.tools.whitelist : undefined;
-      mcpServers = a.mcpServers;
+      // 插件启停 gate（M2）：mcp-servers/connectors 停用 = 弱引用忽略（配置保留不丢）
+      const mcpEnabled = this.deps.isPluginEnabled?.("mcp-servers") ?? true;
+      const connectorsEnabled = this.deps.isPluginEnabled?.("connectors") ?? true;
+      mcpServers = mcpEnabled ? a.mcpServers : undefined;
       // 连接器注入：共享智能体按属主解析（可见性+headers 凭证随分享者，§2.5）；
       // 重名连接器优先，防工具命名空间幻觉
-      if ((a.connectorIds?.length ?? 0) > 0 && this.deps.connectorStore) {
+      if (
+        mcpEnabled &&
+        connectorsEnabled &&
+        (a.connectorIds?.length ?? 0) > 0 &&
+        this.deps.connectorStore
+      ) {
         const connectors = await this.resolveAgentConnectors(
           a.connectorIds ?? [],
           opts.sharedAgentSkillOwner?.id ?? user.id,
         );
-        mcpServers = mergeConnectorMcpServers(mcpServers, connectors.servers);
+        mcpServers = mergeConnectorMcpServers(mcpServers ?? [], connectors.servers);
       }
       // shell git 守卫（防线 2）：2026-10-09 拍板④缺省放开，agent 显式 false 才拦
       // （非 https 远程/宿主凭证栈等恒拒形态在 tool-call-guards 内不随此开关）

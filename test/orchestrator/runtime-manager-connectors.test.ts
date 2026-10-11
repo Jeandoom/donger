@@ -216,3 +216,92 @@ describe("RuntimeManager 连接器注入", () => {
     expect(codes).toEqual(["c1"]);
   });
 });
+
+describe("RuntimeManager 插件停用 gate（M2，specs/2026-10-11-plugin-system-design.md §9.6）", () => {
+  let ws: string;
+  let cstore: SqliteConnectorStore;
+  let csets: SqliteCredentialSetStore;
+  let packStore: SqliteSkillPackStore;
+  const user = {
+    id: "u1",
+    name: "tester",
+    role: "user" as const,
+    homeDir: "",
+    createdAt: "t",
+    updatedAt: "t",
+  };
+  const conv = { id: "c1" } as Conversation;
+
+  function mkMgr(disabled: Set<string>): RuntimeManager {
+    const config: RuntimeManagerConfig = {
+      workspaceDir: ws,
+      llm: { model: "glm", baseUrl: "http://x", authToken: "t" },
+      defaultSystemPromptAppend: "",
+      agentLlmPresets: [],
+    };
+    return new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(),
+      conversationStore: fakeConvStore(),
+      config,
+      skillPackStore: packStore,
+      credentialSets: csets,
+      connectorStore: cstore,
+      installer: fakeInstaller,
+      builtinSkillsDir: "",
+      isPluginEnabled: (id) => !disabled.has(id),
+    });
+  }
+
+  beforeEach(() => {
+    ws = mkdtempSync(join(tmpdir(), "rtmgr-gate-"));
+    user.homeDir = ws;
+    const db = new Database(":memory:");
+    packStore = new SqliteSkillPackStore(db);
+    packStore.migrate();
+    csets = SqliteCredentialSetStore.fromSeed(db, loadOrGenerateAppSecret(db, "k"));
+    csets.migrate();
+    cstore = new SqliteConnectorStore(db, createSecretCipher("conn-seed"));
+    cstore.migrate();
+  });
+
+  it("mcp-servers 停用：agent.mcpServers 不进 RunOptions（配置保留、执行忽略）", async () => {
+    const { runOptions } = await mkMgr(new Set(["mcp-servers"])).prepare(user, conv, {
+      agent: mkAgent(),
+    });
+    expect(runOptions.mcpServers).toBeUndefined();
+  });
+
+  it("connectors 停用：连接器注入跳过", async () => {
+    const c = await cstore.create({ name: "gated", url: "https://gated/mcp" }, "u1");
+    const { runOptions } = await mkMgr(new Set(["connectors"])).prepare(user, conv, {
+      agent: mkAgent({ connectorIds: [c.id] }),
+    });
+    expect(runOptions.mcpServers?.some((s) => s.name === "gated")).toBe(false);
+    // 内联 mcpServers 不受 connectors 停用影响
+    expect(runOptions.mcpServers?.some((s) => s.name === "inline")).toBe(true);
+  });
+
+  it("未传 gate：行为与从前一致（fail-open 向后兼容）", async () => {
+    const c = await cstore.create({ name: "normal", url: "https://n/mcp" }, "u1");
+    const config: RuntimeManagerConfig = {
+      workspaceDir: ws,
+      llm: { model: "glm", baseUrl: "http://x", authToken: "t" },
+      defaultSystemPromptAppend: "",
+      agentLlmPresets: [],
+    };
+    const legacy = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(),
+      conversationStore: fakeConvStore(),
+      config,
+      skillPackStore: packStore,
+      credentialSets: csets,
+      connectorStore: cstore,
+      installer: fakeInstaller,
+      builtinSkillsDir: "",
+    });
+    const { runOptions } = await legacy.prepare(user, conv, {
+      agent: mkAgent({ connectorIds: [c.id] }),
+    });
+    expect(runOptions.mcpServers?.some((s) => s.name === "normal")).toBe(true);
+  });
+});

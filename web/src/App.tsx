@@ -18,6 +18,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { LoginSuccessPage } from "./pages/LoginSuccessPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { NotificationPage } from "./pages/NotificationPage";
+import { PluginsPage } from "./pages/PluginsPage";
 import { ProxyPage } from "./pages/ProxyPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { SetupPage } from "./pages/SetupPage";
@@ -81,6 +82,8 @@ export function App() {
             <Route path="/invites" element={<InvitesPage />} />
             {/* 授权/代理模块（admin 专属；接口侧由守卫 fail-closed 兜底） */}
             <Route path="/authorization" element={<AuthorizationPage />} />
+            {/* 插件注册表（admin 专属；specs/2026-10-11-plugin-system-design.md） */}
+            <Route path="/plugins" element={<PluginsPage />} />
             {/* MCP 接入已迁入授权页（/authorization 分区）；旧深链重定向 */}
             <Route path="/mcp" element={<Navigate to="/authorization?section=mcp" replace />} />
             <Route path="/proxy" element={<ProxyPage />} />

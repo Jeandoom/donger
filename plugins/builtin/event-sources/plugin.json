@@ -1,0 +1,13 @@
+{
+  "id": "event-sources",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "事件源与外呼",
+  "description": "HTTP 外呼入口（/hooks）与事件源探测",
+  "requires": [
+    "workflows"
+  ]
+}

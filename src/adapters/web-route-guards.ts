@@ -542,5 +542,22 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "PUT", pattern: "/api/skills/repo", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/repo/verify", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/repo/sync", access: { kind: "authenticated" } },
+
+    // ===== 插件系统（specs/2026-10-11-plugin-system-design.md §3）=====
+    // 管理面 admin-only；snapshot 登录即可读（导航/编辑器过滤数据源，无敏感字段）
+    { method: "GET", pattern: "/api/admin/plugins", access: { kind: "admin" } },
+    { method: "GET", pattern: "/api/plugins/snapshot", access: { kind: "authenticated" } },
+    { method: "PUT", pattern: "/api/admin/plugins/:id/enabled", access: { kind: "admin" } },
+    { method: "GET", pattern: "/api/admin/engine-runtimes", access: { kind: "admin" } },
+    {
+      method: "POST",
+      pattern: "/api/admin/engine-runtimes/:sdkType/install",
+      access: { kind: "admin" },
+    },
+    {
+      method: "POST",
+      pattern: "/api/admin/engine-runtimes/:sdkType/smoke",
+      access: { kind: "admin" },
+    },
   ];
 }

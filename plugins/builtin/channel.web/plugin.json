@@ -1,0 +1,13 @@
+{
+  "id": "channel.web",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": false,
+  "scope": "platform",
+  "title": "Web 渠道",
+  "description": "Web 客户端消息通道（平台主干，不可停用）",
+  "requires": [
+    "tasks"
+  ]
+}

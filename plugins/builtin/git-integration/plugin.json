@@ -1,0 +1,19 @@
+{
+  "id": "git-integration",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "Git 集成",
+  "description": "仓库物化/donger-git 工具/shell git 门（启停语义暂未开放，仅登记）",
+  "requires": [
+    "credentials"
+  ],
+  "contributes": {
+    "agentConfigFields": [
+      "gitRepositories",
+      "gitAllowShellGit"
+    ]
+  }
+}

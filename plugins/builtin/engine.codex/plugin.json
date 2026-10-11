@@ -1,0 +1,11 @@
+{
+  "id": "engine.codex",
+  "kind": "engine",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "执行引擎 · Codex",
+  "description": "OpenAI Codex Agent SDK（openai 协议平台，经内置 Responses↔Chat 桥）",
+  "requires": []
+}

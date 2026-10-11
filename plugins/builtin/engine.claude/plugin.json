@@ -1,0 +1,11 @@
+{
+  "id": "engine.claude",
+  "kind": "engine",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "执行引擎 · Claude",
+  "description": "Claude Agent SDK（anthropic 协议平台）；npm 内嵌随平台发版，为默认引擎",
+  "requires": []
+}

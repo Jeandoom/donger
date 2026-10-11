@@ -1,0 +1,16 @@
+{
+  "id": "scenarios",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "场景预设",
+  "description": "builder 场景校验（仅登记）",
+  "requires": [],
+  "contributes": {
+    "agentConfigFields": [
+      "scenario"
+    ]
+  }
+}

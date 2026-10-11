@@ -1,0 +1,11 @@
+{
+  "id": "feedback",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "platform",
+  "title": "反馈模块",
+  "description": "对话内反馈收集与处理（仅登记）",
+  "requires": []
+}

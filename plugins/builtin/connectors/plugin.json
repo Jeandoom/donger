@@ -1,0 +1,21 @@
+{
+  "id": "connectors",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "agent",
+  "title": "连接器（HTTP MCP）",
+  "description": "HTTP MCP 连接器注册表与 agent 勾选装配",
+  "requires": [
+    "mcp-servers"
+  ],
+  "contributes": {
+    "navEntries": [
+      "/connectors"
+    ],
+    "agentConfigFields": [
+      "connectorIds"
+    ]
+  }
+}

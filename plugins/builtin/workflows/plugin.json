@@ -1,0 +1,19 @@
+{
+  "id": "workflows",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "触发器与工作流",
+  "description": "事件触发器/工作流/定时任务统一触发管线",
+  "requires": [
+    "tasks"
+  ],
+  "contributes": {
+    "navEntries": [
+      "/workflows",
+      "/events"
+    ]
+  }
+}

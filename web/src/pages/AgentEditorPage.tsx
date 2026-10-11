@@ -17,6 +17,7 @@ import {
 } from "../lib/agents";
 import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
 import { createKb } from "../lib/kb";
+import { fetchPluginSnapshot } from "../lib/plugins";
 import { fetchCredentialTemplates } from "../lib/skills";
 import { cn } from "../lib/utils";
 import { BasicSection } from "./agent-editor/BasicSection";
@@ -68,6 +69,7 @@ export function AgentEditorPage() {
   const [readOnly, setReadOnly] = useState(false);
   const [activeSection, setActiveSection] = useState<string>(AGENT_EDITOR_SECTIONS[0].id);
   const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
+  const [disabledPlugins, setDisabledPlugins] = useState<Set<string>>(new Set());
   const [gitCredentialOptions, setGitCredentialOptions] = useState<
     Array<{ code: string; name: string; repoUrl?: string }>
   >([]);
@@ -101,6 +103,16 @@ export function AgentEditorPage() {
     // 智能体只可勾选 MCP 类型连接器（HTTP 类型是接口登记，不注入工具）
     fetchConnectors()
       .then((list) => setConnectors(list.filter((c) => c.type === "mcp")))
+      .catch(() => {});
+  }, []);
+
+  // 插件快照（specs/2026-10-11-plugin-system-design.md §4）：停用模块的功能区块打
+  // 「模块未启用，配置已保留」徽标；快照不可得按全启用处理（fail-open）
+  useEffect(() => {
+    fetchPluginSnapshot()
+      .then((snap) =>
+        setDisabledPlugins(new Set(snap.plugins.filter((p) => !p.enabled).map((p) => p.id))),
+      )
       .catch(() => {});
   }, []);
 
@@ -487,6 +499,7 @@ export function AgentEditorPage() {
             onMcpJsonTextChange={setMcpJsonText}
             mcpJsonError={mcpJsonError}
             onMcpJsonErrorChange={setMcpJsonError}
+            disabledPlugins={disabledPlugins}
           />
           <ResourcesSection {...sectionProps} gitCredentialOptions={gitCredentialOptions} />
           <KnowledgeSection {...sectionProps} kbNew={kbNew} onKbNewChange={setKbNew} />

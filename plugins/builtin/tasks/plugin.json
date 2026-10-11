@@ -1,0 +1,11 @@
+{
+  "id": "tasks",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": false,
+  "scope": "platform",
+  "title": "任务与会话",
+  "description": "任务/会话/消息平台主干",
+  "requires": []
+}

@@ -1,0 +1,13 @@
+{
+  "id": "channel.dingtalk",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "钉钉渠道",
+  "description": "钉钉机器人消息通道（授权页配置运行时换血）",
+  "requires": [
+    "notifications"
+  ]
+}

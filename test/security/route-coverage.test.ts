@@ -20,6 +20,8 @@ const GROUP_ALIASES: Array<[string, string]> = [
   ["([A-Za-z0-9_-]+)", ":token"],
   ["(\\d+)", ":num"],
   ["([^/]+)", ":code"],
+  // 带点参数段（插件系统 M1：engine.claude 等含点 id；守卫表 :param 段集本就含点）
+  ["([\\w.-]+)", ":id"],
 ];
 
 function restoreGroups(raw: string): string {

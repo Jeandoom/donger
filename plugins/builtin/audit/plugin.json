@@ -1,0 +1,11 @@
+{
+  "id": "audit",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": false,
+  "scope": "platform",
+  "title": "审计与 LLM 观测",
+  "description": "审计事件/工具调用/LLM 输入输出观测（合规底线，不可停用）",
+  "requires": []
+}

@@ -1,0 +1,18 @@
+{
+  "id": "host-exec",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "agent",
+  "title": "远程主机执行",
+  "description": "donger-host 工具挂载与 host_exec 只读白名单",
+  "requires": [
+    "credentials"
+  ],
+  "contributes": {
+    "agentConfigFields": [
+      "hostExecAllowlist"
+    ]
+  }
+}

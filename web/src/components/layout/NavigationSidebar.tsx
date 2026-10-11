@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
+  Puzzle,
   Repeat,
   ScrollText,
   Sparkles,
@@ -21,6 +22,7 @@ import { useCallback, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { apiFetch, apiFetchRetry, clearToken, getToken } from "../../lib/auth";
 import { fetchUnreadCount } from "../../lib/notifications";
+import { disabledNavEntries, fetchPluginSnapshot } from "../../lib/plugins";
 import { cn } from "../../lib/utils";
 import { CredentialIcon } from "../icons/CredentialIcon";
 import { InviteIcon } from "../icons/InviteIcon";
@@ -64,8 +66,11 @@ const bottomEntries: LeafItem[] = [
   { to: "/authorization", label: "授权", icon: KeyRound },
 ];
 
-// 管理员专属沉底项：代理（出站请求代理）
-const adminBottomEntries: LeafItem[] = [{ to: "/proxy", label: "代理", icon: Network }];
+// 管理员专属沉底项：插件（注册表治理）+ 代理（出站请求代理）
+const adminBottomEntries: LeafItem[] = [
+  { to: "/plugins", label: "插件", icon: Puzzle },
+  { to: "/proxy", label: "代理", icon: Network },
+];
 
 interface UserInfo {
   id: string;
@@ -171,6 +176,24 @@ export function NavigationSidebar({
       window.removeEventListener("donger:notifications-changed", refresh);
     };
   }, []);
+
+  // 插件快照：停用模块的 navEntries 从导航隐藏（specs/2026-10-11-plugin-system-design.md §1.3；
+  // 快照拉取失败按不过滤处理——导航可达性优先于治理裁剪）
+  const [disabledNav, setDisabledNav] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (!getToken()) return;
+    let alive = true;
+    fetchPluginSnapshot()
+      .then((snap) => {
+        if (alive) setDisabledNav(disabledNavEntries(snap));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const visibleMainEntries = mainEntries.filter((e) => !disabledNav.has(e.to));
+  const visibleBottomEntries = bottomEntries.filter((e) => !disabledNav.has(e.to));
 
   const handleLogout = async () => {
     await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -283,13 +306,13 @@ export function NavigationSidebar({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-        {mainEntries.map((e) => renderLeaf(e, collapsed))}
+        {visibleMainEntries.map((e) => renderLeaf(e, collapsed))}
       </div>
 
       {/* 原设置子模块：一级化后沉底；代理仅管理员可见，授权全用户（内含 admin 分区） */}
       <div className="mt-2 shrink-0 border-t border-white/10 pt-2">
         <div className="flex flex-col gap-0.5">
-          {bottomEntries.map((e) => renderLeaf(e, collapsed))}
+          {visibleBottomEntries.map((e) => renderLeaf(e, collapsed))}
           {user?.role === "admin" ? adminBottomEntries.map((e) => renderLeaf(e, collapsed)) : null}
         </div>
       </div>

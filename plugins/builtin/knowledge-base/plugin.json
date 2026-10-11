@@ -1,0 +1,21 @@
+{
+  "id": "knowledge-base",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "知识库",
+  "description": "智能体绑定知识库/检索工具注入/自动学习沉淀（仅登记）",
+  "requires": [],
+  "contributes": {
+    "navEntries": [
+      "/kb"
+    ],
+    "agentConfigFields": [
+      "knowledgeBaseIds",
+      "kbAutoLearn",
+      "kbWriteTargetId"
+    ]
+  }
+}

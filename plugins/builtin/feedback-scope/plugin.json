@@ -1,0 +1,18 @@
+{
+  "id": "feedback-scope",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "反馈引用（#）",
+  "description": "反馈项作为智能体资源引用（仅登记）",
+  "requires": [
+    "feedback"
+  ],
+  "contributes": {
+    "agentConfigFields": [
+      "feedbackScope"
+    ]
+  }
+}

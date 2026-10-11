@@ -1,0 +1,11 @@
+{
+  "id": "notifications",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": false,
+  "scope": "platform",
+  "title": "通知（站内信）",
+  "description": "站内信/订阅偏好/审批卡强制送达（不可停用）",
+  "requires": []
+}

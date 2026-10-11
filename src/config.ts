@@ -30,6 +30,8 @@ const EnvSchema = z.object({
   LOG_LEVEL: LogLevelSchema.default("info"),
   // 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills
   BUILTIN_SKILLS_DIR: z.string().default(""),
+  // 内置插件 manifest 目录（specs/2026-10-11-plugin-system-design.md）；默认 <repoRoot>/plugins/builtin
+  BUILTIN_PLUGINS_DIR: z.string().default(""),
   // 管理员的外部 ID 白名单（逗号分隔；裸 externalId 对全平台生效，
   // 或 "provider:externalId" 限定平台（如 github:12345678）。见 domain/user.ts 的 isAdminExternalId）。
   ADMIN_EXTERNAL_IDS: z.string().optional().default(""),
@@ -152,6 +154,8 @@ export interface AppConfig {
   logLevel: LogLevel;
   /** 预装技能根目录（其下每个子目录 = 一个预装 Pack）；默认 <repoRoot>/skills */
   builtinSkillsDir: string;
+  /** 内置插件 manifest 目录；默认 <repoRoot>/plugins/builtin */
+  builtinPluginsDir: string;
   /** 管理员外部 ID 列表（ADMIN_EXTERNAL_IDS，逗号分隔；兼容 ADMIN_STAFF_IDS） */
   adminExternalIds: Set<string>;
   /** 钉钉配置（仅当 KEY/SECRET/ROBOT_CODE 三者齐全；迁移输入——运行时读 module_configs） */
@@ -224,6 +228,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     https,
     logLevel: e.LOG_LEVEL,
     builtinSkillsDir: toAbs(e.BUILTIN_SKILLS_DIR || join(e.REPO_ROOT, "skills")),
+    // manifest 随应用根走（dev=仓库根 / 生产=部署目录检出），不随 REPO_ROOT（那是 repos 同步区）
+    builtinPluginsDir: toAbs(e.BUILTIN_PLUGINS_DIR || join(process.cwd(), "plugins", "builtin")),
     adminExternalIds: parseAdminExternalIds(e.ADMIN_EXTERNAL_IDS, e.ADMIN_STAFF_IDS),
     jwtSecret: e.JWT_SECRET ?? "",
     cliToken: e.CLI_TOKEN,

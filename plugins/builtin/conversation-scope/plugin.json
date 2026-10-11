@@ -1,0 +1,18 @@
+{
+  "id": "conversation-scope",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": false,
+  "scope": "agent",
+  "title": "会话引用（%）",
+  "description": "历史会话作为智能体资源引用（仅登记）",
+  "requires": [
+    "tasks"
+  ],
+  "contributes": {
+    "agentConfigFields": [
+      "conversationScope"
+    ]
+  }
+}

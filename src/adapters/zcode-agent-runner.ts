@@ -954,9 +954,16 @@ export function resolveEventStallMs(): number {
   return 600_000;
 }
 
-export function resolveCliPath(): string {
-  const configured = process.env.DONGER_ZCODE_CLI_PATH?.trim();
-  if (configured) return configured;
+/** 解析链注册表钩子（M1 引擎插件，specs/2026-10-11-plugin-system-design.md §1.3）：
+ *  index.ts 注入 EngineRuntimeService 全链（env → 注册表钉版 → 桌面候选降级）。 */
+type EngineCliResolver = (sdkType: "zcode") => { path: string; pinned: boolean } | undefined;
+let engineCliResolver: EngineCliResolver | undefined;
+export function setEngineCliResolver(resolver: EngineCliResolver | undefined): void {
+  engineCliResolver = resolver;
+}
+
+/** 桌面候选探测（解析链降级层；独立导出供 engine-runtime-service 复用） */
+export function probeZcodeCliFallback(): string | undefined {
   const candidates = [
     "C:/Program Files/ZCode/resources/glm/zcode.cjs",
     join(process.env.LOCALAPPDATA ?? "", "Programs", "ZCode", "resources", "glm", "zcode.cjs"),
@@ -965,7 +972,17 @@ export function resolveCliPath(): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
-  throw new Error("未找到 ZCode CLI：请配置 DONGER_ZCODE_CLI_PATH（指向 zcode.cjs 或可执行文件）");
+  return undefined;
+}
+
+export function resolveCliPath(): string {
+  const viaRegistry = engineCliResolver?.("zcode");
+  if (viaRegistry) return viaRegistry.path;
+  const fallback = probeZcodeCliFallback();
+  if (fallback) return fallback;
+  throw new Error(
+    "未找到 ZCode CLI：请在插件页安装 ZCode 运行时，或配置 DONGER_ZCODE_CLI_PATH（指向 zcode.cjs 或可执行文件）",
+  );
 }
 
 /**

@@ -1,0 +1,11 @@
+{
+  "id": "engine.zcode",
+  "kind": "engine",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "执行引擎 · ZCode",
+  "description": "GLM 官方 harness（spawn zcode app-server）；运行时工件可在本页安装钉版",
+  "requires": []
+}

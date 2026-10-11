@@ -18,6 +18,23 @@ const BUILTIN_MCPS = [
   { name: "donger-platform", desc: "平台元工具 · 仅内置智能体" },
 ];
 
+/** 模块停用横幅（M2）：配置保留不丢，执行面不生效 */
+function ModuleDisabledBanner({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-soft px-3 py-2.5 text-xs text-warning">
+      <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+      <span>
+        插件「{title}」未启用：{hint}
+        配置已保留但不生效，可到
+        <Link to="/plugins" className="mx-0.5 underline">
+          插件页
+        </Link>
+        启用。
+      </span>
+    </div>
+  );
+}
+
 export function ToolsPermsSection({
   form,
   patch,
@@ -28,6 +45,7 @@ export function ToolsPermsSection({
   onMcpJsonTextChange,
   mcpJsonError,
   onMcpJsonErrorChange,
+  disabledPlugins,
 }: {
   form: AgentEditorForm;
   patch: (p: Partial<AgentEditorForm>) => void;
@@ -39,6 +57,8 @@ export function ToolsPermsSection({
   onMcpJsonTextChange: (text: string) => void;
   mcpJsonError: string | null;
   onMcpJsonErrorChange: (error: string | null) => void;
+  /** 已停用插件 id 集（specs/2026-10-11-plugin-system-design.md §4 编辑器徽标） */
+  disabledPlugins?: Set<string>;
 }) {
   const [toolQuery, setToolQuery] = useState("");
   const [mcpAdvancedOpen, setMcpAdvancedOpen] = useState(false);
@@ -125,6 +145,14 @@ export function ToolsPermsSection({
         label="远程主机只读命令白名单"
         hint="host_exec 命中前缀且无组合/替换/重定向（>/dev/null 除外）时免审批自动执行；其余命令仍弹审批卡。每行一条前缀，留空=全部需审批"
       >
+        {disabledPlugins?.has("host-exec") ? (
+          <div className="mb-2">
+            <ModuleDisabledBanner
+              title="远程主机执行"
+              hint="donger-host 工具不挂载、白名单免审批不生效。"
+            />
+          </div>
+        ) : null}
         <Textarea
           mono
           rows={4}
@@ -214,6 +242,16 @@ export function ToolsPermsSection({
       ))}
 
       <FormField label="MCP 工具" hint="内置服务随配置自动挂载；连接器开关启用">
+        {disabledPlugins?.has("mcp-servers") || disabledPlugins?.has("connectors") ? (
+          <div className="mb-2">
+            <ModuleDisabledBanner
+              title={
+                disabledPlugins.has("mcp-servers") ? "MCP 服务器（agent 级）" : "连接器（HTTP MCP）"
+              }
+              hint="自配 MCP 与连接器注入在执行时跳过。"
+            />
+          </div>
+        ) : null}
         <div className="flex flex-col gap-2.5 rounded-[10px] border border-border bg-muted/40 p-3">
           <div className="flex flex-col gap-0.5">
             {BUILTIN_MCPS.map((m) => (

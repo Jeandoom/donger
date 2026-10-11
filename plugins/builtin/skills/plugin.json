@@ -1,0 +1,20 @@
+{
+  "id": "skills",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": true,
+  "stoppable": true,
+  "scope": "agent",
+  "title": "技能",
+  "description": "技能包/用户技能仓库/内置技能的装配与执行面",
+  "requires": [],
+  "contributes": {
+    "navEntries": [
+      "/skills"
+    ],
+    "agentConfigFields": [
+      "skills",
+      "defaultSkill"
+    ]
+  }
+}

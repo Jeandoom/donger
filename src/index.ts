@@ -11,6 +11,8 @@ import { ClaudeLlmDebugRunner } from "./adapters/claude-llm-debug-runner.js";
 import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
 import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
+import { EngineRuntimeService } from "./adapters/engine-runtime-service.js";
+import { SqliteEngineRuntimeStore } from "./adapters/sqlite-engine-runtime-store.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
@@ -44,6 +46,7 @@ import { SqliteMcpTokenStore } from "./adapters/sqlite-mcp-token-store.js";
 import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
 import { SqliteNotificationStore } from "./adapters/sqlite-notification-store.js";
+import { SqlitePluginStore } from "./adapters/sqlite-plugin-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
@@ -56,10 +59,11 @@ import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { createSsh2CommandRunner } from "./adapters/ssh2-command-runner.js";
 import { resolveSystemKeySeed, SystemKeyService } from "./adapters/system-key-service.js";
 import { WebChannel } from "./adapters/web-channel.js";
-import { ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
+import { ZcodeAgentRunner, setEngineCliResolver } from "./adapters/zcode-agent-runner.js";
 import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
+import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
@@ -70,6 +74,7 @@ import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import { SystemEventDispatcher } from "./orchestrator/system-event-dispatcher.js";
+import { PluginHost } from "./plugins/plugin-host.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
 import { warnIfWebDistStale } from "./util/build-fingerprint.js";
@@ -138,6 +143,31 @@ async function main(): Promise<void> {
   const auditStore = new BufferedAuditStore(sqliteAuditStore);
   const systemEventStore = new SqliteSystemEventStore(db);
   systemEventStore.migrate();
+  // 插件注册表（specs/2026-10-11-plugin-system-design.md §1.3）：迁移→对账→快照，
+  // 供 web 通道导航/编辑器过滤与后续引擎/能力启停 gate 消费；对账不改 admin 启停决策
+  const pluginStore = new SqlitePluginStore(db);
+  pluginStore.migrate();
+  const pluginHost = new PluginHost({
+    builtinDir: cfg.builtinPluginsDir,
+    store: pluginStore,
+    log,
+  });
+  await pluginHost.init();
+  // 引擎运行时资产（M1；10-09 引擎注册表稿收编）：工件安装/冒烟/钉版/漂移检测 +
+  // zcode 解析链注册表层（env → 钉版 → 桌面候选降级显性，摘掉桌面更新悄悄换血）
+  const engineRuntimeStore = new SqliteEngineRuntimeStore(db);
+  engineRuntimeStore.migrate();
+  const engineRuntimeService = new EngineRuntimeService({
+    store: engineRuntimeStore,
+    systemEvents: systemEventStore,
+    enginesDir: join(dirname(cfg.dbPath), "engines"),
+    log,
+  });
+  await engineRuntimeService.start();
+  setEngineCliResolver((sdkType) => {
+    const info = engineRuntimeService.resolveCliPathInfo(sdkType);
+    return info ? { path: info.path, pinned: info.pinned } : undefined;
+  });
   const commentStore = new SqliteCommentStore(db);
   commentStore.migrate();
   const feedbackStore = new SqliteFeedbackStore(db);
@@ -308,6 +338,8 @@ async function main(): Promise<void> {
     credentialSets: SqliteCredentialSetStore,
     skillInstaller: LocalSkillInstaller,
   ): Orchestrator {
+    // 插件启停判定（M2 能力 gate；快照缺失/行缺失由 isPluginEnabled fail-open 兜底）
+    const pluginGate = (id: string) => isPluginEnabled(pluginHost.snapshot(), id);
     const runtimeMgr = new RuntimeManager({
       transcriptStore,
       conversationStore,
@@ -334,6 +366,7 @@ async function main(): Promise<void> {
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
       extensionDirectoryResolver,
+      isPluginEnabled: pluginGate,
     });
     return new Orchestrator({
       store,
@@ -350,11 +383,17 @@ async function main(): Promise<void> {
       // 三引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6、
       // specs/2026-09-25-zcode-engine-integration.md §4.1）：
       // anthropic（缺省）→ ClaudeAgentRunner；openai → CodexAgentRunner（恒经内置桥）；
-      // zcode → ZcodeAgentRunner（GLM 官方 harness，spawn app-server）
+      // zcode → ZcodeAgentRunner（GLM 官方 harness，spawn app-server）。
+      // 第 4 参=引擎启停门禁（M1）：停用引擎的会话轮 fail-closed 显性报错
       runner: new RoutingAgentRunner(
         new ClaudeAgentRunner(createDefaultGates()),
         new CodexAgentRunner(createDefaultGates(), new CodexChatBridge()),
         new ZcodeAgentRunner(createDefaultGates()),
+        (sdkType) =>
+          isPluginEnabled(
+            pluginHost.snapshot(),
+            ENGINE_PLUGIN_BY_SDK[sdkType] ?? "engine.claude",
+          ),
       ),
       channel,
       runtimeMgr,
@@ -362,6 +401,7 @@ async function main(): Promise<void> {
       sshRunner,
       agentStore,
       agentShareStore,
+      isPluginEnabled: pluginGate,
       kbLibraryStore,
       kbShareStore,
       kbRevisionStore,
@@ -473,6 +513,11 @@ async function main(): Promise<void> {
   const applyDingTalkChannel = (
     robotCfg: { appKey: string; appSecret: string; robotCode: string } | undefined,
   ): void => {
+    // 插件 gate（M2）：channel.dingtalk 停用 → 视为未配置（装配 no-op；已装配通道走
+    // 下方 undefined 分支 stop+摘除；重新启用后下次 apply 恢复装配）
+    if (!isPluginEnabled(pluginHost.snapshot(), "channel.dingtalk")) {
+      robotCfg = undefined;
+    }
     if (
       robotCfg &&
       dtChannel &&
@@ -556,6 +601,8 @@ async function main(): Promise<void> {
     },
     llm: cfg.llm,
     llmDebugRunner: new ClaudeLlmDebugRunner(),
+    pluginHost,
+    engineRuntimeService,
   };
   // SSH 命令通道（donger-host 工具的生产执行器）；须在 createOrch 调用前就绪（deps 传参）
   const sshRunner = createSsh2CommandRunner();
@@ -592,7 +639,9 @@ async function main(): Promise<void> {
     dispatcher: eventDispatcher,
     logger: log,
   });
-  // 进程内系统事件分发（feedback.created 等；发射方=web-channel 反馈创建，fail-open）
+  // 进程内系统事件分发（feedback.created 等；发射方=web-channel 反馈创建，fail-open）。
+  // 插件 gate（M2）：workflows 停用 → 不向触发管线分发（页面写路径另在 web-channel 409）
+  const workflowsEnabled = () => isPluginEnabled(pluginHost.snapshot(), "workflows");
   const systemEvents = new SystemEventDispatcher({
     eventStore,
     dispatcher: eventDispatcher,
@@ -600,19 +649,23 @@ async function main(): Promise<void> {
   });
   // 应用管家制（spec §6）：orchestrator 的 app 工具事件晚绑定到 dispatcher
   eventEmitRef.current = (eventName, payload) => {
+    if (!workflowsEnabled()) return;
     void systemEvents
       .dispatch(eventName, payload)
       .catch((e: Error) => log.error({ eventName, err: e.message }, "app event dispatch failed"));
   };
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
   webChannelDeps.scheduler = scheduler;
-  webChannelDeps.callEndpoint = callEndpoint;
+  // 插件 gate（M2）：event-sources 停用 → 外呼入口/事件源探测不装配（/hooks 免认证面收口）
+  if (isPluginEnabled(pluginHost.snapshot(), "event-sources")) {
+    webChannelDeps.callEndpoint = callEndpoint;
+    webChannelDeps.eventProbe = {
+      allowPrivateNet: cfg.triggerAllowPrivateNet,
+      workspaceRoot: cfg.workspaceDir,
+    };
+  }
   webChannelDeps.eventDispatcher = eventDispatcher;
   webChannelDeps.systemEvents = systemEvents;
-  webChannelDeps.eventProbe = {
-    allowPrivateNet: cfg.triggerAllowPrivateNet,
-    workspaceRoot: cfg.workspaceDir,
-  };
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
   webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
@@ -629,10 +682,16 @@ async function main(): Promise<void> {
         .catch((err) => console.error("[web] 落回调失败消息异常", err));
     }
   };
-  await scheduler.restore();
-  // 执行队列恢复：崩溃遗留 running→queued 重投（at-least-once）+ 抽积压；记录永久保留（D5）
-  await eventDispatcher.restore();
-  log.info({ scheduledEvents: scheduler.size() }, "scheduler 已恢复");
+  // 自动化恢复：workflows 停用时不恢复定时器与执行队列（触发管线整体静默；
+  // 重新启用需重启进程恢复——启停语义在插件页提示）
+  if (workflowsEnabled()) {
+    await scheduler.restore();
+    // 执行队列恢复：崩溃遗留 running→queued 重投（at-least-once）+ 抽积压；记录永久保留（D5）
+    await eventDispatcher.restore();
+    log.info({ scheduledEvents: scheduler.size() }, "scheduler 已恢复");
+  } else {
+    log.warn("工作流模块已停用：定时触发器与执行队列未恢复（重启进程后恢复）");
+  }
 
   // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
   const shutdown = async (signal: string) => {
