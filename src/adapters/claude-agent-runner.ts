@@ -129,9 +129,15 @@ export class ClaudeAgentRunner implements AgentRunner {
     }
     // apiKeyHelper：CLI 每次鉴权现取 key（x-api-key 语义，GLM 兼容端点实测接受）；
     // 配置经 options.settings 内联注入，宿主 ~/.claude/settings.json 不参与（CONFIG_DIR 已隔离）
+    // 取数命令分平台：win32 用 cmd type，posix 用 cat（容器化实锤：cmd 在 Linux 不存在致 helper 失败）
     const inlineSettings: Settings | undefined =
       apiKeyFile && configDir
-        ? { apiKeyHelper: `cmd /c type "${apiKeyFile}"` }
+        ? {
+            apiKeyHelper:
+              process.platform === "win32"
+                ? `cmd /c type "${apiKeyFile}"`
+                : `cat "${apiKeyFile}"`,
+          }
         : undefined;
 
     // —— PreToolUse 内核守卫（INV-5 完备性，spec §4.3）：SDK「安全只读自动放行」会

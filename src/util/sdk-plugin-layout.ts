@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -67,7 +68,18 @@ export function ensureSdkPluginLayout(packDir: string, pluginName: string): stri
   for (const skill of scanned.skills) {
     const sourceDir = dirname(join(packDir, skill.relativePath));
     const targetName = uniqueSkillDirectoryName(skill.name, usedNames);
-    cpSync(sourceDir, join(targetSkillsDir, targetName), { recursive: true });
+    const target = join(targetSkillsDir, targetName);
+    if (sourceDir === packDir) {
+      // 根级技能（如内置目录 <builtinSkillsDir>/<slug>/SKILL.md 的每技能一目录形态）：
+      // 生成目录是包自身子目录，整目录 cpSync 会命中「拷入自身子目录」，逐条目拷贝并跳过生成目录
+      mkdirSync(target, { recursive: true });
+      for (const entry of readdirSync(packDir)) {
+        if (entry === ".donger-sdk-plugin") continue;
+        cpSync(join(packDir, entry), join(target, entry), { recursive: true });
+      }
+    } else {
+      cpSync(sourceDir, target, { recursive: true });
+    }
   }
   // 共享运行库随插件物化：脚本 `from credentials import ...` 等导入靠它 + PYTHONPATH 桥
   for (const dir of sharedDirs) {

@@ -45,3 +45,7 @@ debug.log
 
 # 本地临时脚本（含凭证，绝不入库）
 .tmp/
+
+# Docker 部署（deploy/）：备料资产（zcode CLI 86MB/superpowers）与环境实例文件不入库
+deploy/assets/
+deploy/donger.env

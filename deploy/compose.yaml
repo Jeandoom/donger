@@ -1,0 +1,45 @@
+# donger 生产 compose（单服务 + bind mount 数据落盘）
+# 本文件为模板：由 scripts/docker-migrate.ps1 拷贝到栈目录（默认 D:\deploy\donger-docker\）运行。
+# 同目录 .env 提供插值变量：DONGER_IMAGE_TAG（必填）、DONGER_PORT（默认 3330）、DONGER_SLOT_SUFFIX（默认空）。
+name: donger${DONGER_SLOT_SUFFIX:-}
+
+services:
+  app:
+    image: donger:${DONGER_IMAGE_TAG:?请在栈目录 .env 设置 DONGER_IMAGE_TAG，如 20261011-1200}
+    container_name: donger-app${DONGER_SLOT_SUFFIX:-}
+    restart: unless-stopped
+    stop_grace_period: 120s
+    ports:
+      - "${DONGER_PORT:-3330}:${DONGER_PORT:-3330}"
+    env_file:
+      - ./donger.env
+    environment:
+      TZ: Asia/Shanghai
+      SHELL: /bin/bash
+      PORT: ${DONGER_PORT:-3330}
+      HOST: 0.0.0.0
+      WORKSPACE_DIR: /data/workspace
+      DB_PATH: /data/donger.db
+      HTTPS_CERT_PATH: /certs/cert.pem
+      HTTPS_KEY_PATH: /certs/privkey.pem
+      HTTPS_CHAIN_PATH: /certs/chain.pem
+    volumes:
+      # D1 拍板：bind mount，数据直接落宿主盘（SQLite WAL×9p 由 M0 压测把关；
+      # 若压测/运行中出现 DB 损坏，回退口径=仅 DB_PATH 改指 named volume，见 docs/deploy-docker.md §回退）
+      - ./data:/data
+      - ./certs:/certs:ro
+      - ./gitconfig:/home/node/.gitconfig:ro
+      # zcode 内置 provider 配置含凭证，不烘镜像：运行时从栈目录只读挂载（migrate 脚本负责拷入）
+      - ./zcode-provider/zcode-builtin.json:/opt/zcode-cli/provider/zcode-builtin.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    # mem_limit: 24g   # 可选：防 agent 高并发挤占宿主

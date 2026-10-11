@@ -260,7 +260,11 @@ export class ZcodeAgentRunner implements AgentRunner {
     });
     // curl 失败（端点 deny=403 → -f 退出码 22）映射到 exit 2：zcode hook 语义与
     // Claude Code 同款——exit 2=阻断，其他非零=非阻断错误（实测 22 会放行）
-    const guardCommand = `cmd /c curl -fsS -m 15 -X POST http://127.0.0.1:${guardPort}/guard --data-binary @- >NUL 2>&1 || exit /b 2`;
+    // 分平台：win32 cmd 通道 / posix sh 通道（容器化实锤：cmd 在 Linux 不存在会废掉守卫 hook）
+    const guardCommand =
+      process.platform === "win32"
+        ? `cmd /c curl -fsS -m 15 -X POST http://127.0.0.1:${guardPort}/guard --data-binary @- >NUL 2>&1 || exit /b 2`
+        : `curl -fsS -m 15 -X POST http://127.0.0.1:${guardPort}/guard --data-binary @- >/dev/null 2>&1 || exit 2`;
     const hooksConfig = JSON.stringify({
       hooks: {
         enabled: true,
