@@ -69,7 +69,8 @@ export interface FileChangeSegment {
 }
 
 export interface FileChangeSummary {
-  path: string;
+  /** 脱敏出口键：回传 detail/content 的唯一标识（不含宿主绝对路径） */
+  key: string;
   displayPath: string;
   language: string;
   firstOp: "created" | "modified";
@@ -82,7 +83,7 @@ export interface FileChangeSummary {
 }
 
 export interface FileChangeDetail {
-  path: string;
+  key: string;
   displayPath: string;
   language: string;
   segments: FileChangeSegment[];
@@ -97,9 +98,9 @@ export async function fetchFileChanges(conversationId: string): Promise<FileChan
 
 export async function fetchFileChangeDetail(
   conversationId: string,
-  path: string,
+  key: string,
 ): Promise<FileChangeDetail> {
-  const qs = new URLSearchParams({ path });
+  const qs = new URLSearchParams({ key });
   const res = await apiFetch(
     `/api/conversations/${conversationId}/file-changes/detail?${qs.toString()}`,
   );
@@ -108,16 +109,16 @@ export async function fetchFileChangeDetail(
 }
 
 export interface FileChangeContent {
-  path: string;
+  key: string;
   mime: string;
   content: string;
 }
 
 export async function fetchFileChangeContent(
   conversationId: string,
-  path: string,
+  key: string,
 ): Promise<FileChangeContent> {
-  const qs = new URLSearchParams({ path });
+  const qs = new URLSearchParams({ key });
   const res = await apiFetch(
     `/api/conversations/${conversationId}/file-changes/content?${qs.toString()}`,
   );

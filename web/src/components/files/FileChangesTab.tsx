@@ -87,11 +87,11 @@ function DiffRows({ rows }: { rows: DiffRow[] }) {
 
 function ResultView({
   conversationId,
-  path,
+  keyPath,
   language,
 }: {
   conversationId: string;
-  path: string;
+  keyPath: string;
   language: string;
 }) {
   const [content, setContent] = useState<FileChangeContent | null>(null);
@@ -102,7 +102,7 @@ function ResultView({
     let cancelled = false;
     setLoading(true);
     setError("");
-    fetchFileChangeContent(conversationId, path)
+    fetchFileChangeContent(conversationId, keyPath)
       .then((c) => {
         if (!cancelled) setContent(c);
       })
@@ -115,7 +115,7 @@ function ResultView({
     return () => {
       cancelled = true;
     };
-  }, [conversationId, path]);
+  }, [conversationId, keyPath]);
 
   if (loading) return <p className="p-3 text-xs text-muted-foreground">读取当前内容…</p>;
   if (error) return <p className="p-3 text-xs text-destructive">{error}</p>;
@@ -185,7 +185,7 @@ export function FileChangesTab({
       setDetail(null);
       setDetailError("");
       setMode("diff");
-      fetchFileChangeDetail(conversationId, file.path)
+      fetchFileChangeDetail(conversationId, file.key)
         .then(setDetail)
         .catch((reason: unknown) =>
           setDetailError(reason instanceof Error ? reason.message : String(reason)),
@@ -194,14 +194,14 @@ export function FileChangesTab({
     [conversationId],
   );
 
-  // 焦点直达：列表就绪后按精确/后缀匹配（容忍绝对路径 vs 展示路径的口径差）自动展开
+  // 焦点直达：列表就绪后按精确/后缀匹配（容忍消息里原始绝对路径 vs 脱敏 key 的口径差）自动展开
   useEffect(() => {
     if (!files || !focusPath) return;
     const norm = (p: string) => p.replaceAll("\\", "/");
     const target = norm(focusPath);
     const match =
-      files.find((f) => norm(f.path) === target) ??
-      files.find((f) => norm(f.path).endsWith(`/${target}`) || target.endsWith(`/${norm(f.path)}`));
+      files.find((f) => norm(f.key) === target) ??
+      files.find((f) => norm(f.key).endsWith(`/${target}`) || target.endsWith(`/${norm(f.key)}`));
     if (match) openDetail(match);
   }, [files, focusPath, openDetail]);
 
@@ -233,11 +233,11 @@ export function FileChangesTab({
       <div className="shrink-0 space-y-1 overflow-y-auto border-b border-border p-2 sm:max-h-[40%]">
         {files.map((f) => (
           <button
-            key={f.path}
+            key={f.key}
             type="button"
             className={cn(
               "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
-              selected?.path === f.path
+              selected?.key === f.key
                 ? "bg-primary-soft font-semibold text-primary"
                 : "hover:bg-muted",
             )}
@@ -267,7 +267,7 @@ export function FileChangesTab({
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
-              <p className="truncate text-xs font-semibold" title={selected.path}>
+              <p className="truncate text-xs font-semibold" title={selected.displayPath}>
                 {selected.displayPath}
               </p>
               <p className="text-[10px] text-muted-foreground">
@@ -309,7 +309,7 @@ export function FileChangesTab({
           {detail && mode === "result" ? (
             <ResultView
               conversationId={conversationId}
-              path={selected.path}
+              keyPath={selected.key}
               language={detail.language}
             />
           ) : null}

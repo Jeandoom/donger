@@ -1,4 +1,4 @@
-import { join, relative, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AuditEvent } from "./types.js";
 
 /**
@@ -31,9 +31,9 @@ export interface FileChangeSegment {
 }
 
 export interface FileChangeSummary {
-  /** 服务端绝对路径（列表→详情/内容回传的键） */
-  path: string;
-  /** 剥离工作区前缀后的展示路径 */
+  /** 出口键：客户端回传 detail/content 的唯一标识（已脱敏，绝不携带宿主绝对路径） */
+  key: string;
+  /** 剥离工作区前缀后的展示路径（工作区外文件只展示「（外部）+ 文件名」） */
   displayPath: string;
   language: string;
   firstOp: "created" | "modified";
@@ -190,12 +190,27 @@ export function languageOf(path: string): string {
   return LANGUAGE_BY_EXT[ext] ?? "text";
 }
 
-/** 剥离显示前缀：roots 按最长匹配优先（调用方把更具体的 workspace 根排前面） */
+/** 归一分隔符并折叠重复斜杠（JSON 双重转义路径如 `D:\\a\\b` 会产生空段，需折叠后才能匹配根前缀） */
+function normalizePathSlashes(p: string): string {
+  return p
+    .split(sep)
+    .join("/")
+    .replace(/\/{2,}/g, "/");
+}
+
+/** workspace 目录标记：`/agents/<id>/workspace/` 或 `/sessions/<id>/workspace/`（取最后一处） */
+const WORKSPACE_MARKER = /.*\/(?:agents|sessions)\/[^/]+\/workspace\//;
+
+/**
+ * 剥离显示前缀：roots 按最长匹配优先（调用方把更具体的 workspace 根排前面）。
+ * 兜底两级：根未命中但含 workspace 标记（历史部署根漂移的审计行）→ 取标记后段；
+ * 绝对路径且两者皆未命中（宿主机任意位置）→ 只展示「（外部）+ 文件名」，不泄露宿主目录结构。
+ */
 export function displayPathOf(absPath: string, roots: string[]): string {
-  const normalized = absPath.split(sep).join("/");
+  const normalized = normalizePathSlashes(absPath);
   let best = normalized;
   for (const root of roots) {
-    const rootNorm = root.split(sep).join("/").replace(/\/+$/, "");
+    const rootNorm = normalizePathSlashes(root).replace(/\/+$/, "");
     if (normalized === rootNorm) return ".";
     const withSlash = `${rootNorm}/`;
     if (normalized.startsWith(withSlash)) {
@@ -203,6 +218,12 @@ export function displayPathOf(absPath: string, roots: string[]): string {
       if (rel.length < best.length) best = rel;
     }
   }
+  if (best !== normalized) return best;
+  const marker = WORKSPACE_MARKER.exec(normalized);
+  if (marker?.[0] && marker[0].length < normalized.length) {
+    return normalized.slice(marker[0].length);
+  }
+  if (isAbsolute(absPath)) return `（外部）${basename(normalized)}`;
   return best;
 }
 
@@ -264,7 +285,12 @@ function salvageFilePath(raw: string): string | undefined {
 export function parseFileChanges(
   events: AuditEvent[],
   opts: { displayRoots: string[] },
-): { files: FileChangeSummary[]; segmentsByPath: Map<string, FileChangeSegment[]> } {
+): {
+  files: FileChangeSummary[];
+  segmentsByPath: Map<string, FileChangeSegment[]>;
+  /** key → 原始绝对路径（仅服务端内部使用：detail 定 segments、content 定可读文件，绝不出口） */
+  absByKey: Map<string, string>;
+} {
   const segmentsByPath = new Map<string, FileChangeSegment[]>();
 
   for (const event of events) {
@@ -309,14 +335,22 @@ export function parseFileChanges(
   }
 
   const files: FileChangeSummary[] = [];
+  const absByKey = new Map<string, string>();
+  const keySeen = new Map<string, number>();
   for (const [path, segs] of segmentsByPath) {
     const lastChangedAt = segs.reduce((acc, s) => (s.at > acc ? s.at : acc), segs[0]?.at ?? "");
     const firstIsWrite = segs[0]?.kind === "write";
     const adds = segs.reduce((acc, s) => acc + s.adds, 0);
     const removes = segs.reduce((acc, s) => acc + s.removes, 0);
+    const displayPath = displayPathOf(path, opts.displayRoots);
+    // 出口键 = 展示路径（已脱敏）；撞名（如两个同名外部文件）加序号保唯一，键序随事件序确定故跨请求稳定
+    const seen = (keySeen.get(displayPath) ?? 0) + 1;
+    keySeen.set(displayPath, seen);
+    const key = seen === 1 ? displayPath : `${displayPath}~${seen}`;
+    absByKey.set(key, path);
     files.push({
-      path,
-      displayPath: displayPathOf(path, opts.displayRoots),
+      key,
+      displayPath,
       language: languageOf(path),
       firstOp: firstIsWrite ? "created" : "modified",
       lastChangedAt,
@@ -328,7 +362,7 @@ export function parseFileChanges(
     });
   }
   files.sort((a, b) => (a.lastChangedAt < b.lastChangedAt ? 1 : -1));
-  return { files, segmentsByPath };
+  return { files, segmentsByPath, absByKey };
 }
 
 function segment(
@@ -361,14 +395,16 @@ function pushSegments(
   map.set(path, existing);
 }
 
-/** 会话绑定的工作区根（与 runtime-manager 推导同式），供 displayPath 与当前内容读取 */
+/** 会话绑定的工作区根（与 runtime-manager 推导同式），供 displayPath 与当前内容读取。
+ * homeDir 先 resolve：存量用户行可能存相对路径（生产库实锤），与 LocalFileBrowser 口径对齐 */
 export function conversationWorkspaceRoots(
   homeDir: string,
   conversation: { id: string; agentId: string | null },
 ): string[] {
+  const home = resolve(homeDir);
   return conversation.agentId
-    ? [join(homeDir, "agents", conversation.agentId, "workspace"), homeDir]
-    : [join(homeDir, "sessions", conversation.id, "workspace"), homeDir];
+    ? [join(home, "agents", conversation.agentId, "workspace"), home]
+    : [join(home, "sessions", conversation.id, "workspace"), home];
 }
 
 /** 相对化当前内容读取路径：abs 必须在 root 之下，否则 undefined（工作区外不可读） */

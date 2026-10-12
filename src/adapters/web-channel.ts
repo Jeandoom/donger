@@ -1012,9 +1012,7 @@ export class WebChannel implements Channel {
    * 会话当前挂起审批（GET pending-approval 用）：刷新/换端后据此恢复锚定审批卡。
    * 属主判定由 routeGuard 执行，与 pending-question 同模式。
    */
-  getPendingApproval(
-    conversationId: string,
-  ): {
+  getPendingApproval(conversationId: string): {
     approvalId: string;
     gateId: string;
     title: string;
@@ -1973,13 +1971,17 @@ export class WebChannel implements Channel {
   // 原有 API 路由
   // ---------------------------------------------------------------------------
 
-  /** 会话文件变更解析（REST 与 MCP 工具共用）；会话不可见返回 null */
+  /** 会话文件变更解析（REST 与 MCP 工具共用）；会话不可见返回 null。
+   * absByKey 仅供服务端内部回查原始路径（detail 定 segments、content 定可读文件），任何出口不得下发 */
   private async parseConversationFileChanges(
     viewer: Viewer,
     conversationId: string,
   ): Promise<{
+    ownerUserId: string;
+    workspaceRoot: string;
     files: FileChangeSummary[];
     segmentsByPath: Map<string, FileChangeSegment[]>;
+    absByKey: Map<string, string>;
   } | null> {
     const conv =
       viewer.role === "admin"
@@ -1995,7 +1997,11 @@ export class WebChannel implements Channel {
     const displayRoots = user
       ? conversationWorkspaceRoots(user.homeDir, { id: conv.id, agentId: conv.agentId || null })
       : [];
-    return parseFileChanges(events, { displayRoots });
+    return {
+      ownerUserId: conv.userId,
+      workspaceRoot: displayRoots[0] ?? "",
+      ...parseFileChanges(events, { displayRoots }),
+    };
   }
 
   private async listConversationFileChanges(
@@ -2741,7 +2747,8 @@ export class WebChannel implements Channel {
     // 随正门策略联动能力后开放），防配置面与行为漂移。
     if (url.split("?")[0] === "/api/admin/ssh-egress-mode" && req.method === "GET") {
       if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
-      const mode = this.deps.moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask";
+      const mode =
+        this.deps.moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask";
       return this.json(res, { mode });
     }
     if (url.split("?")[0] === "/api/admin/ssh-egress-mode" && req.method === "PUT") {
@@ -3702,13 +3709,16 @@ export class WebChannel implements Channel {
       const viewer = this.currentViewer(req);
       const parsed = await this.parseConversationFileChanges(viewer, conversationId);
       if (!parsed) return this.json(res, { error: "会话不存在" }, 404);
-      const path = this.extractQuery(url, "path") ?? "";
-      const segments = parsed.segmentsByPath.get(path);
+      const key = this.extractQuery(url, "key") ?? "";
+      // 键化出口：请求只携脱敏 key，原始绝对路径在服务端经 absByKey 回查
+      const abs = parsed.absByKey.get(key);
+      if (!abs) return this.json(res, { error: "该文件没有变更记录" }, 404);
+      const segments = parsed.segmentsByPath.get(abs);
       if (!segments) return this.json(res, { error: "该文件没有变更记录" }, 404);
-      const summary = parsed.files.find((f) => f.path === path);
+      const summary = parsed.files.find((f) => f.key === key);
       return this.json(res, {
-        path,
-        displayPath: summary?.displayPath ?? path,
+        key,
+        displayPath: summary?.displayPath ?? key,
         language: summary?.language ?? "text",
         segments,
       });
@@ -3719,25 +3729,19 @@ export class WebChannel implements Channel {
     if (fcContentMatch && req.method === "GET") {
       const conversationId = fcContentMatch[1] ?? "";
       const viewer = this.currentViewer(req);
-      const conv =
-        viewer.role === "admin"
-          ? await this.deps.conversationStore?.get(conversationId)
-          : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
-      if (!conv) return this.json(res, { error: "会话不存在" }, 404);
-      const user = await this.deps.userStore?.get(conv.userId);
-      const path = this.extractQuery(url, "path") ?? "";
-      if (!user) return this.json(res, { error: "用户不存在" }, 404);
-      const [workspaceRoot] = conversationWorkspaceRoots(user.homeDir, {
-        id: conv.id,
-        agentId: conv.agentId || null,
-      });
-      const rel = workspaceRoot ? relativeUnderRoot(path, workspaceRoot) : undefined;
+      const parsed = await this.parseConversationFileChanges(viewer, conversationId);
+      if (!parsed) return this.json(res, { error: "会话不存在" }, 404);
+      const key = this.extractQuery(url, "key") ?? "";
+      const abs = parsed.absByKey.get(key);
+      if (!abs) return this.json(res, { error: "该文件没有变更记录" }, 404);
+      // 仍按原始绝对路径做工作区边界复判（键化后 key 只有工作区内文件可对应到可读路径）
+      const rel = parsed.workspaceRoot ? relativeUnderRoot(abs, parsed.workspaceRoot) : undefined;
       if (!rel || !this.fileBrowser) {
         return this.json(res, { error: "当前内容不可用（文件不在会话工作区内）" }, 404);
       }
       try {
         const content = await this.fileBrowser.readFile(
-          conv.userId,
+          parsed.ownerUserId,
           "runtime",
           rel,
           conversationId,
@@ -3746,7 +3750,7 @@ export class WebChannel implements Channel {
           },
         );
         return this.json(res, {
-          path,
+          key,
           mime: content.mime,
           content: content.buffer.toString("utf8"),
         });

@@ -23,13 +23,16 @@ describe("GET /api/conversations/:id/file-changes*", () => {
   let ownerJwt: string;
   let otherJwt: string;
   let convId: string;
+  let usersDir = "";
+  let runtimeRoot = "";
+  let outsidePath = "";
   const absPath = join("workspace-src", "app.ts");
 
   beforeEach(async () => {
     db = new Database(":memory:");
     const sessionStore = new JwtSessionStore(db, "test-secret");
     sessionStore.migrate();
-    const usersDir = mkdtempSync(join(tmpdir(), "fc-users-"));
+    usersDir = mkdtempSync(join(tmpdir(), "fc-users-"));
     const userStore = new SqliteUserStore(db, { adminExternalIds: new Set(), usersDir });
     userStore.migrate();
     const owner = await userStore.getOrCreateByIdentity("internal", "fc-owner", "属主");
@@ -44,9 +47,11 @@ describe("GET /api/conversations/:id/file-changes*", () => {
 
     const wsDir = mkdtempSync(join(tmpdir(), "fc-ws-"));
     // 会话闲聊形态的 runtime 根：<homeDir>/sessions/<convId>/workspace
-    const runtimeRoot = join(usersDir, owner.id, "sessions", conv.id, "workspace");
+    runtimeRoot = join(usersDir, owner.id, "sessions", conv.id, "workspace");
     mkdirSync(join(runtimeRoot, "workspace-src"), { recursive: true });
     writeFileSync(join(runtimeRoot, absPath), "const a = 1;\nconst c = 3;\n", "utf8");
+    // 工作区外路径（模拟宿主任意位置的历史写入）：列表可见 diff，但键脱敏且当前内容不可读
+    outsidePath = join(wsDir, "..", "outside-secret-report.md");
 
     const auditStore = new InMemoryAuditStore({
       conversationOwner: async (id) => (await convStore.get(id))?.userId,
@@ -81,6 +86,9 @@ describe("GET /api/conversations/:id/file-changes*", () => {
       ),
     );
     await auditStore.record(mk({ command: "echo hi" }, "Bash", "2026-09-24T12:00:00Z"));
+    await auditStore.record(
+      mk({ file_path: outsidePath, content: "宿主侧历史写入\n" }, "Write", "2026-09-24T12:30:00Z"),
+    );
 
     web = new WebChannel({
       port: 0,
@@ -117,14 +125,19 @@ describe("GET /api/conversations/:id/file-changes*", () => {
     expect(other.status).toBe(403);
   });
 
-  it("列表：Bash 被忽略；Write/Edit 聚合为 created + adds/removes", async () => {
+  it("列表：Bash 被忽略；Write/Edit 聚合；出口键脱敏不含宿主绝对路径", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/file-changes`, {
       headers: { Authorization: `Bearer ${ownerJwt}` },
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const raw = await res.text();
+    // 不泄漏断言：响应里不出现 runtime 根/用户根/工作区外路径等宿主绝对路径
+    expect(raw).not.toContain(runtimeRoot);
+    expect(raw).not.toContain(usersDir);
+    expect(raw).not.toContain(outsidePath);
+    const body = JSON.parse(raw) as {
       files: Array<{
-        path: string;
+        key: string;
         displayPath: string;
         language: string;
         firstOp: string;
@@ -134,26 +147,30 @@ describe("GET /api/conversations/:id/file-changes*", () => {
         edits: number;
       }>;
     };
-    expect(body.files).toHaveLength(1);
-    const f = body.files[0];
-    expect(f?.displayPath).toBe("workspace-src/app.ts");
-    expect(f?.language).toBe("typescript");
-    expect(f?.firstOp).toBe("created");
-    expect(f?.adds).toBe(3);
-    expect(f?.removes).toBe(1);
-    expect(f?.writes).toBe(1);
-    expect(f?.edits).toBe(1);
+    expect(body.files).toHaveLength(2);
+    const wsFile = body.files.find((f) => f.displayPath === "workspace-src/app.ts");
+    expect(wsFile?.key).toBe("workspace-src/app.ts");
+    expect(wsFile?.language).toBe("typescript");
+    expect(wsFile?.firstOp).toBe("created");
+    expect(wsFile?.adds).toBe(3);
+    expect(wsFile?.removes).toBe(1);
+    expect(wsFile?.writes).toBe(1);
+    expect(wsFile?.edits).toBe(1);
+    // 工作区外文件：键与展示只到（外部）+ 文件名
+    const outFile = body.files.find((f) => f.key.startsWith("（外部）"));
+    expect(outFile?.key).toBe("（外部）outside-secret-report.md");
+    expect(outFile?.displayPath).toBe("（外部）outside-secret-report.md");
   });
 
-  it("详情：分段 diff 行（del/add 带行号）", async () => {
+  it("详情：按 key 查分段 diff 行（del/add 带行号）", async () => {
     const list = (await (
       await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/file-changes`, {
         headers: { Authorization: `Bearer ${ownerJwt}` },
       })
-    ).json()) as { files: Array<{ path: string }> };
-    const path = list.files[0]?.path ?? "";
+    ).json()) as { files: Array<{ key: string; displayPath: string }> };
+    const key = list.files.find((f) => f.displayPath === "workspace-src/app.ts")?.key ?? "";
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/detail?path=${encodeURIComponent(path)}`,
+      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/detail?key=${encodeURIComponent(key)}`,
       { headers: { Authorization: `Bearer ${ownerJwt}` } },
     );
     expect(res.status).toBe(200);
@@ -169,23 +186,30 @@ describe("GET /api/conversations/:id/file-changes*", () => {
     ]);
   });
 
-  it("内容：读活文件；未知路径 404", async () => {
+  it("内容：工作区内按 key 读活文件；工作区外/未知 key 一律 404", async () => {
     const list = (await (
       await fetch(`http://127.0.0.1:${port}/api/conversations/${convId}/file-changes`, {
         headers: { Authorization: `Bearer ${ownerJwt}` },
       })
-    ).json()) as { files: Array<{ path: string }> };
-    const path = list.files[0]?.path ?? "";
+    ).json()) as { files: Array<{ key: string; displayPath: string }> };
+    const key = list.files.find((f) => f.displayPath === "workspace-src/app.ts")?.key ?? "";
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/content?path=${encodeURIComponent(path)}`,
+      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/content?key=${encodeURIComponent(key)}`,
       { headers: { Authorization: `Bearer ${ownerJwt}` } },
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { content: string };
     expect(body.content).toBe("const a = 1;\nconst c = 3;\n");
 
+    const outsideKey = list.files.find((f) => f.key.startsWith("（外部）"))?.key ?? "";
+    const outside = await fetch(
+      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/content?key=${encodeURIComponent(outsideKey)}`,
+      { headers: { Authorization: `Bearer ${ownerJwt}` } },
+    );
+    expect(outside.status).toBe(404);
+
     const missing = await fetch(
-      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/detail?path=${encodeURIComponent("D:/nope/x.ts")}`,
+      `http://127.0.0.1:${port}/api/conversations/${convId}/file-changes/detail?key=${encodeURIComponent("nope/x.ts")}`,
       { headers: { Authorization: `Bearer ${ownerJwt}` } },
     );
     expect(missing.status).toBe(404);

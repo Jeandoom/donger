@@ -296,7 +296,7 @@ function FileChangeLinks() {
         <button
           key={path}
           type="button"
-          title={`${path}（点击查看变更内容）`}
+          title={`${shortChangePath(path)}（点击查看变更内容）`}
           onClick={() => openFileChange(path)}
           className="inline-flex max-w-full items-center gap-1 rounded-lg border border-border bg-card px-2 py-1 font-medium text-primary underline-offset-2 hover:bg-muted hover:underline"
         >
