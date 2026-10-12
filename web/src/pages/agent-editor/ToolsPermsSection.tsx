@@ -62,10 +62,6 @@ export function ToolsPermsSection({
 }) {
   const [toolQuery, setToolQuery] = useState("");
   const [mcpAdvancedOpen, setMcpAdvancedOpen] = useState(false);
-  // host_exec 白名单的文本态（每行一条前缀）；编辑器装载后一次性初始化，行解析即时入 form
-  const [hostAllowText, setHostAllowText] = useState(() =>
-    (form.hostExecAllowlist ?? []).join("\n"),
-  );
 
   const filteredTools = useMemo(() => {
     const q = toolQuery.trim().toLowerCase();
@@ -142,33 +138,23 @@ export function ToolsPermsSection({
       </FormField>
 
       <FormField
-        label="远程主机只读命令白名单"
-        hint="host_exec 命中前缀且无组合/替换/重定向（>/dev/null 除外）时免审批自动执行；其余命令仍弹审批卡。每行一条前缀，留空=全部需审批"
+        label="远程主机命令策略"
+        hint="host_exec / host_logs_clean 的免审与审批按主机策略配置（2026-10-12 起）：在凭证页主机凭证的「执行策略」中维护（当前经管理 API）。本页不再编辑；未迁移的旧白名单字段已停用"
       >
         {disabledPlugins?.has("host-exec") ? (
           <div className="mb-2">
             <ModuleDisabledBanner
               title="远程主机执行"
-              hint="donger-host 工具不挂载、白名单免审批不生效。"
+              hint="donger-host 工具不挂载、策略免审批不生效。"
             />
           </div>
         ) : null}
-        <Textarea
-          mono
-          rows={4}
-          value={hostAllowText}
-          onChange={(e) => {
-            setHostAllowText(e.target.value);
-            patch({
-              hostExecAllowlist: e.target.value
-                .split(/\r?\n/)
-                .map((s) => s.trim())
-                .filter(Boolean),
-            });
-          }}
-          placeholder={"systemctl is-active\nsystemctl show\ncurl -s\njournalctl -u"}
-          spellCheck={false}
-        />
+        {(form.hostExecAllowlist ?? []).length > 0 ? (
+          <p className="text-sm text-muted-foreground">
+            原白名单 {form.hostExecAllowlist?.length} 条前缀已迁移为主机执行策略（agent
+            作用域、全部主机生效）；删除该策略即可彻底退役旧字段。
+          </p>
+        ) : null}
       </FormField>
 
       <FormField

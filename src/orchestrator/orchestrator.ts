@@ -11,8 +11,12 @@ import {
 } from "../domain/conversation-title.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
-import { matchesHostExecAllowlist } from "../domain/host-exec-allowlist.js";
 import type { AgentGitRepository } from "../domain/git.js";
+import {
+  collectPromptAllowSections,
+  type HostExecPolicyRule,
+  resolveHostExecPolicy,
+} from "../domain/host-exec-policy.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
 import { canManageKb, canReadKb } from "../domain/kb-policy.js";
@@ -45,6 +49,7 @@ import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
+import type { HostExecPolicyStore } from "../ports/host-exec-policy-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { RepositoryMaterializeItem } from "../ports/repository-materializer.js";
@@ -107,6 +112,12 @@ export interface OrchestratorDeps {
   credentialSets: CredentialSetStore;
   /** SSH 命令通道（spec 2026-09-30-deploy-ops-loop-design §6 模型合并：主机=凭证）；装配后挂载 donger-host 工具 */
   sshRunner?: SshCommandRunner;
+  /**
+   * 主机执行策略存储（specs/2026-10-12-host-exec-policy-design.md §5）：host_exec/
+   * host_logs_clean 免审/审批的可配置治理。轮级快照读取；未装配=过渡期回落 agent 级
+   * hostExecAllowlist 旧行为（合成等价规则），装配后策略表为单一真源。
+   */
+  hostExecPolicies?: HostExecPolicyStore;
   /**
    * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
    * 缺省视为全部启用。消费点：host-exec 停用 → 不挂载 donger-host 工具、
@@ -182,6 +193,50 @@ export class Orchestrator {
   /** 会话生效权限模式（registry 未命中按变更前问询兜底） */
   private effectivePermissionMode(conversationId: string): AgentPermissionMode {
     return this.permissionModes.get(conversationId) ?? DEFAULT_PERMISSION_MODE;
+  }
+
+  /**
+   * 主机执行策略轮级快照：策略 store 读取异常=空集（全部回审批门，fail-closed）；
+   * store 未装配=合成 agent 级 hostExecAllowlist 等价规则（hostCode='*'、tool=host_exec、
+   * unattended=inherit——与 2026-10-10 白名单轮行为逐点一致，部署过渡期安全网）。
+   */
+  private async resolveHostExecRules(p: {
+    agent?: { id: string; hostExecAllowlist?: string[] };
+  }): Promise<HostExecPolicyRule[]> {
+    const store = this.deps.hostExecPolicies;
+    if (store) {
+      try {
+        return await store.list();
+      } catch {
+        return [];
+      }
+    }
+    const entries = (p.agent?.hostExecAllowlist ?? []).map((s) => s.trim()).filter(Boolean);
+    if (!p.agent || entries.length === 0) return [];
+    return [
+      {
+        id: "legacy-agent-allowlist",
+        hostCode: "*",
+        tool: "host_exec",
+        scopeKind: "agent",
+        scopeRef: p.agent.id,
+        matchKind: "prefix",
+        matchValue: entries.join("\n"),
+        decision: "allow",
+        unattended: "inherit",
+        enabled: true,
+      },
+    ];
+  }
+
+  /** 可见主机凭证 code 清单（提示注入按主机分组用；kind=host 全量，与挂载面同源） */
+  private async listHostCredentialCodes(): Promise<string[]> {
+    try {
+      const templates = await this.deps.credentialSets.listTemplates({});
+      return templates.filter((t) => t.kind === "host").map((t) => t.code);
+    } catch {
+      return [];
+    }
   }
 
   /** 查询会话实时执行状态（正在思考/输出/执行什么工具）；无活跃执行时 undefined */
@@ -514,25 +569,44 @@ export class Orchestrator {
     modelRef?: string;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
-    // host_exec 只读白名单（2026-10-10 拍板）：除门侧放行外，把清单注入系统提示——
-    // LLM 每轮自由发挥命令形态（实测 || true / ps / curl -w 组合），不告知则前缀清单
-    // 永远追不完；告知后 agent 在清单内组命令，未命中段落才落审批门（人工兜底）。
+    // 主机执行策略（2026-10-12 拍板，specs/2026-10-12-host-exec-policy-design.md）：
+    // host_exec/host_logs_clean 免审/审批按策略表裁决（deny 先行→主机精确>'*'→scope 特异度
+    // →无命中 ask）。轮级快照（与 agent 配置同语义，策略改动下一轮生效）；store 未装配=
+    // 过渡期回落 agent 级 hostExecAllowlist 旧行为。除门侧放行外，把生效 allow 前缀注入
+    // 系统提示——LLM 每轮自由发挥命令形态，不告知则清单永远追不完。
     // 插件 gate（M2）：host-exec 停用 → 三处（提示词节/gateAllowCheck/工具挂载）全不装配
     const hostExecEnabled = this.deps.isPluginEnabled?.("host-exec") ?? true;
-    const hostAllowlist = hostExecEnabled ? (p.agent?.hostExecAllowlist ?? []) : [];
+    const hostPolicyRules = hostExecEnabled ? await this.resolveHostExecRules(p) : [];
+    const hostPolicyCtx = {
+      agentId: p.agent?.id,
+      userId: p.user.id,
+      role: p.user.role,
+      unattended: p.unattended === true,
+    };
+    const hostPromptSections = hostExecEnabled
+      ? collectPromptAllowSections(
+          hostPolicyRules,
+          await this.listHostCredentialCodes(),
+          hostPolicyCtx,
+        )
+      : [];
     const systemPromptAppend =
-      hostAllowlist.length > 0
+      hostPromptSections.length > 0
         ? [
             p.memoryAppend,
             [
               "## 远程主机命令白名单",
-              "在远程主机（host_exec）执行命令时，以下列前缀开头的命令段会免审批直接执行；",
+              "对远程主机（host_exec 工具）执行命令时，以下主机上以这些前缀开头的命令段会免审批直接执行；",
               "组合命令的每个分号/管道/&&分段都必须以这些前缀开头，任何未列出的段落会弹出人工审批卡。",
               "禁止命令替换（$()、反引号）与输出重定向（> 文件）——它们一定会触发人工审批；",
               "需要计数/汇总时直接用 grep -c、awk 等管道输出，或拆成多条命令。",
               "请把健康检查类命令组合在这些前缀内；确需其他命令时照常执行（会等待人工审批）。",
               "",
-              ...hostAllowlist.map((pfx) => `- ${pfx}`),
+              ...hostPromptSections.flatMap((s) => [
+                `### 主机 ${s.hostCode}`,
+                ...s.prefixes.map((pfx) => `- ${pfx}`),
+                "",
+              ]),
             ].join("\n"),
           ]
             .filter(Boolean)
@@ -551,15 +625,44 @@ export class Orchestrator {
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
       base = { ...base, permissionMode: () => this.effectivePermissionMode(p.conversation.id) };
-      // agent 级 host_exec 只读白名单：命中且无逃逸结构免 host-ops 审批门；
-      // 判定收窄在钩子内（工具名+命令域函数），runner 侧不解释语义
-      if (hostAllowlist.length > 0) {
+      // 主机执行策略放行（含 force 门）：判定收窄在钩子内（工具名+hostCode+命令域函数），
+      // runner 侧不解释语义。M1 装配口径：仅 allow 免审；skip/deny 守卫接线在 M2/M3，
+      // 暂回审批门（fail-closed）。放行打标审计（fire-and-forget，失败不阻断执行）。
+      if (hostPolicyRules.length > 0) {
         base = {
           ...base,
-          gateAllowCheck: (toolName, input) =>
-            toolName === "mcp__donger-host__host_exec" &&
-            typeof input.command === "string" &&
-            matchesHostExecAllowlist(input.command, hostAllowlist),
+          gateAllowCheck: (toolName, input) => {
+            const tool =
+              toolName === "mcp__donger-host__host_exec"
+                ? "host_exec"
+                : toolName === "mcp__donger-host__host_logs_clean"
+                  ? "host_logs_clean"
+                  : undefined;
+            if (!tool) return false;
+            const hostCode = typeof input.hostCode === "string" ? input.hostCode : "";
+            if (!hostCode) return false;
+            const command = typeof input.command === "string" ? input.command : "";
+            const verdict = resolveHostExecPolicy(hostPolicyRules, {
+              hostCode,
+              tool,
+              command,
+              ...hostPolicyCtx,
+            });
+            if (!verdict || verdict.decision !== "allow") return false;
+            void this.deps.auditStore
+              .record({
+                conversationId: p.conversation.id,
+                taskId: p.task.id,
+                userId: p.user.id,
+                seq: -1,
+                type: "policy_decision",
+                text: `主机命令策略放行：tool=${tool} host=${hostCode} policy=${verdict.policyId}`,
+                toolInput: JSON.stringify({ command: command.slice(0, 300) }),
+                recordedAt: new Date().toISOString(),
+              })
+              .catch(() => {});
+            return true;
+          },
         };
       }
       // 知识库挂载清单（spec §8）：会话绑定库 ∪ agent 绑定库 ∪ 个人库兜底（kbId 缺省=个人库，

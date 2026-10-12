@@ -559,5 +559,15 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       pattern: "/api/admin/engine-runtimes/:sdkType/smoke",
       access: { kind: "admin" },
     },
+    // ===== 主机执行策略（specs/2026-10-12-host-exec-policy-design.md §8；admin-only）=====
+    { method: "GET", pattern: "/api/admin/host-exec-policies", access: { kind: "admin" } },
+    { method: "POST", pattern: "/api/admin/host-exec-policies", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/host-exec-policies/:id", access: { kind: "admin" } },
+    { method: "DELETE", pattern: "/api/admin/host-exec-policies/:id", access: { kind: "admin" } },
+    {
+      method: "PUT",
+      pattern: "/api/admin/host-exec-policies/:id/enabled",
+      access: { kind: "admin" },
+    },
   ];
 }

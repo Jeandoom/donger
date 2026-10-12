@@ -78,6 +78,7 @@ import {
 import { mimeForExt } from "../domain/file-mime.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
+import { HostExecPolicyInputSchema, validatePolicyPattern } from "../domain/host-exec-policy.js";
 import {
   buildInvite,
   EMAIL_VERIFY_TTL_MS,
@@ -188,6 +189,7 @@ import type { EventFiringStore } from "../ports/event-firing-store.js";
 import type { EventStore } from "../ports/event-store.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { FileBrowser, FileScope } from "../ports/file-browser.js";
+import type { HostExecPolicyStore } from "../ports/host-exec-policy-store.js";
 import type { InviteStore } from "../ports/invite-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
 import type { LlmDebugRunner } from "../ports/llm-debug-runner.js";
@@ -520,6 +522,8 @@ export interface WebChannelDeps {
   userSkillRepoStore?: UserSkillRepoStore;
   skillRepoSync?: SkillRepoSyncService;
   credentialSets?: CredentialSetStore;
+  /** 主机执行策略存储（specs/2026-10-12-host-exec-policy-design.md §8；缺省=策略端点 503） */
+  hostExecPolicies?: HostExecPolicyStore;
   /** 连接器（HTTP MCP 注册表）；缺省=端点不可用 */
   connectorStore?: ConnectorStore;
   /** 用户 LLM 供应商配置（多平台多配置）；缺省=模型配置端点不可用 */
@@ -2632,6 +2636,81 @@ export class WebChannel implements Channel {
         detail: `${actor?.name ?? viewer.id} ${body.enabled ? "启用" : "停用"}了插件 ${pluginId}`,
       });
       return this.json(res, { ok: true });
+    }
+
+    // ===== 主机执行策略（admin；specs/2026-10-12-host-exec-policy-design.md §8）=====
+    // M1 管理面走 API（凭证页 UI 随 M2）；decision/unattended 枚举收窄见 domain Schema
+    if (url.split("?")[0] === "/api/admin/host-exec-policies" && req.method === "GET") {
+      if (!this.deps.hostExecPolicies) return this.json(res, { error: "服务未启用" }, 503);
+      const [policies, templates, agents] = await Promise.all([
+        this.deps.hostExecPolicies.list(),
+        this.deps.credentialSets?.listTemplates({}) ?? Promise.resolve([]),
+        this.deps.agentStore?.listAll() ?? Promise.resolve([]),
+      ]);
+      return this.json(res, {
+        policies,
+        hosts: templates
+          .filter((t) => t.kind === "host")
+          .map((t) => ({ code: t.code, name: t.name })),
+        agents: agents.map((a) => ({ id: a.id, name: a.name })),
+      });
+    }
+    if (url.split("?")[0] === "/api/admin/host-exec-policies" && req.method === "POST") {
+      if (!this.deps.hostExecPolicies) return this.json(res, { error: "服务未启用" }, 503);
+      const parsed = HostExecPolicyInputSchema.safeParse(await this.readBody(req));
+      if (!parsed.success) {
+        return this.json(res, { error: parsed.error.issues.map((i) => i.message).join("；") }, 400);
+      }
+      const patternError =
+        parsed.data.matchKind === "pattern"
+          ? validatePolicyPattern(parsed.data.matchValue)
+          : undefined;
+      if (patternError) return this.json(res, { error: patternError }, 400);
+      const viewer = this.currentViewer(req);
+      const rule = await this.deps.hostExecPolicies.create(parsed.data, {
+        createdBy: viewer.id,
+      });
+      return this.json(res, { policy: rule });
+    }
+    const hePolicyMatch = (url.split("?")[0] ?? "").match(
+      /^\/api\/admin\/host-exec-policies\/([\w-]+)$/,
+    );
+    if (hePolicyMatch && req.method === "PUT") {
+      if (!this.deps.hostExecPolicies) return this.json(res, { error: "服务未启用" }, 503);
+      const parsed = HostExecPolicyInputSchema.safeParse(await this.readBody(req));
+      if (!parsed.success) {
+        return this.json(res, { error: parsed.error.issues.map((i) => i.message).join("；") }, 400);
+      }
+      const patternError =
+        parsed.data.matchKind === "pattern"
+          ? validatePolicyPattern(parsed.data.matchValue)
+          : undefined;
+      if (patternError) return this.json(res, { error: patternError }, 400);
+      const rule = await this.deps.hostExecPolicies.update(hePolicyMatch[1]!, parsed.data);
+      if (!rule) return this.json(res, { error: "策略不存在" }, 404);
+      return this.json(res, { policy: rule });
+    }
+    if (hePolicyMatch && req.method === "DELETE") {
+      if (!this.deps.hostExecPolicies) return this.json(res, { error: "服务未启用" }, 503);
+      const removed = await this.deps.hostExecPolicies.remove(hePolicyMatch[1]!);
+      if (!removed) return this.json(res, { error: "策略不存在" }, 404);
+      return this.json(res, { ok: true });
+    }
+    const hePolicyEnabledMatch = (url.split("?")[0] ?? "").match(
+      /^\/api\/admin\/host-exec-policies\/([\w-]+)\/enabled$/,
+    );
+    if (hePolicyEnabledMatch && req.method === "PUT") {
+      if (!this.deps.hostExecPolicies) return this.json(res, { error: "服务未启用" }, 503);
+      const body = JSON.parse(await this.readBody(req)) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") {
+        return this.json(res, { error: "enabled 须为布尔值" }, 400);
+      }
+      const rule = await this.deps.hostExecPolicies.setEnabled(
+        hePolicyEnabledMatch[1]!,
+        body.enabled,
+      );
+      if (!rule) return this.json(res, { error: "策略不存在" }, 404);
+      return this.json(res, { policy: rule });
     }
 
     // GET /api/admin/engine-runtimes —— 引擎工件状态+解析链现状（admin）
@@ -5639,9 +5718,7 @@ export class WebChannel implements Channel {
     const snap = this.deps.pluginHost?.snapshot();
     if (!snap) return null;
     const row = snap.plugins.find((p) => p.id === id);
-    return row && !row.enabled
-      ? `插件「${row.title}」已停用：请在插件页启用后再操作`
-      : null;
+    return row && !row.enabled ? `插件「${row.title}」已停用：请在插件页启用后再操作` : null;
   }
 
   // ---------------------------------------------------------------------------

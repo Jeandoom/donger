@@ -12,8 +12,8 @@ import { CodexAgentRunner } from "./adapters/codex-agent-runner.js";
 import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { EngineRuntimeService } from "./adapters/engine-runtime-service.js";
-import { SqliteEngineRuntimeStore } from "./adapters/sqlite-engine-runtime-store.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
+import { migrateLegacyAgentHostExecAllowlists } from "./adapters/host-exec-policy-migration.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
@@ -32,9 +32,11 @@ import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
 import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
+import { SqliteEngineRuntimeStore } from "./adapters/sqlite-engine-runtime-store.js";
 import { SqliteEventFiringStore } from "./adapters/sqlite-event-firing-store.js";
 import { SqliteEventStore } from "./adapters/sqlite-event-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
+import { SqliteHostExecPolicyStore } from "./adapters/sqlite-host-exec-policy-store.js";
 import { SqliteInviteStore } from "./adapters/sqlite-invite-store.js";
 import {
   SqliteKbLibraryStore,
@@ -59,7 +61,7 @@ import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { createSsh2CommandRunner } from "./adapters/ssh2-command-runner.js";
 import { resolveSystemKeySeed, SystemKeyService } from "./adapters/system-key-service.js";
 import { WebChannel } from "./adapters/web-channel.js";
-import { ZcodeAgentRunner, setEngineCliResolver } from "./adapters/zcode-agent-runner.js";
+import { setEngineCliResolver, ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
 import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
@@ -213,6 +215,10 @@ async function main(): Promise<void> {
   agentShareStore.migrate();
   const agentCallbackStore = new SqliteAgentCallbackStore(db);
   agentCallbackStore.migrate();
+  // 主机执行策略（specs/2026-10-12-host-exec-policy-design.md §5）：admin 治理面 +
+  // orchestrator 轮级快照读取；存量 agent 白名单迁移在 moduleConfigStore（标记位）就绪后执行
+  const hostExecPolicyStore = new SqliteHostExecPolicyStore(db);
+  hostExecPolicyStore.migrate();
   // GitConnection 体系已退役（spec 2026-09-10 §8）：平台连接表随之废弃
   db.exec("DROP TABLE IF EXISTS git_connections");
   db.exec("DROP TABLE IF EXISTS git_repository_grants");
@@ -276,6 +282,13 @@ async function main(): Promise<void> {
     loadOrGenerateAppSecret(db, "module_config_secret_key"),
   );
   moduleConfigStore.migrate();
+  // 存量迁移（幂等，全局标记位防重启复活）：agent 级 hostExecAllowlist → agent 作用域策略规则
+  await migrateLegacyAgentHostExecAllowlists({
+    agents: agentStore,
+    policies: hostExecPolicyStore,
+    flags: moduleConfigStore,
+    log,
+  });
   // 首启一次性迁移：.env 三方配置 → DB（幂等；迁移后运行时只读 DB，.env 三方段不再被读取）
   const envSnapshot: EnvAuthSnapshot = {};
   const migrating: string[] = [];
@@ -390,15 +403,13 @@ async function main(): Promise<void> {
         new CodexAgentRunner(createDefaultGates(), new CodexChatBridge()),
         new ZcodeAgentRunner(createDefaultGates()),
         (sdkType) =>
-          isPluginEnabled(
-            pluginHost.snapshot(),
-            ENGINE_PLUGIN_BY_SDK[sdkType] ?? "engine.claude",
-          ),
+          isPluginEnabled(pluginHost.snapshot(), ENGINE_PLUGIN_BY_SDK[sdkType] ?? "engine.claude"),
       ),
       channel,
       runtimeMgr,
       credentialSets,
       sshRunner,
+      hostExecPolicies: hostExecPolicyStore,
       agentStore,
       agentShareStore,
       isPluginEnabled: pluginGate,
@@ -573,6 +584,7 @@ async function main(): Promise<void> {
     userSkillRepoStore,
     skillRepoSync,
     credentialSets,
+    hostExecPolicies: hostExecPolicyStore,
     connectorStore,
     llmProviderStore,
     systemKey,

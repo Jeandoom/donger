@@ -133,6 +133,9 @@ export interface AuditEvent {
     | "permission_mode_change"
     /** 知识库自动学习失败（seq=-1 执行外事件；text=失败原因，静默不扰用户） */
     | "kb_auto_learn_error"
+    /** 主机命令策略放行打标（seq=-1 执行外事件；specs/2026-10-12-host-exec-policy-design.md §6；
+     *  text=裁决摘要，toolInput=命令前 300 字符。ask/deny 不打标——审批卡/守卫拒绝已可见） */
+    | "policy_decision"
     /** zcode 轮末对账标记（specs/2026-09-29-zcode-record-fidelity-design.md M1；
      *  text=补录统计 JSON。幂等键：同 taskId 再对账时发现此行即整体跳过） */
     | "zcode_reconcile";
