@@ -7,12 +7,11 @@ import type { GateRouter } from "../domain/gate-router.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { AgentPermissionMode } from "../domain/permission-mode.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
-import { classifyShellDecision } from "../domain/shell-decision.js";
 import { matchSensitiveRead, sensitiveReadDenyMessage } from "../domain/sensitive-read-guard.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
-import { evaluateToolCall } from "./guard-kernel.js";
+import { evaluateToolCall, needsApprovalCheck } from "./guard-kernel.js";
 import { type McpGateCheck, McpHttpBridge } from "./mcp-http-bridge.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
 import {
@@ -567,16 +566,16 @@ export class ZcodeAgentRunner implements AgentRunner {
       if (hit) return deny(sensitiveReadDenyMessage(hit, existsSync(hit.resolved)));
     }
 
-    // 解码管线强制审批（INV-6/INV-10，与 claude canUseTool 同语义）：任何权限模式
-    // （含 full_access）都进审批卡；gateId 用合成 "shell-decision"。
-    // 注：zcode 引擎「只读直通」形态不进本处理器（探针 2026-10-10 实锤直通旁路），
-    // 该面由引擎侧 hook/trustGrant 方案收口（M1 已知缺口，审计对账留痕缓解）。
-    if (
-      toolName === "Bash" &&
-      typeof input.command === "string" &&
-      classifyShellDecision(input.command) === "needs-approval"
-    ) {
-      return this.resolveShellDecisionApproval(task, resolver, params, input, String(input.command));
+    // 解码管线/渗出闸强制审批（INV-6/10/8，与 claude canUseTool 同语义）：任何权限
+    // 模式（含 full_access）都进审批卡；gateId 用合成 "shell-decision"。直通形态由
+    // 内核 hook（M1.5）先拦，本处理器覆盖 requestPermission 可达形态。
+    const approvalHit = needsApprovalCheck(toolName, input, opts);
+    if (approvalHit.hit) {
+      const summary =
+        toolName === "Bash" && typeof input.command === "string"
+          ? String(input.command)
+          : JSON.stringify(input).slice(0, 500);
+      return this.resolveShellDecisionApproval(task, resolver, params, input, summary);
     }
 
     // 只读命令豁免审批门（与 claude 同口径）：三项全净才豁免

@@ -13,7 +13,11 @@ import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { EngineRuntimeService } from "./adapters/engine-runtime-service.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
-import { migrateLegacyAgentHostExecAllowlists } from "./adapters/host-exec-policy-migration.js";
+import { SSH_EGRESS_MODE_FLAG } from "./domain/host-exec-policy.js";
+import {
+  migrateLegacyAgentHostExecAllowlists,
+  seedBuiltinDenyRules,
+} from "./adapters/host-exec-policy-migration.js";
 import { JwtSessionStore } from "./adapters/jwt-session-store.js";
 import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
@@ -289,6 +293,8 @@ async function main(): Promise<void> {
     flags: moduleConfigStore,
     log,
   });
+  // 内置 deny 黑名单播种（幂等一次；admin 删除不复活）
+  await seedBuiltinDenyRules({ policies: hostExecPolicyStore, flags: moduleConfigStore, log });
   // 首启一次性迁移：.env 三方配置 → DB（幂等；迁移后运行时只读 DB，.env 三方段不再被读取）
   const envSnapshot: EnvAuthSnapshot = {};
   const migrating: string[] = [];
@@ -370,6 +376,8 @@ async function main(): Promise<void> {
         // 要害路径读守卫（2026-09-24 审计 H1/D3）：数据库目录+平台安装根（含 .env、
         // .deploy、源码）对 agent Bash/Read 拒绝；本人工作区经 allowRead 豁免
         sensitivePaths: [dirname(cfg.dbPath), process.cwd()],
+        // 渗出闸额外放行域（M2-8/INV-8）：与 llm.baseUrl 域、内置 localhost 系并集
+        egressAllowDomains: cfg.egressAllowDomains,
       },
       skillPackStore,
       credentialSets,
@@ -410,6 +418,9 @@ async function main(): Promise<void> {
       credentialSets,
       sshRunner,
       hostExecPolicies: hostExecPolicyStore,
+      // SSH 出站档位（旁门治理 M2）：app_config flag 现取（同步读），改即生效
+      sshEgressMode: () =>
+        moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask",
       agentStore,
       agentShareStore,
       isPluginEnabled: pluginGate,

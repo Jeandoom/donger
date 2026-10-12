@@ -22,6 +22,7 @@ export interface StaticToolGuardScope {
     | "cwd"
     | "allowedTools"
     | "gitAllowShellGit"
+    | "egressAllowDomains"
     | "kbWriteGuardRoots"
     | "sensitiveReadPolicy"
     | "workspaceRoot"

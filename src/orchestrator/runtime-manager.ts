@@ -52,6 +52,8 @@ export interface RuntimeManagerConfig {
    * agent 的 Bash/Read 拒绝触达，allowReadRoots=本人工作区+扩展目录豁免。
    */
   sensitivePaths?: string[];
+  /** 渗出闸额外放行域（M2-8/INV-8）：与内置 localhost 系、llm.baseUrl 域并集生效 */
+  egressAllowDomains?: string[];
 }
 
 export interface PrepareOpts {
@@ -401,6 +403,17 @@ export class RuntimeManager {
     const configuredDenyRoots = this.deps.config.sensitivePaths ?? [];
     // denyRoots 追加引擎状态根（纵深：命中报「保护路径」；confine 的 outside-allowed 已先挡）
     const denyRoots = [...configuredDenyRoots, engineStateRoot];
+    // 渗出闸放行域（M2-8/INV-8）：当前 LLM API 域（引擎自身出网必需）+ 部署扩展域
+    let llmHost = "";
+    try {
+      llmHost = llm.baseUrl ? new URL(llm.baseUrl).hostname : "";
+    } catch {
+      llmHost = "";
+    }
+    const egressAllowDomains = [
+      ...(llmHost ? [llmHost] : []),
+      ...(this.deps.config.egressAllowDomains ?? []),
+    ];
 
     const runOptions: RunOptions = {
       cwd: runtimeDir,
@@ -412,6 +425,7 @@ export class RuntimeManager {
       resume: idleTooLong || sdkTypeMismatch ? undefined : resumeSessionId,
       workspaceRoot: user.homeDir,
       engineStateRoot,
+      egressAllowDomains,
       additionalDirectories,
       allowedWriteRoots,
       readOnlyRoots,

@@ -48,6 +48,12 @@ export interface RunOptions {
   /** 透传 SDK allowedTools（工具白名单） */
   allowedTools?: string[];
   /**
+   * 渗出闸放行域（M2-8，INV-8）：内置 localhost 系之外的额外后缀域（LLM API 域由
+   * runtime-manager 从 llm.baseUrl 并入；部署扩展域经 EGRESS_ALLOW_DOMAINS）。白名单
+   * 外的显式出网（Bash curl/wget、WebFetch URL）进审批（claude）/拒绝（zcode）。
+   */
+  egressAllowDomains?: string[];
+  /**
    * shell git 守卫（收口防线 2）：所有会话缺省禁止 Bash 跑 git（引导用 donger-git
    * 工具）；仅 agent 显式配置 true 时放行（push 仍有 deploy 审批门）。
    */

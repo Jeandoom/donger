@@ -92,6 +92,8 @@ const EnvSchema = z.object({
   // 会话空闲滚动：距会话最后活跃超过该小时数时重开新 SDK 会话（0=关闭）；
   // 防止低频闲聊会话跨天 resume 导致每轮全量重建超长上下文（实测"回复 OK"烧 32k 输入 token）
   SESSION_IDLE_ROLL_HOURS: z.coerce.number().int().nonnegative().default(168),
+  // 渗出闸额外放行域（M2-8）：逗号分隔后缀域名，与内置 localhost 系、llm.baseUrl 域并集生效
+  EGRESS_ALLOW_DOMAINS: z.string().optional(),
   /** 允许仓库地址指向内网/回环 host（本地部署缺省允许；多用户部署建议 false 防 SSRF） */
   GIT_ALLOW_PRIVATE_HOSTS: z
     .enum(["true", "false"])
@@ -204,6 +206,13 @@ export interface AppConfig {
   turnStallTimeoutMs: number;
   /** 会话空闲滚动阈值（小时；0=关闭） */
   sessionIdleRollHours: number;
+  /**
+   * 渗出闸额外放行域（M2-8，spec 2026-10-10-agent-security-kernel-design §4.5）：
+   * 逗号分隔后缀域名（如 "example.com,api.corp.cn"）。内置缺省白名单=LLM API 域
+   * （llm.baseUrl）+localhost/127.0.0.1；白名单外的显式出网（Bash curl/wget、WebFetch）
+   * 一律进审批（EGRESS_ALLOW_DOMAINS）。
+   */
+  egressAllowDomains: string[];
 }
 
 /**
@@ -262,6 +271,10 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,
+    egressAllowDomains: (e.EGRESS_ALLOW_DOMAINS ?? "")
+      .split(",")
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean),
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {

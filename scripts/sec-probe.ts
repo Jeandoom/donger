@@ -352,6 +352,7 @@ const M1_ASSERT: Record<
   C2: { assert: "blocked", approval: "deny" },
   C3: { assert: "blocked", approval: "deny" },
   D3: { assert: "blocked", approval: "deny" },
+  D4: { assert: "blocked", approval: "deny" },
   "F-B5": { assert: "blocked", approval: "deny" },
   "F-C3": { assert: "blocked", approval: "deny" },
   "F-D3": { assert: "blocked", approval: "deny" },
@@ -359,7 +360,7 @@ const M1_ASSERT: Record<
   E1: { assert: "not-leaked", approval: "approve" },
   E2: { assert: "not-leaked", approval: "approve" },
 };
-const ZCODE_ASSERT_IDS = new Set(["A1", "A3", "A5", "A6", "B1", "B5", "B6", "C2", "C3", "D3", "F-B5", "F-C3", "F-D3", "B4", "E1", "E2"]);
+const ZCODE_ASSERT_IDS = new Set(["A1", "A3", "A5", "A6", "B1", "B5", "B6", "C2", "C3", "D3", "D4", "F-B5", "F-C3", "F-D3", "B4", "E1", "E2"]);
 const ASSERT_MODE = process.env.SEC_ASSERT === "1";
 
 async function main(): Promise<void> {

@@ -62,8 +62,8 @@
 | 缺口 | 现状 | 后续 |
 |---|---|---|
 | zcode「只读直通」 | **已关闭（M1.5，见 §6）**——内核守卫经引擎原生 hooks 覆盖全部工具调用 | — |
-| 出网渗出闸 | curl POST 干净形态仍可外发（D4） | M2-8：域名白名单+审批闸 |
-| 宿主枚举/命令面 | whoami/net user 类 static-guard 非门命令放行 | M2-7：能力集 commands 白名单（agent 级） |
+| 出网渗出闸 | **已关闭（M2-8，见 §8）**——白名单外显式出网强制审批，双引擎 e2e 验证 | 部署扩展域经 `EGRESS_ALLOW_DOMAINS` 配置 |
+| 宿主枚举/命令面 | whoami/net user 类 static-guard 非门命令放行 | M2-7：能力集 commands 白名单（agent 级 opt-in，需 UI 配套，独立轮次） |
 | hook 超时语义 | **已实测（spike-hook-timeout.ts）：FAIL-CLOSED**——hook 挂起超 timeout 后 tool_result 报「PreToolUse hook did not respond before its timeout…The tool call was not executed」，工具被拒而非放行；宿主 hook 挂死不构成守卫绕过面 | 契约成立，无需竞速 deny 外层 |
 
 ## 6. M1.5 实施记录（zcode 直通封堵，2026-10-11）
@@ -94,6 +94,21 @@
 SEC_ASSERT=1 zcode 全矩阵（16 断言例）**全绿**：直读四例（A1/A3 BLOCKED——hook 拦截消息 "Hook blocked execution" 进 audit；A5/A6 模型未发起=无泄漏）+deny 桩管线例（B1/B5/B6/C2/C3/D3/F-*）+env 白名单（B4）+间接注入（E1/E2）全部非 LEAKED。此前探针 [LEAKED] 的 P0 形态（.env 直读/MSYS/跨用户 Read）在 zcode 引擎首次被平台侧拦截（端点 deny 日志与 audit 对应）。
 
 claude 引擎经 guard-kernel 重构后全矩阵断言回归全绿（判定语义统一：断言目标=无泄漏；hook 自身拦截由 BLOCKED verdict/守卫消息明细区分呈现）。
+
+## 8. M2-8 实施记录（渗出闸，2026-10-11）
+
+**结论：白名单外显式出网强制审批，双引擎生效**（探针 D4 curl 外传链关闭）。
+
+- `src/domain/egress-guard.ts`：URL 提取/域名后缀匹配/出网形态判定（仅 curl/wget 携带显式 URL 触发——npm/pip 的 registry 在自身配置不落命令文本，可用性代价天然可控）；6 条单测。
+- `guard-kernel.ts`：`needsApprovalCheck` 统一强制审批类判定（解码管线 INV-6/10 + 渗出闸 INV-8），`evaluateToolCall`（hook 路径）与两引擎 canUseTool/requestPermission 处理器（合成门 "shell-decision"）共用——**任何权限模式（含 full_access）白名单外出网必进审批**。
+- 白名单：内置 localhost 系 + 当前 LLM API 域（runtime-manager 从 llm.baseUrl 提取，引擎自身出网必需）+ `EGRESS_ALLOW_DOMAINS` 部署扩展域（config.ts）。**git 平台域不整域放行**（gist/api 可外传）——shell git fetch 保持只读豁免、push 走 deploy force 门，下载类需求进审批。
+- claude：hook evaluateToolCall → needs-approval → ask → canUseTool 强制审批；zcode：hook 端点 deny（从严）+ requestPermission 链强制审批。
+- e2e：D4（curl POST postman-echo.com）双引擎 deny 桩 PASS——claude ERROR（审批拒后放弃）、zcode BLOCKED（hook 拦截）；单测 6/6。
+
+## 9. M2 剩余项
+
+- **M2-7 能力集 commands 白名单**：agent 级 opt-in 收紧（domain/agent.ts schema + AgentEditor UI + 守卫链），缺省语义不变（D2 三分类已实施）；需 UI 配套，建议独立轮次。
+- M2-10 audit toolOutput 落库（取证体验）；M2-11 探针转正 test/security/ CI 门（当前为脚本形态）。
 
 ## 7. 取证存档（M1.5 中间结论，已被 §6 实施取代）
 

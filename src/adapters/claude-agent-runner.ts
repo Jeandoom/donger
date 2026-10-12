@@ -9,11 +9,10 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
-import { classifyShellDecision } from "../domain/shell-decision.js";
 import type { QuestionItem, RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { BUILTIN_TOOL_TEXT_PREFIX } from "../util/provider-tool-text.js";
-import { evaluateToolCall } from "./guard-kernel.js";
+import { evaluateToolCall, needsApprovalCheck } from "./guard-kernel.js";
 import { runStaticToolGuards } from "./tool-call-guards.js";
 
 /**
@@ -224,16 +223,16 @@ export class ClaudeAgentRunner implements AgentRunner {
           if (denial) {
             return { behavior: "deny" as const, message: denial.message, toolUseID: ctx.toolUseID };
           }
-          // 解码管线强制审批（INV-6/INV-10，spec 2026-10-10 §4.3）：Bash 含展开/替换/
-          // 编码/解释器特征 → 任何权限模式（含 full_access）都进审批卡。hook 的 ask
-          // 分支会把引擎直通形态拉到这里；本分支兜住 canUseTool 直达形态。gateId 用
-          // 合成 "shell-decision"（非门审批，审批卡照常展示完整命令）。
-          if (
-            toolName === "Bash" &&
-            typeof input.command === "string" &&
-            classifyShellDecision(input.command) === "needs-approval"
-          ) {
-            const summary = String(input.command);
+          // 解码管线/渗出闸强制审批（INV-6/10/8，spec 2026-10-10 §4.3/§4.5）：Bash 含
+          // 展开/替换/编码/解释器特征、或出网目标白名单外 → 任何权限模式（含
+          // full_access）都进审批卡。hook 的 ask 分支会把引擎直通形态拉到这里；本分支
+          // 兜住 canUseTool 直达形态。gateId 用合成 "shell-decision"（非门审批）。
+          const approvalHit = needsApprovalCheck(toolName, input, opts);
+          if (approvalHit.hit) {
+            const summary =
+              toolName === "Bash" && typeof input.command === "string"
+                ? String(input.command)
+                : JSON.stringify(input).slice(0, 500);
             const pipedDecision = await resolver({
               taskId: task.id,
               gateId: "shell-decision",
