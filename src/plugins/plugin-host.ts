@@ -115,9 +115,9 @@ export class PluginHost {
         return { ok: false, blockers: missing.map((t) => `依赖「${t}」未启用，须先启用依赖`) };
     }
     await this.deps.store.setEnabled(id, enabled);
-    const row = views.find((p) => p.id === id);
-    if (row) (row as { enabled: boolean }).enabled = enabled;
-    if (this.cached) this.cached.generatedAt = new Date().toISOString();
+    // 缓存快照整体重建（snapshot()/各装配点 gate 的唯一读取面；e2e 实锤：只改临时
+    // 副本不刷缓存会让停用在底账与执行面之间漂移到重启才生效）
+    this.cached = await this.buildSnapshot();
     return { ok: true, blockers: [] };
   }
 

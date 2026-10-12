@@ -146,13 +146,9 @@ export class EngineRuntimeService {
       return { path: configured, pinned: true, source: "env" };
     }
     const row = this.cachedRows?.get(sdkType);
-    if (
-      row &&
-      row.status === "ready" &&
-      row.managed &&
-      row.installedPath &&
-      existsSync(row.installedPath)
-    ) {
+    // ready 行即被消费（local 直引 managed=0 同样生效——显式钉版选择；差异只在
+    // 漂移保护：managed=0 不做 sha256 复核，风险自担）
+    if (row && row.status === "ready" && row.installedPath && existsSync(row.installedPath)) {
       return { path: row.installedPath, pinned: true, source: "registry" };
     }
     const fallback = probeZcodeCliFallback();

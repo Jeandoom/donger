@@ -180,6 +180,18 @@ describe("setEnabled 前置校验", () => {
     expect(reEnable.ok).toBe(false);
     expect(reEnable.blockers[0]).toContain("任务");
   });
+
+  it("setEnabled 后缓存快照即时刷新（e2e 实锤回归：snapshot/装配点 gate 不读旧态）", async () => {
+    writeManifest("wf", { id: "wf", kind: "capability", title: "工作流", requires: [] });
+    const host = new PluginHost({ builtinDir: dir, store, log: silentLogger });
+    await host.init();
+    expect(host.snapshot()?.plugins.find((p) => p.id === "wf")?.enabled).toBe(true);
+    await host.setEnabled("wf", false);
+    expect(host.snapshot()?.plugins.find((p) => p.id === "wf")?.enabled).toBe(false);
+    expect((await host.list()).find((p) => p.id === "wf")?.enabled).toBe(false);
+    await host.setEnabled("wf", true);
+    expect(host.snapshot()?.plugins.find((p) => p.id === "wf")?.enabled).toBe(true);
+  });
 });
 
 describe("domain 依赖校验纯函数", () => {

@@ -71,14 +71,13 @@ describe("解析链（env → 注册表 → 降级）", () => {
     expect(info).toMatchObject({ path: cli, pinned: true, source: "env" });
   });
 
-  it("注册表 ready 且 managed 行被消费；drifted/error 不被消费（fail-closed）", async () => {
+  it("注册表 ready 行被消费（local 直引 managed=0 同样生效，e2e 实锤回归）；drifted/error 不被消费（fail-closed）", async () => {
     const cli = writeFakeCli("registry-cli.cjs");
     await store.upsert({
       sdkType: "zcode",
-      sourceKind: "discover",
+      sourceKind: "local",
       installedPath: cli,
-      sha256: "x",
-      managed: true,
+      managed: false,
       status: "ready",
       updatedAt: "t",
     });
