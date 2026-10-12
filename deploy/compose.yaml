@@ -32,7 +32,8 @@ services:
       # zcode 内置 provider 配置含凭证，不烘镜像：运行时从栈目录只读挂载（migrate 脚本负责拷入）
       - ./zcode-provider/zcode-builtin.json:/opt/zcode-cli/provider/zcode-builtin.json:ro
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      # 容器内是进程内 HTTPS（证书挂载），必须 https+跳过自签校验；http 会永远 unhealthy
+      test: ["CMD-SHELL", "node -e \"process.env.NODE_TLS_REJECT_UNAUTHORIZED='0';fetch('https://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
       timeout: 10s
       retries: 5

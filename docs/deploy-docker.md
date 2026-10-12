@@ -97,6 +97,15 @@ host_exec 白名单语义：agent 的「本机」= 容器文件系统；查宿�
 - 容器内 github 访问走 `host.docker.internal:7897` 代理——需宿主 Clash 开 Allow LAN，否则容器内 github 失联（gitee/jihulab 不受影响）。
 - Docker Desktop 需开机自启 + Windows 自动登录（`restart: unless-stopped` 只管引擎活着时）。
 
+## 外部访问排查（2026-10-12 实录）
+
+外网不可达时按序查：
+1. `docker ps`（容器 Up 且 healthy）→ `curl -k https://localhost:3330/api/health` → `curl -k https://10.9.101.78:3330/api/health`（宿主 LAN IP）。
+2. 公网解析是否=当前出口 IP（`nslookup donger.jeandom.cc 8.8.8.8` vs `curl --noproxy "*" https://ifconfig.me`）。
+3. **借 homedb 外网视角实测入口**（agent 让它在 homedb 上 `curl -sk -m 8 https://<出口IP>:3330/api/health`）。
+4. pktmon 抓 3330 判决 SYN 是否到达本机（到达=防火墙层；不到=路由器转发层，去路由器改转发目标=当前 LAN IP）。
+已装底座：防火墙入站规则 `donger-3330-in`（TCP 3330 全 profile；本机 GPO 管理域机，本地规则效力以实测为准）。
+
 ## 回退口径（D1 风险兜底）
 
 若 bind mount 上出现 SQLite 异常（IOErr/损坏）：compose.yaml 增加 `donger-db:/db` named volume 并把
