@@ -190,6 +190,7 @@ export class RuntimeManager {
     let mcpServers: McpServerConfig[] | undefined;
     // 2026-10-09 拍板④：缺省放开（无 agent 的闲聊会话同口径）；显式 false 才拦
     let gitAllowShellGit = true;
+    let bashAllowlist: string[] | undefined;
     let extraPrompt: string | undefined = opts.systemPromptAppend;
     let additionalDirectories: string[] | undefined;
     let allowedWriteRoots: string[] | undefined;
@@ -227,6 +228,8 @@ export class RuntimeManager {
       // shell git 守卫（防线 2）：2026-10-09 拍板④缺省放开，agent 显式 false 才拦
       // （非 https 远程/宿主凭证栈等恒拒形态在 tool-call-guards 内不随此开关）
       gitAllowShellGit = a.gitAllowShellGit;
+      // Bash 命令白名单（M2-7）：agent 级 opt-in，非空时白名单外命令强制审批
+      bashAllowlist = a.bashAllowlist;
       if (a.systemPrompt) {
         // 在现有 extraPrompt（已含身份节与上游 append）之后追加，不整体重建
         extraPrompt = `${extraPrompt ? `${extraPrompt}\n\n` : ""}${a.systemPrompt}`;
@@ -452,6 +455,7 @@ export class RuntimeManager {
       ...(pythonPaths.length ? { pythonPaths } : {}),
       ...(allowedTools ? { allowedTools } : {}),
       gitAllowShellGit,
+      ...(bashAllowlist?.length ? { bashAllowlist } : {}),
       ...(mcpServers?.length ? { mcpServers } : {}),
     };
 

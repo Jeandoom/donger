@@ -23,7 +23,10 @@
     "dev:web": "npm --prefix web run dev",
     "build:web": "npm --prefix web run build",
     "dev:cli": "tsx cli/src/index.ts",
-    "test:cli": "npm --prefix cli run test"
+    "test:cli": "npm --prefix cli run test",
+    "probe:security": "tsx scripts/sec-probe.ts claude && tsx scripts/sec-probe.ts zcode",
+    "probe:security:assert": "tsx scripts/sec-probe-assert.ts",
+    "probe:guard-check": "tsx scripts/guard-check.ts && tsx scripts/pipeline-boundary-check.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

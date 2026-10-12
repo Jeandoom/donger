@@ -204,6 +204,13 @@ export const AgentSchema = z.object({
    */
   gitAllowShellGit: z.boolean().default(true),
   /**
+   * Bash 命令白名单（M2-7，能力集 commands 面，spec 2026-10-10-agent-security-kernel-design
+   * §4.2；agent 级 opt-in 收紧——缺省/空=不启用，既有语义不变）。非空时 Bash 每个
+   * 组合段须以某条目为前缀（如 "git status"/"npm"），白名单外命令强制进审批卡
+   * （任何权限模式含 full_access）。判定=domain/bash-allowlist.ts。
+   */
+  bashAllowlist: z.array(z.string()).optional(),
+  /**
    * host_exec 只读命令白名单（agent 级，前缀条目；2026-10-10 拍板）：命中且无逃逸
    * 结构（组合段全命中/无命令替换/无输出重定向，除 >/dev/null）自动放行 host-ops
    * 审批门，其余命令仍走审批。判定=domain/host-exec-allowlist.ts。缺省/空=全拦截。

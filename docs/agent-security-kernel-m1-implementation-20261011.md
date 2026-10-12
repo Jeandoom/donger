@@ -105,10 +105,28 @@ claude 引擎经 guard-kernel 重构后全矩阵断言回归全绿（判定语�
 - claude：hook evaluateToolCall → needs-approval → ask → canUseTool 强制审批；zcode：hook 端点 deny（从严）+ requestPermission 链强制审批。
 - e2e：D4（curl POST postman-echo.com）双引擎 deny 桩 PASS——claude ERROR（审批拒后放弃）、zcode BLOCKED（hook 拦截）；单测 6/6。
 
-## 9. M2 剩余项
+## 9. M2 收尾（2026-10-11 第三批）
 
-- **M2-7 能力集 commands 白名单**：agent 级 opt-in 收紧（domain/agent.ts schema + AgentEditor UI + 守卫链），缺省语义不变（D2 三分类已实施）；需 UI 配套，建议独立轮次。
-- M2-10 audit toolOutput 落库（取证体验）；M2-11 探针转正 test/security/ CI 门（当前为脚本形态）。
+### M2-7 Bash 命令白名单（能力集 commands 面，已实施）
+
+- `domain/bash-allowlist.ts`：`matchesBashAllowlist`——组合段全命中才放行，段以条目为前缀（词边界，"cat" 不误配 "catalog"）；4 条单测。
+- `domain/agent.ts`：`bashAllowlist?: string[]`（agent 级 opt-in——**缺省/空=不启用，既有语义不变**）。
+- 链路：agent → runtime-manager → RunOptions.bashAllowlist → `needsApprovalCheck`（guard-kernel 单实例，两引擎共用）——白名单外命令强制审批（合成门，含 full_access）。
+- e2e（SEC_PROBE_BASH_ALLOWLIST="git status,cat,ls,echo"）：claude H1 whoami/hostname 两命令进 shell-decision 审批被拒（无泄漏）；zcode H1 hook 端点 deny（"Bash 命令不在该智能体的命令白名单内"→Hook blocked）；双引擎 H0 对照组白名单内 `cat` 正常执行、Write 工具走写边界不受白名单管（分层正确）。
+- **UI 未配套**：字段经 agent 配置 API 可设，AgentEditor 表单待后续轮。
+
+### M2-10 audit toolOutput：实证已满足，无需改码
+
+`toAuditEvent` 的 tool_result 分支已落 `toolOutput`（truncate+redactSecrets）；zcode 事件桥 `toolResultToText` 以 serializeJson 兜底——sec-probe 加 `audit-q` 填充率指标实测 100%（历史上「toolOutput 恒空」旧结论不成立，取证应读 toolOutput 列）。
+
+### M2-11 探针转正
+
+`package.json`：`probe:security`（双引擎记录模式）/ `probe:security:assert`（`sec-probe-assert.ts` 启动器，SEC_ASSERT=1 双引擎断言，非零退出=失败，可作 CI 安全门）/ `probe:guard-check`（守卫纯函数回归）。LLM 实跑语义→建议 CI 定时/发版手动门而非 PR 门。
+
+### M2 剩余项
+
+- AgentEditor 的 bashAllowlist 表单（UI 配套，独立轮次）。
+- 能力集完整归一（fsRead/fsWrite/network 显式字段，spec §4.2 全形态）——当前以散字段落地（sensitivePaths/allowedWriteRoots/egressAllowDomains/bashAllowlist），归一属结构重构。
 
 ## 7. 取证存档（M1.5 中间结论，已被 §6 实施取代）
 

@@ -3,6 +3,7 @@
 // 输入=工具名+入参；输出=allow / deny（守卫命中）/ needs-approval（解码管线，调用方决定语义：
 // claude 转 hook ask 拉审批链；zcode 无 ask 通道，从严 deny——不执行即无泄漏）。
 import { existsSync } from "node:fs";
+import { matchesBashAllowlist } from "../domain/bash-allowlist.js";
 import { EGRESS_BUILTIN_ALLOW, matchEgress } from "../domain/egress-guard.js";
 import {
   classifyShellDecision,
@@ -84,6 +85,16 @@ export function needsApprovalCheck(
         };
       }
     }
+  }
+  // ⑤ Bash 命令白名单（M2-7，能力集 commands 面）：agent 级 opt-in——非空时白名单
+  //    外命令强制审批（含 full_access）；undefined/空=未启用，缺省语义不变。
+  if (
+    toolName === "Bash" &&
+    typeof input.command === "string" &&
+    opts.bashAllowlist !== undefined &&
+    !matchesBashAllowlist(input.command, opts.bashAllowlist)
+  ) {
+    return { hit: true, reason: "Bash 命令不在该智能体的命令白名单内（bashAllowlist）" };
   }
   return { hit: false };
 }

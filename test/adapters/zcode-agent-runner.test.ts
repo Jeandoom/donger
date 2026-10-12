@@ -355,13 +355,13 @@ describe("ZcodeAgentRunner", () => {
         },
         answered: undefined,
       },
-      // 只读 Bash（GET 型 curl）→ 豁免审批门（不进门、不弹卡）
+      // 只读 Bash（GET 型 curl，白名单内域 localhost）→ 豁免审批门（不进门、不弹卡）
       {
         method: "interaction/requestPermission",
         params: {
           toolCallId: "tc-ls",
           toolName: "Bash",
-          input: { command: "curl https://api.example.com/status" },
+          input: { command: "curl https://localhost/status" },
         },
         answered: undefined,
       },
@@ -371,11 +371,24 @@ describe("ZcodeAgentRunner", () => {
         params: { toolCallId: "tc-dep", toolName: "Bash", input: { command: "deploy now" } },
         answered: undefined,
       },
+      // 渗出闸（M2-8）：白名单外域 curl → 强制审批（shell-decision 合成门）；拒绝回写
+      {
+        method: "interaction/requestPermission",
+        params: {
+          toolCallId: "tc-eg",
+          toolName: "Bash",
+          input: { command: "curl https://postman-echo.com/post" },
+        },
+        answered: undefined,
+      },
     ];
     server.eventsAfterSend = [completedEvent("ok")];
     const gates = makeGates([{ gateId: "deploy", toolName: "Bash" }]);
 
-    const decisions: ApprovalDecision[] = [{ approved: false, reason: "不允许部署" }];
+    const decisions: ApprovalDecision[] = [
+      { approved: false, reason: "不允许部署" },
+      { approved: false, reason: "出网须确认" },
+    ];
     const seenRequests: string[] = [];
     const resolver: ApprovalResolver = async (req) => {
       seenRequests.push(
@@ -392,7 +405,8 @@ describe("ZcodeAgentRunner", () => {
     const git = revs.at(1);
     const readOnly = revs.at(2);
     const deploy = revs.at(3);
-    if (!whitelisted || !git || !readOnly || !deploy) throw new Error("reverse 脚本缺失");
+    const egress = revs.at(4);
+    if (!whitelisted || !git || !readOnly || !deploy || !egress) throw new Error("reverse 脚本缺失");
     expect(whitelisted.answered).toMatchObject({ decision: "deny" });
     expect(String((whitelisted.answered as { reason?: string }).reason)).toContain("允许列表");
     expect(git.answered).toMatchObject({ decision: "deny" });
@@ -400,7 +414,9 @@ describe("ZcodeAgentRunner", () => {
     expect(readOnly.answered).toMatchObject({ decision: "allow" });
     expect(readOnly.answered).not.toHaveProperty("gateId");
     expect(deploy.answered).toMatchObject({ decision: "deny", reason: "不允许部署" });
-    expect(seenRequests).toEqual(["deploy:Bash:deploy now"]);
+    expect(seenRequests.slice(0, 1)).toEqual(["deploy:Bash:deploy now"]);
+    expect(egress.answered).toMatchObject({ decision: "deny", reason: "出网须确认" });
+    expect(seenRequests).toContain("shell-decision:Bash:curl https://postman-echo.com/post");
   });
 
   it("full_access 豁免非 force 门；plan 模式（只读白名单）与 denylist 解析", async () => {

@@ -54,6 +54,12 @@ export interface RunOptions {
    */
   egressAllowDomains?: string[];
   /**
+   * Bash 命令白名单（M2-7，能力集 commands 面）：agent 级 opt-in——非空时 Bash 每个
+   * 组合段须以某条目为前缀，白名单外强制审批（needsApprovalCheck，含 full_access）。
+   * undefined/空=未启用（缺省语义不变）。判定=domain/bash-allowlist.ts。
+   */
+  bashAllowlist?: string[];
+  /**
    * shell git 守卫（收口防线 2）：所有会话缺省禁止 Bash 跑 git（引导用 donger-git
    * 工具）；仅 agent 显式配置 true 时放行（push 仍有 deploy 审批门）。
    */

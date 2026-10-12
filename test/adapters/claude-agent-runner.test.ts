@@ -403,6 +403,43 @@ describe("ClaudeAgentRunner", () => {
     expect(seen).toEqual(["shell-decision"]);
   });
 
+  it("canUseTool：M2-7 bashAllowlist——白名单外命令强制审批（含 full_access）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+    const gates = new GateRouter();
+    const runner = new ClaudeAgentRunner(gates);
+    const seen: string[] = [];
+    await collect(
+      runner.run(
+        task,
+        { ...opts, permissionMode: () => "full_access", bashAllowlist: ["git status", "cat"] },
+        async (req) => {
+          seen.push(req.gateId);
+          return { approved: false, reason: "白名单外须人工确认" };
+        },
+      ),
+    );
+    // 白名单外：进审批（shell-decision 合成门），full_access 不豁免
+    const denied = await captured?.canUseTool?.("Bash", { command: "whoami" }, { toolUseID: "t1" });
+    expect(denied?.behavior).toBe("deny");
+    expect(seen).toEqual(["shell-decision"]);
+    // 白名单内：正常放行（不走审批）
+    seen.length = 0;
+    const allowed = await captured?.canUseTool?.(
+      "Bash",
+      { command: "cat ./src/index.ts" },
+      { toolUseID: "t2" },
+    );
+    expect(allowed?.behavior).toBe("allow");
+    expect(seen).toEqual([]);
+    // 组合段一段白名单外即审批
+    const mixed = await captured?.canUseTool?.(
+      "Bash",
+      { command: "cat a.txt && whoami" },
+      { toolUseID: "t3" },
+    );
+    expect(mixed?.behavior).toBe("deny");
+  });
+
   it("canUseTool：permissionMode 为取值器，轮内切换立即生效", async () => {
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const gates = new GateRouter();
