@@ -87,10 +87,12 @@ host_exec 白名单语义：agent 的「本机」= 容器文件系统；查宿�
 
 ## 已知行为 delta 与限制
 
-- **VPN 内网主机不可达（homedb 事件 2026-10-11）**：Docker Desktop(WSL2) 的 NAT 出站不走 OpenVPN 隧道路由——容器内到 VPN 后面网段（如 192.168.1.x）TCP 全超时，宿主直发正常。现用宿主 portproxy 解决：
-  `netsh interface portproxy` `10.9.101.78:2222 → 192.168.1.103:22`（重启持久）；`ssh-homedb` 凭证值已改 host=10.9.101.78/port=2222。
-  维护口径：目标机换 IP/换端口 → 改 portproxy（管理员）+ 凭证页改 host/port 两处；宿主 LAN IP 变化（DHCP）→ 同步改这两处。新增 VPN 内网目标 → 照此模式加新 portproxy。
-  ⚠️ **勿把 ssh-homedb 凭证改回直连 IP**（2026-10-12 凌晨发生过一次，当日巡检全挂）：容器 NAT 不达 VPN 网段，直连必超时；凭证别名已带警示。
+- **VPN 内网主机不可达（homedb 事件 2026-10-11，10-12 终版=回环方案）**：Docker Desktop(WSL2) 的 NAT 出站不走 OpenVPN 隧道路由——容器内到 VPN 后面网段（如 192.168.1.x）TCP 全超时，宿主直发正常。终版方案：
+  - 宿主 portproxy `127.0.0.1:2222 → 192.168.1.103:22`（回环监听，零对外暴露，重启持久）；`ssh-homedb` 凭证 host=`host.docker.internal`、port=`2222`（Docker 代理落宿主回环，已实证 banner+agent 端到端）。
+  - **该形态对宿主物理 IP 与 VPN 隧道 IP 均零依赖**：办公网 DHCP 换 IP、VPN 重连跳隧道 IP（10.8.0.x）都不影响——服务端=家里 ASUS 路由器内建 OpenVPN（证书 O=ASUS 实证），无 CCD 钉不了隧道 IP，也无需钉。
+  - 维护口径：目标机换 IP/端口 → 只改这一条 portproxy（管理员）；新增 VPN 内网目标 → 照此模式加新回环 portproxy + 凭证 host 用 host.docker.internal。
+  - ⚠️ **勿把 ssh-homedb 凭证改回直连 IP**（2026-10-12 凌晨发生过一次，当日巡检全挂）：容器 NAT 不达 VPN 网段，直连必超时；凭证别名已带警示（现指 host.docker.internal:2222）。
+  - 隧道断（花生壳 qicp.vip DDNS/家里断网）属另一类故障：先看本机 VPN 是否连着。
 - **内置技能首次真实生效**（D6）：`BUILTIN_SKILLS_DIR=/app/skills`，仓库 7 技能可见（生产裸机时代该目录解析到不存在的 `data/repos/skills`）。不想要则把 donger.env 里 BUILTIN_SKILLS_DIR 指向空目录。
 - zcode 桌面插件（computer-use/browser-use 等）内含 win32 原生依赖（sharp/koffi），容器内对应 plugin 能力降级；核心对话/MCP/技能不受影响（app-server 启动+会话迁移实证通过）。
 - zcode CLI 更新随 ZCode 桌面端：重跑备料 + 重建镜像。

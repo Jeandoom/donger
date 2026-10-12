@@ -238,3 +238,13 @@ scripts/m0-wal-stress.cjs       docs/deploy-docker.md
 本侧已做：① 防火墙入站放行 `donger-3330-in`（TCP 3330，全 profile——本机为 GPO 管理域机全 profile BlockInbound，裸机时代如何放行成谜，此规则为必需底座）；② 修复 healthcheck 协议 bug（compose 用了 http，进程内是 https，永远误报 unhealthy；栈目录 compose 需同步更新）。homedb→宿主 VPN IP 的旁路入口也不通（VPN 客户端模式无反向路由，不追）。
 
 **待用户**：路由器（WAN=60.176.64.47 那台，若多层 NAT 每层都要查）确认 3330 转发存在且目标=本机当前内网 IP `10.9.101.78`，建议做 DHCP 保留防再发。
+
+### 8.7 「固定 OpenVPN IP」评估与回环方案终版（2026-10-12）
+
+用户提出固定本机 OpenVPN 隧道 IP（10.8.0.10）防跳。评估结论：
+
+- **不可行/不经济**：活跃 profile 证书 `O=ASUS, CN=RT-AC66U_B1` 实证服务端=家里华硕路由器内建 OpenVPN Server（花生壳 qicp.vip:12345 入口，net30 拓扑）。原厂/梅林固件均不暴露 CCD（per-client 静态 IP），钉死需 Entware 自建——代价远超收益。
+- **且无需钉**：全链路对隧道 IP 零依赖（portproxy 目标=192.168.1.103 走隧道路由即可、目标机无源 IP 白名单、凭证不引用隧道 IP）。真正会跳且被依赖的是物理网卡 `10.9.101.78`（办公网 DHCP）。
+- **终版方案（已实施+验证）**：portproxy 改回环监听 `127.0.0.1:2222 → 192.168.1.103:22`（同次 UAC 移除旧 10.9.101.78 监听，回环零对外暴露）+ `ssh-homedb` 凭证 host=`host.docker.internal`（容器解析 192.168.65.254、Docker 代理落宿主回环——ECONNREFUSED 语义实证该路径）+ 凭证别名警示同步（8.5 事件的别名文案已过时）。容器 banner + agent 端到端两验通过（真实 uptime up 9 days）。
+- **效果**：办公网 DHCP 换 IP、VPN 重连跳隧道 IP，homedb 链路均免疫；维护收敛为「目标机换址→只改一条 portproxy」。
+- 8.4 的第一版（10.9.101.78 监听）已废弃，被本节取代。
