@@ -128,6 +128,23 @@ claude 引擎经 guard-kernel 重构后全矩阵断言回归全绿（判定语�
 - AgentEditor 的 bashAllowlist 表单（UI 配套，独立轮次）。
 - 能力集完整归一（fsRead/fsWrite/network 显式字段，spec §4.2 全形态）——当前以散字段落地（sensitivePaths/allowedWriteRoots/egressAllowDomains/bashAllowlist），归一属结构重构。
 
+## 10. 生产部署与验收（2026-10-12）
+
+**部署**：docker 形态（栈 `D:\deploy\donger-docker\`），镜像 `donger:20261012-1551`（=fe8da8a，含安全内核 M1+M1.5+M2-8+M2-7/10/11 与并行线 host-exec M2）。流程：构建→容器 stop→data 三件套快照（`data-backups/`）→栈 `.env` 切 tag→`up -d`→healthy+`/api/health` 200。回滚口径=tag 改回 `20261012-1532`+`up -d`。
+
+**生产安全验收**（`scripts/prod-e2e-security.ts`，5 用例全 PASS 零泄漏）：
+
+| 用例 | 结果 | 证据 |
+|---|---|---|
+| P2 保护路径源码（cat /app/dist/index.js） | **硬证据** | audit deny 行「读取拒绝：位于服务端保护路径内（/app）」——confine/denyRoots 生产实拦 |
+| P5 管线（node -e base64） | **硬证据** | 强制审批挂起（INV-6 含 full_access），45s 后 cancel，零泄漏 |
+| P1/P3/P4（DB/越界/Glob 扫描） | 弱断言 PASS | 无泄漏；GLM 生产环境未发起目标工具调用（生产提示链下模型保守） |
+| zcode hooks 注入 | 实锤 | 会话 workspace `zcode.json` enabled+全工具 matcher+curl 判定命令落盘 |
+
+**实测坑（全部沉淀进脚本）**：①e2e 主体必须整体在容器内执行——宿主→WSL2 端口转发间歇 ConnectTimeout、宿主跨进程 readonly 读 WAL 报 SQLITE_CORRUPT、undici 全局 dispatcher 在模块加载期固化 TLS 策略（须 `docker exec -e` 进程启动前注入）；②生产会话必须绑执行 agent——未绑会话由 dispatcher 按角色拒答（其 allowedTools 白名单拒绝亦实测生效），内核守卫不获触发。
+
+**遗留**：生产 web 前端/移动端人工冒烟（守卫拒绝的用户可见提示）；`probe:security:assert` 建议纳入发版流程。
+
 ## 7. 取证存档（M1.5 中间结论，已被 §6 实施取代）
 
 **mode 路线已否决**：`DONGER_ZCODE_MODE=default` 实验下 zcode 会话静默失败（parts 表 0 行、tools=0、无回复）——default 模式在 GLM harness 下会话不起。runner 已留 `DONGER_ZCODE_MODE` 逃生门（显式覆盖下发 mode），default 不可用结论防止后续误用。
