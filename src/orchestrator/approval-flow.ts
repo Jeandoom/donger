@@ -1,4 +1,5 @@
 import type { GateRouter } from "../domain/gate-router.js";
+import { buildHostExecAdoptDraft } from "../domain/host-exec-policy.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type { ApprovalCard } from "../domain/types.js";
 import type { ApprovalResolver, QuestionResolver } from "../ports/agent-runner.js";
@@ -12,6 +13,7 @@ import type { NotificationService } from "./notification-service.js";
  * 改状态 running→awaiting_approval → 推审批卡 → 等渠道决议 → 恢复 awaiting_approval→running
  * → 把渠道的 ApprovalResult 转成 runner 的 ApprovalDecision 返回。
  * 决议附带评论时落 task_comments（T17.3 验收门评论）。
+ * ownerRole="admin" 且 host_exec 审批时卡片携带「一键成策略」草稿（specs/2026-10-12 §8.1 M2）。
  */
 export function makeApprovalResolver(
   store: TaskStore,
@@ -21,6 +23,7 @@ export function makeApprovalResolver(
   commentStore?: CommentStore,
   notifications?: NotificationService,
   ownerId?: string,
+  ownerRole?: string,
 ): ApprovalResolver {
   return async (req) => {
     const gate = gates.getGate(req.gateId);
@@ -29,6 +32,14 @@ export function makeApprovalResolver(
       title: `审批门：${gate?.description ?? req.gateId}`,
       summary: req.summary,
     };
+    if (
+      ownerRole === "admin" &&
+      req.gateId === "host-ops" &&
+      req.tool === "mcp__donger-host__host_exec"
+    ) {
+      const draft = buildHostExecAdoptDraft(req.input, {});
+      if (draft) card.adoptDraft = draft;
+    }
     // pendingGate 落库：重启清扫（failStaleAwaiting）与观测面板据此识别卡在人工门的任务
     await store.updateStatus(req.taskId, nextStatus("running", "request_approval"), {
       pendingGate: {
@@ -62,7 +73,11 @@ export function makeApprovalResolver(
     await store.updateStatus(req.taskId, nextStatus("awaiting_approval", "resume"), {
       pendingGate: undefined,
     });
-    return { approved: result.approved, reason: result.reason };
+    return {
+      approved: result.approved,
+      reason: result.reason,
+      ...(result.adoptPrefix ? { adoptPrefix: result.adoptPrefix } : {}),
+    };
   };
 }
 

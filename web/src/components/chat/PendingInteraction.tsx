@@ -1,12 +1,14 @@
+import { useState } from "react";
 import type { PendingApproval, PendingCredential } from "../../types";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 
 export interface PendingInteractionProps {
   approval: PendingApproval | null;
   credential: PendingCredential | null;
   approvalError?: string;
   credentialError?: string;
-  onResolveApproval: (approved: boolean, reason?: string) => void;
+  onResolveApproval: (approved: boolean, reason?: string, adoptPrefix?: string) => void;
   onDecideCredentialMissing: (decision: string) => void;
 }
 
@@ -20,32 +22,7 @@ export function PendingInteraction({
 }: PendingInteractionProps) {
   return (
     <>
-      {approval ? (
-        <fieldset
-          aria-label="审批请求"
-          className="rounded-xl border border-warning/50 bg-warning-soft p-4"
-        >
-          <div className="text-sm font-semibold text-warning-foreground">{approval.title}</div>
-          <div className="mt-1 text-sm text-warning-foreground">{approval.summary}</div>
-          <div className="mt-2 flex gap-2">
-            <Button size="sm" onClick={() => onResolveApproval(true)}>
-              通过
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onResolveApproval(false, "Web 驳回")}
-            >
-              驳回
-            </Button>
-          </div>
-          {approvalError ? (
-            <p role="alert" className="mt-2 text-sm text-destructive">
-              {approvalError}
-            </p>
-          ) : null}
-        </fieldset>
-      ) : null}
+      {approval ? <ApprovalCard approval={approval} error={approvalError} onResolve={onResolveApproval} /> : null}
       {credential ? (
         <MissingCredentialsCard
           key={credential.reqId}
@@ -55,6 +32,68 @@ export function PendingInteraction({
         />
       ) : null}
     </>
+  );
+}
+
+/** 审批卡：通过/驳回 + 可选「通过并记住」（admin 轮 host_exec 审批时携带 adopt 草稿） */
+function ApprovalCard({
+  approval,
+  error,
+  onResolve,
+}: {
+  approval: PendingApproval;
+  error?: string;
+  onResolve: (approved: boolean, reason?: string, adoptPrefix?: string) => void;
+}) {
+  // adopt 前缀的文本态：卡片装载后一次性以草稿初始化，可编辑
+  const [adoptPrefix, setAdoptPrefix] = useState(approval.adoptDraft?.prefix ?? "");
+  return (
+    <fieldset
+      aria-label="审批请求"
+      className="rounded-xl border border-warning/50 bg-warning-soft p-4"
+    >
+      <div className="text-sm font-semibold text-warning-foreground">{approval.title}</div>
+      <div className="mt-1 text-sm text-warning-foreground">{approval.summary}</div>
+      {approval.adoptDraft ? (
+        <div className="mt-2.5 rounded-lg border border-warning/30 bg-white/60 p-2.5">
+          <div className="text-xs text-slate-600">
+            通过并记住此类命令（主机 <span className="font-mono">{approval.adoptDraft.hostCode}</span>
+            ，前缀命中即免审批；可在前缀框调整粒度）：
+          </div>
+          <Input
+            mono
+            className="mt-1.5 h-8 text-[13px]"
+            value={adoptPrefix}
+            aria-label="免审批前缀"
+            spellCheck={false}
+            onChange={(e) => setAdoptPrefix(e.target.value)}
+          />
+          <div className="mt-2">
+            <Button
+              size="sm"
+              disabled={!adoptPrefix.trim()}
+              title="批准本次执行，并把该前缀写为主机执行策略（下次免审批）"
+              onClick={() => onResolve(true, undefined, adoptPrefix.trim())}
+            >
+              通过并记住此类命令
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-2 flex gap-2">
+        <Button size="sm" onClick={() => onResolve(true)}>
+          通过
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => onResolve(false, "Web 驳回")}>
+          驳回
+        </Button>
+      </div>
+      {error ? (
+        <p role="alert" className="mt-2 text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </fieldset>
   );
 }
 

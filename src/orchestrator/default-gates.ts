@@ -1,10 +1,27 @@
 import { GateRouter } from "../domain/gate-router.js";
 
+/** SSH 出站命令形态（段首命令位；default-gates 与审批 resolver 的 deny 档共用一份模式） */
+export const SSH_EGRESS_PATTERN =
+  /(?:^|&&|\|\||;|\||&|\()\s*(?:ssh|scp|sftp|sshpass)(?:\.exe)?(?:\s|$)/i;
+
 /** 默认审批门策略：高危操作（部署/发布/推送）→ deploy 门。 */
 // 三道门均为 force 门：full_access 权限模式不豁免（admin 高权限会话仍须人工确认外发写；
 // 自我迭代智能体的安全前提，specs/2026-09-17-agent-self-deploy-design.md §3.6）。
 export function createDefaultGates(): GateRouter {
   const gates = new GateRouter();
+  // SSH 出站旁门治理（specs/2026-10-12-host-exec-policy-design.md §7，M2）——注册在最前：
+  // 组合命令同时命中 ssh 与 deploy 关键词时按更精确的 ssh-egress 展示卡面（两者均 force，
+  // 审批行为等价）。本地 Bash 直连 ssh/scp/sftp/sshpass 可完全绕过 donger-host 正门策略——
+  // 恒 force 审批（full_access 不豁免），合法远程操作引导走 donger-host 工具（正门有策略
+  // 引擎+审计）。命中模式=段首命令位（cd x && ssh … / (ssh …) 均拦；git push ssh:// 等
+  // 非段首不误伤）。deny 档（ssh_egress.mode=deny）在审批 resolver 侧短路拒绝，不弹卡。
+  gates.describe({ id: "ssh-egress", description: "SSH 出站命令审批（旁门治理）" });
+  gates.add({
+    gateId: "ssh-egress",
+    toolName: "Bash",
+    commandPattern: SSH_EGRESS_PATTERN,
+    force: true,
+  });
   gates.describe({ id: "deploy", description: "部署/发布/推送操作审批" });
   // release 用负向断言：release-202608-1 这类分支名/版本号是普通参数，不算发布动作
   //（此前误拦只读 git fetch origin release-202608-1，60s 审批超时致任务失败，复盘 P2-9）

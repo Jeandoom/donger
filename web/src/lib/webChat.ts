@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { AgentPermissionMode, ConversationSummary, PendingQuestion, SSEEvent } from "../types";
+import type {
+  AgentPermissionMode,
+  ConversationSummary,
+  PendingApproval,
+  PendingQuestion,
+  SSEEvent,
+} from "../types";
 import { apiFetch, getToken } from "./auth";
 import type { FileInfo } from "./chatReducer";
 import { chatReducer, initialChatState, isDraftConversation, makeId } from "./chatReducer";
@@ -345,6 +351,7 @@ export function useWebChat() {
                     gateId: string;
                     title: string;
                     summary: string;
+                    adoptDraft?: PendingApproval["adoptDraft"];
                   } | null;
                 }>)
               : { approval: null },
@@ -374,6 +381,9 @@ export function useWebChat() {
                     gateId: approval.gateId,
                     title: approval.title,
                     summary: approval.summary,
+                    ...(approval.adoptDraft
+                      ? { adoptDraft: approval.adoptDraft as PendingApproval["adoptDraft"] }
+                      : {}),
                   }
                 : null,
             });
@@ -507,7 +517,7 @@ export function useWebChat() {
   }, [state.activeConversationId, state.conversations]);
 
   const resolveApproval = useCallback(
-    async (approved: boolean, reason?: string) => {
+    async (approved: boolean, reason?: string, adoptPrefix?: string) => {
       // 审批响应通过 HTTP POST 发送
       const pending = state.pendingApproval;
       if (!pending) return;
@@ -521,7 +531,11 @@ export function useWebChat() {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ approved, reason }),
+          body: JSON.stringify({
+            approved,
+            reason,
+            ...(approved && adoptPrefix ? { adoptPrefix } : {}),
+          }),
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         dispatch({ type: "clear_approval" });

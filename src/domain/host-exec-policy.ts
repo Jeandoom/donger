@@ -165,7 +165,9 @@ export const HostExecPolicyInputSchema = z
     scopeRef: z.string().max(100).optional(),
     matchKind: z.enum(["prefix", "pattern"]),
     matchValue: z.string().min(1).max(6000),
-    decision: z.enum(["allow", "ask"]),
+    // M2 起 deny 开放（tool-call-guards deny 守卫已接线，配置面与行为一致）
+    decision: z.enum(["allow", "ask", "deny"]),
+    // skip 仍收窄（无人值守跳过接线随 M3）
     unattended: z.enum(["inherit", "allow"]),
     note: z.string().max(300).optional(),
   })
@@ -204,6 +206,81 @@ export function validatePolicyPattern(source: string): string | undefined {
   } catch (e) {
     return `正则不可编译：${(e as Error).message}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 内置 deny 黑名单（specs/2026-10-12 §8.2 M2）：灾难级命令的保守精确集——
+// 只收「无歧义毁灭」形态（全盘格式化/写设备/关机重启/删根/全盘提权），宁缺勿滥；
+// 误拦回审批门有人工兜底，误放行不可逆。admin 可停用/删除单条（种子只播一次）。
+// 正则全部线性（无嵌套量词），防 ReDoS。
+// ---------------------------------------------------------------------------
+
+export const BUILTIN_DENY_PATTERNS: Array<{ id: string; pattern: string; note: string }> = [
+  { id: "builtin-mkfs", pattern: "\\bmkfs(?:\\.\\w+)?(?:\\s|$)", note: "内置黑名单：文件系统格式化" },
+  {
+    id: "builtin-dd-device",
+    pattern: "\\bdd\\s[^;|&]*\\bof=/dev/",
+    note: "内置黑名单：dd 直写设备",
+  },
+  {
+    id: "builtin-power",
+    pattern:
+      "(?:^|&&|\\|\\||;|\\||&|\\()\\s*(?:sudo\\s+)?(?:shutdown|reboot|poweroff|halt)(?:\\.exe)?(?:\\s|$)|\\bsystemctl\\s+(?:reboot|poweroff|halt)\\b|\\binit\\s+[06]\\b",
+    note: "内置黑名单：关机/重启",
+  },
+  {
+    id: "builtin-rm-root",
+    pattern: "\\brm\\s+(?:-{1,2}[\\w-]+\\s+)+/(?:\\s|$)",
+    note: "内置黑名单：递归删除根目录",
+  },
+  {
+    id: "builtin-chmod-root",
+    pattern: "\\bchmod\\s+-(?:\\w+)?R(?:\\w+)?\\s+777\\s+/(?:\\s|$)",
+    note: "内置黑名单：全盘放开权限",
+  },
+  {
+    id: "builtin-forkbomb",
+    pattern: "\\:\\s*\\(\\s*\\)\\s*\\{[^}]*\\|[^}]*&[^}]*\\}\\s*;\\s*\\:",
+    note: "内置黑名单：fork 炸弹",
+  },
+];
+
+// ---------------------------------------------------------------------------
+// 审批卡「一键成策略」草稿（specs/2026-10-12 §8.1 M2）：未命中 allow 的 host_exec
+// 命令在审批时按草稿前缀沉淀为策略——前缀取命令前两个空白段（二进制+首参），
+// admin 可在卡片上改；写侧护栏=不含元字符、长度上限。
+// ---------------------------------------------------------------------------
+
+/** SSH 出站档位 app_config flag（specs/2026-10-12 §7）：ask | deny（registered-hosts-align 预留） */
+export const SSH_EGRESS_MODE_FLAG = "ssh_egress.mode";
+
+const ADOPT_PREFIX_META = /[;|&$`<>\r\n]/;
+
+/** 从 host_exec 审批请求生成 adopt 草稿；形态不合法返回 undefined（不展示入口） */
+export function buildHostExecAdoptDraft(
+  input: Record<string, unknown>,
+  opts: { agentId?: string },
+): { hostCode: string; prefix: string; agentId?: string } | undefined {
+  if (typeof input.hostCode !== "string" || !input.hostCode) return undefined;
+  const command = typeof input.command === "string" ? input.command.trim() : "";
+  if (!command || command.length > 600) return undefined;
+  const tokens = command.split(/\s+/).slice(0, 2);
+  const prefix = tokens.join(" ");
+  if (!prefix || prefix.length > 120 || ADOPT_PREFIX_META.test(prefix)) return undefined;
+  return {
+    hostCode: input.hostCode,
+    prefix,
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+  };
+}
+
+/** adopt 前缀终验（web 卡片可编辑，落库前再校验一次）；返回错误文案或 undefined */
+export function validateAdoptPrefix(prefix: string): string | undefined {
+  const trimmed = prefix.trim();
+  if (!trimmed) return "前缀不能为空";
+  if (trimmed.length > 120) return "前缀不超过 120 字符";
+  if (ADOPT_PREFIX_META.test(trimmed)) return "前缀不能包含 ; | & $ ` < > 或换行";
+  return undefined;
 }
 
 /**

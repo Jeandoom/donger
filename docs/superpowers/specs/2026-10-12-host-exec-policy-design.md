@@ -179,3 +179,29 @@ admin API 五条（web-channel+守卫表登记）、agent 编辑器白名单 tex
 
 测试：判定器 12 用例（deny 先行/主机×scope 特异度/tool 过滤/无人值守档/防逃逸复用/Schema 收窄）、
 store+迁移 5 用例（幂等/防复活/等价性）；全量后端 1583 绿 + tsc + web build 绿。
+
+## 12. M2 实施记录（2026-10-12）
+
+落点：deny 走**审批 resolver 短路**（orchestrator 包装层在弹卡前拒绝并落 `policy_decision`
+审计；相比 §7 的静态守卫方案零 runner/守卫表改动，deny 语义不被门注册顺序稀释——按
+`SSH_EGRESS_PATTERN` 直接匹配命令而非 gateId）。`decision=deny` 枚举开放（Schema M2 起）。
+内置黑名单 6 条（mkfs/dd-of-device/关机重启段首+systemctl 形/删根/全盘 777/fork 炸弹），
+启动播种一次（flag `host_exec_policy.builtin_deny_seeded_at`，admin 删除不复活）；模式串
+要求命令词位（后随空白/结尾或段首锚定），`grep reboot` 等参数形态不误伤。
+
+ssh-egress 旁门：`ssh|scp|sftp|sshpass` 段首命令位 → force 审批门（注册在 deploy 之前，
+组合命令 `cd x && ssh …` 按更精确的 ssh-egress 展示；`git push ssh://` 非段首不误伤）；
+deny 档 `ssh_egress.mode`（app_config flag，GET/PUT `/api/admin/ssh-egress-mode`）M2 收窄
+ask|deny，registered-hosts-align 预留。
+
+一键成策略：ApprovalCard.adoptDraft（admin 轮 host_exec 审批时携带，前缀=命令前两段）→
+web 审批卡可编辑前缀 +「通过并记住此类命令」→ respond.adoptPrefix → orchestrator 去重后
+落 agent（或 user）作用域 allow 规则 + 审计。刷新恢复（pending-approval）与 SSE 均透传草稿。
+
+凭证页：admin 在 host 凭证行卡菜单「执行策略」打开 HostPolicyDialog——本主机规则 CRUD+
+启停、'*' 通配规则就地管理、agent 下拉选生效域；API 客户端 lib/hostPolicy.ts。
+
+实施裁决：deny 未走 §7 的 tool-call-guards 静态守卫（与并行在飞的 M2-8 渗出闸工作同文件，
+让位避碰；resolver 短路行为等价）；skip 仍收窄（M3）。测试：内置黑名单命中/误伤矩阵、
+ssh-egress 门回归、adopt 草稿/终验、Schema deny 开放；全量 1595/1596 绿（唯一失败=
+并行 M2-8 提交 0d60b42 未更新的 zcode 旧断言，非本轮引入）。

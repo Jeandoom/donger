@@ -133,8 +133,8 @@ export interface AuditEvent {
     | "permission_mode_change"
     /** 知识库自动学习失败（seq=-1 执行外事件；text=失败原因，静默不扰用户） */
     | "kb_auto_learn_error"
-    /** 主机命令策略放行打标（seq=-1 执行外事件；specs/2026-10-12-host-exec-policy-design.md §6；
-     *  text=裁决摘要，toolInput=命令前 300 字符。ask/deny 不打标——审批卡/守卫拒绝已可见） */
+    /** 主机命令策略裁决打标（seq=-1 执行外事件；specs/2026-10-12-host-exec-policy-design.md §6；
+     *  text=裁决摘要，toolInput=命令前 300 字符。allow/deny/一键成策略落此；ask 有审批卡可见） */
     | "policy_decision"
     /** zcode 轮末对账标记（specs/2026-09-29-zcode-record-fidelity-design.md M1；
      *  text=补录统计 JSON。幂等键：同 taskId 再对账时发现此行即整体跳过） */
@@ -209,6 +209,9 @@ export interface ApprovalCard {
   gateId: string;
   title: string;
   summary: string;
+  /** 一键成策略草稿（specs/2026-10-12 §8.1 M2）：host_exec 审批卡展示「通过并记住」
+   *  入口（前缀可编辑）；仅 admin 属主的轮携带。undefined=不展示 */
+  adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
 }
 
 /** 命中门时由 runner 传给 Orchestrator 的审批请求（数据形状；resolver 函数类型在 ports 定义） */
@@ -224,6 +227,8 @@ export interface ApprovalRequest {
 export interface ApprovalDecision {
   approved: boolean;
   reason?: string;
+  /** 审批人勾选「通过并记住」时携带（编辑后的前缀；orchestrator 据此落策略） */
+  adoptPrefix?: string;
 }
 
 /** AskUserQuestion 单个问题（与 CLI 工具输入 schema 对齐；数据形状，resolver 类型在 ports 定义） */

@@ -397,7 +397,7 @@ export interface AssistantThreadProps {
   onAnswerQuestion: (answers: Record<string, string>, response?: string) => void;
   approvalError?: string;
   credentialError?: string;
-  onResolveApproval: (approved: boolean, reason?: string) => void;
+  onResolveApproval: (approved: boolean, reason?: string, adoptPrefix?: string) => void;
   onDecideCredentialMissing: (decision: string) => void;
   placeholder: string;
   /** 当前会话绑定的智能体 id（引用候选按该 agent 装配集过滤；空 = 闲聊会话，仅附件入口） */

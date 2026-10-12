@@ -4,9 +4,11 @@
 // 跑过一次后不再重入，admin 删除迁移产物不会被重启复活。字段本身保留在 agent 配置里
 // （读路径已退役，仅作迁移来源与历史追溯）。
 import type { Agent } from "../domain/agent.js";
+import { BUILTIN_DENY_PATTERNS } from "../domain/host-exec-policy.js";
 import type { HostExecPolicyStore } from "../ports/host-exec-policy-store.js";
 
 export const LEGACY_HOST_EXEC_MIGRATION_FLAG = "host_exec_policy.legacy_allowlist_migrated_at";
+export const BUILTIN_DENY_SEED_FLAG = "host_exec_policy.builtin_deny_seeded_at";
 
 export async function migrateLegacyAgentHostExecAllowlists(deps: {
   agents: { listAll(): Promise<Agent[]> };
@@ -46,4 +48,35 @@ export async function migrateLegacyAgentHostExecAllowlists(deps: {
     deps.log?.info({ migrated }, "agent 白名单已迁移为主机执行策略");
   }
   return { migrated };
+}
+
+/**
+ * 内置 deny 黑名单种子（specs/2026-10-12 §8.2 M2）：灾难级命令保守精确集，启动播一次
+ * （标记位幂等，admin 删除不复活）。宿主机上 mkfs/dd-of-device/关机重启/删根等形态
+ * 无歧义毁灭，deny 先行于一切 allow——global allow 规则也不能覆盖。
+ */
+export async function seedBuiltinDenyRules(deps: {
+  policies: HostExecPolicyStore;
+  flags?: { getFlag(key: string): string | undefined; setFlag(key: string, value: string): void };
+  log?: { info(obj: unknown, msg: string): void };
+}): Promise<{ seeded: number }> {
+  if (deps.flags?.getFlag(BUILTIN_DENY_SEED_FLAG)) return { seeded: 0 };
+  for (const p of BUILTIN_DENY_PATTERNS) {
+    await deps.policies.create(
+      {
+        hostCode: "*",
+        tool: "host_exec",
+        scopeKind: "global",
+        matchKind: "pattern",
+        matchValue: p.pattern,
+        decision: "deny",
+        unattended: "inherit",
+        note: p.note,
+      },
+      { createdBy: "system", note: p.note },
+    );
+  }
+  deps.flags?.setFlag(BUILTIN_DENY_SEED_FLAG, new Date().toISOString());
+  deps.log?.info({ seeded: BUILTIN_DENY_PATTERNS.length }, "内置 deny 黑名单已播种");
+  return { seeded: BUILTIN_DENY_PATTERNS.length };
 }

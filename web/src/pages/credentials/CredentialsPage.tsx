@@ -8,6 +8,7 @@ import {
   Search,
   Server,
   Settings2,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,7 +21,7 @@ import { Input } from "../../components/ui/input";
 import { Menu, type MenuEntry } from "../../components/ui/menu";
 import { PageHeader } from "../../components/ui/page-header";
 import { Segmented } from "../../components/ui/segmented";
-import { getUserId } from "../../lib/auth";
+import { fetchMe, getUserId } from "../../lib/auth";
 import {
   type CredentialTemplateDTO,
   type CredentialValueViewDTO,
@@ -32,6 +33,7 @@ import {
 } from "../../lib/skills";
 import { cn } from "../../lib/utils";
 import { FillValuesDialog } from "./FillValuesDialog";
+import { HostPolicyDialog } from "./HostPolicyDialog";
 import {
   type CredentialFilter,
   type CredentialRow,
@@ -61,6 +63,9 @@ export function CredentialsPage() {
   const [tplDeleteBusy, setTplDeleteBusy] = useState(false);
   const [tplDeleteError, setTplDeleteError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  // 主机执行策略（M2 治理面）：admin 视角在 host 凭证行卡展开「执行策略」管理
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [policyCode, setPolicyCode] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const myId = getUserId();
@@ -85,6 +90,11 @@ export function CredentialsPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // admin 判定（host 行卡「执行策略」入口可见性；API 侧 admin-only 双保险）
+  useEffect(() => {
+    void fetchMe().then((me) => setIsAdmin(me?.role === "admin"));
+  }, []);
 
   // 操作成功提示：3s 自动消退
   useEffect(() => {
@@ -210,6 +220,9 @@ export function CredentialsPage() {
                       setPendingValueDelete(row.code);
                     }}
                     onRenamed={() => void reload()}
+                    onOpenPolicy={
+                      isAdmin && row.kind === "host" ? () => setPolicyCode(row.code) : undefined
+                    }
                   />
                 ))
               )}
@@ -237,6 +250,9 @@ export function CredentialsPage() {
                       setTplDeleteError(null);
                       setPendingTemplateDelete(row.code);
                     }}
+                    onOpenPolicy={
+                      isAdmin && row.kind === "host" ? () => setPolicyCode(row.code) : undefined
+                    }
                   />
                 ))}
               </section>
@@ -301,6 +317,15 @@ export function CredentialsPage() {
             showFlash("凭证值已保存");
             void reload();
           }}
+        />
+      ) : null}
+
+      {policyCode ? (
+        <HostPolicyDialog
+          hostCode={policyCode}
+          hostName={rows.find((r) => r.code === policyCode)?.name ?? policyCode}
+          onClose={() => setPolicyCode(null)}
+          onChanged={() => showFlash("执行策略已更新")}
         />
       ) : null}
 
@@ -371,6 +396,7 @@ function CredentialRowCard(props: {
   onEditTemplate: () => void;
   onDeleteValue: () => void;
   onRenamed: () => void;
+  onOpenPolicy?: () => void;
 }) {
   const { row } = props;
   const [renaming, setRenaming] = useState(false);
@@ -418,6 +444,14 @@ function CredentialRowCard(props: {
       label: "编辑模板",
       icon: <Settings2 size={13} aria-hidden="true" />,
       onSelect: props.onEditTemplate,
+    });
+  }
+  if (props.onOpenPolicy) {
+    entries.push({
+      kind: "item",
+      label: "执行策略",
+      icon: <ShieldCheck size={13} aria-hidden="true" />,
+      onSelect: props.onOpenPolicy,
     });
   }
   entries.push({ kind: "separator" });
@@ -550,6 +584,7 @@ function TemplateRowCard(props: {
   onFill: () => void;
   onEditTemplate: () => void;
   onDeleteTemplate: () => void;
+  onOpenPolicy?: () => void;
 }) {
   const { row } = props;
   return (
@@ -580,6 +615,16 @@ function TemplateRowCard(props: {
           <Menu
             label={`模板操作：${row.code}`}
             entries={[
+              ...(props.onOpenPolicy
+                ? [
+                    {
+                      kind: "item" as const,
+                      label: "执行策略",
+                      icon: <ShieldCheck size={13} aria-hidden="true" />,
+                      onSelect: props.onOpenPolicy,
+                    },
+                  ]
+                : []),
               {
                 kind: "item",
                 label: "编辑模板",

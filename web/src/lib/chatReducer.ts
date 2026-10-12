@@ -413,6 +413,7 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
           gateId: msg.gateId,
           title: msg.title,
           summary: msg.summary,
+          ...(msg.adoptDraft ? { adoptDraft: msg.adoptDraft } : {}),
         },
       };
     case "credential_missing_card":

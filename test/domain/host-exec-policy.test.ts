@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILTIN_DENY_PATTERNS,
+  buildHostExecAdoptDraft,
   collectPromptAllowSections,
   HostExecPolicyInputSchema,
   type HostExecPolicyRule,
   resolveHostExecPolicy,
+  validateAdoptPrefix,
   validatePolicyPattern,
 } from "../../src/domain/host-exec-policy.js";
 
@@ -210,7 +213,7 @@ describe("collectPromptAllowSections", () => {
 });
 
 describe("HostExecPolicyInputSchema", () => {
-  it("M1 枚举收窄：deny 与 skip 拒收（守卫未接线防配置面漂移）", () => {
+  it("M2 起 deny 开放（审批短路已接线）；skip 仍收窄（M3 接线）", () => {
     expect(
       HostExecPolicyInputSchema.safeParse({
         hostCode: "*",
@@ -221,7 +224,7 @@ describe("HostExecPolicyInputSchema", () => {
         decision: "deny",
         unattended: "inherit",
       }).success,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       HostExecPolicyInputSchema.safeParse({
         hostCode: "*",
@@ -266,5 +269,65 @@ describe("HostExecPolicyInputSchema", () => {
     expect(validatePolicyPattern("^ok$")).toBeUndefined();
     expect(validatePolicyPattern("([unclosed")).toContain("不可编译");
     expect(validatePolicyPattern("x".repeat(201))).toContain("200");
+  });
+});
+
+describe("BUILTIN_DENY_PATTERNS", () => {
+  const CASES: Array<{ pattern: string; hit: string[]; miss: string[] }> = [
+    {
+      pattern: BUILTIN_DENY_PATTERNS.find((p) => p.id === "builtin-mkfs")!.pattern,
+      hit: ["mkfs.ext4 /dev/sda1", "sudo mkfs -t ext4 /dev/nvme0n1"],
+      miss: ["systemctl status mkfssync", "ls /opt/mkfs-tools"],
+    },
+    {
+      pattern: BUILTIN_DENY_PATTERNS.find((p) => p.id === "builtin-dd-device")!.pattern,
+      hit: ["dd if=zero.img of=/dev/sda", "dd bs=4M if=x of=/dev/nvme0n1"],
+      miss: ["dd if=a of=b.img", "cat /var/log/dd.log"],
+    },
+    {
+      pattern: BUILTIN_DENY_PATTERNS.find((p) => p.id === "builtin-power")!.pattern,
+      hit: ["shutdown -h now", "sudo reboot", "systemctl reboot", "init 0"],
+      miss: ["systemctl status shutdown-helper", "grep reboot app.log"],
+    },
+    {
+      pattern: BUILTIN_DENY_PATTERNS.find((p) => p.id === "builtin-rm-root")!.pattern,
+      hit: ["rm -rf /", "rm -fr / ", "sudo rm --recursive --force /"],
+      miss: ["rm -rf /tmp/build", "rm file.txt", "rm -rf ./"],
+    },
+    {
+      pattern: BUILTIN_DENY_PATTERNS.find((p) => p.id === "builtin-forkbomb")!.pattern,
+      hit: [":(){ :|:& };:", "bash -c ':() { :|:& };:'"],
+      miss: ["echo 'func() { echo hi; };'"],
+    },
+  ];
+  it("黑名单命中预期形态、放过良性形态；全部线性可编译", () => {
+    for (const c of CASES) {
+      const re = new RegExp(c.pattern);
+      for (const h of c.hit) expect(re.test(h), `应命中: ${h}`).toBe(true);
+      for (const m of c.miss) expect(re.test(m), `不应命中: ${m}`).toBe(false);
+    }
+  });
+});
+
+describe("buildHostExecAdoptDraft / validateAdoptPrefix", () => {
+  it("草稿=前两个空白段；hostCode/命令缺失不出草稿", () => {
+    expect(buildHostExecAdoptDraft({ hostCode: "ssh-homedb", command: "git -C /srv pull" }, { agentId: "a1" })).toEqual({
+      hostCode: "ssh-homedb",
+      prefix: "git -C",
+      agentId: "a1",
+    });
+    expect(buildHostExecAdoptDraft({ command: "uptime" }, {})).toBeUndefined();
+    expect(buildHostExecAdoptDraft({ hostCode: "ssh-homedb", command: "  " }, {})).toBeUndefined();
+    expect(
+      buildHostExecAdoptDraft({ hostCode: "ssh-homedb", command: "a; b" }, {}),
+    ).toBeUndefined();
+  });
+
+  it("adopt 前缀终验：元字符/超长/空拒收", () => {
+    expect(validateAdoptPrefix("systemctl is-active")).toBeUndefined();
+    expect(validateAdoptPrefix("git push; rm")).toContain("不能包含");
+    expect(validateAdoptPrefix("$(evil)")).toContain("不能包含");
+    expect(validateAdoptPrefix("x".repeat(121))).toContain("120");
+    expect(validateAdoptPrefix("  ")).toContain("空");
   });
 });

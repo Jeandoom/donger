@@ -569,5 +569,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       pattern: "/api/admin/host-exec-policies/:id/enabled",
       access: { kind: "admin" },
     },
+    { method: "GET", pattern: "/api/admin/ssh-egress-mode", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/ssh-egress-mode", access: { kind: "admin" } },
   ];
 }

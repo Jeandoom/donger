@@ -17,6 +17,8 @@ export type SSEEvent =
       gateId: string;
       title: string;
       summary: string;
+      /** 一键成策略草稿（admin 轮 host_exec 审批；specs/2026-10-12 §8.1 M2） */
+      adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
     }
   | {
       type: "credential_missing_card";
@@ -105,6 +107,8 @@ export interface PendingApproval {
   gateId: string;
   title: string;
   summary: string;
+  /** 一键成策略草稿（admin 轮 host_exec 审批；specs/2026-10-12 §8.1 M2） */
+  adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
 }
 
 export interface PendingCredential {

@@ -78,7 +78,11 @@ import {
 import { mimeForExt } from "../domain/file-mime.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
-import { HostExecPolicyInputSchema, validatePolicyPattern } from "../domain/host-exec-policy.js";
+import {
+  HostExecPolicyInputSchema,
+  SSH_EGRESS_MODE_FLAG,
+  validatePolicyPattern,
+} from "../domain/host-exec-policy.js";
 import {
   buildInvite,
   EMAIL_VERIFY_TTL_MS,
@@ -389,6 +393,8 @@ type SSEEvent =
       gateId: string;
       title: string;
       summary: string;
+      /** 一键成策略草稿（admin 轮 host_exec 审批；specs/2026-10-12 §8.1 M2） */
+      adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
     }
   | {
       type: "credential_missing_card";
@@ -921,7 +927,7 @@ export class WebChannel implements Channel {
   async requestApproval(
     threadId: string,
     card: ApprovalCard,
-  ): Promise<{ approved: boolean; reason?: string }> {
+  ): Promise<{ approved: boolean; reason?: string; adoptPrefix?: string }> {
     // 审批实例 id 用一次性随机值：gateId 是全局静态常量（deploy/authoring/git-write），
     // 以它做 Map 键会被并发会话互相覆盖，造成「人审的卡片与实际放行的命令不一致」
     const approvalId = crypto.randomUUID();
@@ -932,6 +938,7 @@ export class WebChannel implements Channel {
       gateId: card.gateId,
       title: card.title,
       summary: card.summary,
+      ...(card.adoptDraft ? { adoptDraft: card.adoptDraft } : {}),
     });
     return new Promise((resolve) => {
       this.approvalStreams.set(approvalId, {
@@ -948,6 +955,7 @@ export class WebChannel implements Channel {
         gateId: card.gateId,
         title: card.title,
         summary: card.summary,
+        ...(card.adoptDraft ? { adoptDraft: card.adoptDraft } : {}),
         resolve: (result) => {
           this.approvalStreams.delete(approvalId);
           resolve(result);
@@ -989,11 +997,13 @@ export class WebChannel implements Channel {
       gateId: string;
       title: string;
       summary: string;
+      adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
       resolve: (result: {
         approved: boolean;
         reason?: string;
         comment?: string;
         responderId?: string;
+        adoptPrefix?: string;
       }) => void;
     }
   >();
@@ -1004,7 +1014,13 @@ export class WebChannel implements Channel {
    */
   getPendingApproval(
     conversationId: string,
-  ): { approvalId: string; gateId: string; title: string; summary: string } | null {
+  ): {
+    approvalId: string;
+    gateId: string;
+    title: string;
+    summary: string;
+    adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
+  } | null {
     for (const [approvalId, pending] of this.pendingApprovalResolves) {
       if (pending.conversationId === conversationId) {
         return {
@@ -1012,6 +1028,7 @@ export class WebChannel implements Channel {
           gateId: pending.gateId,
           title: pending.title,
           summary: pending.summary,
+          ...(pending.adoptDraft ? { adoptDraft: pending.adoptDraft } : {}),
         };
       }
     }
@@ -1532,6 +1549,7 @@ export class WebChannel implements Channel {
       approved: boolean;
       reason?: string;
       comment?: string;
+      adoptPrefix?: string;
     };
 
     const pending = this.pendingApprovalResolves.get(approvalId);
@@ -1558,6 +1576,11 @@ export class WebChannel implements Channel {
       reason: body.reason,
       comment: body.comment?.trim() || undefined,
       responderId: authUserId,
+      // 「通过并记住」编辑后的前缀（仅审批卡带 adoptDraft 时前端会传）
+      adoptPrefix:
+        typeof body.adoptPrefix === "string" && body.adoptPrefix.trim()
+          ? body.adoptPrefix.trim()
+          : undefined,
     });
     res.writeHead(200);
     res.end(JSON.stringify({ ok: true }));
@@ -2711,6 +2734,24 @@ export class WebChannel implements Channel {
       );
       if (!rule) return this.json(res, { error: "策略不存在" }, 404);
       return this.json(res, { policy: rule });
+    }
+
+    // GET/PUT /api/admin/ssh-egress-mode —— SSH 出站档位（specs/2026-10-12 §7 M2；
+    // app_config flag ssh_egress.mode 现取改即生效）。M2 收窄 ask|deny（registered-hosts-align
+    // 随正门策略联动能力后开放），防配置面与行为漂移。
+    if (url.split("?")[0] === "/api/admin/ssh-egress-mode" && req.method === "GET") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      const mode = this.deps.moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask";
+      return this.json(res, { mode });
+    }
+    if (url.split("?")[0] === "/api/admin/ssh-egress-mode" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      const body = JSON.parse(await this.readBody(req)) as { mode?: unknown };
+      if (body.mode !== "ask" && body.mode !== "deny") {
+        return this.json(res, { error: "mode 仅支持 ask | deny" }, 400);
+      }
+      this.deps.moduleConfigStore.setFlag(SSH_EGRESS_MODE_FLAG, body.mode);
+      return this.json(res, { ok: true, mode: body.mode });
     }
 
     // GET /api/admin/engine-runtimes —— 引擎工件状态+解析链现状（admin）

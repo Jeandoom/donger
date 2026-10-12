@@ -14,6 +14,8 @@ export interface ApprovalResult {
   responderId?: string;
   /** 审批附带的评论（T17.3：验收门评论随决议落 task_comments） */
   comment?: string;
+  /** 「通过并记住」编辑后的前缀（web 卡片 adopt 入口；specs/2026-10-12 §8.1 M2） */
+  adoptPrefix?: string;
 }
 
 /** 凭证缺失问询单项：agent 勾选但当前用户未配置的模板（结构元数据，不含值） */

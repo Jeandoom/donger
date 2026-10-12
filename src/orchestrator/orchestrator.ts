@@ -11,11 +11,13 @@ import {
 } from "../domain/conversation-title.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
+import { SSH_EGRESS_PATTERN } from "./default-gates.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import {
   collectPromptAllowSections,
   type HostExecPolicyRule,
   resolveHostExecPolicy,
+  validateAdoptPrefix,
 } from "../domain/host-exec-policy.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
@@ -31,7 +33,7 @@ import {
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
+import type { ApprovalDecision, IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
@@ -118,6 +120,12 @@ export interface OrchestratorDeps {
    * hostExecAllowlist 旧行为（合成等价规则），装配后策略表为单一真源。
    */
   hostExecPolicies?: HostExecPolicyStore;
+  /**
+   * SSH 出站档位取值器（旁门治理 M2，specs/2026-10-12 §7；app_config ssh_egress.mode）：
+   * "ask"（缺省）=ssh 系 Bash 命令走 ssh-egress force 审批门；"deny"=审批 resolver 侧
+   * 短路拒绝（不弹卡），引导走 donger-host 正门。同步读（app_config flag 现取，改即生效）。
+   */
+  sshEgressMode?: () => "ask" | "deny";
   /**
    * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
    * 缺省视为全部启用。消费点：host-exec 停用 → 不挂载 donger-host 工具、
@@ -854,6 +862,7 @@ export class Orchestrator {
       this.deps.commentStore,
       this.deps.notificationService,
       p.user.id,
+      p.user.role,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
     const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);
@@ -861,12 +870,128 @@ export class Orchestrator {
     const markPending = () => this.markTaskPending(p.user.id, p.conversation.id);
     const clearPending = () => this.clearTaskPending(p.user.id, p.conversation.id);
     const resolver: ApprovalResolver = async (req) => {
+      // 主机命令策略 deny 短路（M2，specs/2026-10-12 §6）：deny 是独立语义（黑名单先行
+      // 于一切 allow），不弹审批卡直接拒绝——审批卡是 ask 的载体。轮级规则快照保证与
+      // gateAllowCheck 同源判定。落 policy_decision 审计（deny 无其他可见痕迹）。
+      if (req.gateId === "host-ops" && hostPolicyRules.length > 0) {
+        const tool =
+          req.tool === "mcp__donger-host__host_exec"
+            ? "host_exec"
+            : req.tool === "mcp__donger-host__host_logs_clean"
+              ? "host_logs_clean"
+              : undefined;
+        const hostCode = typeof req.input.hostCode === "string" ? req.input.hostCode : "";
+        if (tool && hostCode) {
+          const verdict = resolveHostExecPolicy(hostPolicyRules, {
+            hostCode,
+            tool,
+            command: typeof req.input.command === "string" ? req.input.command : "",
+            ...hostPolicyCtx,
+          });
+          if (verdict?.decision === "deny") {
+            void this.deps.auditStore
+              .record({
+                conversationId: p.conversation.id,
+                taskId: p.task.id,
+                userId: p.user.id,
+                seq: -1,
+                type: "policy_decision",
+                text: `主机命令策略拒绝：tool=${tool} host=${hostCode} policy=${verdict.policyId}`,
+                toolInput: JSON.stringify({
+                  command:
+                    typeof req.input.command === "string" ? req.input.command.slice(0, 300) : "",
+                }),
+                recordedAt: new Date().toISOString(),
+              })
+              .catch(() => {});
+            return {
+              approved: false,
+              reason: `主机命令策略拒绝（policy=${verdict.policyId}）：命令形态命中黑名单，不予执行`,
+            };
+          }
+        }
+      }
+      // SSH 出站 deny 档（M2 旁门治理）：ssh_egress.mode=deny 时 ssh 系命令不弹卡直接
+      // 拒绝。按命令形态判定（SSH_EGRESS_PATTERN）而非 gateId——组合命令撞上 deploy 等
+      // 前置门时同样收口，deny 语义不被门的注册顺序稀释。
+      const egressCommand =
+        req.tool === "Bash" && typeof req.input.command === "string" ? req.input.command : "";
+      if (egressCommand && this.deps.sshEgressMode?.() === "deny") {
+        if (SSH_EGRESS_PATTERN.test(egressCommand)) {
+          return {
+            approved: false,
+            reason:
+              "SSH 出站已停用（ssh_egress.mode=deny）：远程操作请使用 donger-host 工具（正门有策略治理与审计）",
+          };
+        }
+      }
       markPending();
+      let decision: ApprovalDecision;
       try {
-        return await innerApprovalResolver(req);
+        decision = await innerApprovalResolver(req);
       } finally {
         clearPending();
       }
+      // 一键成策略（M2，specs/2026-10-12 §8.1）：admin 轮批准 host_exec 且勾选「记住」→
+      // 前缀落策略表（agent 作用域优先；同型规则已存在则跳过防重复）。落库失败不影响
+      // 已批准的执行。
+      if (
+        decision.approved &&
+        decision.adoptPrefix &&
+        p.user.role === "admin" &&
+        req.tool === "mcp__donger-host__host_exec" &&
+        this.deps.hostExecPolicies
+      ) {
+        const prefixError = validateAdoptPrefix(decision.adoptPrefix);
+        const hostCode = typeof req.input.hostCode === "string" ? req.input.hostCode : "";
+        if (!prefixError && hostCode) {
+          try {
+            const matchValue = decision.adoptPrefix.trim();
+            const existing = await this.deps.hostExecPolicies.list();
+            const duplicate = existing.some(
+              (r) =>
+                r.enabled &&
+                r.hostCode === hostCode &&
+                r.tool === "host_exec" &&
+                r.matchKind === "prefix" &&
+                r.decision === "allow" &&
+                r.scopeKind === (p.agent ? "agent" : "user") &&
+                r.scopeRef === (p.agent?.id ?? p.user.id) &&
+                r.matchValue === matchValue,
+            );
+            if (!duplicate) {
+              const rule = await this.deps.hostExecPolicies.create(
+                {
+                  hostCode,
+                  tool: "host_exec",
+                  scopeKind: p.agent ? "agent" : "user",
+                  scopeRef: p.agent?.id ?? p.user.id,
+                  matchKind: "prefix",
+                  matchValue,
+                  decision: "allow",
+                  unattended: "inherit",
+                  note: `审批卡一键放行（来源：${String(req.input.command ?? "").slice(0, 120)}）`,
+                },
+                { createdBy: p.user.id },
+              );
+              void this.deps.auditStore
+                .record({
+                  conversationId: p.conversation.id,
+                  taskId: p.task.id,
+                  userId: p.user.id,
+                  seq: -1,
+                  type: "policy_decision",
+                  text: `审批卡一键成策略：host=${hostCode} policy=${rule.id} prefix=${matchValue}`,
+                  recordedAt: new Date().toISOString(),
+                })
+                .catch(() => {});
+            }
+          } catch {
+            // 策略落库失败不阻断已批准的命令执行
+          }
+        }
+      }
+      return decision;
     };
     const questionResolver: QuestionResolver = async (req) => {
       markPending();
