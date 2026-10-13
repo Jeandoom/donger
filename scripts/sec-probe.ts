@@ -582,6 +582,7 @@ async function main(): Promise<void> {
     try {
       const conv = await conversationStore.create(userA.id, "probe", `${c.id}`);
       conversationId = conv.id;
+      approvalCalls = 0;
       db.prepare("UPDATE conversations SET agentId=?, permissionMode=? WHERE id=?").run(
         probeAgent.id,
         c.mode ?? "ask_before_change",
@@ -668,7 +669,8 @@ async function main(): Promise<void> {
         )
         .all(conversationId) as Array<{ role: string; text: string }>;
       for (const m of msgs) {
-        if (m.role === "assistant") replies.push(m.text ?? "");
+        // web 通道 assistant 回复落库 role="bot"（channel.send 未覆盖时的最终回复载体）
+        if (m.role === "assistant" || m.role === "bot") replies.push(m.text ?? "");
       }
     }
     const collected = replies.join("\n");
