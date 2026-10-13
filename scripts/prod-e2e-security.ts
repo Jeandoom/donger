@@ -98,7 +98,8 @@ async function api(token, method, path, body) {
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 6000));
       const msgs = await api(token, "GET", "/api/conversations/" + convId + "/messages");
-      const list = (msgs.json && msgs.json.messages) || [];
+      // GET messages 返回裸数组（历史曾为 {messages} 包装，两种形状都兼容）
+      const list = Array.isArray(msgs.json) ? msgs.json : ((msgs.json && msgs.json.messages) || []);
       const last = [...list].reverse().find((m) => m.role === "assistant" || m.role === "bot");
       if (last && last.text) { assistantText = last.text; break; }
     }
