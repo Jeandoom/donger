@@ -38,8 +38,8 @@ import {
  * - MCP 挂载（对齐 codex M2 + 部署运维轮 hostTools）：进程内平台工具台
  *   （platform/git/host/kb/audit）经共享 McpHttpBridge 以 Streamable HTTP 形态
  *   喂给 session/create 原生 mcpServers 参数；连接器 stdio/http 原样透传。
- *   审批门在桥级静态拒绝（force 门任何模式、非 force 门 ask 模式；full_access
- *   豁免非 force 门——与 claude canUseTool 同语义）。
+ *   审批门在桥级静态拒绝（ask 模式全拦；risk_guard 放行非 force 门；full_access
+ *   零拦截全放行——2026-10-13 权限模式轮，与 claude canUseTool 同语义）。
  * - 平台技能物化（G5 收口）：白名单技能每轮物化到 <重定向HOME>/.zcode/skills（ZCode
  *   用户级发现根，bundle resolveDefaultSkillRoots 实证）；agent 级技能（workspace/
  *   .agents/skills）由项目级发现根原生读取，零改动。
@@ -133,8 +133,8 @@ export function resolveToolDenylist(allowedTools: string[] | undefined): string[
 
 /** MCP 桥级审批门语义（共享 McpHttpBridge 的 gateCheck 注入）：命中审批门的工具在桥内
  *  静态拒绝——zcode 会话内的 requestPermission 通道是否覆盖 MCP 工具未经实证，
- *  fail-closed 优先。分流与平台铁律对齐：force 门任何权限模式不豁免；非 force 门
- *  full_access 放行（与 claude canUseTool 同语义），ask 模式拒绝。 */
+ *  fail-closed 优先。分流与平台铁律对齐（2026-10-13 权限模式轮）：ask 全拦；risk_guard
+ *  放行非 force 门（force 恒拒）；full_access 零拦截全放行。 */
 export function createMcpGateCheck(
   gates: GateRouter,
   permissionMode?: () => AgentPermissionMode,
@@ -145,7 +145,9 @@ export function createMcpGateCheck(
     if (!gated) return undefined;
     // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄
     if (gateAllowCheck?.(tool, input)) return undefined;
-    if (permissionMode?.() === "full_access" && !gated.force) return undefined;
+    const mode = permissionMode?.();
+    if (mode === "full_access") return undefined;
+    if (mode === "risk_guard" && !gated.force) return undefined;
     return gated;
   };
 }
@@ -566,15 +568,24 @@ export class ZcodeAgentRunner implements AgentRunner {
       if (hit) return deny(sensitiveReadDenyMessage(hit, existsSync(hit.resolved)));
     }
 
-    // 解码管线/渗出闸强制审批（INV-6/10/8，与 claude canUseTool 同语义）：任何权限
-    // 模式（含 full_access）都进审批卡；gateId 用合成 "shell-decision"。直通形态由
-    // 内核 hook（M1.5）先拦，本处理器覆盖 requestPermission 可达形态。
+    // 解码管线/渗出闸强制审批（INV-6/10/8，与 claude canUseTool 同语义）：ask/risk_guard
+    // 模式进审批卡；full_access 零拦截直接放行并落 inv_bypass 打标（2026-10-13 权限模式轮）。
+    // gateId 用合成 "shell-decision"。直通形态由内核 hook（M1.5）先拦，本处理器覆盖
+    // requestPermission 可达形态。
     const approvalHit = needsApprovalCheck(toolName, input, opts);
     if (approvalHit.hit) {
       const summary =
         toolName === "Bash" && typeof input.command === "string"
           ? String(input.command)
           : JSON.stringify(input).slice(0, 500);
+      if (opts.permissionMode?.() === "full_access") {
+        try {
+          opts.onApprovalBypass?.({ toolName, reason: approvalHit.reason, summary });
+        } catch {
+          // 打标失败不阻断放行
+        }
+        return { decision: "allow" };
+      }
       return this.resolveShellDecisionApproval(task, resolver, params, input, summary);
     }
 
@@ -595,8 +606,9 @@ export class ZcodeAgentRunner implements AgentRunner {
       return { decision: "allow" };
     }
 
-    // full_access 豁免审批门（force 门例外，与 claude 同语义）
-    if (opts.permissionMode?.() === "full_access" && !gated.force) {
+    // full_access 豁免全部审批门（2026-10-13 权限模式轮：零拦截含 force 门，拍板①；
+    // force 门审批语义由 risk_guard 模式承接，与 claude 同语义）
+    if (opts.permissionMode?.() === "full_access") {
       return { decision: "allow" };
     }
 

@@ -85,7 +85,7 @@ export interface AgentDTO {
   /** 反馈资源范围（# 反馈引用；缺省 = 功能未开启） */
   feedbackScope?: AgentFeedbackScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */
-  defaultPermissionMode?: "ask_before_change" | "full_access";
+  defaultPermissionMode?: "ask_before_change" | "risk_guard" | "full_access";
   createdAt: string;
   updatedAt: string;
 }

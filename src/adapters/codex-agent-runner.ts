@@ -181,9 +181,19 @@ export class CodexAgentRunner implements AgentRunner {
         upstreamToken,
         sdkTools.name,
         sdkTools.instance as never,
-        // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄
-        (tool, args) =>
-          opts.gateAllowCheck?.(tool, args) ? undefined : this.gates.match(tool, args),
+        // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄。
+        // 模式分流（2026-10-13 权限模式轮）：full_access 零拦截全放行；risk_guard 放行
+        // 非 force 门；codex 无审批卡通道，命中门（ask 模式/risk_guard 的 force 门）
+        // 维持桥内静态拒绝 fail-closed。
+        (tool, args) => {
+          if (opts.gateAllowCheck?.(tool, args)) return undefined;
+          const gated = this.gates.match(tool, args);
+          if (!gated) return undefined;
+          const mode = opts.permissionMode?.();
+          if (mode === "full_access") return undefined;
+          if (mode === "risk_guard" && !gated.force) return undefined;
+          return gated;
+        },
       );
       mcpServerConfigs[sdkTools.name] = { url };
     }

@@ -136,6 +136,9 @@ export interface AuditEvent {
     /** 主机命令策略裁决打标（seq=-1 执行外事件；specs/2026-10-12-host-exec-policy-design.md §6；
      *  text=裁决摘要，toolInput=命令前 300 字符。allow/deny/一键成策略落此；ask 有审批卡可见） */
     | "policy_decision"
+    /** 风险不变量命中但被 full_access 零拦截放行（seq=-1 执行外事件；2026-10-13 权限模式轮；
+     *  text=INV 判定原因，toolInput=调用摘要。零拦截≠零记录——事后追责/复盘凭此行） */
+    | "inv_bypass"
     /** zcode 轮末对账标记（specs/2026-09-29-zcode-record-fidelity-design.md M1；
      *  text=补录统计 JSON。幂等键：同 taskId 再对账时发现此行即整体跳过） */
     | "zcode_reconcile";

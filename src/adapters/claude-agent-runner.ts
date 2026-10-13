@@ -224,15 +224,28 @@ export class ClaudeAgentRunner implements AgentRunner {
             return { behavior: "deny" as const, message: denial.message, toolUseID: ctx.toolUseID };
           }
           // 解码管线/渗出闸强制审批（INV-6/10/8，spec 2026-10-10 §4.3/§4.5）：Bash 含
-          // 展开/替换/编码/解释器特征、或出网目标白名单外 → 任何权限模式（含
-          // full_access）都进审批卡。hook 的 ask 分支会把引擎直通形态拉到这里；本分支
-          // 兜住 canUseTool 直达形态。gateId 用合成 "shell-decision"（非门审批）。
+          // 展开/替换/编码/解释器特征、或出网目标白名单外 → ask/risk_guard 模式进审批卡；
+          // full_access 零拦截直接放行并落 inv_bypass 打标（2026-10-13 权限模式轮）。
+          // hook 的 ask 分支会把引擎直通形态拉到这里；本分支兜住 canUseTool 直达形态。
+          // gateId 用合成 "shell-decision"（非门审批）。
           const approvalHit = needsApprovalCheck(toolName, input, opts);
           if (approvalHit.hit) {
             const summary =
               toolName === "Bash" && typeof input.command === "string"
                 ? String(input.command)
                 : JSON.stringify(input).slice(0, 500);
+            if (opts.permissionMode?.() === "full_access") {
+              try {
+                opts.onApprovalBypass?.({
+                  toolName,
+                  reason: approvalHit.reason,
+                  summary,
+                });
+              } catch {
+                // 打标失败不阻断放行
+              }
+              return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
+            }
             const pipedDecision = await resolver({
               taskId: task.id,
               gateId: "shell-decision",
@@ -301,11 +314,12 @@ export class ClaudeAgentRunner implements AgentRunner {
           if (opts.gateAllowCheck?.(toolName, input)) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
           }
-          // 完全权限模式：命中审批门的调用直接放行（每次调用现取，轮内切换立即生效）。
-          // 只跳过审批门——白名单/写入边界/shell git 守卫/只读豁免在到达此处前已生效。
-          // force 门例外：full_access 不豁免（git-write/deploy/authoring 仍走审批，
-          // 防高权限会话绕过外发写防线；自我迭代智能体的安全前提）。
-          if (opts.permissionMode?.() === "full_access" && !gated.force) {
+          // 权限模式分流（每次调用现取，轮内切换立即生效）。只跳过审批门——白名单/
+          // 写入边界/shell git 守卫/只读豁免在到达此处前已生效。
+          // 2026-10-13 权限模式轮：full_access 零拦截含 force 门（拍板①）；risk_guard
+          // 豁免非 force 门（旧 full_access 语义），force 门仍走审批。
+          const mode = opts.permissionMode?.();
+          if (mode === "full_access" || (mode === "risk_guard" && !gated.force)) {
             return { behavior: "allow" as const, updatedInput: input, toolUseID: ctx.toolUseID };
           }
           const summary =

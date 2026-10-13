@@ -3866,7 +3866,7 @@ export class WebChannel implements Channel {
       if (!parsed.success) {
         res.writeHead(400);
         res.end(
-          JSON.stringify({ error: "permissionMode 无效（ask_before_change | full_access）" }),
+          JSON.stringify({ error: "permissionMode 无效（ask_before_change | risk_guard | full_access）" }),
         );
         return;
       }

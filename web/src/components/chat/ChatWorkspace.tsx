@@ -199,7 +199,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       }`}
     >
       <option value="ask_before_change">变更前问询</option>
-      <option value="full_access">完全权限（高危）</option>
+      <option value="risk_guard">风险拦截</option>
+      <option value="full_access">完全权限（零拦截·高危）</option>
     </select>
   ) : null;
 
@@ -331,7 +332,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         <ConfirmDialog
           open={confirmFullAccess}
           title="切换到完全权限模式？"
-          description="完全权限下，部署/发布/推送/Git 写入等高危操作将不再弹审批卡确认，直接执行（工具白名单与文件写入边界仍然生效）。定时/钩子等无人值守任务不受此开关影响，仍会逐项问询。"
+          description="完全权限（零拦截）下，所有审批卡不再弹出：出网请求、命令解释器脚本、Git 写入/推送、部署发布等一律直接执行（工具白名单与文件边界等硬拦截仍生效并留审计）。若需保留风险形态审批，请改用「风险拦截」模式。定时/钩子等无人值守任务不受此开关影响，仍会逐项问询。"
           confirmText="切换为完全权限"
           destructive
           onConfirm={() => {

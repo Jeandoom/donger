@@ -330,43 +330,57 @@ describe("ClaudeAgentRunner", () => {
     expect(calls).toBe(0);
   });
 
-  it("canUseTool：full_access 不豁免 force 门（仍走审批 resolver）", async () => {
+  it("canUseTool：full_access 零拦截豁免 force 门；risk_guard 下 force 门仍走审批", async () => {
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const gates = new GateRouter();
     gates.add({ gateId: "git-write", toolName: "mcp__donger-git__git_push", force: true });
     gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /deploy/ });
     const runner = new ClaudeAgentRunner(gates);
     const seen: string[] = [];
+    // risk_guard：force 门仍走审批（旧 full_access 语义由该模式承接）
     await collect(
-      runner.run(task, { ...opts, permissionMode: () => "full_access" }, async (req) => {
+      runner.run(task, { ...opts, permissionMode: () => "risk_guard" }, async (req) => {
         seen.push(req.gateId);
         return { approved: false, reason: "force 门须人工确认" };
       }),
     );
-    const push = await captured?.canUseTool?.(
+    const pushGuarded = await captured?.canUseTool?.(
       "mcp__donger-git__git_push",
       { repo: "r" },
       { toolUseID: "tu1" },
     );
-    expect(push?.behavior).toBe("deny");
+    expect(pushGuarded?.behavior).toBe("deny");
     expect(seen).toEqual(["git-write"]);
-    // 非 force 门在 full_access 下照旧豁免
-    const bash = await captured?.canUseTool?.(
+    // risk_guard 非 force 门豁免（与旧 full_access 同语义）
+    const bashGuarded = await captured?.canUseTool?.(
       "Bash",
       { command: "./deploy.sh" },
       { toolUseID: "tu2" },
     );
-    expect(bash?.behavior).toBe("allow");
+    expect(bashGuarded?.behavior).toBe("allow");
+    // full_access 零拦截：force 门直接放行（拍板①）
+    await collect(
+      runner.run(task, { ...opts, permissionMode: () => "full_access" }, async (req) => {
+        seen.push(req.gateId);
+        return { approved: false };
+      }),
+    );
+    const pushFull = await captured?.canUseTool?.(
+      "mcp__donger-git__git_push",
+      { repo: "r" },
+      { toolUseID: "tu3" },
+    );
+    expect(pushFull?.behavior).toBe("allow");
   });
 
-  it("canUseTool：解码管线 INV-10——解释器命令（bash script.sh）在 full_access 下仍强制审批", async () => {
+  it("canUseTool：解码管线 INV-10——解释器命令 risk_guard 强制审批；full_access 放行+打标", async () => {
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const gates = new GateRouter();
     gates.add({ gateId: "deploy", toolName: "Bash", commandPattern: /deploy/ });
     const runner = new ClaudeAgentRunner(gates);
     const seen: string[] = [];
     await collect(
-      runner.run(task, { ...opts, permissionMode: () => "full_access" }, async (req) => {
+      runner.run(task, { ...opts, permissionMode: () => "risk_guard" }, async (req) => {
         seen.push(req.gateId);
         return { approved: false, reason: "解释器命令须人工确认" };
       }),
@@ -378,6 +392,31 @@ describe("ClaudeAgentRunner", () => {
     );
     expect(r?.behavior).toBe("deny");
     expect(seen).toEqual(["shell-decision"]);
+    // full_access 零拦截：INV 命中放行且落 onApprovalBypass 打标，不调 resolver
+    const bypassed: string[] = [];
+    await collect(
+      runner.run(
+        task,
+        {
+          ...opts,
+          permissionMode: () => "full_access",
+          onApprovalBypass: (info) => bypassed.push(`${info.toolName}:${info.reason ?? ""}`),
+        },
+        async (req) => {
+          seen.push(req.gateId);
+          return { approved: false };
+        },
+      ),
+    );
+    const rFull = await captured?.canUseTool?.(
+      "Bash",
+      { command: "bash deploy.sh" },
+      { toolUseID: "tu-inv10-full" },
+    );
+    expect(rFull?.behavior).toBe("allow");
+    expect(bypassed).toHaveLength(1);
+    expect(bypassed[0]).toContain("Bash");
+    expect(seen).toEqual(["shell-decision"]); // full_access 分支未新增审批调用
   });
 
   it("canUseTool：解码管线 INV-6——base64/eval 形态强制审批（非门调用也拦）", async () => {
@@ -403,7 +442,7 @@ describe("ClaudeAgentRunner", () => {
     expect(seen).toEqual(["shell-decision"]);
   });
 
-  it("canUseTool：M2-7 bashAllowlist——白名单外命令强制审批（含 full_access）", async () => {
+  it("canUseTool：M2-7 bashAllowlist——白名单外命令 risk_guard 强制审批；full_access 零拦截放行", async () => {
     mockStream([{ type: "result", subtype: "success", result: "x" }]);
     const gates = new GateRouter();
     const runner = new ClaudeAgentRunner(gates);
@@ -411,14 +450,14 @@ describe("ClaudeAgentRunner", () => {
     await collect(
       runner.run(
         task,
-        { ...opts, permissionMode: () => "full_access", bashAllowlist: ["git status", "cat"] },
+        { ...opts, permissionMode: () => "risk_guard", bashAllowlist: ["git status", "cat"] },
         async (req) => {
           seen.push(req.gateId);
           return { approved: false, reason: "白名单外须人工确认" };
         },
       ),
     );
-    // 白名单外：进审批（shell-decision 合成门），full_access 不豁免
+    // 白名单外：进审批（shell-decision 合成门），risk_guard 不豁免
     const denied = await captured?.canUseTool?.("Bash", { command: "whoami" }, { toolUseID: "t1" });
     expect(denied?.behavior).toBe("deny");
     expect(seen).toEqual(["shell-decision"]);
@@ -438,6 +477,23 @@ describe("ClaudeAgentRunner", () => {
       { toolUseID: "t3" },
     );
     expect(mixed?.behavior).toBe("deny");
+    // full_access 零拦截：白名单外放行（bashAllowlist 审批语义仅 ask/risk_guard）
+    await collect(
+      runner.run(
+        task,
+        { ...opts, permissionMode: () => "full_access", bashAllowlist: ["git status", "cat"] },
+        async (req) => {
+          seen.push(req.gateId);
+          return { approved: false };
+        },
+      ),
+    );
+    const allowedFull = await captured?.canUseTool?.(
+      "Bash",
+      { command: "whoami" },
+      { toolUseID: "t1-full" },
+    );
+    expect(allowedFull?.behavior).toBe("allow");
   });
 
   it("canUseTool：permissionMode 为取值器，轮内切换立即生效", async () => {

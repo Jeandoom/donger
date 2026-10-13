@@ -66,9 +66,15 @@ export interface RunOptions {
   gitAllowShellGit?: boolean;
   /**
    * 会话权限模式取值器（每次工具调用现取，轮内切换立即生效）：
-   * full_access 时命中审批门的调用直接放行；白名单/写边界/shell git 守卫不受影响。
+   * full_access 时全部审批类门（常规+INV+force）直接放行；risk_guard 仅放行常规门；
+   * deny 级静态守卫任何模式不豁免。
    */
   permissionMode?: () => AgentPermissionMode;
+  /**
+   * INV 零拦截放行打标（full_access 专用）：解码管线/渗出闸/bashAllowlist 命中但被
+   * 零拦截放行时调用，orchestrator 落 inv_bypass 审计行（零拦截≠零记录）。
+   */
+  onApprovalBypass?: (info: { toolName: string; reason?: string; summary: string }) => void;
   /**
    * 审批门放行钩子（agent 级白名单，2026-10-10 拍板）：返回 true 则该次命中门的调用
    * 免审批放行（含 force 门）。判定范围由 orchestrator 侧实现收窄（当前仅 host_exec

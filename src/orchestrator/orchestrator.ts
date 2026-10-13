@@ -633,6 +633,25 @@ export class Orchestrator {
       let base = p.skills ? { ...runOptions, skills: p.skills } : runOptions;
       // 会话权限模式取值器：canUseTool 每次工具调用现取（轮内经 PATCH 切换立即生效）
       base = { ...base, permissionMode: () => this.effectivePermissionMode(p.conversation.id) };
+      // INV 零拦截放行打标（full_access 专用，2026-10-13 权限模式轮）：解码管线/渗出闸/
+      // bashAllowlist 命中被零拦截放行时落 inv_bypass 审计行——零拦截≠零记录。
+      base = {
+        ...base,
+        onApprovalBypass: (info) => {
+          void this.deps.auditStore
+            .record({
+              conversationId: p.conversation.id,
+              taskId: p.task.id,
+              userId: p.user.id,
+              seq: -1,
+              type: "inv_bypass",
+              text: `风险门命中但 full_access 零拦截放行：${info.reason ?? "needsApprovalCheck 命中"}`,
+              toolInput: JSON.stringify({ tool: info.toolName, summary: info.summary.slice(0, 300) }),
+              recordedAt: new Date().toISOString(),
+            })
+            .catch(() => {});
+        },
+      };
       // 主机执行策略放行（含 force 门）：判定收窄在钩子内（工具名+hostCode+命令域函数），
       // runner 侧不解释语义。M1 装配口径：仅 allow 免审；skip/deny 守卫接线在 M2/M3，
       // 暂回审批门（fail-closed）。放行打标审计（fire-and-forget，失败不阻断执行）。

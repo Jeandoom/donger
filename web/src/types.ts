@@ -147,8 +147,14 @@ export type ChatErrorKey =
 
 export type ChatErrors = Partial<Record<ChatErrorKey, string>>;
 
-/** 会话权限模式：full_access 跳过工具审批门（白名单/写边界/shell git 守卫不受影响） */
-export type AgentPermissionMode = "ask_before_change" | "full_access";
+/**
+ * 会话权限模式（2026-10-13 三档）：
+ * - ask_before_change：命中审批门弹卡等人工决议；
+ * - risk_guard（风险拦截）：常规门放行，风险不变量（出网白名单外/命令展开编码/解释器/
+ *   bashAllowlist/git 写/部署）仍弹卡；
+ * - full_access：零审批拦截（全部审批卡不再弹出），deny 级守卫（白名单/写边界/敏感读）仍生效。
+ */
+export type AgentPermissionMode = "ask_before_change" | "risk_guard" | "full_access";
 
 /** 会话摘要（从 GET /api/conversations 返回） */
 export interface ConversationSummary {

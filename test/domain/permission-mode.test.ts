@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_PERMISSION_MODES,
+  AgentPermissionModeSchema,
   DEFAULT_PERMISSION_MODE,
   resolvePermissionMode,
   resolveUnattendedPermissionMode,
@@ -13,6 +15,13 @@ describe("resolvePermissionMode", () => {
 
   it("会话未覆盖时跟随智能体默认", () => {
     expect(resolvePermissionMode(undefined, "full_access")).toBe("full_access");
+    expect(resolvePermissionMode(undefined, "risk_guard")).toBe("risk_guard");
+  });
+
+  it("三模式枚举含 risk_guard（2026-10-13 权限模式轮）", () => {
+    expect(AGENT_PERMISSION_MODES).toContain("risk_guard");
+    expect(AgentPermissionModeSchema.safeParse("risk_guard").success).toBe(true);
+    expect(AgentPermissionModeSchema.safeParse("unknown_mode").success).toBe(false);
   });
 
   it("都未配置时用系统缺省（变更前问询）", () => {

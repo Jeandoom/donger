@@ -419,6 +419,56 @@ describe("ZcodeAgentRunner", () => {
     expect(seenRequests).toContain("shell-decision:Bash:curl https://postman-echo.com/post");
   });
 
+  it("INV 渗出闸三模式：risk_guard 仍弹卡；full_access 零拦截放行+inv_bypass 打标", async () => {
+    newWorkDir();
+    const egressParams = {
+      method: "interaction/requestPermission",
+      params: {
+        toolCallId: "tc-eg",
+        toolName: "Bash",
+        input: { command: "curl https://postman-echo.com/post" },
+      },
+      answered: undefined,
+    };
+    // risk_guard：渗出闸命中 → 仍走审批（旧 full_access 语义由该模式承接）
+    const serverG = new FakeZcodeServer();
+    serverG.reverseOnSend = [{ ...egressParams }];
+    serverG.eventsAfterSend = [completedEvent("ok")];
+    const runnerG = new ZcodeAgentRunner(makeGates([]), factoryFor(serverG).factory);
+    await collect(
+      runnerG.run(task, { ...baseOpts(), permissionMode: () => "risk_guard" }, async () => ({
+        approved: false,
+        reason: "出网须确认",
+      })),
+    );
+    const revG = serverG.reverseOnSend.at(0);
+    expect(revG?.answered).toMatchObject({ decision: "deny", reason: "出网须确认" });
+
+    // full_access：零拦截放行，不调 resolver，落 onApprovalBypass
+    const serverF = new FakeZcodeServer();
+    serverF.reverseOnSend = [{ ...egressParams }];
+    serverF.eventsAfterSend = [completedEvent("ok")];
+    const bypassed: string[] = [];
+    const runnerF = new ZcodeAgentRunner(makeGates([]), factoryFor(serverF).factory);
+    await collect(
+      runnerF.run(
+        task,
+        {
+          ...baseOpts(),
+          permissionMode: () => "full_access",
+          onApprovalBypass: (info) => bypassed.push(`${info.toolName}:${info.reason ?? ""}`),
+        },
+        async () => {
+          throw new Error("full_access 下不应进入审批 resolver");
+        },
+      ),
+    );
+    const revF = serverF.reverseOnSend.at(0);
+    expect(revF?.answered).toMatchObject({ decision: "allow" });
+    expect(bypassed).toHaveLength(1);
+    expect(bypassed[0]).toContain("Bash");
+  });
+
   it("full_access 豁免非 force 门；plan 模式（只读白名单）与 denylist 解析", async () => {
     newWorkDir();
     const server = new FakeZcodeServer();
@@ -629,21 +679,24 @@ describe("ZcodeAgentRunner", () => {
     ]);
   });
 
-  it("MCP 桥级门语义：force 门任何模式拒、非 force 门 full_access 豁免、未命中放行", () => {
+  it("MCP 桥级门语义三模式：ask 全拦、risk_guard 放行非 force、full_access 零拦截全放行", () => {
     const gates = makeGates([
       { gateId: "host-ops", toolName: "mcp__donger-host__exec", force: true },
       { gateId: "authoring", toolName: "mcp__donger-platform__create_asset", force: false },
     ]);
     const ask = createMcpGateCheck(gates, () => "ask_before_change");
+    const guarded = createMcpGateCheck(gates, () => "risk_guard");
     const full = createMcpGateCheck(gates, () => "full_access");
     expect(ask("mcp__donger-host__exec", {})).toEqual({ gateId: "host-ops", force: true });
-    // force 门 full_access 不豁免（平台铁律）
-    expect(full("mcp__donger-host__exec", {})).toEqual({ gateId: "host-ops", force: true });
     expect(ask("mcp__donger-platform__create_asset", {})).toEqual({
       gateId: "authoring",
       force: false,
     });
-    // 非 force 门 full_access 豁免（与 claude canUseTool 同语义）
+    // risk_guard：非 force 门豁免（旧 full_access 语义）；force 门桥内静态拒绝（无卡通道 fail-closed）
+    expect(guarded("mcp__donger-platform__create_asset", {})).toBeUndefined();
+    expect(guarded("mcp__donger-host__exec", {})).toEqual({ gateId: "host-ops", force: true });
+    // full_access 零拦截：force 门一并放行（2026-10-13 拍板①）
+    expect(full("mcp__donger-host__exec", {})).toBeUndefined();
     expect(full("mcp__donger-platform__create_asset", {})).toBeUndefined();
     // 无门工具（kb_write 等）桥不拦——静态守卫在权限回调层
     expect(ask("mcp__donger-kb__kb_write", {})).toBeUndefined();

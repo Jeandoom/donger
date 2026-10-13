@@ -116,14 +116,25 @@ export function ToolsPermsSection({
       description="智能体能用哪些工具、以什么权限运行"
     >
       <FormField label="默认对话模式" hint="会话中可临时切换；无人值守任务恒按变更前问询">
-        <div className="grid gap-2.5 sm:grid-cols-2">
+        <div className="grid gap-2.5 sm:grid-cols-3">
           <RadioCard
             name="agent-perm-mode"
             value="ask_before_change"
-            checked={form.defaultPermissionMode !== "full_access"}
+            checked={
+              form.defaultPermissionMode !== "full_access" &&
+              form.defaultPermissionMode !== "risk_guard"
+            }
             onChange={() => patch({ defaultPermissionMode: "ask_before_change" })}
             title="变更前问询（推荐）"
             description="写入/高危操作先弹审批卡确认后再执行"
+          />
+          <RadioCard
+            name="agent-perm-mode"
+            value="risk_guard"
+            checked={form.defaultPermissionMode === "risk_guard"}
+            onChange={() => patch({ defaultPermissionMode: "risk_guard" })}
+            title="风险拦截"
+            description="常规操作免审批直跑；风险形态（出网白名单外/命令展开编码/解释器脚本/git 写/部署）仍弹卡"
           />
           <RadioCard
             name="agent-perm-mode"
@@ -131,8 +142,8 @@ export function ToolsPermsSection({
             tone="danger"
             checked={form.defaultPermissionMode === "full_access"}
             onChange={() => patch({ defaultPermissionMode: "full_access" })}
-            title="完全权限"
-            description="跳过审批卡直接执行（deploy/push 等高危操作不再询问），需谨慎"
+            title="完全权限（零拦截）"
+            description="全部审批卡不再弹出（含出网/git 写/部署），仅保留目录边界硬拦截并留审计，需谨慎"
           />
         </div>
       </FormField>

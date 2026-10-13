@@ -253,3 +253,33 @@ AgentCapabilitySet {
 | 残余风险（接受项） | — | ①TOCTOU 审批到执行窗口（单机形态接受，M3 宿主边界兜底）；②DNS/ICMP 底层隐通道（渗出闸按 HTTP(S) 域名管）；③LLM 供应商侧可见上下文（INV-3b 本源治理收敛）；④模型遵从性攻击（间接注入）仍可能发起请求——机制侧保证请求被受理不了 |
 
 **总体结论**：方案理论闭环（全部反例可被不变量体系吸收，无一需要推翻架构）；M1 六+一项全部有已实证的技术前提。**方案可靠、可行。**
+
+---
+
+## 附录：权限模式与不变量的模式相关性（2026-10-13 权限模式轮修订）
+
+本节修订正文「任何权限模式（含 full_access）命中即进审批」的表述。自 2026-10-13 起
+会话权限模式扩为三档，不变量门的语义随档位分化：
+
+| 模式 | 常规审批门 | INV 强制审批（INV-6/10 解码管线、INV-8 渗出闸、M2-7 bashAllowlist） | force 门（git-write/deploy/authoring） | deny 级静态守卫（白名单/写边界/shell git/要害路径读/启动敏感文件/env 脱敏/敏感读扫描） |
+|---|---|---|---|---|
+| ask_before_change（缺省） | 审批卡 | 审批卡 | 审批卡 | 硬拒（不弹卡），任何模式不豁免 |
+| risk_guard（风险拦截） | 放行 | 审批卡 | 审批卡 | 硬拒 |
+| full_access（完全权限，零拦截） | 放行 | 放行 + inv_bypass 审计打标 | 放行（拍板①） | 硬拒 |
+
+要点：
+
+1. **零拦截的兑现与边界**：full_access 下全部审批类门（常规+INV+force）不再弹卡；
+   兜底只剩 deny 级守卫（目录边界）与全量审计。用户在知情拍板（2026-10-13 会话）
+   下接受了「注入×合法凭证×外传」链路在零拦截档的可达性。
+2. **零拦截≠零记录**：INV 命中被放行时，runner 经 RunOptions.onApprovalBypass 落
+   `inv_bypass` 审计行（seq=-1 执行外事件），含判定原因与调用摘要——事后追责凭此。
+3. **risk_guard 承接旧 full_access 语义**：常规门免审、INV/force 仍弹卡。原 F 组
+   探针（M2-11 CI 门）整体迁至 risk_guard 档断言；新增 G 组（G-C3）在 full_access
+   档断言「审批桩零调用」的零拦截正语义；prod-e2e P5（管线审批挂起）迁 risk_guard，
+   新增 P6（零拦截放行正断言）。
+4. **无人值守不变**：定时/钩子/工作流触发仍强制 ask_before_change（resolveUnattended
+   PermissionMode），高档模式仅限交互式会话。
+5. **三引擎对称**：claude canUseTool、zcode handlePermissionRequest + MCP 桥
+   gateCheck、codex MCP 桥 gateCheck（无审批卡通道，risk_guard 的 force 门维持
+   桥内静态拒绝 fail-closed）三处同一判定语义。
