@@ -319,3 +319,55 @@ describe("chatReducer 会话权限模式乐观更新", () => {
     expect(state.conversations.find((c) => c.id === "c2")?.title).toBe("帮我整理物料清单");
   });
 });
+
+describe("chatReducer 审批卡生命周期", () => {
+  const card = {
+    type: "approval_card" as const,
+    approvalId: "ap-1",
+    gateId: "shell-decision",
+    title: "审批门：shell-decision",
+    summary: "node -e '...'",
+  };
+
+  function stateWithCard(): ChatState {
+    return chatReducer(initialChatState(), { type: "ws", msg: card });
+  }
+
+  it("approval_closed 仅撤同实例卡：迟到事件不得误清新弹出的卡", () => {
+    const withCard = stateWithCard();
+    expect(withCard.pendingApproval?.respondId).toBe("ap-1");
+
+    const cleared = chatReducer(withCard, {
+      type: "ws",
+      msg: { type: "approval_closed", approvalId: "ap-1", reason: "任务已中断" },
+    });
+    expect(cleared.pendingApproval).toBeNull();
+
+    // 旧实例的消亡事件晚于新卡到达：新卡必须保留
+    const withNewCard = chatReducer(withCard, {
+      type: "ws",
+      msg: { ...card, approvalId: "ap-2" },
+    });
+    const kept = chatReducer(withNewCard, {
+      type: "ws",
+      msg: { type: "approval_closed", approvalId: "ap-1", reason: "任务已中断" },
+    });
+    expect(kept.pendingApproval?.respondId).toBe("ap-2");
+  });
+
+  it("result/error 回合收口时清审批卡（残卡必为失效实例）", () => {
+    const withCard = stateWithCard();
+
+    const afterResult = chatReducer(withCard, {
+      type: "ws",
+      msg: { type: "result", subtype: "success", text: "done" },
+    });
+    expect(afterResult.pendingApproval).toBeNull();
+
+    const afterError = chatReducer(stateWithCard(), {
+      type: "ws",
+      msg: { type: "error", error: "任务已中断" },
+    });
+    expect(afterError.pendingApproval).toBeNull();
+  });
+});

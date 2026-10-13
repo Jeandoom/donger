@@ -2909,3 +2909,97 @@ describe("WebChannel /api/agents 独立知识库（kbWriteTargetId）", () => {
     expect(stored?.kbWriteTargetId ?? null).toBeNull();
   });
 });
+
+describe("WebChannel 审批实例生命周期（approval_closed 撤卡事件）", () => {
+  /** 最小无认证通道：审批实例与 SSE 广播不依赖 store；会话 id 用任意串即可 */
+  async function startApprovalChannel(): Promise<number> {
+    const tmp = mkdtempSync(join(tmpdir(), "web-approval-"));
+    web = new WebChannel({ port: 0, workspaceDir: tmp });
+    web.onMessage(() => {});
+    await web.ready();
+    const port = web.boundPort;
+    if (!port) throw new Error("server not listening");
+    return port;
+  }
+
+  function subscribe(convId: string): Array<Record<string, unknown>> {
+    const events: Array<Record<string, unknown>> = [];
+    web.subscribeSSE(convId, {
+      write: (event) => events.push(event as Record<string, unknown>),
+      close: () => {},
+    });
+    return events;
+  }
+
+  it("respond 消费一次性实例：resolver 解出决议、广播 approval_closed、重复 respond 404", async () => {
+    const port = await startApprovalChannel();
+    const convId = "conv-respond";
+    const events = subscribe(convId);
+
+    const decision = web.requestApproval(convId, {
+      gateId: "shell-decision",
+      title: "审批门：shell-decision",
+      summary: "node -e 'fetch(...)'",
+    });
+    const card = events.find((e) => e.type === "approval_card") as
+      | { approvalId?: string }
+      | undefined;
+    expect(card?.approvalId).toBeTruthy();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/approvals/${card?.approvalId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(res.status).toBe(200);
+    await expect(decision).resolves.toEqual({ approved: true });
+
+    const closed = events.filter((e) => e.type === "approval_closed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.approvalId).toBe(card?.approvalId);
+    expect(closed[0]?.reason).toBe("已通过");
+
+    // 一次性实例已消费：第二端再点同一张卡 → 404（前端据 approval_closed 已撤卡，这里是协议兜底）
+    const res2 = await fetch(`http://127.0.0.1:${port}/api/approvals/${card?.approvalId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: false }),
+    });
+    expect(res2.status).toBe(404);
+    const body = (await res2.json()) as { error?: string };
+    expect(body.error).toContain("not found or expired");
+  });
+
+  it("cancelPendingApprovals：广播 approval_closed（任务已中断）+ deny 收口，respond 随之 404", async () => {
+    const port = await startApprovalChannel();
+    const convId = "conv-cancel";
+    const events = subscribe(convId);
+
+    const decision = web.requestApproval(convId, {
+      gateId: "shell-decision",
+      title: "审批门：shell-decision",
+      summary: "node -e 'fetch(...)'",
+    });
+    const card = events.find((e) => e.type === "approval_card") as
+      | { approvalId?: string }
+      | undefined;
+    // 挂起恢复端点能看到活实例
+    expect(web.getPendingApproval(convId)?.approvalId).toBe(card?.approvalId);
+
+    web.cancelPendingApprovals(convId);
+    await expect(decision).resolves.toEqual({ approved: false, reason: "任务已中断" });
+    expect(web.getPendingApproval(convId)).toBeNull();
+
+    const closed = events.filter((e) => e.type === "approval_closed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.approvalId).toBe(card?.approvalId);
+    expect(closed[0]?.reason).toBe("任务已中断");
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/approvals/${card?.approvalId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(res.status).toBe(404);
+  });
+});
