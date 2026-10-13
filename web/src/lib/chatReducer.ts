@@ -416,6 +416,11 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
           ...(msg.adoptDraft ? { adoptDraft: msg.adoptDraft } : {}),
         },
       };
+    case "approval_closed":
+      // 审批实例消亡（任务中断/他端已决议）：仅当当前卡仍是该实例时撤卡，防迟到事件误清新弹出的卡
+      return state.pendingApproval?.respondId === msg.approvalId
+        ? { ...state, pendingApproval: null }
+        : state;
     case "credential_missing_card":
       return {
         ...state,
@@ -448,7 +453,14 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
       };
     case "result": {
       const closed = closeTurn(state.messages, msg.subtype === "error" ? "error" : "done");
-      return { ...state, isGenerating: false, messages: closed, pendingQuestion: null };
+      // 回合已收口：审批门阻塞着轮次不可能正常结束，残留卡必是失效实例（任务中断/重启清扫），撤下
+      return {
+        ...state,
+        isGenerating: false,
+        messages: closed,
+        pendingQuestion: null,
+        pendingApproval: null,
+      };
     }
     case "error":
       return {
@@ -457,6 +469,7 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         messages: closeTurn(state.messages, "error"),
         errors: { ...state.errors, stream: msg.error },
         pendingQuestion: null,
+        pendingApproval: null,
       };
     default:
       return state;

@@ -397,6 +397,12 @@ type SSEEvent =
       adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
     }
   | {
+      /** 审批实例消亡（任务中断/他端已决议）：在看的客户端据此撤卡，防止残卡点击 respond 恒 404 */
+      type: "approval_closed";
+      approvalId: string;
+      reason: string;
+    }
+  | {
       type: "credential_missing_card";
       reqId: string;
       conversationId: string;
@@ -966,10 +972,16 @@ export class WebChannel implements Channel {
 
   /** 任务停止/中断时解开该会话全部挂起审批：以「任务已中断」deny，runner 侧 abort 后不消费决策，仅解除 canUseTool await 让轮次可收口。 */
   cancelPendingApprovals(conversationId: string): void {
-    for (const [gateId, pending] of this.pendingApprovalResolves) {
+    for (const [approvalId, pending] of this.pendingApprovalResolves) {
       if (pending.conversationId !== conversationId) continue;
-      this.pendingApprovalResolves.delete(gateId);
-      this.approvalStreams.delete(gateId);
+      this.pendingApprovalResolves.delete(approvalId);
+      this.approvalStreams.delete(approvalId);
+      // 实例消亡必须通知在看的客户端撤卡：resolver 是纯内存，残卡点击 respond 恒 404
+      this.broadcastToConversation(conversationId, {
+        type: "approval_closed",
+        approvalId,
+        reason: "任务已中断",
+      });
       pending.resolve({ approved: false, reason: "任务已中断" });
     }
   }
@@ -1568,6 +1580,12 @@ export class WebChannel implements Channel {
       }
     }
     this.pendingApprovalResolves.delete(approvalId);
+    // 一次性实例已被本端消费：同会话其余在看的标签页据事件撤卡，避免点击残卡得到 404
+    this.broadcastToConversation(pending.conversationId, {
+      type: "approval_closed",
+      approvalId,
+      reason: body.approved ? "已通过" : "已驳回",
+    });
     // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
     pending.resolve({
       approved: body.approved,

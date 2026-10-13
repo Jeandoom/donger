@@ -21,6 +21,12 @@ export type SSEEvent =
       adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
     }
   | {
+      /** 审批实例消亡（任务中断/他端已决议）：在看的客户端据此撤卡，防残卡点击 respond 恒 404 */
+      type: "approval_closed";
+      approvalId: string;
+      reason: string;
+    }
+  | {
       type: "credential_missing_card";
       reqId: string;
       conversationId: string;

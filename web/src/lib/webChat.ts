@@ -22,6 +22,37 @@ function errorText(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+/** GET pending-approval 返回的审批 DTO（后端 getPendingApproval 形态） */
+type PendingApprovalDTO = {
+  approvalId: string;
+  gateId: string;
+  title: string;
+  summary: string;
+  adoptDraft?: PendingApproval["adoptDraft"];
+};
+
+/** 审批 DTO → 前端卡片态（切换会话恢复 / SSE 重连重查 / 审批 404 换绑共用） */
+function toPendingApproval(approval: PendingApprovalDTO): PendingApproval {
+  return {
+    respondId: approval.approvalId,
+    gateId: approval.gateId,
+    title: approval.title,
+    summary: approval.summary,
+    ...(approval.adoptDraft ? { adoptDraft: approval.adoptDraft } : {}),
+  };
+}
+
+/** 非 2xx 响应的语义化错误：优先后端 {error} 字段，退回 HTTP 状态码 */
+async function responseErrorDetail(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string };
+    if (body.error) return body.error;
+  } catch {
+    // 非 JSON 体退回状态码
+  }
+  return `HTTP ${response.status}`;
+}
+
 export function useWebChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
   const sseRef = useRef<SSEClient | null>(null);
@@ -94,8 +125,27 @@ export function useWebChat() {
     }
   }, [getUserId]);
 
+  /** 重查会话挂起审批（SSE 重连握手 / 审批 404 换绑共用）：有活实例重新锚定，没有则撤下残卡 */
+  const refreshPendingApproval = useCallback(async (conversationId: string): Promise<void> => {
+    const token = getToken();
+    try {
+      const response = await apiFetch(`/api/conversations/${conversationId}/pending-approval`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) return;
+      const { approval } = (await response.json()) as { approval: PendingApprovalDTO | null };
+      dispatch({
+        type: "set_pending_approval",
+        approval: approval ? toPendingApproval(approval) : null,
+      });
+    } catch {
+      // 尽力而为：查询失败保持现状
+    }
+  }, []);
+
   /** 连接 SSE 流 */
-  const connectSSE = useCallback((conversationId: string) => {
+  const connectSSE = useCallback(
+    (conversationId: string) => {
     // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
     const token = getToken();
     const qs = token ? `?token=${encodeURIComponent(token)}` : "";
@@ -182,6 +232,17 @@ export function useWebChat() {
       }
     });
 
+    eventSource.addEventListener("approval_closed", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "approval_closed") {
+          dispatch({ type: "ws", msg: data });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("credential_missing_card", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -253,6 +314,8 @@ export function useWebChat() {
     eventSource.onopen = () => {
       dispatch({ type: "connection", state: "open" });
       dispatch({ type: "clear_error", key: "stream" });
+      // 重连/重开即重查挂起审批：服务重启清扫后残卡随握手撤下，活审批重新锚定
+      void refreshPendingApproval(conversationId);
     };
 
     eventSource.onerror = (event) => {
@@ -267,7 +330,7 @@ export function useWebChat() {
     };
 
     return eventSource;
-  }, []);
+  }, [refreshPendingApproval]);
 
   // 初始连接
   useEffect(() => {
@@ -345,15 +408,7 @@ export function useWebChat() {
         })
           .then((response) =>
             response.ok
-              ? (response.json() as Promise<{
-                  approval: {
-                    approvalId: string;
-                    gateId: string;
-                    title: string;
-                    summary: string;
-                    adoptDraft?: PendingApproval["adoptDraft"];
-                  } | null;
-                }>)
+              ? (response.json() as Promise<{ approval: PendingApprovalDTO | null }>)
               : { approval: null },
           )
           .catch(() => ({ approval: null })),
@@ -375,17 +430,7 @@ export function useWebChat() {
             dispatch({ type: "set_pending_question", question: question ?? null });
             dispatch({
               type: "set_pending_approval",
-              approval: approval
-                ? {
-                    respondId: approval.approvalId,
-                    gateId: approval.gateId,
-                    title: approval.title,
-                    summary: approval.summary,
-                    ...(approval.adoptDraft
-                      ? { adoptDraft: approval.adoptDraft as PendingApproval["adoptDraft"] }
-                      : {}),
-                  }
-                : null,
+              approval: approval ? toPendingApproval(approval) : null,
             });
             setLlmOptions(llmOpts);
             // 恢复上次选择；不在当前可选集（配置已变）则回落首项
@@ -520,6 +565,7 @@ export function useWebChat() {
     async (approved: boolean, reason?: string, adoptPrefix?: string) => {
       // 审批响应通过 HTTP POST 发送
       const pending = state.pendingApproval;
+      const conversationId = state.activeConversationId;
       if (!pending) return;
 
       const token = getToken();
@@ -537,7 +583,19 @@ export function useWebChat() {
             ...(approved && adoptPrefix ? { adoptPrefix } : {}),
           }),
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+          // 404 = 审批实例已消亡（任务中断/他端已决议/重启清扫）的死卡：重查换绑而不是裸报错
+          if (response.status === 404 && conversationId) {
+            await refreshPendingApproval(conversationId);
+            dispatch({
+              type: "set_error",
+              key: "stream",
+              message: "该审批已失效（任务可能已被停止或服务重启），已刷新审批状态",
+            });
+            return;
+          }
+          throw new Error(await responseErrorDetail(response));
+        }
         dispatch({ type: "clear_approval" });
       } catch (error: unknown) {
         dispatch({
@@ -547,7 +605,7 @@ export function useWebChat() {
         });
       }
     },
-    [state.pendingApproval],
+    [refreshPendingApproval, state.activeConversationId, state.pendingApproval],
   );
 
   const decideCredentialMissing = useCallback(
