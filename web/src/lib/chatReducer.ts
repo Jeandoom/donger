@@ -78,6 +78,15 @@ export function isDraftConversation(conversation: ConversationSummary | undefine
   return conversation?.isDraft === true;
 }
 
+/** 会话列表排序：未保存草稿置顶，其余按 updatedAt 倒序（最近活跃在前，与后端 listByUser 排序一致）  */
+export function sortByRecentFirst(conversations: ConversationSummary[]): ConversationSummary[] {
+  const drafts = conversations.filter((conversation) => isDraftConversation(conversation));
+  const rest = conversations
+    .filter((conversation) => !isDraftConversation(conversation))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return [...drafts, ...rest];
+}
+
 /** 取或建当前进行中的回合（最后一个 running 状态的回合消息），返回新消息数组与回合下标 */
 function ensureTurn(messages: ChatMessage[]): { messages: ChatMessage[]; index: number } {
   const last = messages[messages.length - 1];
@@ -211,10 +220,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "set_conversations":
       return {
         ...state,
-        conversations: [
+        conversations: sortByRecentFirst([
           ...state.conversations.filter((conversation) => conversation.isDraft),
           ...action.conversations,
-        ],
+        ]),
         loadingConversations: false,
       };
     case "switch_conversation": {
@@ -288,8 +297,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "update_conversation":
       return {
         ...state,
-        conversations: state.conversations.map((c) =>
-          c.id === action.conversationId ? { ...c, ...action.patch } : c,
+        // patch 携带 updatedAt（发消息触达）时重排，活跃会话实时置顶
+        conversations: sortByRecentFirst(
+          state.conversations.map((c) =>
+            c.id === action.conversationId ? { ...c, ...action.patch } : c,
+          ),
         ),
       };
     default:

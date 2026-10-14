@@ -535,6 +535,12 @@ export function useWebChat() {
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         dispatch({ type: "message_delivery", id, delivery: "accepted" });
+        // 活跃度触达：与后端「消息落库刷新会话 updatedAt」对齐，发消息后该会话实时排到列表最前
+        dispatch({
+          type: "update_conversation",
+          conversationId,
+          patch: { updatedAt: new Date().toISOString() },
+        });
       } catch {
         dispatch({ type: "message_delivery", id, delivery: "failed" });
       }
