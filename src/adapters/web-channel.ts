@@ -4814,7 +4814,11 @@ export class WebChannel implements Channel {
     }
     if (url === "/api/agents" && req.method === "POST") {
       const me = this.requireUserId(req);
-      const body = JSON.parse(await this.readBody(req));
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      // D1（知识体系轮）：新建 agent 未显式表态时缺省开启收尾萃取（存量不自动打开）
+      if (body.kbAutoLearn === undefined && body.learnRoutes === undefined) {
+        body.kbAutoLearn = true;
+      }
       const input = parseAgentInput({ ...body, ownerId: me });
       const bindingError = await this.validateGitBindings(input.gitRepositories ?? []);
       if (bindingError) return this.json(res, { error: bindingError }, 400);
