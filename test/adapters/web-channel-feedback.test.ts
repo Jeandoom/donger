@@ -237,6 +237,29 @@ describe("反馈 API：状态流转 admin 收口", () => {
   });
 });
 
+describe("反馈 API：admin 删除（守卫收口 + 级联清理）", () => {
+  it("member DELETE → 403；admin 删除 200 且主项/回复/附件目录全清；不存在 404", async () => {
+    const port = await startChannel();
+    const alice = await makeUser("alice");
+    const admin = await makeUser("root", "admin");
+    const created = await req(port, "POST", "/api/feedback", alice.token, { content: "待删" });
+    const { id } = (await created.json()) as { id: string };
+    await req(port, "POST", `/api/feedback/${id}/replies`, admin.token, { content: "回复" });
+    const attDir = join(tmpDir, "feedback", id);
+    mkdirSync(attDir, { recursive: true });
+    writeFileSync(join(attDir, "pic.png"), "fake-png");
+
+    expect((await req(port, "DELETE", `/api/feedback/${id}`, alice.token)).status).toBe(403);
+    expect((await req(port, "DELETE", `/api/feedback/${id}`, admin.token)).status).toBe(200);
+    expect(await feedbackStore.get(id)).toBeUndefined();
+    expect(await feedbackStore.listReplies(id)).toEqual([]);
+    expect(existsSync(attDir)).toBe(false);
+    expect((await req(port, "GET", `/api/feedback/${id}`, admin.token)).status).toBe(404);
+
+    expect((await req(port, "DELETE", "/api/feedback/ghost", admin.token)).status).toBe(404);
+  });
+});
+
 describe("反馈附件：上传-收编-回读全链路", () => {
   it("上传落草稿目录 → 创建反馈收编 → 属主/管理员可回读，他人 404，穿越名 404", async () => {
     const port = await startChannel();

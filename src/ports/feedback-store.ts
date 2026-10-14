@@ -12,6 +12,7 @@ export interface FeedbackStore {
   listAll(): Promise<Feedback[]>;
   /** 状态流转（仅 admin 端点调用）；实现内更新 updatedAt */
   updateStatus(id: string, status: FeedbackStatus): Promise<void>;
+  remove(id: string): Promise<void>;
   addReply(reply: FeedbackReply): Promise<void>;
   listReplies(feedbackId: string): Promise<FeedbackReply[]>;
 }

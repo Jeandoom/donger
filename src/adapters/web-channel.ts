@@ -4038,7 +4038,9 @@ export class WebChannel implements Channel {
       if (!parsed.success) {
         res.writeHead(400);
         res.end(
-          JSON.stringify({ error: "permissionMode 无效（ask_before_change | risk_guard | full_access）" }),
+          JSON.stringify({
+            error: "permissionMode 无效（ask_before_change | risk_guard | full_access）",
+          }),
         );
         return;
       }
@@ -4404,6 +4406,33 @@ export class WebChannel implements Channel {
         return;
       }
       await store.updateStatus(id, body.status);
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // DELETE 反馈（守卫已收口 admin）：主项+回复一并落库删除，附件目录随删
+    const feedbackDeleteMatch = url.match(/^\/api\/feedback\/([\w-]+)$/);
+    if (feedbackDeleteMatch && req.method === "DELETE") {
+      const store = this.deps.feedbackStore;
+      if (!store) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: "反馈服务未启用" }));
+        return;
+      }
+      const id = feedbackDeleteMatch[1] ?? "";
+      if (!(await store.get(id))) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+      await store.remove(id);
+      // 附件目录随反馈删除；清理失败不阻断响应（DB 已删，残留文件无读取入口）
+      try {
+        rmSync(this.feedbackAttachmentDir(id), { recursive: true, force: true });
+      } catch {
+        // 附件清理失败仅忽略：无读取入口，不影响功能
+      }
       res.writeHead(200);
       res.end(JSON.stringify({ ok: true }));
       return;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatState, TurnPart } from "../types";
+import type { ChatState, ConversationSummary, TurnPart } from "../types";
 import { chatReducer, initialChatState } from "./chatReducer";
 
 function withMessages(messages: ChatState["messages"]): ChatState {
@@ -369,5 +369,63 @@ describe("chatReducer 审批卡生命周期", () => {
       msg: { type: "error", error: "任务已中断" },
     });
     expect(afterError.pendingApproval).toBeNull();
+  });
+});
+
+describe("chatReducer 会话列表按更新时间排序", () => {
+  const conv = (id: string, updatedAt: string, extra?: Partial<ConversationSummary>) => ({
+    id,
+    userId: "u1",
+    sdkSessionId: "",
+    title: id,
+    channelId: "web",
+    agentId: "",
+    createdAt: "2026-09-16T00:00:00.000Z",
+    updatedAt,
+    archived: false,
+    ...extra,
+  });
+
+  it("set_conversations 按 updatedAt 倒序合并（最近活跃在前，而非创建时间序）", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "set_conversations",
+      conversations: [
+        conv("old", "2026-09-16T00:00:00.000Z"),
+        conv("new", "2026-09-17T00:00:00.000Z"),
+      ],
+    });
+    expect(state.conversations.map((c) => c.id)).toEqual(["new", "old"]);
+  });
+
+  it("update_conversation 触达 updatedAt 后该会话置顶（发消息实时置顶）", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "set_conversations",
+      conversations: [
+        conv("top", "2026-09-17T00:00:00.000Z"),
+        conv("bottom", "2026-09-16T00:00:00.000Z"),
+      ],
+    });
+    expect(state.conversations[0]?.id).toBe("top");
+    state = chatReducer(state, {
+      type: "update_conversation",
+      conversationId: "bottom",
+      patch: { updatedAt: "2026-09-18T00:00:00.000Z" },
+    });
+    expect(state.conversations.map((c) => c.id)).toEqual(["bottom", "top"]);
+  });
+
+  it("未保存草稿始终置顶，不参与活跃度排序", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "set_conversations",
+      conversations: [conv("recent", "2026-09-17T00:00:00.000Z")],
+    });
+    state = chatReducer(state, {
+      type: "new_conversation",
+      conversation: conv("draft-1", "2026-09-01T00:00:00.000Z", { isDraft: true }),
+    });
+    expect(state.conversations.map((c) => c.id)).toEqual(["draft-1", "recent"]);
   });
 });

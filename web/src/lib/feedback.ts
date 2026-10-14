@@ -153,6 +153,12 @@ export async function updateFeedbackStatus(id: string, status: FeedbackStatus): 
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
 }
 
+// 删除反馈（admin 专属；服务端连带删除回复与截图附件）
+export async function deleteFeedback(id: string): Promise<void> {
+  const r = await apiFetch(`/api/feedback/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+}
+
 /** 上传反馈截图（单张 ≤2MB 图片）；返回服务端落盘安全名 */
 export async function uploadFeedbackImage(draftKey: string, file: File): Promise<string> {
   const form = new FormData();

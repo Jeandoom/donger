@@ -161,6 +161,14 @@ export class SqliteFeedbackStore implements FeedbackStore {
       .run(status, new Date().toISOString(), id);
   }
 
+  async remove(id: string): Promise<void> {
+    const remove = this.db.transaction((fid: string) => {
+      this.db.prepare("DELETE FROM feedback_replies WHERE feedbackId = ?").run(fid);
+      this.db.prepare("DELETE FROM feedback_items WHERE id = ?").run(fid);
+    });
+    remove(id);
+  }
+
   async addReply(reply: FeedbackReply): Promise<void> {
     this.db
       .prepare(
