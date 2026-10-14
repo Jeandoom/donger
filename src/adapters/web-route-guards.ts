@@ -231,6 +231,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     },
     { method: "GET", pattern: "/api/feedback/:id", access: { kind: "authenticated" } },
     { method: "PATCH", pattern: "/api/feedback/:id/status", access: { kind: "admin" } },
+    { method: "DELETE", pattern: "/api/feedback/:id", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/feedback/:id/replies", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/feedback/:id/replies", access: { kind: "authenticated" } },
     {

@@ -1,10 +1,11 @@
-import { MessagesSquare, Plus } from "lucide-react";
+import { MessagesSquare, Plus, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { FeedbackForm } from "../components/feedback/FeedbackForm";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
 import { Select } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
@@ -12,6 +13,7 @@ import { type CurrentUser, fetchMe } from "../lib/auth";
 import {
   addFeedbackReply,
   CATEGORY_LABELS,
+  deleteFeedback,
   FEEDBACK_STATUSES,
   type FeedbackItem,
   type FeedbackReplyDTO,
@@ -29,17 +31,14 @@ import { cn } from "../lib/utils";
 
 /**
  * 反馈模块唯一页面（spec 2026-09-20-feedback-module-design）：
- * 左列提交记录（admin 全量/本人），点击展开历史回复时间线，点回复条右区打开详情；
- * 右区切换 新增表单 / 反馈详情 两种形态。
+ * 左列提交记录（admin 全量/本人），点击记录右区打开详情（选中高亮）；
+ * 右区切换 新增表单 / 反馈详情 两种形态；admin 可在详情内回复与删除。
  */
 export function FeedbackPage() {
   const [me, setMe] = useState<CurrentUser | null>(null);
   const [list, setList] = useState<FeedbackItem[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [expandedReplies, setExpandedReplies] = useState<FeedbackReplyDTO[]>([]);
-  const [repliesError, setRepliesError] = useState<string | null>(null);
   const [view, setView] = useState<"form" | "detail" | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<FeedbackItem | null>(null);
@@ -67,22 +66,6 @@ export function FeedbackPage() {
     reloadList();
   }, [reloadList]);
 
-  // 展开记录时懒加载该反馈的回复时间线
-  useEffect(() => {
-    if (!expandedId) {
-      setExpandedReplies([]);
-      setRepliesError(null);
-      return;
-    }
-    setRepliesError(null);
-    void fetchFeedbackReplies(expandedId)
-      .then(setExpandedReplies)
-      .catch((err: unknown) => {
-        setExpandedReplies([]);
-        setRepliesError(err instanceof Error ? err.message : String(err));
-      });
-  }, [expandedId]);
-
   const openDetail = async (id: string) => {
     setView("detail");
     setDetailId(id);
@@ -101,7 +84,6 @@ export function FeedbackPage() {
   useEffect(() => {
     const focus = searchParams.get("focus");
     if (!focus) return;
-    setExpandedId(focus);
     void openDetail(focus);
     setSearchParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -110,7 +92,7 @@ export function FeedbackPage() {
   const handleCreated = async (fb: FeedbackItem) => {
     setView(null);
     reloadList();
-    setExpandedId(fb.id);
+    void openDetail(fb.id);
   };
 
   return (
@@ -160,11 +142,8 @@ export function FeedbackPage() {
                 key={fb.id}
                 fb={fb}
                 showUser={isAdmin}
-                expanded={expandedId === fb.id}
-                replies={expandedId === fb.id ? expandedReplies : null}
-                repliesError={expandedId === fb.id ? repliesError : null}
-                onToggle={() => setExpandedId(expandedId === fb.id ? null : fb.id)}
-                onOpenReply={() => void openDetail(fb.id)}
+                active={detailId === fb.id}
+                onOpen={() => void openDetail(fb.id)}
               />
             ))}
           </div>
@@ -199,10 +178,15 @@ export function FeedbackPage() {
                   .then(setList)
                   .catch(() => {});
               }}
+              onClose={() => {
+                setView(null);
+                setDetail(null);
+                setDetailId(null);
+              }}
             />
           ) : (
             <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">
-              点击列表中的记录展开回复，或新增一条反馈
+              点击左侧记录查看详情，或新增一条反馈
             </div>
           )}
         </div>
@@ -211,116 +195,74 @@ export function FeedbackPage() {
   );
 }
 
-/** 左列单条记录：点击展开该反馈的回复时间线（历史返回内容） */
+/** 左列单条记录：点击在右区打开详情（当前查看项高亮） */
 function FeedbackListItem({
   fb,
   showUser,
-  expanded,
-  replies,
-  repliesError,
-  onToggle,
-  onOpenReply,
+  active,
+  onOpen,
 }: {
   fb: FeedbackItem;
   showUser: boolean;
-  expanded: boolean;
-  replies: FeedbackReplyDTO[] | null;
-  /** 回复时间线加载失败信息（null = 成功或加载中） */
-  repliesError: string | null;
-  onToggle: () => void;
-  onOpenReply: () => void;
+  active: boolean;
+  onOpen: () => void;
 }) {
   return (
-    <div className="mb-0.5">
-      <button
-        type="button"
-        onClick={onToggle}
-        className={cn(
-          "block w-full rounded-lg px-3 py-2 text-left",
-          expanded ? "bg-primary-soft" : "hover:bg-muted",
-        )}
-      >
-        <div className="flex items-center gap-1.5">
-          <Badge tone="primary">{CATEGORY_LABELS[fb.category]}</Badge>
-          <Badge tone={STATUS_TONES[fb.status]}>{STATUS_LABELS[fb.status]}</Badge>
-          {(fb.conversations?.length ?? 0) > 0 && (
-            <span
-              className="flex items-center gap-0.5 text-[10px] text-muted-foreground"
-              title="含关联对话记录"
-            >
-              <MessagesSquare size={11} />
-              会话
-            </span>
-          )}
-          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-            {formatRelative(fb.updatedAt)}
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "mb-0.5 block w-full rounded-lg px-3 py-2 text-left",
+        active ? "bg-primary-soft" : "hover:bg-muted",
+      )}
+    >
+      <div className="flex items-center gap-1.5">
+        <Badge tone="primary">{CATEGORY_LABELS[fb.category]}</Badge>
+        <Badge tone={STATUS_TONES[fb.status]}>{STATUS_LABELS[fb.status]}</Badge>
+        {(fb.conversations?.length ?? 0) > 0 && (
+          <span
+            className="flex items-center gap-0.5 text-[10px] text-muted-foreground"
+            title="含关联对话记录"
+          >
+            <MessagesSquare size={11} />
+            会话
           </span>
-        </div>
-        <div className={cn("mt-1 truncate text-[13px] font-medium", expanded && "text-primary")}>
-          {fb.content}
-        </div>
-        {showUser && (
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            提交人：{fb.userName ?? fb.userId}
-          </div>
         )}
-      </button>
-      {expanded && (
-        <div className="mt-1 mb-2 ml-3 space-y-1.5 border-l border-border pl-3">
-          <div className="rounded-lg bg-muted px-3 py-2 text-xs whitespace-pre-wrap break-words text-foreground/90">
-            {fb.content}
-          </div>
-          {replies === null && !repliesError && (
-            <div className="px-1 text-[11px] text-muted-foreground">加载中…</div>
-          )}
-          {repliesError && (
-            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-[11px] text-destructive">
-              回复加载失败：{repliesError}
-            </div>
-          )}
-          {replies?.length === 0 && (
-            <div className="px-1 text-[11px] text-muted-foreground">暂无回复</div>
-          )}
-          {replies?.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={onOpenReply}
-              className="block w-full rounded-lg bg-card px-3 py-2 text-left ring-1 ring-border transition-colors hover:bg-muted"
-              title="点击查看完整反馈"
-            >
-              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                <Badge tone={r.authorRole === "admin" ? "success" : "neutral"}>
-                  {r.authorRole === "admin" ? "官方回复" : "补充说明"}
-                </Badge>
-                {formatRelative(r.createdAt)}
-              </div>
-              <div className="mt-1 line-clamp-2 text-xs whitespace-pre-wrap break-words">
-                {r.content}
-              </div>
-            </button>
-          ))}
+        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+          {formatRelative(fb.updatedAt)}
+        </span>
+      </div>
+      <div className={cn("mt-1 truncate text-[13px] font-medium", active && "text-primary")}>
+        {fb.content}
+      </div>
+      {showUser && (
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          提交人：{fb.userName ?? fb.userId}
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
-/** 右区：反馈详情——对话形式（原始反馈+回复按角色分侧气泡；admin 顶部流转状态） */
+/** 右区：反馈详情——对话形式（原始反馈+回复按角色分侧气泡；admin 顶部流转状态与删除） */
 function FeedbackDetailPanel({
   fb,
   me,
   onChanged,
+  onClose,
 }: {
   fb: FeedbackItem;
   me: CurrentUser | null;
   onChanged: () => void;
+  onClose: () => void;
 }) {
   const [replies, setReplies] = useState<FeedbackReplyDTO[]>([]);
   const [repliesError, setRepliesError] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const threadEndRef = useRef<HTMLDivElement>(null);
   const isAdmin = me?.role === "admin";
   const isOwner = me?.id === fb.userId;
@@ -368,6 +310,21 @@ function FeedbackDetailPanel({
     }
   };
 
+  const removeFeedback = async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteFeedback(fb.id);
+      setConfirmDelete(false);
+      onChanged();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   // 对话时间线：原始反馈排首（提交人侧），回复按角色分侧（user 右 / admin 左），双方视角一致
   const thread: Array<{
     key: string;
@@ -395,144 +352,168 @@ function FeedbackDetailPanel({
   ];
 
   return (
-    <Card className="flex h-full min-h-0 flex-col p-5">
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <Badge tone="primary">{CATEGORY_LABELS[fb.category]}</Badge>
-        <Badge tone={STATUS_TONES[fb.status]}>{STATUS_LABELS[fb.status]}</Badge>
-        {isAdmin && (
-          <span className="text-xs text-muted-foreground">提交人：{fb.userName ?? fb.userId}</span>
-        )}
-        <span className="ml-auto text-xs text-muted-foreground">
-          {formatRelative(fb.createdAt)}
-        </span>
-      </div>
-
-      {isAdmin && (
-        <div className="mt-3 flex shrink-0 items-center gap-2">
-          <span className="text-xs text-muted-foreground">状态流转</span>
-          <Select
-            className="w-32"
-            value={fb.status}
-            onChange={(e) => void changeStatus(e.target.value as FeedbackStatus)}
-          >
-            {FEEDBACK_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {STATUS_LABELS[s]}
-              </option>
-            ))}
-          </Select>
-          <span className="text-[11px] text-muted-foreground">状态标识双方均可见</span>
-        </div>
-      )}
-
-      {(fb.conversations?.length ?? 0) > 0 && (
-        <div className="mt-3 shrink-0 space-y-1.5">
-          {fb.conversations?.map((c) =>
-            c.missing ? (
-              <div
-                key={c.id}
-                className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
-              >
-                <MessagesSquare size={14} className="shrink-0" />
-                关联对话记录已删除
-              </div>
-            ) : (
-              <a
-                key={c.id}
-                href={`/?conv=${c.id}`}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs transition-colors hover:bg-muted"
-              >
-                <MessagesSquare size={14} className="shrink-0 text-primary" />
-                <span className="min-w-0 flex-1 truncate">{c.title}</span>
-                {c.updatedAt && (
-                  <span className="shrink-0 text-[10px] text-muted-foreground">
-                    {formatRelative(c.updatedAt)}
-                  </span>
-                )}
-                <span className="shrink-0 text-[10px] text-primary">查看会话 →</span>
-              </a>
-            ),
+    <>
+      <Card className="flex h-full min-h-0 flex-col p-5">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Badge tone="primary">{CATEGORY_LABELS[fb.category]}</Badge>
+          <Badge tone={STATUS_TONES[fb.status]}>{STATUS_LABELS[fb.status]}</Badge>
+          {isAdmin && (
+            <span className="text-xs text-muted-foreground">
+              提交人：{fb.userName ?? fb.userId}
+            </span>
           )}
+          <div className="ml-auto flex items-center gap-1">
+            {isAdmin && (
+              <Button size="sm" variant="danger" onClick={() => setConfirmDelete(true)}>
+                <Trash2 size={14} />
+                删除
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={onClose} title="关闭详情">
+              <X size={14} />
+            </Button>
+          </div>
+          <span className="text-xs text-muted-foreground">{formatRelative(fb.createdAt)}</span>
         </div>
-      )}
 
-      <div className="mt-3 flex min-h-40 flex-1 flex-col gap-3 overflow-y-auto rounded-lg bg-muted/40 p-3">
-        {repliesError && (
-          <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
-            沟通记录加载失败：{repliesError}
+        {isAdmin && (
+          <div className="mt-3 flex shrink-0 items-center gap-2">
+            <span className="text-xs text-muted-foreground">状态流转</span>
+            <Select
+              className="w-32"
+              value={fb.status}
+              onChange={(e) => void changeStatus(e.target.value as FeedbackStatus)}
+            >
+              {FEEDBACK_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABELS[s]}
+                </option>
+              ))}
+            </Select>
+            <span className="text-[11px] text-muted-foreground">状态标识双方均可见</span>
           </div>
         )}
-        {thread.map((m) => {
-          const fromUser = m.role === "user";
-          return (
-            <div
-              key={m.key}
-              className={cn("flex flex-col", fromUser ? "items-end" : "items-start")}
-            >
-              <div className="mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                {m.role === "admin" && <Badge tone="success">官方回复</Badge>}
-                <span>{m.name}</span>
-                <span>{formatRelative(m.createdAt)}</span>
-              </div>
-              <div
-                className={cn(
-                  "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap break-words leading-6",
-                  fromUser ? "bg-primary-soft" : "bg-success-soft",
-                )}
-              >
-                {m.content}
-              </div>
-              {m.images && m.images.length > 0 && (
-                <div className="mt-1 flex flex-wrap gap-2">
-                  {m.images.map((name) => (
-                    <a
-                      key={name}
-                      href={feedbackImageUrl(fb.id, name)}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <img
-                        src={feedbackImageUrl(fb.id, name)}
-                        alt="反馈截图"
-                        className="h-20 w-20 rounded-lg border border-border object-cover transition-opacity hover:opacity-85"
-                      />
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        <div ref={threadEndRef} />
-      </div>
 
-      {canReply ? (
-        <div className="mt-3 shrink-0">
-          <Textarea
-            rows={3}
-            maxLength={2000}
-            value={replyText}
-            onChange={(e) => setReplyText(e.target.value)}
-            placeholder={isAdmin ? "回复该反馈…" : "补充说明…"}
-          />
-          <div className="mt-2 flex items-center gap-2">
-            <Button
-              size="sm"
-              disabled={!replyText.trim() || sending}
-              onClick={() => void sendReply()}
-            >
-              {sending ? "发送中…" : "发送"}
-            </Button>
-            {error && <span className="text-xs text-destructive">{error}</span>}
+        {(fb.conversations?.length ?? 0) > 0 && (
+          <div className="mt-3 shrink-0 space-y-1.5">
+            {fb.conversations?.map((c) =>
+              c.missing ? (
+                <div
+                  key={c.id}
+                  className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
+                >
+                  <MessagesSquare size={14} className="shrink-0" />
+                  关联对话记录已删除
+                </div>
+              ) : (
+                <a
+                  key={c.id}
+                  href={`/?conv=${c.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs transition-colors hover:bg-muted"
+                >
+                  <MessagesSquare size={14} className="shrink-0 text-primary" />
+                  <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                  {c.updatedAt && (
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {formatRelative(c.updatedAt)}
+                    </span>
+                  )}
+                  <span className="shrink-0 text-[10px] text-primary">查看会话 →</span>
+                </a>
+              ),
+            )}
           </div>
+        )}
+
+        <div className="mt-3 flex min-h-40 flex-1 flex-col gap-3 overflow-y-auto rounded-lg bg-muted/40 p-3">
+          {repliesError && (
+            <div className="rounded-lg bg-destructive-soft px-3 py-2 text-xs text-destructive">
+              沟通记录加载失败：{repliesError}
+            </div>
+          )}
+          {thread.map((m) => {
+            const fromUser = m.role === "user";
+            return (
+              <div
+                key={m.key}
+                className={cn("flex flex-col", fromUser ? "items-end" : "items-start")}
+              >
+                <div className="mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  {m.role === "admin" && <Badge tone="success">官方回复</Badge>}
+                  <span>{m.name}</span>
+                  <span>{formatRelative(m.createdAt)}</span>
+                </div>
+                <div
+                  className={cn(
+                    "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap break-words leading-6",
+                    fromUser ? "bg-primary-soft" : "bg-success-soft",
+                  )}
+                >
+                  {m.content}
+                </div>
+                {m.images && m.images.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {m.images.map((name) => (
+                      <a
+                        key={name}
+                        href={feedbackImageUrl(fb.id, name)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <img
+                          src={feedbackImageUrl(fb.id, name)}
+                          alt="反馈截图"
+                          className="h-20 w-20 rounded-lg border border-border object-cover transition-opacity hover:opacity-85"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div ref={threadEndRef} />
         </div>
-      ) : (
-        <div className="mt-3 shrink-0 text-xs text-muted-foreground">
-          仅反馈提交人与管理员可参与对话
-        </div>
-      )}
-    </Card>
+
+        {canReply ? (
+          <div className="mt-3 shrink-0">
+            <Textarea
+              rows={3}
+              maxLength={2000}
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              placeholder={isAdmin ? "回复该反馈…" : "补充说明…"}
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={!replyText.trim() || sending}
+                onClick={() => void sendReply()}
+              >
+                {sending ? "发送中…" : "发送"}
+              </Button>
+              {error && <span className="text-xs text-destructive">{error}</span>}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 shrink-0 text-xs text-muted-foreground">
+            仅反馈提交人与管理员可参与对话
+          </div>
+        )}
+      </Card>
+      <ConfirmDialog
+        open={confirmDelete}
+        title="删除这条反馈？"
+        description="删除后反馈、回复与截图一并移除，不可恢复。"
+        confirmText="删除"
+        destructive
+        busy={deleting}
+        error={error}
+        onConfirm={() => void removeFeedback()}
+        onCancel={() => setConfirmDelete(false)}
+      />
+    </>
   );
 }

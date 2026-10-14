@@ -116,4 +116,22 @@ describe("SqliteFeedbackStore", () => {
     expect(replies.map((r) => r.id)).toEqual(["r-1", "r-2"]);
     expect((await store.get("fb-1"))?.updatedAt).toBe("2026-09-20T11:00:00Z");
   });
+
+  it("remove 级联删除回复；不存在 id 静默通过", async () => {
+    await store.create(makeFeedback("fb-1", "u-1", "2026-09-20T10:00:00Z"));
+    await store.addReply({
+      id: "r-1",
+      feedbackId: "fb-1",
+      userId: "u-admin",
+      authorRole: "admin",
+      content: "官方回复",
+      createdAt: "2026-09-20T11:00:00Z",
+    });
+
+    await store.remove("fb-1");
+    expect(await store.get("fb-1")).toBeUndefined();
+    expect(await store.listReplies("fb-1")).toEqual([]);
+    expect((await store.listAll()).map((f) => f.id)).toEqual([]);
+    await expect(store.remove("ghost")).resolves.toBeUndefined();
+  });
 });
