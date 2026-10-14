@@ -48,7 +48,10 @@ export class MemoryStore {
   /** 列出全部记忆（顶层 + auto/ 子目录；按文件名内嵌时间戳倒序 = 最新在前）。 */
   list(): MemoryEntry[] {
     const filenames = [...this.#mdFiles("."), ...this.#mdFiles("auto").map((f) => `auto/${f}`)];
-    filenames.sort((a, b) => this.#tsOf(b) - this.#tsOf(a));
+    // 时间戳倒序，同毫秒并列时按文件名降序 tie-break（快连追加同 ts 的确定性）
+    filenames.sort(
+      (a, b) => this.#tsOf(b) - this.#tsOf(a) || (a < b ? 1 : a > b ? -1 : 0),
+    );
     return filenames.map((filename) => {
       const text = readFileSync(join(this.dir, filename), "utf8");
       const lines = text.split("\n");
