@@ -3,7 +3,11 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gitPatFromValues } from "../domain/credential.js";
 import { defaultUsernameForHost, normalizeRepositoryIdentity } from "../domain/git.js";
 import type { PackSkill, SkillPack, SkillPackSource } from "../domain/skill-pack.js";
-import { parseFrontmatter, scanSkillPack } from "../domain/skill-scan.js";
+import {
+  assertDescriptionWithinLimit,
+  parseFrontmatter,
+  scanSkillPack,
+} from "../domain/skill-scan.js";
 import { cleanHttpsRepoUrl } from "../domain/user-skill-repo.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type {
@@ -208,6 +212,8 @@ export class LocalSkillInstaller implements SkillInstaller {
         `frontmatter name（${fm.name}）与现有技能名（${skill.name}）不一致；改名请先卸载再重建`,
       );
     }
+    // description 丢弃线（知识体系轮 P1）：超 1024 字节引擎会整体丢弃该技能，写前拦截
+    assertDescriptionWithinLimit(fm.description);
     writeFileSync(docPath, content);
     const before = new Map(
       (await this.deps.packStore.listSkills(userId, packId)).map((s) => [s.name, s]),
@@ -311,6 +317,8 @@ export class LocalSkillInstaller implements SkillInstaller {
     const fm = parseFrontmatter(args.content);
     const skillName = args.name ?? fm.name ?? "skill";
     validateSkillName(skillName);
+    // description 丢弃线（知识体系轮 P1）：超 1024 字节引擎会整体丢弃该技能，装前拦截
+    assertDescriptionWithinLimit(fm.description);
     const slug = await this.deriveSlug(userId, args.slugHint ?? slugify(skillName));
     const dir = this.userPackDir(userId, slug);
     const skillDir = join(dir, "skills", skillName);

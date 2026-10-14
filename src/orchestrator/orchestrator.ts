@@ -127,6 +127,18 @@ export interface OrchestratorDeps {
    */
   sshEgressMode?: () => "ask" | "deny";
   /**
+   * 记忆通道模式取值器（知识体系轮 P1；app_config memory.channel，同步现取改即生效）：
+   * curated（缺省）=收尾不倾倒原文（P2 起注入改 curated 索引常驻）；legacy=旧行为
+   * （每任务原文倾倒至 memory/auto/ 子目录并截断）；off=不注入不沉淀。
+   */
+  memoryChannelMode?: () => "curated" | "legacy" | "off";
+  /**
+   * 平台环境约束（知识体系轮 P1；app_config platform.envNotes，admin 编辑）：
+   * 非空时注入默认提示词「## 平台环境约束」节——沙箱工具面/校验器怪癖等全平台
+   * 共享事实在此单点维护，替代各 agent 记忆各自存一份。
+   */
+  platformEnvNotes?: () => string | undefined;
+  /**
    * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
    * 缺省视为全部启用。消费点：host-exec 停用 → 不挂载 donger-host 工具、
    * 不注入白名单提示词节、gateAllowCheck 不装配。
@@ -620,9 +632,15 @@ export class Orchestrator {
             .filter(Boolean)
             .join("\n\n")
         : p.memoryAppend;
+    // 平台环境约束（知识体系轮 P1）：admin 在设置面维护的全平台共享事实，
+    // 单点注入默认提示词，替代各 agent 记忆各自存一份（每轮现取，改即生效）
+    const envNotes = this.deps.platformEnvNotes?.()?.trim();
+    const systemPromptAppendWithEnv = envNotes
+      ? [systemPromptAppend, `## 平台环境约束\n${envNotes}`].filter(Boolean).join("\n\n")
+      : systemPromptAppend;
     const prepareOnce = async (recoverResume = true): Promise<RunOptions> => {
       const { context, runOptions } = await this.deps.runtimeMgr.prepare(p.user, p.conversation, {
-        systemPromptAppend,
+        systemPromptAppend: systemPromptAppendWithEnv,
         abortSignal: p.runController.signal,
         agent: p.agent,
         sharedAgentSkillOwner: p.sharedAgentSkillOwner,
@@ -1514,7 +1532,8 @@ export class Orchestrator {
     threadId: string;
     channelId: string;
     memoryAppend?: string;
-    memory?: MemoryStore;
+    /** legacy 记忆倾倒目标（curated/off 缺省不装配，知识体系轮 P1） */
+    memoryDump?: MemoryStore;
     agent: Agent;
     sharedAgentSkillOwner?: User;
     gitMaterializeItems?: RepositoryMaterializeItem[];
@@ -1553,11 +1572,12 @@ export class Orchestrator {
 
     await store.updateStatus(p.task.id, nextStatus("running", "finish"));
     channel.pushResult?.(p.conversation.id, "success", r.resultText || "完成");
-    if (p.memory) {
-      p.memory.append({
+    if (p.memoryDump) {
+      // legacy 倾倒：原文截断（知识体系轮 P1——倾倒只做恢复线索，不做沉淀主通道）
+      p.memoryDump.append({
         summary: p.task.prompt.slice(0, 40),
-        detail: `prompt: ${p.task.prompt}\n结果: 成功\n${r.resultText}`,
-      });
+        detail: `prompt: ${p.task.prompt}\n结果: 成功\n${(r.resultText || "").slice(0, 500)}`,
+      }, { subdir: "auto" });
     }
     if ("finalizeCard" in channel && typeof channel.finalizeCard === "function") {
       await (channel as { finalizeCard: (id: string) => Promise<void> })
@@ -1816,18 +1836,28 @@ export class Orchestrator {
     const _capturedConversationId = conversation.id;
     try {
       let memory: MemoryStore | undefined;
+      // 收尾倾倒目标：仅 legacy 模式装配（curated/off 不再原文倾倒，知识体系轮 P1）
+      let memoryDump: MemoryStore | undefined;
+      // 通道模式提升到注入点作用域（P2：curated=索引常驻 / legacy=关键词检索）
+      const memoryChannel = this.deps.memoryChannelMode?.() ?? "curated";
       try {
         // 记忆目录统一进标准知识库架构（spec §5.4，D5）：个人库 memory/ 子目录；
-        // 迁移器已把旧 knowledge_base/user 并入并退役，此处绝不再落旧路径（会重建自成一体）
-        const personalKb =
-          this.deps.kbLibraryStore && this.deps.workspaceDir
-            ? await this.deps.kbLibraryStore.ensurePersonalLibrary(user.id)
-            : undefined;
-        memory = new MemoryStore(
-          personalKb && this.deps.workspaceDir
-            ? join(kbRootDir(this.deps.workspaceDir, personalKb.id), "memory")
-            : join(user.homeDir, "knowledge_base", "user"),
-        );
+        // 迁移器已把旧 knowledge_base/user 并入并退役，此处绝不再落旧路径（会重建自成一体）。
+        // 通道模式（知识体系轮 P1；app_config memory.channel）：curated（缺省）只注入
+        // 不倾倒；legacy 保留旧行为（收尾倾落 memory/auto/ 子目录）；off 不注入不沉淀。
+        const channelMode = memoryChannel;
+        if (channelMode !== "off") {
+          const personalKb =
+            this.deps.kbLibraryStore && this.deps.workspaceDir
+              ? await this.deps.kbLibraryStore.ensurePersonalLibrary(user.id)
+              : undefined;
+          const memoryRoot =
+            personalKb && this.deps.workspaceDir
+              ? join(kbRootDir(this.deps.workspaceDir, personalKb.id), "memory")
+              : join(user.homeDir, "knowledge_base", "user");
+          memory = new MemoryStore(memoryRoot);
+          if (channelMode === "legacy") memoryDump = new MemoryStore(memoryRoot);
+        }
       } catch {
         memory = undefined;
       }
@@ -2048,13 +2078,24 @@ export class Orchestrator {
           .catch(() => {});
       }
 
-      // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并
+      // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并。
+      // curated=索引常驻（Claude Code MEMORY.md 模式：索引进上下文，详情按需 kb_read）；
+      // legacy=关键词检索（P1 兼容通道）。
       let memoryAppend: string | undefined;
       if (memory) {
-        const hits = memory.search(task.prompt).slice(0, 5);
-        if (hits.length > 0) {
-          const memCtx = hits.map((h) => `- ${h.summary}`).join("\n");
-          memoryAppend = `## 相关记忆\n${memCtx}`;
+        if (memoryChannel === "curated") {
+          const idx = memory.readCuratedIndex();
+          if (idx) {
+            memoryAppend =
+              `## 长期记忆索引\n${idx.text}` +
+              (idx.truncated ? "\n（索引超限，将在下次整理时压缩）" : "");
+          }
+        } else {
+          const hits = memory.search(task.prompt).slice(0, 5);
+          if (hits.length > 0) {
+            const memCtx = hits.map((h) => `- ${h.summary}`).join("\n");
+            memoryAppend = `## 相关记忆\n${memCtx}`;
+          }
         }
       }
 
@@ -2107,7 +2148,7 @@ export class Orchestrator {
           threadId: msg.threadId,
           channelId: msg.channelId,
           memoryAppend,
-          memory,
+          memoryDump,
           agent,
           sharedAgentSkillOwner,
           gitMaterializeItems,
@@ -2154,12 +2195,12 @@ export class Orchestrator {
         await channel.send(msg.threadId, { text: "✅" });
       }
 
-      // 记忆沉淀
-      if (memory) {
-        memory.append({
+      // 记忆沉淀（仅 legacy 装配；curated/off 不倾倒，知识体系轮 P1）
+      if (memoryDump) {
+        memoryDump.append({
           summary: task.prompt.slice(0, 40),
-          detail: `prompt: ${task.prompt}\n结果: ${r.ok ? "成功" : "失败"}\n${r.resultText}`,
-        });
+          detail: `prompt: ${task.prompt}\n结果: ${r.ok ? "成功" : "失败"}\n${(r.resultText || "").slice(0, 500)}`,
+        }, { subdir: "auto" });
       }
 
       // 钉钉卡片：标记完成（streaming=false）

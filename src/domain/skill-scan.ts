@@ -1,10 +1,26 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, relative } from "node:path";
+import { SkillInstallError } from "../util/errors.js";
 
 export interface ParsedFrontmatter {
   name?: string;
   description?: string;
   allowedTools?: string[];
+}
+
+/**
+ * description 丢弃线（知识体系轮 P1）：zcode 引擎对 description>1024 字节的技能
+ * 整体丢弃（官方文档硬约束，G5 物化实证）。安装/更新写盘前拦截，错误码统一
+ * DESCRIPTION_TOO_LONG，编辑器预警通道（agentEquipmentWarnings）同口径复用。
+ */
+export function assertDescriptionWithinLimit(description: string | undefined): void {
+  const bytes = Buffer.byteLength(description ?? "", "utf8");
+  if (bytes > 1024) {
+    throw new SkillInstallError(
+      "DESCRIPTION_TOO_LONG",
+      `description 超 1024 字节（当前 ${bytes}）：引擎会整体丢弃该技能，请压缩描述后重试`,
+    );
+  }
 }
 
 /** 最小 frontmatter 解析（SKILL.md frontmatter 为扁平 key:value，无嵌套）。 */

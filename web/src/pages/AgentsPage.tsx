@@ -17,6 +17,7 @@ import {
 import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { fetchMe } from "../lib/auth";
 import { BUILTIN_AGENT_ENTRIES, BUILTIN_SELF_IMPROVER_AGENT_ID } from "../lib/builtinAgents";
+import { PlatformNotesCard } from "../components/PlatformNotesCard";
 
 export function AgentsPage() {
   const navigate = useNavigate();
@@ -129,6 +130,8 @@ export function AgentsPage() {
         builtin
         onChat={(a) => navigate(`/?agent=${a.id}`)}
       />
+
+      {admin ? <PlatformNotesCard /> : null}
 
       <ConfirmDialog
         open={pendingDelete !== null}

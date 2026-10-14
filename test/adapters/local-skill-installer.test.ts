@@ -68,6 +68,40 @@ describe("LocalSkillInstaller", () => {
     expect(p2.slug).toBe("x-2");
   });
 
+  // ---- description 丢弃线（知识体系轮 P1）----
+
+  it("paste 安装：description 超 1024 字节拒绝（DESCRIPTION_TOO_LONG）", async () => {
+    await expect(
+      installer.installFromPaste("u1", {
+        content: `---\nname: big\ndescription: "${"长".repeat(600)}"\n---\n正文`,
+        slug: "big",
+      }),
+    ).rejects.toMatchObject({ code: "DESCRIPTION_TOO_LONG" });
+    // 中文 3 字节/字符：600 字 = 1800 字节超线；100 字 = 300 字节合规
+    const ok = await installer.installFromPaste("u1", {
+      content: `---\nname: ok\ndescription: "${"长".repeat(100)}"\n---\n正文`,
+      slug: "ok",
+    });
+    expect(ok.slug).toBe("ok");
+  });
+
+  it("updateSkillDoc：description 超 1024 字节拒绝且不落盘", async () => {
+    const pack = await installer.installFromPaste("u1", {
+      content: '---\nname: doc\ndescription: "d"\n---\n正文',
+      slug: "doc",
+    });
+    await expect(
+      installer.updateSkillDoc(
+        "u1",
+        pack.id,
+        "doc",
+        `---\nname: doc\ndescription: "${"长".repeat(600)}"\n---\n改后正文`,
+      ),
+    ).rejects.toMatchObject({ code: "DESCRIPTION_TOO_LONG" });
+    const doc = await installer.readSkillDoc("u1", pack.id, "doc");
+    expect(doc).toContain("正文");
+  });
+
   it("恶意 slug 被净化为安全 slug（防路径穿越）", async () => {
     const pack = await installer.installFromPaste("u1", {
       content: "---\nname: x\ndescription: d\n---\n",

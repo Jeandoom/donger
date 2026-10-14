@@ -50,6 +50,8 @@ export const KB_REVISION_ACTOR_KINDS = [
   "chat",
   "auto-learn",
   "memory",
+  "memory-consolidation",
+  "skill-promotion",
   "import",
   "system",
 ] as const;

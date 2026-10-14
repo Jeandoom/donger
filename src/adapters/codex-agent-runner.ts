@@ -151,7 +151,13 @@ export class CodexAgentRunner implements AgentRunner {
       writeFileSync(join(cwd, "AGENTS.md"), `${opts.systemPromptAppend.trim()}\n`);
     }
 
-    materializeWhitelistedSkills(opts.skills ?? [], opts.pluginPaths ?? [], skillsHome);
+    for (const w of materializeWhitelistedSkills(
+      opts.skills ?? [],
+      opts.pluginPaths ?? [],
+      skillsHome,
+    )) {
+      console.warn(`[skill-materialize] ${w}`);
+    }
 
     const upstreamToken = randomUUID();
     const bridgePort = await this.bridge.ensureStarted();

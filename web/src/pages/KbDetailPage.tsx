@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 import { Badge } from "../components/ui/badge";
+import { MemoryPanel } from "../components/MemoryPanel";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
@@ -40,7 +41,7 @@ export function KbDetailPage() {
   const { id = "" } = useParams();
   const [lib, setLib] = useState<KbLibraryDTO | null>(null);
   const [error, setError] = useState<string>();
-  const [tab, setTab] = useState<"content" | "settings" | "revisions">("content");
+  const [tab, setTab] = useState<"content" | "settings" | "revisions" | "memory">("content");
 
   useEffect(() => {
     fetchKb(id)
@@ -86,6 +87,7 @@ export function KbDetailPage() {
           className="ml-auto shrink-0"
           options={[
             { value: "content", label: "内容" },
+            ...(lib.personal && manage ? [{ value: "memory" as const, label: "记忆" }] : []),
             ...(manage ? [{ value: "settings" as const, label: "配置" }] : []),
             { value: "revisions", label: "修订" },
           ]}
@@ -95,6 +97,7 @@ export function KbDetailPage() {
       </div>
 
       {tab === "content" ? <ContentTab kbId={id} manage={manage} /> : null}
+      {tab === "memory" && lib.personal && manage ? <MemoryPanel kbId={id} /> : null}
       {tab === "settings" && manage ? <SettingsTab lib={lib} onSaved={setLib} /> : null}
       {tab === "revisions" ? <RevisionsTab kbId={id} manage={manage} /> : null}
     </div>

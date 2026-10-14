@@ -421,6 +421,12 @@ async function main(): Promise<void> {
       // SSH 出站档位（旁门治理 M2）：app_config flag 现取（同步读），改即生效
       sshEgressMode: () =>
         moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask",
+      // 记忆通道模式 + 平台环境约束（知识体系轮 P1）：app_config 现取（同步读），改即生效
+      memoryChannelMode: () => {
+        const v = moduleConfigStore.getFlag("memory.channel");
+        return v === "legacy" || v === "off" ? v : "curated";
+      },
+      platformEnvNotes: () => moduleConfigStore.getFlag("platform.envNotes"),
       agentStore,
       agentShareStore,
       isPluginEnabled: pluginGate,

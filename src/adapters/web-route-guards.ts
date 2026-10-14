@@ -297,6 +297,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // ===== 用户维度 =====
     { method: "GET", pattern: "/api/users", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/email-verifications", access: { kind: "admin" } },
+    // 平台环境约束（知识体系轮 P1）：admin 编辑，orchestrator 注入默认提示词
+    { method: "GET", pattern: "/api/admin/platform-notes", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/platform-notes", access: { kind: "admin" } },
+    // 记忆通道全局档位（知识体系轮 P2）：admin 设置
+    { method: "GET", pattern: "/api/admin/memory-channel", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/memory-channel", access: { kind: "admin" } },
     // 用户管理（spec 2026-09-21-user-management-design §2.2）：列表 DTO + 角色变更 + 系统事件
     { method: "GET", pattern: "/api/admin/users", access: { kind: "admin" } },
     { method: "PATCH", pattern: "/api/admin/users/:id/role", access: { kind: "admin" } },
@@ -421,6 +427,9 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "PATCH", pattern: "/api/kb/:id", access: { kind: "authenticated" } },
     { method: "DELETE", pattern: "/api/kb/:id", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/tree", access: { kind: "authenticated" } },
+    // 个人库记忆分区（知识体系轮 P2）：读=可管理者，迁移=可管理者
+    { method: "GET", pattern: "/api/kb/:id/memory", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/kb/:id/memory/migrate-legacy", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/entry", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/search", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/kb/:id/entries", access: { kind: "authenticated" } },

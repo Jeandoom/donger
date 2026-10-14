@@ -195,7 +195,13 @@ export class ZcodeAgentRunner implements AgentRunner {
     //    注意 description>1024 字符的技能会被 CLI 整体丢弃（官方文档硬约束）。
     const zcodeSkillsDir = join(homeDir, ".zcode", "skills");
     rmSync(zcodeSkillsDir, { recursive: true, force: true });
-    materializeWhitelistedSkills(opts.skills ?? [], opts.pluginPaths ?? [], zcodeSkillsDir);
+    for (const w of materializeWhitelistedSkills(
+      opts.skills ?? [],
+      opts.pluginPaths ?? [],
+      zcodeSkillsDir,
+    )) {
+      console.warn(`[skill-materialize] ${w}`);
+    }
 
     // —— GLM key 物化：个人 provider 注册（api-key 明文进配置文件，finally 删除）。
     //    ZCODE_{BUILTIN,PERSONAL}_PROVIDER_CONFIG_FILE 必须成对显式：builtin 侧要求

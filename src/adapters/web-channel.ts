@@ -17,7 +17,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Busboy from "busboy";
 import { ZodError } from "zod";
@@ -238,6 +238,7 @@ import { ftsBackfillLibrary } from "../util/kb-fts.js";
 import { searchKbLibraries } from "../util/kb-search.js";
 import { hashPassword, verifyPassword } from "../util/password.js";
 import { BUILTIN_TOOLS, discoverSkills } from "../util/skill-discovery.js";
+import { skillDocIssues } from "../util/skill-materialization.js";
 import { ApiRouteGuard } from "./api-route-guard.js";
 import { flattenWorkspaceFiles } from "./local-file-browser.js";
 import { handleMcpMessage } from "./mcp/rpc.js";
@@ -271,6 +272,12 @@ import { buildWebRouteGuardSpecs } from "./web-route-guards.js";
 
 /** 页面上传单文件上限（字符）；与 kb_read 分段读上限、修订快照上限独立 */
 const KB_UPLOAD_MAX_CHARS = 1_000_000;
+
+/** 平台环境约束的 app_config key（知识体系轮 P1；orchestrator 每轮现取注入默认提示词） */
+const PLATFORM_ENV_NOTES_FLAG = "platform.envNotes";
+
+/** 记忆通道全局档位的 app_config key（知识体系轮 P2；curated=缺省） */
+const MEMORY_CHANNEL_FLAG = "memory.channel";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -2836,6 +2843,60 @@ export class WebChannel implements Channel {
       return this.json(res, { verifications });
     }
 
+    // === 平台环境约束（知识体系轮 P1；app_config platform.envNotes，admin 编辑） ===
+    // orchestrator 组装默认提示词时每轮现取注入「## 平台环境约束」节，改即生效。
+
+    // GET /api/admin/platform-notes
+    if (url.split("?")[0] === "/api/admin/platform-notes" && req.method === "GET") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      return this.json(res, { notes: this.deps.moduleConfigStore.getFlag(PLATFORM_ENV_NOTES_FLAG) ?? "" });
+    }
+
+    // PUT /api/admin/platform-notes —— 全量保存（markdown 文本；空串=清空）
+    if (url.split("?")[0] === "/api/admin/platform-notes" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { notes?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req)) as { notes?: unknown };
+      } catch {
+        return this.json(res, { error: "请求体不是合法 JSON" }, 400);
+      }
+      if (typeof body.notes !== "string") {
+        return this.json(res, { error: "notes 必须为字符串" }, 400);
+      }
+      if (body.notes.length > 32_000) {
+        return this.json(res, { error: "notes 过长（上限 32000 字符）" }, 400);
+      }
+      this.deps.moduleConfigStore.setFlag(PLATFORM_ENV_NOTES_FLAG, body.notes);
+      return this.json(res, { ok: true });
+    }
+
+    // === 记忆通道全局档位（知识体系轮 P2；app_config memory.channel，admin 设置） ===
+
+    // GET /api/admin/memory-channel
+    if (url.split("?")[0] === "/api/admin/memory-channel" && req.method === "GET") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      const v = this.deps.moduleConfigStore.getFlag(MEMORY_CHANNEL_FLAG);
+      return this.json(res, { mode: v === "legacy" || v === "off" ? v : "curated" });
+    }
+
+    // PUT /api/admin/memory-channel —— { mode: "curated" | "legacy" | "off" }
+    if (url.split("?")[0] === "/api/admin/memory-channel" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { mode?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req)) as { mode?: unknown };
+      } catch {
+        return this.json(res, { error: "请求体不是合法 JSON" }, 400);
+      }
+      const mode = body.mode;
+      if (mode !== "curated" && mode !== "legacy" && mode !== "off") {
+        return this.json(res, { error: "mode 必须为 curated | legacy | off" }, 400);
+      }
+      this.deps.moduleConfigStore.setFlag(MEMORY_CHANNEL_FLAG, mode);
+      return this.json(res, { ok: true, mode });
+    }
+
     // === 授权/代理模块配置（admin；spec 2026-09-21-auth-module-design §3.3/§3.6） ===
     // 语义：PUT 合并保存（秘密留空=保留旧值，掩码不回显）+「应用」即生效（登录每请求读库；
     // 钉钉机器人通道经 controller 运行时换血；代理经 configureGithubProxy 幂等重配）。
@@ -5164,6 +5225,54 @@ export class WebChannel implements Channel {
       const id = kbTreeMatch[1] ?? "";
       if (!(await this.requireKbRead(kb, id, me, res))) return;
       return this.json(res, listKbTree(kbRootDir(this.workspaceDir, id)));
+    }
+    // === 个人库记忆分区（知识体系轮 P2） ===
+    const kbMemoryMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/memory$/);
+    if (kbMemoryMatch && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbMemoryMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+      const mem = new MemoryStore(join(kbRootDir(this.workspaceDir, id), "memory"));
+      const idx = mem.readCuratedIndex();
+      return this.json(res, {
+        mode: this.deps.moduleConfigStore?.getFlag("memory.channel") === "legacy" ? "legacy" : "curated",
+        curated: mem.listCurated(),
+        indexLines: idx?.lines ?? 0,
+        indexTruncated: idx?.truncated ?? false,
+        legacyCount: mem.countLegacyTopLevel(),
+      });
+    }
+    // POST /api/kb/:id/memory/migrate-legacy —— memory/ 顶层旧条目 → archive/（一次性）
+    const kbMemMigrateMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/memory\/migrate-legacy$/);
+    if (kbMemMigrateMatch && req.method === "POST") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const me = this.requireUserId(req);
+      const id = kbMemMigrateMatch[1] ?? "";
+      const lib = await kb.libraries.get(id);
+      if (!lib) return this.json(res, { error: "not found" }, 404);
+      const actor = await this.kbActor(me);
+      if (!canManageKb(lib, actor)) return this.json(res, { error: "forbidden" }, 403);
+      const mem = new MemoryStore(join(kbRootDir(this.workspaceDir, id), "memory"));
+      const moved = mem.migrateLegacyToArchive();
+      try {
+        await kb.revisions.record({
+          kbId: id,
+          path: "memory/",
+          action: "update",
+          actorUserId: me,
+          actorKind: "memory-consolidation",
+          summary: `迁移 legacy 自动记忆 ${moved} 条至 archive/`,
+        });
+      } catch {
+        // 修订留痕失败不阻断迁移
+      }
+      return this.json(res, { ok: true, moved });
     }
     // GET /api/kb/:id/entry?path= —— 读 markdown 源文本（仅 .md；containment+相对根复判在 util 层）
     const kbEntryMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/entry$/);
@@ -7735,7 +7844,44 @@ export class WebChannel implements Channel {
         if (!have.has(code)) warnings.push(`凭证 ${code} 的值尚未配置（执行时将触发问询）`);
       }
     }
+    warnings.push(...(await this.agentSkillDocWarnings(actorId, agent)));
     return warnings;
+  }
+
+  /**
+   * 勾选技能的文档完整性预警（知识体系轮 P1）：description 超 1024 字节（引擎丢弃线）
+   * 与正文引用的本地资产缺失（技能半失效，60475bae 实锤）。与运行时物化器同源校验
+   * （skillDocIssues），编辑保存时回显不阻断；读不到盘上文档时静默跳过。
+   */
+  private async agentSkillDocWarnings(actorId: string, agent: Agent): Promise<string[]> {
+    if (!this.deps.skillPackStore || !this.deps.userStore || agent.skills.length === 0) return [];
+    try {
+      const owner =
+        (await this.deps.userStore.get(actorId)) ??
+        (await this.deps.userStore.get(agent.ownerId));
+      if (!owner) return [];
+      const packs = await this.deps.skillPackStore.listPacks(owner.id);
+      const bySlug = new Map(packs.map((p) => [p.slug, p]));
+      const out: string[] = [];
+      for (const id of agent.skills) {
+        const sep = id.indexOf(":");
+        if (sep <= 0 || sep === id.length - 1) continue;
+        const pack = bySlug.get(id.slice(0, sep));
+        if (!pack) continue;
+        const skills = await this.deps.skillPackStore.listSkills(owner.id, pack.id);
+        const skill = skills.find((s) => s.name === id.slice(sep + 1));
+        if (!skill) continue;
+        const packDir =
+          pack.builtin || isAbsolute(pack.installedPath)
+            ? pack.installedPath
+            : join(owner.homeDir, pack.installedPath);
+        const issues = skillDocIssues(join(packDir, skill.relativePath), skill.description);
+        for (const issue of issues) out.push(`技能 ${skill.name}：${issue}`);
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   private mergeMaskedMcp(a: Agent, patch: Partial<Agent>): Partial<Agent> {
