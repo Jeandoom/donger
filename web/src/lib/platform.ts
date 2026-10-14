@@ -11,6 +11,33 @@ export async function fetchPlatformNotes(): Promise<string> {
   return body.notes;
 }
 
+/** 平台约束候选（萃取器 platformNote 路由产出，admin 审阅） */
+export interface PlatformNoteCandidate {
+  content: string;
+  conversationId: string;
+  createdAt: string;
+}
+
+export async function fetchPlatformCandidates(): Promise<PlatformNoteCandidate[]> {
+  const r = await apiFetch("/api/admin/platform-notes");
+  if (!r.ok) throw new Error(`platform-notes ${r.status}`);
+  const body = (await r.json()) as { notes: string; candidates: PlatformNoteCandidate[] };
+  return body.candidates ?? [];
+}
+
+/** 候选处理：merge=并入环境约束；dismiss=忽略 */
+export async function resolvePlatformCandidate(
+  index: number,
+  action: "merge" | "dismiss",
+): Promise<void> {
+  const r = await apiFetch("/api/admin/platform-notes/merge-candidate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index, action }),
+  });
+  if (!r.ok) throw new Error(`merge-candidate ${r.status}`);
+}
+
 export async function savePlatformNotes(notes: string): Promise<void> {
   const r = await apiFetch("/api/admin/platform-notes", {
     method: "PUT",

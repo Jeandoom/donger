@@ -193,6 +193,20 @@ export const AgentSchema = z.object({
    * 缺省/null=回退「全部可管理绑定库」的既有语义）
    */
   kbWriteTargetId: z.string().nullable().optional(),
+  /**
+   * 收尾萃取路由（知识体系轮 P3；kbAutoLearn=true 时生效，缺省全开）：
+   * memory=个性化事实→个人库 memory/curated；kbRecord=状态/历史→可写绑定库（受
+   * kbWriteTargetId 收窄）；skillSuggestion=How-to→技能修订建议（audit 留痕，人审落盘）；
+   * platformNote=平台环境约束→admin 候选池。
+   */
+  learnRoutes: z
+    .object({
+      memory: z.boolean().default(true),
+      kbRecord: z.boolean().default(true),
+      skillSuggestion: z.boolean().default(true),
+      platformNote: z.boolean().default(true),
+    })
+    .optional(),
   /** 勾选的凭证模板 code（弱引用：执行时按当前用户解析，未配置的注入 _MISSING 标记） */
   credentials: z.array(z.string()).default([]),
   gitRepositories: AgentGitRepositoriesSchema,

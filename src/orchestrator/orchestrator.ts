@@ -139,6 +139,11 @@ export interface OrchestratorDeps {
    */
   platformEnvNotes?: () => string | undefined;
   /**
+   * 平台约束候选池（知识体系轮 P3；app_config platform.envNotes.candidates 草稿区）：
+   * 萃取器 platformNote 路由追加候选，admin 在设置面审阅合并或忽略。
+   */
+  platformNotesStore?: { appendCandidate(content: string, conversationId: string): void };
+  /**
    * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
    * 缺省视为全部启用。消费点：host-exec 停用 → 不挂载 donger-host 工具、
    * 不注入白名单提示词节、gateAllowCheck 不装配。
@@ -1344,7 +1349,7 @@ export class Orchestrator {
     return { aborted: false, ok, error, resultText };
   }
 
-  /** 自动学习入队（条件过滤 + 异步；任何失败仅落 audit_events 静默） */
+  /** 自动学习入队（条件过滤 + 异步；任何失败仅落 audit_events 静默）。P3：四路萃取编排 */
   private maybeEnqueueAutoLearn(
     p: {
       task: Task;
@@ -1363,12 +1368,20 @@ export class Orchestrator {
       if (!libs || !revisions || !workspaceDir || !llm) return;
       if (!ok || resultText.length === 0 || resultText === "(无结果)") return;
       if (p.agent?.kbAutoLearn !== true) return;
+      const routes = p.agent.learnRoutes ?? undefined;
+      const routeOn = routes ?? { memory: true, kbRecord: true, skillSuggestion: true, platformNote: true };
+      // 四路任一可用即可入队：kbRecord 需绑定库；memory 需个人库；suggestion/platformNote 由 agent 面决定
+      const hasKbRoute =
+        routeOn.kbRecord && ((p.agent.kbWriteTargetId ?? undefined) !== undefined || (p.agent.knowledgeBaseIds ?? []).length > 0);
+      const hasMemoryRoute = routeOn.memory && libs !== undefined && workspaceDir !== undefined;
+      const hasSuggestionRoute = routeOn.skillSuggestion && (p.agent.skills?.length ?? 0) > 0;
+      const hasPlatformRoute = routeOn.platformNote && this.deps.platformNotesStore !== undefined;
+      if (!hasKbRoute && !hasMemoryRoute && !hasSuggestionRoute && !hasPlatformRoute) return;
       // 独立知识库（可写目标）：命中候选则收窄为该库；悬空/失权时回退全量可管理绑定库
       // （specs/2026-10-01-agent-own-kb-picker-design.md §2.3）
       const targetId = p.agent.kbWriteTargetId ?? undefined;
       const boundIds = p.agent.knowledgeBaseIds ?? [];
       const kbIds = targetId && !boundIds.includes(targetId) ? [targetId, ...boundIds] : boundIds;
-      if (kbIds.length === 0) return;
       // 候选库=调用者可管理的绑定库（异步取，避免阻塞返回）
       void (async () => {
         try {
@@ -1379,6 +1392,39 @@ export class Orchestrator {
             if (lib && canManageKb(lib, actor)) candidates.push(lib);
           }
           const narrowed = narrowAutoLearnTargets(targetId, candidates);
+          // 记忆落点：个人库 memory/ 子目录（curated 路由写这里）
+          let memoryRootDir: string | undefined;
+          let curatedIndex: string | null = null;
+          if (routeOn.memory) {
+            const personal = await libs.ensurePersonalLibrary(p.user.id);
+            memoryRootDir = join(kbRootDir(workspaceDir, personal.id), "memory");
+            curatedIndex = new MemoryStore(memoryRootDir).readCuratedIndex()?.text ?? null;
+          }
+          // 技能清单（skillSuggestion 判定目标；仅 paste/upload 源可修订）
+          let skillCatalog: Array<{ id: string; name: string; description: string; editable: boolean }> | undefined;
+          if (routeOn.skillSuggestion && p.agent!.skills.length > 0) {
+            const packs = await this.deps.skillPackStore?.listPacks(p.user.id);
+            if (packs) {
+              const bySlug = new Map(packs.map((pk) => [pk.slug, pk]));
+              skillCatalog = [];
+              for (const id of p.agent!.skills) {
+                const sep = id.indexOf(":");
+                if (sep <= 0) continue;
+                const pack = bySlug.get(id.slice(0, sep));
+                if (!pack) continue;
+                const skills = await this.deps.skillPackStore!.listSkills(p.user.id, pack.id);
+                const skill = skills.find((s) => s.name === id.slice(sep + 1));
+                if (skill) {
+                  skillCatalog.push({
+                    id,
+                    name: skill.name,
+                    description: skill.description ?? "",
+                    editable: pack.source.kind === "paste" || pack.source.kind === "upload",
+                  });
+                }
+              }
+            }
+          }
           enqueueAutoLearn(
             {
               user: p.user,
@@ -1389,6 +1435,31 @@ export class Orchestrator {
               llm,
               revisionStore: revisions,
               kbFts: this.deps.kbFts,
+              routes,
+              memoryRootDir,
+              curatedIndex,
+              skillCatalog,
+              suggestionRecorder: {
+                record: async (input) => {
+                  await this.deps.auditStore.record({
+                    conversationId: input.conversationId,
+                    taskId: input.taskId,
+                    userId: input.userId,
+                    seq: -1,
+                    type: "skill_suggestion",
+                    text: `技能修订建议：${input.targetSkill}——${input.rationale || "（无理由说明）"}`,
+                    toolInput: JSON.stringify({
+                      targetSkill: input.targetSkill,
+                      diff: input.diff,
+                      rationale: input.rationale,
+                      evidence: input.evidence,
+                      status: "pending",
+                    }),
+                    recordedAt: new Date().toISOString(),
+                  });
+                },
+              },
+              platformNoteStore: this.deps.platformNotesStore,
             },
             `${p.task.prompt}\n\n---\n\n${resultText}`,
           );

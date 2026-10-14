@@ -427,6 +427,20 @@ async function main(): Promise<void> {
         return v === "legacy" || v === "off" ? v : "curated";
       },
       platformEnvNotes: () => moduleConfigStore.getFlag("platform.envNotes"),
+      // 平台约束候选池（知识体系轮 P3）：萃取器追加候选，admin 审阅合并
+      platformNotesStore: {
+        appendCandidate: (content: string, conversationId: string) => {
+          const key = "platform.envNotes.candidates";
+          let list: Array<{ content: string; conversationId: string; createdAt: string }> = [];
+          try {
+            list = JSON.parse(moduleConfigStore.getFlag(key) ?? "[]") as typeof list;
+          } catch {
+            list = [];
+          }
+          if (content.trim()) list.push({ content: content.trim(), conversationId, createdAt: new Date().toISOString() });
+          moduleConfigStore.setFlag(key, JSON.stringify(list.slice(-50)));
+        },
+      },
       agentStore,
       agentShareStore,
       isPluginEnabled: pluginGate,

@@ -300,6 +300,12 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // 平台环境约束（知识体系轮 P1）：admin 编辑，orchestrator 注入默认提示词
     { method: "GET", pattern: "/api/admin/platform-notes", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/platform-notes", access: { kind: "admin" } },
+    // 平台约束候选池（知识体系轮 P3）：萃取器候选的合并/忽略
+    {
+      method: "POST",
+      pattern: "/api/admin/platform-notes/merge-candidate",
+      access: { kind: "admin" },
+    },
     // 记忆通道全局档位（知识体系轮 P2）：admin 设置
     { method: "GET", pattern: "/api/admin/memory-channel", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/memory-channel", access: { kind: "admin" } },

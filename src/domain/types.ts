@@ -134,6 +134,10 @@ export interface AuditEvent {
     | "permission_mode_change"
     /** 知识库自动学习失败（seq=-1 执行外事件；text=失败原因，静默不扰用户） */
     | "kb_auto_learn_error"
+    /** 技能修订建议（知识体系轮 P3 萃取 skillSuggestion 路由；seq=-1 执行外事件；
+     *  text=摘要，toolInput=JSON {targetSkill,diff,rationale,evidence,status:"pending"}。
+     *  采纳走人审链路（P4），不直接改技能） */
+    | "skill_suggestion"
     /** 主机命令策略裁决打标（seq=-1 执行外事件；specs/2026-10-12-host-exec-policy-design.md §6；
      *  text=裁决摘要，toolInput=命令前 300 字符。allow/deny/一键成策略落此；ask 有审批卡可见） */
     | "policy_decision"

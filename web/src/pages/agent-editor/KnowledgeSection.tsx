@@ -153,8 +153,8 @@ export function KnowledgeSection(props: {
         </div>
       </FormField>
       <FormField
-        label="自动学习与记忆"
-        hint="开启后对话结束会自动梳理有价值信息写入独立知识库（未指定时写入全部可写的绑定库；有修订记录可回溯；默认关闭）"
+        label="对话收尾自动萃取沉淀"
+        hint="开启后对话结束自动萃取知识并按路由落位：记忆条目→个人库精选层；知识库记录→绑定的可写库；技能修订建议→审计留痕待采纳；平台约束→管理员候选池（默认关闭）"
       >
         <div className="flex items-center gap-2">
           <Switch
@@ -165,6 +165,34 @@ export function KnowledgeSection(props: {
             {form.kbAutoLearn ? "已开启" : "已关闭"}
           </span>
         </div>
+        {form.kbAutoLearn ? (
+          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2">
+            <RouteToggle
+              label="记忆条目"
+              desc="个性化事实/偏好 → 个人库 curated"
+              checked={form.learnRoutes?.memory !== false}
+              onChange={(v) => patch({ learnRoutes: { memory: v, kbRecord: form.learnRoutes?.kbRecord !== false, skillSuggestion: form.learnRoutes?.skillSuggestion !== false, platformNote: form.learnRoutes?.platformNote !== false } })}
+            />
+            <RouteToggle
+              label="知识库记录"
+              desc="状态/历史 → 上方可写目标库"
+              checked={form.learnRoutes?.kbRecord !== false}
+              onChange={(v) => patch({ learnRoutes: { memory: form.learnRoutes?.memory !== false, kbRecord: v, skillSuggestion: form.learnRoutes?.skillSuggestion !== false, platformNote: form.learnRoutes?.platformNote !== false } })}
+            />
+            <RouteToggle
+              label="技能修订建议"
+              desc="How-to → 审计留痕，采纳后进技能"
+              checked={form.learnRoutes?.skillSuggestion !== false}
+              onChange={(v) => patch({ learnRoutes: { memory: form.learnRoutes?.memory !== false, kbRecord: form.learnRoutes?.kbRecord !== false, skillSuggestion: v, platformNote: form.learnRoutes?.platformNote !== false } })}
+            />
+            <RouteToggle
+              label="平台约束上报"
+              desc="全平台环境事实 → 管理员候选池"
+              checked={form.learnRoutes?.platformNote !== false}
+              onChange={(v) => patch({ learnRoutes: { memory: form.learnRoutes?.memory !== false, kbRecord: form.learnRoutes?.kbRecord !== false, skillSuggestion: form.learnRoutes?.skillSuggestion !== false, platformNote: v } })}
+            />
+          </div>
+        ) : null}
       </FormField>
 
       <ConversationScopePicker
@@ -391,5 +419,23 @@ function ConversationScopePicker({
         </div>
       </div>
     </FormField>
+  );
+}
+
+/** 萃取路由子开关（知识体系轮 P3）：标签+说明+勾选，无表单域外壳 */
+function RouteToggle(props: {
+  label: string;
+  desc: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2 rounded border p-2">
+      <Switch checked={props.checked} onCheckedChange={props.onChange} />
+      <span className="min-w-0">
+        <span className="block text-xs font-medium">{props.label}</span>
+        <span className="block text-xs text-muted-foreground">{props.desc}</span>
+      </span>
+    </label>
   );
 }

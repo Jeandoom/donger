@@ -279,6 +279,9 @@ const PLATFORM_ENV_NOTES_FLAG = "platform.envNotes";
 /** 记忆通道全局档位的 app_config key（知识体系轮 P2；curated=缺省） */
 const MEMORY_CHANNEL_FLAG = "memory.channel";
 
+/** 平台约束候选池的 app_config key（知识体系轮 P3；JSON 数组草稿区） */
+const PLATFORM_NOTE_CANDIDATES_FLAG = "platform.envNotes.candidates";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** get-or-create 复用匹配：同一 agent 已有多个会话时取最近使用的（updatedAt 倒序首个），而非创建序首个 */
@@ -2846,10 +2849,57 @@ export class WebChannel implements Channel {
     // === 平台环境约束（知识体系轮 P1；app_config platform.envNotes，admin 编辑） ===
     // orchestrator 组装默认提示词时每轮现取注入「## 平台环境约束」节，改即生效。
 
-    // GET /api/admin/platform-notes
+    // GET /api/admin/platform-notes —— { notes, candidates }
     if (url.split("?")[0] === "/api/admin/platform-notes" && req.method === "GET") {
       if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
-      return this.json(res, { notes: this.deps.moduleConfigStore.getFlag(PLATFORM_ENV_NOTES_FLAG) ?? "" });
+      let candidates: Array<{ content: string; conversationId: string; createdAt: string }> = [];
+      try {
+        candidates = JSON.parse(
+          this.deps.moduleConfigStore.getFlag(PLATFORM_NOTE_CANDIDATES_FLAG) ?? "[]",
+        ) as typeof candidates;
+      } catch {
+        candidates = [];
+      }
+      return this.json(res, {
+        notes: this.deps.moduleConfigStore.getFlag(PLATFORM_ENV_NOTES_FLAG) ?? "",
+        candidates,
+      });
+    }
+
+    // POST /api/admin/platform-notes/merge-candidate —— { index, action: "merge" | "dismiss" }
+    if (url.split("?")[0] === "/api/admin/platform-notes/merge-candidate" && req.method === "POST") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { index?: unknown; action?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req)) as { index?: unknown; action?: unknown };
+      } catch {
+        return this.json(res, { error: "请求体不是合法 JSON" }, 400);
+      }
+      const index = Number(body.index);
+      const action = body.action;
+      if (!Number.isInteger(index) || index < 0 || (action !== "merge" && action !== "dismiss")) {
+        return this.json(res, { error: "index（非负整数）与 action（merge|dismiss）必填" }, 400);
+      }
+      let candidates: Array<{ content: string; conversationId: string; createdAt: string }> = [];
+      try {
+        candidates = JSON.parse(
+          this.deps.moduleConfigStore.getFlag(PLATFORM_NOTE_CANDIDATES_FLAG) ?? "[]",
+        ) as typeof candidates;
+      } catch {
+        candidates = [];
+      }
+      const picked = candidates[index];
+      if (!picked) return this.json(res, { error: "候选不存在（可能已被处理）" }, 404);
+      const rest = candidates.filter((_, i) => i !== index);
+      if (action === "merge") {
+        const current = this.deps.moduleConfigStore.getFlag(PLATFORM_ENV_NOTES_FLAG) ?? "";
+        const merged = current.trim()
+          ? `${current.trimEnd()}\n- ${picked.content}`
+          : `- ${picked.content}`;
+        this.deps.moduleConfigStore.setFlag(PLATFORM_ENV_NOTES_FLAG, merged);
+      }
+      this.deps.moduleConfigStore.setFlag(PLATFORM_NOTE_CANDIDATES_FLAG, JSON.stringify(rest));
+      return this.json(res, { ok: true, action, remaining: rest.length });
     }
 
     // PUT /api/admin/platform-notes —— 全量保存（markdown 文本；空串=清空）

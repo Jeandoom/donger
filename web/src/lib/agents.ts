@@ -82,6 +82,13 @@ export interface AgentDTO {
   kbAutoLearn?: boolean;
   /** 独立知识库（可写目标，单选）：自动学习沉淀写入该库；null=未指定（回退全部可写绑定库） */
   kbWriteTargetId?: string | null;
+  /** 收尾萃取路由（知识体系轮 P3；kbAutoLearn=true 时生效，缺省全开） */
+  learnRoutes?: {
+    memory: boolean;
+    kbRecord: boolean;
+    skillSuggestion: boolean;
+    platformNote: boolean;
+  };
   /** 反馈资源范围（# 反馈引用；缺省 = 功能未开启） */
   feedbackScope?: AgentFeedbackScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */
