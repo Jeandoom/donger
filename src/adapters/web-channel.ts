@@ -255,6 +255,7 @@ import {
   handleSetSkillEnabled,
   handleUninstall,
   handleUpdate,
+  handleApplySuggestion,
   type SkillApiDeps,
 } from "./skill-api.js";
 import type { SkillJobRunner } from "./skill-jobs.js";
@@ -2919,6 +2920,48 @@ export class WebChannel implements Channel {
       }
       this.deps.moduleConfigStore.setFlag(PLATFORM_ENV_NOTES_FLAG, body.notes);
       return this.json(res, { ok: true });
+    }
+
+    // GET /api/admin/kb-metrics —— 治理指标 K1（知识体系轮 P5）：近 2000 条 kb_* 工具调用
+    // 按库聚合 read/search/write 次数 + 各库条目数 → 只写不读可视化
+    if (url.split("?")[0] === "/api/admin/kb-metrics" && req.method === "GET") {
+      const kb = this.requireKbStores(res);
+      if (!kb) return;
+      const uses = (await this.deps.auditStore?.listKbToolUse(2000)) ?? [];
+      const perKb = new Map<string, { read: number; search: number; write: number }>();
+      for (const u of uses) {
+        let kbId = "";
+        try {
+          kbId = String(JSON.parse(u.toolInput ?? "{}")?.kbId ?? "");
+        } catch {
+          kbId = "";
+        }
+        if (!kbId) continue;
+        const slot = perKb.get(kbId) ?? { read: 0, search: 0, write: 0 };
+        if (u.toolName.endsWith("kb_read")) slot.read++;
+        else if (u.toolName.endsWith("kb_search")) slot.search++;
+        else if (u.toolName.endsWith("kb_write") || u.toolName.endsWith("kb_delete")) slot.write++;
+        perKb.set(kbId, slot);
+      }
+      const libs = await kb.libraries.listAll();
+      const metrics = libs.map((l) => {
+        const usage = perKb.get(l.id) ?? { read: 0, search: 0, write: 0 };
+        let entries = 0;
+        try {
+          entries = listKbTree(kbRootDir(this.workspaceDir, l.id)).total;
+        } catch {
+          entries = 0;
+        }
+        return {
+          kbId: l.id,
+          name: l.name,
+          personal: l.personal,
+          entries,
+          ...usage,
+          readRatio: usage.read + usage.search > 0 ? Number(((usage.read + usage.search) / Math.max(entries, 1)).toFixed(2)) : 0,
+        };
+      });
+      return this.json(res, { metrics });
     }
 
     // === 记忆通道全局档位（知识体系轮 P2；app_config memory.channel，admin 设置） ===
@@ -6555,6 +6598,79 @@ export class WebChannel implements Channel {
       res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(r.json));
     };
+    // POST /api/skills/packs/:pid/skills/:name/apply-suggestion —— 萃取建议晋升（知识体系轮 P4）
+    const applySugMatch = match(/^\/api\/skills\/packs\/([\w-]+)\/skills\/([^/]+)\/apply-suggestion$/);
+    if (applySugMatch && req.method === "POST") {
+      if (!deps) {
+        send({ status: 404, json: { error: "技能 API 未装配" } });
+        return true;
+      }
+      const body = JSON.parse(await this.readBody(req)) as {
+        content?: string;
+        confirmed?: boolean;
+      };
+      send(
+        await handleApplySuggestion(
+          uid,
+          {
+            packId: decodeURIComponent(applySugMatch[1] ?? ""),
+            skillName: decodeURIComponent(applySugMatch[2] ?? ""),
+            content: body.content,
+            confirmed: body.confirmed === true,
+          },
+          deps,
+          this.deps.auditStore,
+        ),
+      );
+      return true;
+    }
+    // GET /api/skills/skill-events?skill= —— 技能相关沉淀事件（修订建议+晋升记录；知识体系轮 P4）
+    const skillEventsMatch = basePath.match(/^\/api\/skills\/skill-events$/);
+    if (skillEventsMatch && req.method === "GET") {
+      const skill = new URL(url, "http://localhost").searchParams.get("skill") ?? "";
+      if (!skill.trim()) {
+        send({ status: 400, json: { error: "缺少 skill 参数" } });
+        return true;
+      }
+      const audit = this.deps.auditStore;
+      if (!audit) {
+        send({ status: 200, json: { suggestions: [], promotions: [] } });
+        return true;
+      }
+      const [allSuggestions, promotions] = await Promise.all([
+        audit.listByUserType(uid, "skill_suggestion", 50),
+        audit.listByUserType(uid, "skill_promoted", 20),
+      ]);
+      // 按 toolInput.targetSkill 过滤到目标技能（text 前缀含技能名作兜底）
+      const hitSkill = (e: { text?: string; toolInput?: string | null }): boolean => {
+        const text = e.text ?? "";
+        try {
+          const p = JSON.parse(e.toolInput ?? "{}") as { targetSkill?: string; skill?: string };
+          return p.targetSkill === skill || p.skill === skill || text.includes(`：${skill}`);
+        } catch {
+          return text.includes(`：${skill}`);
+        }
+      };
+      const suggestions = allSuggestions.filter(hitSkill);
+      const hitPromotions = promotions.filter((e) => hitSkill({ text: e.text, toolInput: e.toolInput }));
+      send({
+        status: 200,
+        json: {
+          suggestions: suggestions.map((e) => ({
+            id: e.id,
+            recordedAt: e.recordedAt,
+            text: e.text,
+            detail: e.toolInput,
+          })),
+          promotions: hitPromotions.map((e) => ({
+            id: e.id,
+            recordedAt: e.recordedAt,
+            text: e.text,
+          })),
+        },
+      });
+      return true;
+    }
     // ---- 用户技能仓库（配置/测试连接/手动同步；不依赖 credentialSets 装配）----
     if (basePath === "/api/skills/repo" || basePath.startsWith("/api/skills/repo/")) {
       const repoDeps = this.skillRepoDeps();

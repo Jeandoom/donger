@@ -138,6 +138,8 @@ export interface AuditEvent {
      *  text=摘要，toolInput=JSON {targetSkill,diff,rationale,evidence,status:"pending"}。
      *  采纳走人审链路（P4），不直接改技能） */
     | "skill_suggestion"
+    /** 技能晋升（知识体系轮 P4：萃取建议采纳落盘；seq=-1 执行外事件；text=晋升摘要） */
+    | "skill_promoted"
     /** 主机命令策略裁决打标（seq=-1 执行外事件；specs/2026-10-12-host-exec-policy-design.md §6；
      *  text=裁决摘要，toolInput=命令前 300 字符。allow/deny/一键成策略落此；ask 有审批卡可见） */
     | "policy_decision"

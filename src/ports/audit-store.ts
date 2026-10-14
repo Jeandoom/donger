@@ -48,6 +48,12 @@ export interface AuditStore {
   /** 仅检索属于 viewer 的会话事件 text 关键词检索（同样经 conversations.userId 收口） */
   searchByKeywordVisible(viewerId: string, keyword: string, limit: number): Promise<AuditEvent[]>;
 
+  // ---- 执行外事件检索（知识体系轮 P4）：按事件自身 userId 判属主（seq=-1 无会话归属）----
+  /** 按用户+类型检索执行外事件（skill_suggestion/skill_promoted 等），recordedAt 倒序截 limit 条 */
+  listByUserType(userId: string, type: string, limit: number): Promise<AuditEvent[]>;
+  /** 近 limit 条 kb_* 工具调用（治理指标 K1：库被读/检索次数聚合的数据源；知识体系轮 P5） */
+  listKbToolUse(limit?: number): Promise<Array<{ toolName: string; toolInput: string | null }>>;
+
   /**
    * kb_search 0 命中统计（R-E：检索质量信号，向量层触发依据）：
    * 近 limit 次 kb_search 调用中 0 命中的次数（tool_result 空 hits / 旧格式无命中标记）。

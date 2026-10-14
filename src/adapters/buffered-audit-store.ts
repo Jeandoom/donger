@@ -123,6 +123,14 @@ export class BufferedAuditStore implements AuditStore {
     return this.drained(() => this.inner.searchByKeywordVisible(viewerId, keyword, limit));
   }
 
+  listByUserType(userId: string, type: string, limit: number): Promise<AuditEvent[]> {
+    return this.drained(() => this.inner.listByUserType(userId, type, limit));
+  }
+
+  listKbToolUse(limit?: number): Promise<Array<{ toolName: string; toolInput: string | null }>> {
+    return this.drained(() => this.inner.listKbToolUse(limit));
+  }
+
   kbSearchStats(limit?: number): Promise<{ total: number; zeroHit: number }> {
     return this.drained(() => this.inner.kbSearchStats(limit));
   }

@@ -309,6 +309,8 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     // 记忆通道全局档位（知识体系轮 P2）：admin 设置
     { method: "GET", pattern: "/api/admin/memory-channel", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/memory-channel", access: { kind: "admin" } },
+    // KB 治理指标（知识体系轮 P5）：库被读/条目比
+    { method: "GET", pattern: "/api/admin/kb-metrics", access: { kind: "admin" } },
     // 用户管理（spec 2026-09-21-user-management-design §2.2）：列表 DTO + 角色变更 + 系统事件
     { method: "GET", pattern: "/api/admin/users", access: { kind: "admin" } },
     { method: "PATCH", pattern: "/api/admin/users/:id/role", access: { kind: "admin" } },
@@ -517,6 +519,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
 
     // 技能包（handler 内按 viewer 解析）
     { method: "GET", pattern: "/api/skills/packs", access: { kind: "authenticated" } },
+    // 技能修订建议采纳（知识体系轮 P4）：晋升 API + 技能事件检索
+    {
+      method: "POST",
+      pattern: "/api/skills/packs/:pid/skills/:name/apply-suggestion",
+      access: { kind: "authenticated" },
+    },
+    { method: "GET", pattern: "/api/skills/skill-events", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/skills/packs/install", access: { kind: "authenticated" } },
     {
       method: "POST",

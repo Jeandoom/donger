@@ -1428,6 +1428,7 @@ export class Orchestrator {
           enqueueAutoLearn(
             {
               user: p.user,
+              ownerUserId: p.agent!.ownerId,
               conversation: p.conversation,
               taskId: p.task.id,
               candidateKbs: narrowed,
@@ -1457,6 +1458,29 @@ export class Orchestrator {
                     }),
                     recordedAt: new Date().toISOString(),
                   });
+                  // 通知（P4）：属主+发起者双收件（D3），深链技能页采纳
+                  const notify = this.deps.notificationService;
+                  if (notify) {
+                    const recipients = [
+                      ...new Set([input.userId, input.ownerUserId].filter(Boolean)),
+                    ].map((userId) => ({ kind: "user" as const, userId }));
+                    await notify
+                      .notify({
+                        event: "agent.skill_suggestion",
+                        recipients,
+                        title: `技能修订建议：${input.targetSkill}`,
+                        body: [
+                          input.rationale || "（无理由说明）",
+                          input.evidence ? `证据：${input.evidence}` : "",
+                          `建议 diff ${input.diff.length} 字符，见技能详情页采纳`,
+                        ]
+                          .filter(Boolean)
+                          .join("\n"),
+                        link: "/skills",
+                        dedupeKey: `skill-suggestion:${input.conversationId}:${input.targetSkill}`,
+                      })
+                      .catch(() => undefined);
+                  }
                 },
               },
               platformNoteStore: this.deps.platformNotesStore,

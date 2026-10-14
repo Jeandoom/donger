@@ -129,6 +129,21 @@ export class InMemoryAuditStore implements AuditStore {
       .slice(0, limit);
   }
 
+  async listKbToolUse(limit = 2000): Promise<Array<{ toolName: string; toolInput: string | null }>> {
+    return [...this.byId.values()]
+      .filter((e) => e.type === "tool_use" && (e.toolName ?? "").startsWith("mcp__donger-kb__"))
+      .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+      .slice(0, limit)
+      .map((e) => ({ toolName: e.toolName ?? "", toolInput: e.toolInput ?? null }));
+  }
+
+  async listByUserType(userId: string, type: string, limit: number): Promise<AuditEvent[]> {
+    return [...this.byId.values()]
+      .filter((e) => e.userId === userId && e.type === type)
+      .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+      .slice(0, limit);
+  }
+
   async searchByKeywordVisible(
     viewerId: string,
     keyword: string,

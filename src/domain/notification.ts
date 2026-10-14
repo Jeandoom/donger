@@ -22,7 +22,8 @@ export type NotificationEvent =
   | "deploy.detected"
   | "deploy.succeeded"
   | "deploy.failed"
-  | "agent.skill_issue_reported";
+  | "agent.skill_issue_reported"
+  | "agent.skill_suggestion";
 
 /** 订阅偏好按事件组粒度（用户不感知单事件开关）；组×通道成矩阵 */
 export type NotificationEventGroup =
@@ -132,6 +133,12 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     severity: "info",
     mandatoryInapp: false,
     label: "智能体技能问题上报",
+  },
+  "agent.skill_suggestion": {
+    group: "share",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "技能修订建议（萃取）",
   },
 };
 

@@ -50,6 +50,8 @@ function consumeQuota(conversationId: string): void {
 
 export interface AutoLearnParams {
   user: { id: string };
+  /** agent 属主（suggestion 通知双收件 D3）；缺省=user.id */
+  ownerUserId?: string;
   conversation: Conversation;
   taskId: string;
   /** 候选库（调用方已按 canManageKb 过滤的绑定库） */
@@ -87,6 +89,8 @@ export interface AutoLearnParams {
       conversationId: string;
       taskId: string;
       userId: string;
+      /** agent 属主（通知双收件 D3：属主+发起者） */
+      ownerUserId: string;
       targetSkill: string;
       diff: string;
       rationale: string;
@@ -196,6 +200,7 @@ export async function runAutoLearn(
 
   await applyLearnRoutes(parsed, params, routes, {
     user,
+    ownerUserId: params.ownerUserId,
     conversation,
     taskId,
     candidateKbs,
@@ -211,6 +216,8 @@ export interface ApplyContext {
   candidateKbs: KbLibrary[];
   workspaceDir: string;
   revisionStore: AutoLearnParams["revisionStore"];
+  /** agent 属主（suggestion 通知双收件）；缺省=发起者 */
+  ownerUserId?: string;
 }
 
 /**
@@ -356,6 +363,7 @@ async function applySkillSuggestionRoute(
     conversationId: ctx.conversation.id,
     taskId: ctx.taskId,
     userId: ctx.user.id,
+    ownerUserId: ctx.ownerUserId ?? ctx.user.id,
     targetSkill,
     diff,
     rationale: String(r.rationale ?? ""),

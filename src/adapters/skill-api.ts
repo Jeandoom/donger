@@ -332,3 +332,100 @@ function validSkillName(raw: unknown): string | undefined {
 function writeDocSync(targetDir: string, content: string): void {
   writeFileSync(join(targetDir, "SKILL.md"), content, "utf8");
 }
+
+// ---- 技能修订建议采纳（知识体系轮 P4）----
+
+/** 危险面模式：新增行命中且旧文档没有 → 必须 confirmed 才放行（不扩危险面的无证据改动直接过） */
+const DANGEROUS_LINE_RE =
+  /(rm\s+-rf|curl\s|wget\s|ssh\s|scp\s|chmod\s|chown\s|sudo\s|>\s*\/| tee\b|invoke-|iex\b|powershell)/i;
+
+/**
+ * 萃取建议的危险面检查：对比新旧 SKILL.md 行集，新增行命中危险模式且未显式确认 → 拒绝。
+ * 返回错误消息（null=通过）。不阻断「既有危险操作的继续使用」——只拦净新增。
+ */
+export function assertSuggestionDangerFace(
+  oldContent: string,
+  newContent: string,
+  confirmed: boolean,
+): string | null {
+  const oldLines = new Set(oldContent.split(/\r?\n/).map((l) => l.trim()));
+  const offenders: string[] = [];
+  for (const line of newContent.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || oldLines.has(t)) continue;
+    if (DANGEROUS_LINE_RE.test(t)) offenders.push(t.slice(0, 120));
+  }
+  if (offenders.length === 0) return null;
+  if (!confirmed) {
+    return `建议新增了危险面操作（${offenders.length} 行：${offenders[0]}…），需勾选「我已审阅危险面」确认后才能应用`;
+  }
+  return null;
+}
+
+/** POST /api/skills/packs/:pid/skills/:name/apply-suggestion —— 萃取建议晋升落盘（属主+paste/upload 源+危险面检查） */
+export async function handleApplySuggestion(
+  userId: string,
+  body: { packId?: string; skillName?: string; content?: string; confirmed?: boolean },
+  d: SkillApiDeps,
+  audit?: {
+    record(input: {
+      conversationId: string;
+      taskId: string;
+      userId: string;
+      seq: number;
+      type: "skill_promoted";
+      text: string;
+      toolInput?: string;
+      recordedAt: string;
+    }): Promise<unknown>;
+  },
+): Promise<ApiResult> {
+  const packId = body.packId ?? "";
+  const skillName = body.skillName ?? "";
+  const content = body.content ?? "";
+  if (!packId || !skillName || !content.trim()) {
+    return { status: 400, json: { error: "packId/skillName/content 必填" } };
+  }
+  const pack = await d.packStore.getPack(userId, packId);
+  if (!pack) return { status: 404, json: { error: `pack 不存在: ${packId}` } };
+  if (pack.source.kind !== "paste" && pack.source.kind !== "upload") {
+    return {
+      status: 409,
+      json: {
+        error: `${pack.source.kind} 源技能只读：请按建议在上游仓库修订后回推（可用 skills-push）`,
+        code: "PACK_NOT_HOSTABLE",
+      },
+    };
+  }
+  let oldContent = "";
+  try {
+    oldContent = await d.installer.readSkillDoc(userId, packId, skillName);
+  } catch {
+    oldContent = "";
+  }
+  const danger = assertSuggestionDangerFace(oldContent, content, body.confirmed === true);
+  if (danger) return { status: 422, json: { error: danger, code: "DANGER_FACE_UNCONFIRMED" } };
+  try {
+    const updated = await d.installer.updateSkillDoc(userId, packId, skillName, content);
+    d.skillRepoSync?.onChanged(userId);
+    await audit?.record({
+      conversationId: "",
+      taskId: "",
+      userId,
+      seq: -1,
+      type: "skill_promoted",
+      text: `技能晋升：${skillName}（pack ${pack.slug}）萃取建议已采纳落盘`,
+      toolInput: JSON.stringify({ pack: pack.slug, skill: skillName, bytes: content.length }),
+      recordedAt: new Date().toISOString(),
+    });
+    return { status: 200, json: { ok: true, packSlug: updated.slug } };
+  } catch (e) {
+    return {
+      status: 400,
+      json: {
+        error: (e as Error).message,
+        code: e instanceof SkillInstallError ? e.code : undefined,
+      },
+    };
+  }
+}

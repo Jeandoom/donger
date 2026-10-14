@@ -6,6 +6,7 @@ import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
+import { KbMetricsCard } from "../components/KbMetricsCard";
 import { Textarea } from "../components/ui/textarea";
 import { createKb, deleteKb, duplicateKb, fetchKnowledgeBases, type KbLibraryDTO } from "../lib/kb";
 
@@ -106,6 +107,8 @@ export function KnowledgeBasePage() {
           </Button>
         }
       />
+
+      <KbMetricsCard />
 
       {creating ? (
         <Card className="flex flex-col gap-3 p-4">

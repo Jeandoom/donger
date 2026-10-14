@@ -72,6 +72,7 @@ import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config
 import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
+import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
@@ -654,6 +655,32 @@ async function main(): Promise<void> {
   webChannel.onMessage((m) => void webOrch.handleMessage(m));
   webChannel.onCancel((conversationId) => webOrch.cancelConversation(conversationId));
   orchestrators.set("web", webOrch);
+
+  // 记忆闲时整理器（知识体系轮 P5）：低峰（无 running task）执行归档/索引重排，
+  // 动作记 memory-consolidation 修订；索引超限 warn 通知库属主
+  startMemoryConsolidator({
+    kbLibraryStore: kbLibraryStore,
+    workspaceDir: cfg.workspaceDir,
+    revisionStore: kbRevisionStore,
+    // 低峰判定：无 running task（整理动作含文件重命名，避开执行高峰）
+    idleCheck: async () => {
+      const running = await store.listByStatus("running");
+      return running.length === 0;
+    },
+    intervalMs: 3_600_000,
+    notify: (input: { userId: string; title: string; body: string; link: string }) => {
+      void notificationService
+        .notify({
+          event: "system.announcement",
+          recipients: [{ kind: "user", userId: input.userId }],
+          title: input.title,
+          body: input.body,
+          link: input.link,
+          dedupeKey: `memory-consolidation:${input.userId}:${new Date().toISOString().slice(0, 10)}`,
+        })
+        .catch(() => undefined);
+    },
+  });
 
   // 自动化运行时：统一触发管线（eventDispatcher）+ 三分发器（依赖 webOrch，构造后回填
   // webChannel.deps；spec 2026-10-09-events-workflows-refactor-design §4）

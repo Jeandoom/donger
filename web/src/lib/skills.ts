@@ -473,3 +473,46 @@ export async function repoInstallSkill(
     });
   return data as never;
 }
+
+// ---- 技能修订建议（知识体系轮 P4）----
+
+export interface SkillSuggestionEvent {
+  id: string;
+  recordedAt: string;
+  text: string;
+  detail: string | null;
+}
+
+export interface SkillPromotionEvent {
+  id: string;
+  recordedAt: string;
+  text: string;
+}
+
+export async function fetchSkillEvents(
+  skill: string,
+): Promise<{ suggestions: SkillSuggestionEvent[]; promotions: SkillPromotionEvent[] }> {
+  const res = await apiFetch(`/api/skills/skill-events?skill=${encodeURIComponent(skill)}`);
+  if (!res.ok) throw new Error(`skill-events ${res.status}`);
+  return (await res.json()) as never;
+}
+
+/** 采纳萃取建议：晋升 API（paste/upload 源；危险面新增行需 confirmed） */
+export async function applySkillSuggestion(input: {
+  packId: string;
+  skillName: string;
+  content: string;
+  confirmed: boolean;
+}): Promise<void> {
+  const res = await apiFetch(
+    `/api/skills/packs/${input.packId}/skills/${encodeURIComponent(input.skillName)}/apply-suggestion`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: input.content, confirmed: input.confirmed }),
+    },
+  );
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok)
+    throw Object.assign(new Error(String(data.error ?? `apply ${res.status}`)), { code: data.code });
+}

@@ -12,6 +12,7 @@ import ReactMarkdown from "react-markdown";
 import { useNavigate } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 import { Badge } from "../components/ui/badge";
+import { SkillSuggestionsPanel } from "../components/SkillSuggestionsPanel";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
@@ -954,6 +955,15 @@ function PackCard({
             <article className="prose prose-sm max-w-none dark:prose-invert">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.content}</ReactMarkdown>
             </article>
+            <SkillSuggestionsPanel
+              packId={pack.id}
+              skillName={preview.name}
+              editable={pack.source.kind === "paste" || pack.source.kind === "upload"}
+              onApplied={async () => {
+                // 落盘后刷新预览内容
+                await openPreview(preview.name);
+              }}
+            />
           </div>
         </DialogShell>
       ) : null}

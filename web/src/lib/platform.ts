@@ -91,3 +91,23 @@ export async function saveMemoryChannel(mode: MemoryChannelMode): Promise<void> 
   });
   if (!r.ok) throw new Error(`memory-channel ${r.status}`);
 }
+
+// ---- KB 治理指标（知识体系轮 P5）----
+
+export interface KbMetric {
+  kbId: string;
+  name: string;
+  personal: boolean;
+  entries: number;
+  read: number;
+  search: number;
+  write: number;
+  readRatio: number;
+}
+
+export async function fetchKbMetrics(): Promise<KbMetric[]> {
+  const r = await apiFetch("/api/admin/kb-metrics");
+  if (!r.ok) throw new Error(`kb-metrics ${r.status}`);
+  const body = (await r.json()) as { metrics: KbMetric[] };
+  return body.metrics ?? [];
+}

@@ -221,6 +221,28 @@ export class SqliteAuditStore implements AuditStore {
     return rows.map((r) => this.rowToEv(r));
   }
 
+  async listKbToolUse(limit = 2000): Promise<Array<{ toolName: string; toolInput: string | null }>> {
+    const rows = this.db
+      .prepare(
+        `SELECT toolName, toolInput FROM audit_events
+         WHERE type = 'tool_use' AND toolName LIKE 'mcp__donger-kb__%'
+         ORDER BY recordedAt DESC LIMIT ?`,
+      )
+      .all(limit) as Array<{ toolName: string | null; toolInput: string | null }>;
+    return rows.map((r) => ({ toolName: r.toolName ?? "", toolInput: r.toolInput ?? null }));
+  }
+
+  async listByUserType(userId: string, type: string, limit: number): Promise<AuditEvent[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM audit_events
+         WHERE userId = ? AND type = ?
+         ORDER BY recordedAt DESC, seq DESC LIMIT ?`,
+      )
+      .all(userId, type, limit) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToEv(r));
+  }
+
   async searchByKeywordVisible(
     viewerId: string,
     keyword: string,
