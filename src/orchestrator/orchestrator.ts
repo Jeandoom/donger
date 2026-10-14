@@ -28,7 +28,7 @@ import { appendMessageFiles } from "../domain/message-files.js";
 import {
   type AgentPermissionMode,
   DEFAULT_PERMISSION_MODE,
-  resolvePermissionMode,
+  resolveTurnPermissionMode,
 } from "../domain/permission-mode.js";
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
@@ -2023,16 +2023,30 @@ export class Orchestrator {
       }
       task.steps = steps;
 
-      // 会话权限模式预热：无人值守触发（定时/钩子/工作流）强制按变更前问询，
-      // full_access 仅限交互式会话；会话未手动覆盖时跟随智能体默认。
+      // 会话权限模式预热：消息级覆盖（工作流派发，2026-10-14 拍板：以工作流配置为准）
+      // > 无人值守缺省（定时/钩子等，强制按变更前问询）> 会话覆盖 > 智能体默认。
       // registry 供 runner canUseTool 每次工具调用现取（轮内 PATCH 切换立即生效）。
-      this.permissionModes.set(
-        conversation.id,
-        resolvePermissionMode(
-          msg.unattended === true ? DEFAULT_PERMISSION_MODE : conversation.permissionMode,
-          agent?.defaultPermissionMode,
-        ),
-      );
+      const effectiveMode = resolveTurnPermissionMode({
+        messageMode: msg.permissionMode,
+        unattended: msg.unattended === true,
+        conversationMode: conversation.permissionMode,
+        agentMode: agent?.defaultPermissionMode,
+      });
+      this.permissionModes.set(conversation.id, effectiveMode);
+      if (msg.permissionMode) {
+        void this.deps.auditStore
+          .record({
+            conversationId: conversation.id,
+            taskId: task.id,
+            userId: user.id,
+            seq: -1,
+            type: "permission_mode_change",
+            text: `工作流权限模式生效：${effectiveMode}（来源：工作流配置）`,
+            toolInput: JSON.stringify({ from: "workflow-config", to: effectiveMode }),
+            recordedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
 
       // 记忆注入：拼出 memory 上下文，交 RuntimeManager.prepare 与默认 prompt 合并
       let memoryAppend: string | undefined;

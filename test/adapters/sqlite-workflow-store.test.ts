@@ -25,6 +25,51 @@ describe("SqliteWorkflowStore", () => {
     expect("outputSubdir" in w).toBe(false);
   });
 
+  it("permissionMode：create 缺省 full_access，显式值读写回（2026-10-14 拍板）", async () => {
+    const w = await ws.create({ ownerId: "u1", name: "W", eventId: "e1", agentId: "a1" });
+    expect(w.permissionMode).toBe("full_access");
+    const w2 = await ws.create({
+      ownerId: "u1",
+      name: "W2",
+      eventId: "e1",
+      agentId: "a1",
+      permissionMode: "risk_guard",
+    });
+    expect((await ws.get(w2.id))?.permissionMode).toBe("risk_guard");
+    await ws.update(w.id, { permissionMode: "ask_before_change" });
+    expect((await ws.get(w.id))?.permissionMode).toBe("ask_before_change");
+  });
+
+  it("存量库无 permissionMode 列：迁移幂等补列，旧行落缺省 full_access", async () => {
+    const old = new Database(":memory:");
+    old.exec(`
+      CREATE TABLE workflows (
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+        eventId TEXT NOT NULL DEFAULT '', agentId TEXT NOT NULL,
+        promptTemplate TEXT NOT NULL DEFAULT '{{triggerOutput}}',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        lastRunId TEXT, lastRunAt TEXT, lastError TEXT,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+      );
+      CREATE TABLE events (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL);
+    `);
+    old
+      .prepare(
+        "INSERT INTO workflows (id, ownerId, name, eventId, agentId, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?)",
+      )
+      .run("w1", "u1", "旧", "e1", "a1", "now", "now");
+    old.prepare("INSERT INTO events (id, ownerId) VALUES (?,?)").run("e1", "u1");
+
+    const store = new SqliteWorkflowStore(old);
+    store.migrate();
+
+    expect((await store.get("w1"))?.permissionMode).toBe("full_access");
+    // 迁移后可直接新建
+    await expect(
+      store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" }),
+    ).resolves.toBeTruthy();
+  });
+
   it("get + listByOwner", async () => {
     const w = await ws.create({ ownerId: "u1", name: "W", eventId: "e1", agentId: "a1" });
     expect((await ws.get(w.id))?.name).toBe("W");
@@ -126,14 +171,20 @@ describe("SqliteWorkflowStore", () => {
     expect(w2?.eventId).toBe("t-git");
     expect(w2?.enabled).toBe(false);
     // 旧列/旧索引摘净，迁移后可直接新建（NOT NULL 约束不复现）
-    const cols = (legacy.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
+    const cols = (
+      legacy.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(cols).not.toContain("triggerId");
     expect(cols).not.toContain("outputSubdir");
-    const idx = (legacy.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='workflows'").all() as Array<{ name: string }>).map((i) => i.name);
+    const idx = (
+      legacy
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='workflows'")
+        .all() as Array<{ name: string }>
+    ).map((i) => i.name);
     expect(idx).not.toContain("idx_workflows_trigger");
-    await expect(store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" })).resolves.toBeTruthy();
+    await expect(
+      store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" }),
+    ).resolves.toBeTruthy();
   });
 
   it("半迁移存量库：eventId 已在但 triggerId(NOT NULL) 未删——再次迁移幂等摘列，create 不撞约束", async () => {
@@ -159,12 +210,14 @@ describe("SqliteWorkflowStore", () => {
     const store = new SqliteWorkflowStore(half);
     store.migrate();
 
-    const cols = (half.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
+    const cols = (
+      half.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(cols).not.toContain("triggerId");
     // 已回填的 eventId 不被覆盖
     expect((await store.get("w1"))?.eventId).toBe("e1");
-    await expect(store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" })).resolves.toBeTruthy();
+    await expect(
+      store.create({ ownerId: "u1", name: "新", eventId: "e1", agentId: "a1" }),
+    ).resolves.toBeTruthy();
   });
 });

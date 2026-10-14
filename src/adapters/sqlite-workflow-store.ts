@@ -11,6 +11,7 @@ interface WorkflowRow {
   description: string | null;
   eventId: string;
   agentId: string;
+  permissionMode: string | null;
   promptTemplate: string;
   enabled: number;
   lastRunId: string | null;
@@ -44,11 +45,22 @@ export class SqliteWorkflowStore implements WorkflowStore {
         id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
         eventId TEXT NOT NULL DEFAULT '', agentId TEXT NOT NULL,
         promptTemplate TEXT NOT NULL DEFAULT '{{triggerOutput}}',
+        permissionMode TEXT NOT NULL DEFAULT 'full_access',
         enabled INTEGER NOT NULL DEFAULT 0,
         lastRunId TEXT, lastRunAt TEXT, lastError TEXT,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
       )
     `);
+    // permissionMode 列（2026-10-14 拍板）：无人值守轮以工作流配置为准，缺省完全权限。
+    // 存量库按「列是否存在」幂等补列，旧行落缺省 full_access。
+    const hasPermissionMode = (
+      this.db.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).some((c) => c.name === "permissionMode");
+    if (!hasPermissionMode) {
+      this.db.exec(
+        "ALTER TABLE workflows ADD COLUMN permissionMode TEXT NOT NULL DEFAULT 'full_access'",
+      );
+    }
     if (isLegacy) {
       // 旧表补列（CREATE TABLE IF NOT EXISTS 不会改既有表结构）
       this.db.exec("ALTER TABLE workflows ADD COLUMN eventId TEXT NOT NULL DEFAULT ''");
@@ -104,6 +116,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       description: row.description ?? undefined,
       eventId: row.eventId,
       agentId: row.agentId,
+      permissionMode: row.permissionMode ?? undefined,
       promptTemplate: row.promptTemplate,
       enabled: row.enabled === 1,
       lastRunId: row.lastRunId,
@@ -125,8 +138,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     this.db
       .prepare(
-        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, promptTemplate, enabled, createdAt, updatedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, createdAt, updatedAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         w.id,
@@ -135,6 +148,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         w.description ?? null,
         w.eventId,
         w.agentId,
+        w.permissionMode,
         w.promptTemplate,
         w.enabled ? 1 : 0,
         w.createdAt,
@@ -175,13 +189,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
     };
     this.db
       .prepare(
-        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, promptTemplate=?, updatedAt=? WHERE id=?`,
+        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, updatedAt=? WHERE id=?`,
       )
       .run(
         next.name,
         next.description ?? null,
         next.eventId,
         next.agentId,
+        next.permissionMode,
         next.promptTemplate,
         next.updatedAt,
         next.id,

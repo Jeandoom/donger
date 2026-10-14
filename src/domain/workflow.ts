@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentPermissionModeSchema } from "./permission-mode.js";
 
 export const WorkflowSchema = z.object({
   id: z.string(),
@@ -8,6 +9,8 @@ export const WorkflowSchema = z.object({
   /** 订阅的事件（原 triggerId；spec 2026-10-09-events-workflows-refactor-design §3.2） */
   eventId: z.string(),
   agentId: z.string(),
+  /** 无人值守轮的会话权限模式（2026-10-14 拍板）：以工作流配置为准，缺省完全权限 */
+  permissionMode: AgentPermissionModeSchema.default("full_access"),
   promptTemplate: z.string().default("{{triggerOutput}}"),
   /** 启用态（原 Loop.enabled；loops 模块已移除） */
   enabled: z.boolean().default(false),

@@ -2,6 +2,7 @@
 // IO 边界（持久化、外部输入）用 Zod 做运行时校验；内部传递类型用纯 TS。
 import { z } from "zod";
 import { ResolvedMentionSchema } from "./mentions.js";
+import { AgentPermissionModeSchema } from "./permission-mode.js";
 import { FlowStepSchema } from "./task-flow.js";
 
 // === Task ===
@@ -184,8 +185,11 @@ export const IncomingMessageSchema = z.object({
   modelRef: z.string().optional(),
   /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
   builderFromTaskId: z.string().optional(),
-  /** 无人值守触发（定时/钩子/工作流）：权限模式强制按变更前问询执行 */
+  /** 无人值守触发（定时/钩子/工作流）：缺省权限模式强制按变更前问询执行；
+   *  工作流派发携带配置值（2026-10-14 拍板：以工作流配置为准，缺省完全权限），覆盖此缺省 */
   unattended: z.boolean().optional(),
+  /** 消息级权限模式覆盖（工作流派发注入；仅无人值守管线使用） */
+  permissionMode: AgentPermissionModeSchema.optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

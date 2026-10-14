@@ -29,6 +29,8 @@ interface WorkflowDTO {
   description?: string;
   eventId: string;
   agentId: string;
+  /** 无人值守轮权限模式（ask_before_change | risk_guard | full_access）；旧数据缺省 full_access */
+  permissionMode?: string;
   promptTemplate?: string;
   enabled: boolean;
   lastRunAt?: string | null;
@@ -84,6 +86,7 @@ export function WorkflowEditorPage() {
   const [description, setDescription] = useState("");
   const [eventId, setEventId] = useState("");
   const [agentId, setAgentId] = useState("");
+  const [permissionMode, setPermissionMode] = useState("full_access");
   const [promptTemplate, setPromptTemplate] = useState("{{triggerOutput}}");
   const [enabled, setEnabled] = useState(false);
   const [events, setEvents] = useState<EventOption[]>([]);
@@ -104,7 +107,14 @@ export function WorkflowEditorPage() {
   const [runningNow, setRunningNow] = useState(false);
   const [canShowRecords, setCanShowRecords] = useState(Boolean(id));
 
-  const snapshot = JSON.stringify({ name, description, eventId, agentId, promptTemplate });
+  const snapshot = JSON.stringify({
+    name,
+    description,
+    eventId,
+    agentId,
+    permissionMode,
+    promptTemplate,
+  });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
     if (loaded && pristineRef.current === null) pristineRef.current = snapshot;
@@ -147,6 +157,7 @@ export function WorkflowEditorPage() {
       setDescription(w.description ?? "");
       setEventId(w.eventId);
       setAgentId(w.agentId);
+      setPermissionMode(w.permissionMode ?? "full_access");
       if (w.promptTemplate) setPromptTemplate(w.promptTemplate);
       setEnabled(w.enabled);
       setLoaded(true);
@@ -218,6 +229,7 @@ export function WorkflowEditorPage() {
           description: description || undefined,
           eventId,
           agentId,
+          permissionMode,
           promptTemplate,
         }),
       });
@@ -375,7 +387,7 @@ export function WorkflowEditorPage() {
         id="wf-sec-run"
         no="2"
         title="执行配置"
-        description="订阅事件、执行智能体与提示词模板"
+        description="订阅事件、执行智能体、权限模式与提示词模板"
       >
         {refsError ? (
           <button
@@ -420,6 +432,16 @@ export function WorkflowEditorPage() {
             </FormField>
           </>
         )}
+        <FormField
+          label="权限模式"
+          hint="仅对工作流触发的无人值守轮生效；无人值守时无人在场审批，默认完全权限。deny 级守卫（读写边界、工具白名单等）不受模式影响"
+        >
+          <Select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)}>
+            <option value="full_access">完全权限——零审批拦截（默认）</option>
+            <option value="risk_guard">风险拦截——仅风险不变量弹卡</option>
+            <option value="ask_before_change">变更前问询——命中审批门即弹卡</option>
+          </Select>
+        </FormField>
         <FormField
           label="Prompt 模板"
           hint={

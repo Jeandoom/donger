@@ -45,7 +45,8 @@ export const EVENT_QUEUE_CAPACITY = 10;
  * fire = 触发记录落行（永久保留）→ 扇出 enabled 订阅者 → 全局队列入队（容量 10，溢出
  * 直接失败且原因可见）→ 全局泵认领执行（同 workflow 串行、跨 workflow 并行）。
  * 执行 = 每轮独立运行会话（createWithAgent，⚙️ 前缀）→ 变量表渲染（外部内容
- * wrapUntrusted 包装）→ orchestrator.handleMessage（unattended 强制问询）→ 状态回写。
+ * wrapUntrusted 包装）→ orchestrator.handleMessage（unattended 轮，权限模式以
+ * 工作流配置为准、缺省完全权限）→ 状态回写。
  */
 export class EventDispatcher {
   /** 全局泵守卫：至多一个 drain 循环在认领 */
@@ -185,8 +186,10 @@ export class EventDispatcher {
         ...(conv ? { conversationId: conv.id } : {}),
         requesterId: wf.ownerId,
         text: prompt,
-        // 无人值守触发：orchestrator 据此强制按变更前问询执行（full_access 仅限交互式会话）
+        // 无人值守触发：缺省按变更前问询；权限模式以工作流配置为准
+        // （2026-10-14 拍板：配置缺省 full_access，orchestrator 据消息级值预热）
         unattended: true,
+        permissionMode: wf.permissionMode,
       });
       const finishedAt = new Date().toISOString();
       await runStore.updateRun(run.id, {

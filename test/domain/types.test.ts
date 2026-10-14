@@ -53,6 +53,35 @@ describe("IncomingMessageSchema", () => {
       IncomingMessageSchema.parse({ channelId: "cli", threadId: "th", requesterId: "u" }),
     ).toThrow();
   });
+
+  it("permissionMode 可缺省；非法值拒绝（工作流派发注入用）", () => {
+    const m = IncomingMessageSchema.parse({
+      channelId: "web",
+      threadId: "th",
+      requesterId: "u",
+      text: "t",
+      unattended: true,
+      permissionMode: "risk_guard",
+    });
+    expect(m.permissionMode).toBe("risk_guard");
+    expect(
+      IncomingMessageSchema.parse({
+        channelId: "web",
+        threadId: "th",
+        requesterId: "u",
+        text: "t",
+      }).permissionMode,
+    ).toBeUndefined();
+    expect(
+      IncomingMessageSchema.safeParse({
+        channelId: "web",
+        threadId: "th",
+        requesterId: "u",
+        text: "t",
+        permissionMode: "yolo",
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("RunnerEvent 判别联合", () => {

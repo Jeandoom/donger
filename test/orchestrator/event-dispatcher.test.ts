@@ -125,6 +125,25 @@ describe("EventDispatcher", () => {
     expect((await s.workflowStore.get(wf.id))?.lastRunId).toBe(run.id);
   });
 
+  it("权限模式以工作流配置为准（2026-10-14）：schema 缺省 full_access，显式配置透传消息级", async () => {
+    const s = setup();
+    const { event, wf } = await makeSubscribed(s);
+    // 旧字段未配置 → schema 缺省完全权限
+    expect(wf.permissionMode).toBe("full_access");
+    await s.dispatcher.fire(event.id, { payload: "hello" }, "schedule");
+    await waitFor(async () => (await runsOf(s, wf.id))[0]?.status === "success");
+    const msg = s.orchestrator.handleMessage.mock.calls[0]?.[0] as IncomingMessage;
+    expect(msg.unattended).toBe(true);
+    expect(msg.permissionMode).toBe("full_access");
+
+    // 显式改成问询档 → 下一轮透传配置值
+    await s.workflowStore.update(wf.id, { permissionMode: "ask_before_change" });
+    await s.dispatcher.fire(event.id, { payload: "again" }, "schedule");
+    await waitFor(() => (s.orchestrator.handleMessage.mock.calls.length >= 2 ? true : undefined));
+    const msg2 = s.orchestrator.handleMessage.mock.calls.at(-1)?.[0] as IncomingMessage;
+    expect(msg2.permissionMode).toBe("ask_before_change");
+  });
+
   it("队列容量：溢出那次直接 failed，原因进执行记录（D6）", async () => {
     const s = setup({ maxQueuePending: 2 });
     const { event, wf } = await makeSubscribed(s);
