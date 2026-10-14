@@ -85,6 +85,12 @@ const EnvSchema = z.object({
   PUBLIC_BASE_URL: z.string().optional().default(""),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
+  // 会话级 git worktree 隔离（2026-10-14 并行会话分支冲突轮）：仓库物化为每会话独立
+  // worktree（主克隆只作同步基座），同 agent 并发会话不再共享工作树。false=回退共享目录旧行为
+  GIT_SESSION_WORKTREE: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
   // 智能体回调链接发起限流（次/分钟/token，防泄露后被刷 LLM 费用）
   CALLBACK_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   // LLM 流停摆看门狗：轮内超过该毫秒数无任何事件视为挂死，中断并立即收尾（0=关闭）
@@ -195,6 +201,8 @@ export interface AppConfig {
   trustProxy: boolean;
   gitCloneTimeoutMs: number;
   gitAuthCacheTtlMs: number;
+  /** 会话级 git worktree 隔离（GIT_SESSION_WORKTREE，默认 true） */
+  gitSessionWorktree: boolean;
   gitAllowPrivateHosts: boolean;
   /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
   triggerAllowPrivateNet: boolean;
@@ -265,6 +273,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     setupToken: e.SETUP_TOKEN.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
+    gitSessionWorktree: e.GIT_SESSION_WORKTREE,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
     triggerAllowPrivateNet: e.TRIGGER_ALLOW_PRIVATE_NET,
     triggerQueueMaxPending: e.TRIGGER_QUEUE_MAX_PENDING,

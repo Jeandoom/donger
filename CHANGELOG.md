@@ -2,6 +2,10 @@
 
 本文件记录面向使用者的重要变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+- **会话级 git worktree 隔离**：智能体绑定的仓库物化为每会话独立 worktree（分支 `donger-session/<会话ID>`，基于最新主分支），同智能体并行会话不再共享工作树，互不踩踏分支与未提交改动；主克隆降级为同步基座，由平台负责 fetch/快进。归档或闲置超 7 天的会话 worktree 由后台清道夫回收（有未提交工作/未合并分支时自动保留）。`GIT_SESSION_WORKTREE=false` 回退旧的共享目录模式。
+
 ## [0.1.0] - 2026-09-28
 
 首个开源公开版本。核心能力：

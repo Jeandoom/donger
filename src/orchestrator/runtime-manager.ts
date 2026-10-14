@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { sessionWorktreeReposRoot } from "../adapters/git-cli-repository-materializer.js";
 import { SdkSessionStoreAdapter } from "../adapters/sdk-session-store.js";
 import type { LlmPreset } from "../config.js";
 import type { Agent, McpServerConfig } from "../domain/agent.js";
@@ -10,6 +11,7 @@ import {
 } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
+import { SESSION_BRANCH_PREFIX } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { LlmSdkType } from "../domain/llm-platforms.js";
 import { parseModelRef } from "../domain/model-ref.js";
@@ -87,6 +89,12 @@ interface RuntimeManagerDeps {
   installer: SkillInstaller;
   builtinSkillsDir: string;
   repositoryMaterializer?: RepositoryMaterializer;
+  /**
+   * 会话级 git worktree 隔离（2026-10-14 并行会话分支冲突轮；GIT_SESSION_WORKTREE，
+   * 默认开启）：仓库物化为每会话独立 worktree，主克隆只作同步基座；false=回退
+   * 共享目录旧行为。
+   */
+  sessionWorktree?: boolean;
   extensionDirectoryResolver?: ExtensionDirectoryResolver;
   /**
    * 插件启停判定（M2 能力 gate；specs/2026-10-11-plugin-system-design.md §9.6）。
@@ -324,11 +332,24 @@ export class RuntimeManager {
       }
     }
 
+    // 会话级 worktree 隔离：仓库物化为 <runtimeDir>/worktrees/<convId>/repos/<name> 的
+    // 独立工作树，agent 的读写面与会话一一对应，主克隆（<runtimeDir>/repos）只作同步
+    // 基座——同 agent 并发会话不再共享同一工作树（2026-10-14 并行会话分支冲突轮）。
+    const worktreeRoot = join(runtimeDir, "worktrees");
+    const sessionScope =
+      this.deps.sessionWorktree === false
+        ? undefined
+        : { conversationId: conversation.id, worktreeRoot };
+    const reposRoot = sessionScope
+      ? sessionWorktreeReposRoot(worktreeRoot, conversation.id)
+      : join(runtimeDir, "repos");
+
     if (opts.gitMaterializeItems?.length && this.deps.repositoryMaterializer) {
       const repositories = await this.deps.repositoryMaterializer.materialize({
         destination: join(runtimeDir, "repos"),
         items: opts.gitMaterializeItems,
         signal: opts.abortSignal,
+        session: sessionScope,
       });
       const requiredById = new Map(
         opts.gitMaterializeItems.map((item) => [item.repository.id, item.repository.required]),
@@ -344,6 +365,11 @@ export class RuntimeManager {
           (result) =>
             `- ${result.name}: ${result.path}，${result.status === "ready" ? "已就绪" : (result.message ?? result.status)}`,
         ),
+        ...(sessionScope
+          ? [
+              `以上仓库为本会话专属 git worktree（会话分支 ${SESSION_BRANCH_PREFIX}${conversation.id}，基于最新主分支），与其他会话物理隔离：可自由建分支、提交；同步主分支用 git_pull。不要改动其他会话路径或主克隆基座。`,
+            ]
+          : []),
       ].join("\n");
       extraPrompt = extraPrompt ? `${extraPrompt}\n\n${repositoryPrompt}` : repositoryPrompt;
     }
@@ -366,6 +392,7 @@ export class RuntimeManager {
       sdkSessionId: conversation.sdkSessionId,
       userId: user.id,
       runtimeDir,
+      reposRoot,
       capabilities,
       transcript,
       createdAt: conversation.createdAt,

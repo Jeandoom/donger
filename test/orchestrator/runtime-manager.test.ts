@@ -13,6 +13,7 @@ import {
   type RuntimeManagerConfig,
 } from "../../src/orchestrator/runtime-manager.js";
 import type { ConversationStore } from "../../src/ports/conversation-store.js";
+import type { RepositoryMaterializeRequest } from "../../src/ports/repository-materializer.js";
 import type { SkillInstaller } from "../../src/ports/skill-installer.js";
 import type { TranscriptStore } from "../../src/ports/transcript-store.js";
 import { loadOrGenerateAppSecret } from "../../src/util/app-secret.js";
@@ -318,6 +319,13 @@ describe("RuntimeManager", () => {
         skills: [],
         tools: { mode: "all", whitelist: [] },
         mcpServers: [],
+        connectorIds: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: true,
+        extensionDirectories: [],
+        defaultPermissionMode: "ask_before_change",
+        version: 1,
         createdAt: "",
         updatedAt: "",
       },
@@ -902,5 +910,133 @@ describe("RuntimeManager agent 分支", () => {
     expect(runOptions.additionalDirectories).toEqual([]);
     expect(runOptions.allowedWriteRoots).toEqual([]);
     expect(runOptions.systemPromptAppend).toContain("不可用");
+  });
+
+  it("prepare：会话 worktree 隔离——materialize 带 session、reposRoot 指向会话 worktree 区（2026-10-14 并行会话分支冲突轮）", async () => {
+    const requests: RepositoryMaterializeRequest[] = [];
+    const conv = baseConv({ agentId: "a1" });
+    const materializer = {
+      checkRead: async () => ({ ok: true }) as never,
+      materialize: async (req: RepositoryMaterializeRequest) => {
+        requests.push(req);
+        return req.items.map((item) => ({
+          repositoryId: item.repository.id,
+          name: item.repository.name,
+          path: join(req.destination, item.repository.name),
+          status: "ready" as const,
+        }));
+      },
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+      repositoryMaterializer: materializer,
+    });
+    const { context, runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        systemPrompt: "",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        connectorIds: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: true,
+        extensionDirectories: [],
+        defaultPermissionMode: "ask_before_change",
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      },
+      gitMaterializeItems: [
+        {
+          repository: {
+            id: "repo-1",
+            name: "sample",
+            provider: "github",
+            url: "https://github.com/acme/sample.git",
+            required: true,
+            shallow: true,
+            syncMode: "fastForward",
+          },
+        },
+      ],
+    });
+    const runtimeDir = join(ws, "users", "u1", "agents", "a1", "workspace");
+    expect(requests[0]?.session).toEqual({
+      conversationId: "c1",
+      worktreeRoot: join(runtimeDir, "worktrees"),
+    });
+    expect(context.reposRoot).toBe(join(runtimeDir, "worktrees", "c1", "repos"));
+    const prompt = runOptions.systemPromptAppend ?? "";
+    expect(prompt).toContain("worktree");
+    expect(prompt).toContain("donger-session/c1");
+  });
+
+  it("prepare：sessionWorktree=false 回退共享目录（无 session、reposRoot=共享 repos）", async () => {
+    const requests: RepositoryMaterializeRequest[] = [];
+    const conv = baseConv({ agentId: "a1" });
+    const materializer = {
+      checkRead: async () => ({ ok: true }) as never,
+      materialize: async (req: RepositoryMaterializeRequest) => {
+        requests.push(req);
+        return req.items.map((item) => ({
+          repositoryId: item.repository.id,
+          name: item.repository.name,
+          path: join(req.destination, item.repository.name),
+          status: "ready" as const,
+        }));
+      },
+    };
+    const m = new RuntimeManager({
+      transcriptStore: fakeTranscriptStore(() => null),
+      conversationStore: fakeConvStore([conv]) as unknown as ConversationStore,
+      config: baseConfig(ws),
+      ...emptySkillDeps(),
+      repositoryMaterializer: materializer,
+      sessionWorktree: false,
+    });
+    const { context, runOptions } = await m.prepare(baseUser(join(ws, "users", "u1")), conv, {
+      agent: {
+        id: "a1",
+        ownerId: "u1",
+        name: "A",
+        systemPrompt: "",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        connectorIds: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: true,
+        extensionDirectories: [],
+        defaultPermissionMode: "ask_before_change",
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      },
+      gitMaterializeItems: [
+        {
+          repository: {
+            id: "repo-1",
+            name: "sample",
+            provider: "github",
+            url: "https://github.com/acme/sample.git",
+            required: true,
+            shallow: true,
+            syncMode: "fastForward",
+          },
+        },
+      ],
+    });
+    const runtimeDir = join(ws, "users", "u1", "agents", "a1", "workspace");
+    expect(requests[0]?.session).toBeUndefined();
+    expect(context.reposRoot).toBe(join(runtimeDir, "repos"));
+    expect(runOptions.systemPromptAppend ?? "").not.toContain("worktree");
   });
 });

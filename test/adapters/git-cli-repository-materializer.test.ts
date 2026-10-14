@@ -1,7 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { GitCliRepositoryMaterializer } from "../../src/adapters/git-cli-repository-materializer.js";
@@ -145,6 +153,175 @@ describe("GitCliRepositoryMaterializer", () => {
     expect(readFileSync(join(destination, "sample", "README.md"), "utf8")).toBe("hello");
     const backup = results[0]?.message?.match(/已备份到 (.+?) 并重新克隆/)?.[1] ?? "";
     expect(readFileSync(join(backup, "junk.txt"), "utf8")).toBe("old");
+  });
+});
+
+describe("GitCliRepositoryMaterializer 会话 worktree 隔离", () => {
+  const sessionScope = (destination: string, conversationId: string) => ({
+    conversationId,
+    worktreeRoot: join(destination, "worktrees"),
+  });
+
+  function git(root: string, ...args: string[]): string {
+    return execFileSync("git", ["-C", root, ...args])
+      .toString()
+      .trim();
+  }
+
+  it("会话模式：物化为会话私有 worktree，分支/upstream/基座分工就位", {
+    timeout: 30_000,
+  }, async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+
+    const results = await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-1"),
+    });
+
+    const wt = join(destination, "worktrees", "conv-1", "repos", "sample");
+    expect(results[0]?.status).toBe("ready");
+    expect(results[0]?.path).toBe(wt);
+    expect(readFileSync(join(wt, "README.md"), "utf8")).toBe("hello");
+    // 会话分支 + upstream 指向主分支（git_pull 即同步主分支）；主克隆 HEAD 不被移动
+    expect(git(wt, "branch", "--show-current")).toBe("donger-session/conv-1");
+    expect(git(wt, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
+    expect(git(join(destination, "sample"), "branch", "--show-current")).toBe("main");
+  });
+
+  it("同一会话重复物化幂等复用；两会话各自独立 worktree 互不可见", {
+    timeout: 30_000,
+  }, async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const materializer = new GitCliRepositoryMaterializer(10_000, 0);
+    const session = sessionScope(destination, "conv-1");
+
+    const first = await materializer.materialize({ destination, items: [{ repository }], session });
+    const wt1 = first[0]?.path;
+    if (!wt1) throw new Error("conv-1 worktree path missing");
+    const again = await materializer.materialize({ destination, items: [{ repository }], session });
+    expect(again[0]?.path).toBe(wt1);
+    expect(git(wt1, "status", "--porcelain")).toBe("");
+
+    // 第二个会话：独立 worktree + 独立分支；conv-1 的提交不出现在 conv-2
+    const conv2 = await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-2"),
+    });
+    const wt2 = conv2[0]?.path;
+    if (!wt2) throw new Error("conv-2 worktree path missing");
+    expect(wt2).not.toBe(wt1);
+    expect(git(wt2, "branch", "--show-current")).toBe("donger-session/conv-2");
+    writeFileSync(join(wt1, "README.md"), "conv1 work");
+    execFileSync("git", ["-C", wt1, "add", "."]);
+    execFileSync("git", ["-C", wt1, "commit", "-m", "conv1 work"]);
+    expect(git(wt2, "log", "--oneline")).not.toContain("conv1 work");
+  });
+
+  it("基点取 origin 最新：新会话从远端最新提交开分支", { timeout: 30_000 }, async () => {
+    const { root, repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+    await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-1"),
+    });
+    writeFileSync(join(root, "README.md"), "v2");
+    execFileSync("git", ["-C", root, "add", "README.md"]);
+    execFileSync("git", ["-C", root, "commit", "-m", "v2"]);
+
+    const conv2 = await new GitCliRepositoryMaterializer(10_000, 0).materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-2"),
+    });
+    const wt2 = conv2[0]?.path;
+    if (!wt2) throw new Error("conv-2 worktree path missing");
+    expect(readFileSync(join(wt2, "README.md"), "utf8")).toBe("v2");
+  });
+
+  it("脏基座仍 fetch：worktree 基于最新 origin 引用创建", { timeout: 30_000 }, async () => {
+    const { root, repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const mainClone = join(destination, "sample");
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+    await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-1"),
+    });
+    writeFileSync(join(root, "README.md"), "v2");
+    execFileSync("git", ["-C", root, "add", "README.md"]);
+    execFileSync("git", ["-C", root, "commit", "-m", "v2"]);
+    // 主克隆遗留脏树（历史会话的旧模式）：fetch 不再被阻断，仅跳过 merge
+    writeFileSync(join(mainClone, "README.md"), "dirty");
+
+    const results = await new GitCliRepositoryMaterializer(10_000, 0).materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-2"),
+    });
+    expect(results[0]?.status).toBe("warning");
+    expect(results[0]?.message).toContain("本地修改");
+    const wt2 = results[0]?.path;
+    if (!wt2) throw new Error("conv-2 worktree path missing");
+    expect(readFileSync(join(wt2, "README.md"), "utf8")).toBe("v2");
+  });
+
+  it("异源残留目录改名备份后重建 worktree", { timeout: 30_000 }, async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const wt = join(destination, "worktrees", "conv-1", "repos", "sample");
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, "junk.txt"), "old");
+
+    const results = await new GitCliRepositoryMaterializer(10_000).materialize({
+      destination,
+      items: [{ repository }],
+      session: sessionScope(destination, "conv-1"),
+    });
+    expect(results[0]?.status).toBe("ready");
+    expect(readFileSync(join(wt, "README.md"), "utf8")).toBe("hello");
+    const backupDir = readdirSync(dirname(wt)).find((n) => n.startsWith(`${basename(wt)}.stale-`));
+    expect(backupDir).toBeTruthy();
+    expect(readFileSync(join(dirname(wt), backupDir ?? "", "junk.txt"), "utf8")).toBe("old");
+  });
+
+  it("会话分支残留时重挂既有分支（历史提交不丢）", { timeout: 30_000 }, async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-dest-"));
+    roots.push(destination);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+    const session = sessionScope(destination, "conv-1");
+    const first = await materializer.materialize({ destination, items: [{ repository }], session });
+    const wt = first[0]?.path;
+    if (!wt) throw new Error("conv-1 worktree path missing");
+    writeFileSync(join(wt, "notes.md"), "wip");
+    execFileSync("git", ["-C", wt, "add", "."]);
+    execFileSync("git", ["-C", wt, "commit", "-m", "wip-on-session"]);
+    // 模拟 GC/人工清理了 worktree 目录，但分支保留
+    execFileSync("git", ["-C", join(destination, "sample"), "worktree", "remove", wt]);
+    expect(existsSync(wt)).toBe(false);
+
+    const again = await new GitCliRepositoryMaterializer(10_000, 0).materialize({
+      destination,
+      items: [{ repository }],
+      session,
+    });
+    expect(again[0]?.path).toBe(wt);
+    expect(git(wt, "branch", "--show-current")).toBe("donger-session/conv-1");
+    expect(git(wt, "log", "--oneline")).toContain("wip-on-session");
+    expect(git(wt, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
   });
 });
 

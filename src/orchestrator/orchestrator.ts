@@ -806,7 +806,8 @@ export class Orchestrator {
         };
       }
       // agent 绑定了 git 仓库时注入 git 工具（donger-git）：CLI 工作区工具（reposRoot=
-      // 会话 repos 目录，与后台物化共享）+ 平台 API 工具；共享智能体凭证桥按分享者现取（§2.5）
+      // 会话 repos 目录——会话 worktree 隔离时为该会话私有 worktree 区，与后台物化
+      // 返回路径一致收敛）+ 平台 API 工具；共享智能体凭证桥按分享者现取（§2.5）
       if (p.agent && p.agent.gitRepositories.length > 0) {
         base = {
           ...base,
@@ -815,7 +816,7 @@ export class Orchestrator {
             agent: p.agent,
             credentialUserId: p.sharedAgentSkillOwner?.id,
             credentialSets: this.deps.credentialSets,
-            reposRoot: join(context.runtimeDir, "repos"),
+            reposRoot: context.reposRoot,
           }),
         };
       }

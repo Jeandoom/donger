@@ -73,6 +73,7 @@ import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
+import { startWorktreeGc } from "./orchestrator/worktree-gc.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
@@ -387,6 +388,8 @@ async function main(): Promise<void> {
       installer: skillInstaller,
       builtinSkillsDir: cfg.builtinSkillsDir,
       repositoryMaterializer,
+      // 会话级 git worktree 隔离（2026-10-14 并行会话分支冲突轮）：默认开，false 回退共享目录
+      sessionWorktree: cfg.gitSessionWorktree,
       extensionDirectoryResolver,
       isPluginEnabled: pluginGate,
     });
@@ -682,6 +685,14 @@ async function main(): Promise<void> {
     },
   });
 
+  // 会话 worktree 清道夫（2026-10-14 并行会话分支冲突轮）：回收归档/超龄会话的
+  // 独立 worktree（干净才删，未提交工作/未合并分支由 git 拒绝自动保留）
+  const stopWorktreeGc = startWorktreeGc({
+    workspaceDir: cfg.workspaceDir,
+    conversationStore,
+    intervalMs: 3_600_000,
+  });
+
   // 自动化运行时：统一触发管线（eventDispatcher）+ 三分发器（依赖 webOrch，构造后回填
   // webChannel.deps；spec 2026-10-09-events-workflows-refactor-design §4）
   const eventDispatcher = new EventDispatcher({
@@ -766,6 +777,7 @@ async function main(): Promise<void> {
   // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
   const shutdown = async (signal: string) => {
     log.info({ signal }, "关闭中");
+    stopWorktreeGc();
     scheduler.stopAll();
     // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
     await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);

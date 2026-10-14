@@ -29,6 +29,12 @@ export interface RuntimeContext {
   userId: string;
   /** cwd 绝对路径（homeDir/sessions/<convId>/workspace/） */
   runtimeDir: string;
+  /**
+   * 会话 git 仓库区根（git 平台工具按 <reposRoot>/<repoName> 解析）。
+   * 会话 worktree 隔离开启时指向 <runtimeDir>/worktrees/<convId>/repos，
+   * 否则为共享区 <runtimeDir>/repos（与后台物化同目录收敛）。
+   */
+  reposRoot: string;
   capabilities: CapabilitySet;
   transcript: TranscriptRef;
   createdAt: string;

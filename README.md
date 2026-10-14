@@ -23,7 +23,7 @@
 - **技能系统**：SKILL.md 技能包管理与安装、预装技能目录（`BUILTIN_SKILLS_DIR`）、内置技能（`skills/`）。
 - **对话与会话**：SSE 流式回复、Turn 合并渲染、@文件 //技能 $连接器 引用、问答卡交互、消息持久化。
 - **审批门**：高危操作推卡审批（IM / Web），durable gate 持久化、重启不丢。
-- **Git 平台集成**：GitHub / Gitee / GitLab PAT 凭证、一凭一仓绑定、工具化 git 操作与 worktree 隔离。
+- **Git 平台集成**：GitHub / Gitee / GitLab PAT 凭证、一凭一仓绑定、工具化 git 操作；会话级 git worktree 隔离（每会话独立工作树，并行会话互不踩踏）。
 - **自动化**：触发器（Trigger）、多步工作流（Workflow）、循环（Loop）、定时调度。
 - **LLM 多供应商**：供应商 / 模型管理，Agent 级与会话级选模型（默认智谱 GLM，Anthropic 兼容端点）。
 - **连接器与凭证集**：外部系统集成，凭证集中管理（加密存储、按仓库 / 连接器绑定、共享访问解析）。

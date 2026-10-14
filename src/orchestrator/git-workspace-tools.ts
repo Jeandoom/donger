@@ -1,7 +1,9 @@
 // donger-git CLI 工作区工具：agent 对绑定仓库的本地 git 操作唯一通道（clone/fetch/
 // pull/status/commit/merge/push）。provider 无关（git CLI 三平台一致）；凭证经凭证桥
 // 现取 + 临时 AskPass 注入 git 子进程，不进 env/prompt/返回值（收口防线 1）。
-// 工作目录 = 会话仓库工作区 <runtimeDir>/repos/<repoName>，与后台物化共享（同目录收敛）。
+// 工作目录 = 会话仓库工作区 repos/<repoName>——会话 worktree 隔离时（默认开）为
+// <runtimeDir>/worktrees/<convId>/repos/<repoName>（每会话独立工作树，主克隆只作
+// 同步基座）；关闭时回退共享 <runtimeDir>/repos（与后台物化同目录收敛）。
 // shell git 被 canUseTool 守卫默认禁止（防线 2），本模块是替代面。
 
 import { existsSync, renameSync, rmSync } from "node:fs";

@@ -120,6 +120,13 @@ export function buildCloneArgs(repository: AgentGitRepository, destination: stri
   return args;
 }
 
+/**
+ * 会话级 worktree 分支前缀（2026-10-14 并行会话分支冲突轮）：每会话在其 worktree
+ * 中签出 donger-session/<conversationId> 分支——git 不允许两个 worktree 签出同一
+ * 分支，按会话一条分支天然错开，也让会话提交在 worktree 被清理后仍可从分支找回。
+ */
+export const SESSION_BRANCH_PREFIX = "donger-session/";
+
 /** 归一化仓库标识：host 小写 + path 去 .git 后缀（绑定一致性比对用） */
 export function normalizeRepositoryIdentity(value: string): string {
   const parsed = parseRepositoryUrl(value);
