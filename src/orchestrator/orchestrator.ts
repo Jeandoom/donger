@@ -542,7 +542,7 @@ export class Orchestrator {
         lines.push(
           m.ownerIsUser
             ? `  库提示词：${m.systemPrompt}`
-            : String(wrapUntrusted(m.systemPrompt, `kb:${m.kbId}:systemPrompt`)),
+            : wrapUntrusted(m.systemPrompt, `kb:${m.kbId}:systemPrompt`).wrapped, // 存量 bug 修复：String(对象)= "[object Object]"，他人库提示词从未真正注入
         );
       }
       if (m.topDirs && m.topDirs.length > 0) lines.push(`  顶层目录：${m.topDirs}`);
@@ -1377,7 +1377,13 @@ export class Orchestrator {
       const hasMemoryRoute = routeOn.memory && libs !== undefined && workspaceDir !== undefined;
       const hasSuggestionRoute = routeOn.skillSuggestion && (p.agent.skills?.length ?? 0) > 0;
       const hasPlatformRoute = routeOn.platformNote && this.deps.platformNotesStore !== undefined;
-      if (!hasKbRoute && !hasMemoryRoute && !hasSuggestionRoute && !hasPlatformRoute) return;
+      if (!hasKbRoute && !hasMemoryRoute && !hasSuggestionRoute && !hasPlatformRoute) {
+        if (process.env.KNOWLEDGE_DEBUG) console.error("[auto-learn] gate: all routes unavailable");
+        return;
+      }
+      if (process.env.KNOWLEDGE_DEBUG) {
+        console.error("[auto-learn] gate pass: kb=" + hasKbRoute + " mem=" + hasMemoryRoute + " sug=" + hasSuggestionRoute + " note=" + hasPlatformRoute);
+      }
       // 独立知识库（可写目标）：命中候选则收窄为该库；悬空/失权时回退全量可管理绑定库
       // （specs/2026-10-01-agent-own-kb-picker-design.md §2.3）
       const targetId = p.agent.kbWriteTargetId ?? undefined;

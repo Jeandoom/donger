@@ -12,6 +12,13 @@ import { SqliteAgentShareStore } from "../../../src/adapters/sqlite-agent-share-
 import { SqliteAgentStore } from "../../../src/adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "../../../src/adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "../../../src/adapters/sqlite-comment-store.js";
+import {
+  SqliteKbLibraryStore,
+  SqliteKbRevisionStore,
+  SqliteKbShareStore,
+} from "../../../src/adapters/sqlite-kb-store.js";
+import { SqliteModuleConfigStore } from "../../../src/adapters/sqlite-module-config-store.js";
+import { SqliteNotificationStore } from "../../../src/adapters/sqlite-notification-store.js";
 import { SqliteConversationStore } from "../../../src/adapters/sqlite-conversation-store.js";
 import { SqliteCredentialSetStore } from "../../../src/adapters/sqlite-credential-set-store.js";
 import { SqliteMessageStore } from "../../../src/adapters/sqlite-message-store.js";
@@ -24,6 +31,7 @@ import { WebChannel } from "../../../src/adapters/web-channel.js";
 import { loadConfig } from "../../../src/config.js";
 import type { User } from "../../../src/domain/user.js";
 import { createDefaultGates } from "../../../src/orchestrator/default-gates.js";
+import { NotificationService } from "../../../src/orchestrator/notification-service.js";
 import { Orchestrator } from "../../../src/orchestrator/orchestrator.js";
 import { RuntimeManager } from "../../../src/orchestrator/runtime-manager.js";
 import { loadOrGenerateAppSecret } from "../../../src/util/app-secret.js";
@@ -59,6 +67,11 @@ export interface LiveBackend {
   agentStore: SqliteAgentStore;
   installer: LocalSkillInstaller;
   userHome: string;
+  /** 会话 JWT（raw fetch 用；api.call 已带） */
+  jwt: string;
+  auditStore: SqliteAuditStore;
+  moduleConfigStore: SqliteModuleConfigStore;
+  workspaceDir: string;
   stop: () => Promise<void>;
 }
 
@@ -88,6 +101,18 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
   usageStore.migrate();
   const auditStore = new SqliteAuditStore(db);
   auditStore.migrate();
+  // kb 三表 + 模块配置 + 通知（知识体系轮真机 e2e：四路萃取/记忆通道/平台约束候选池）
+  const kbLibraryStore = new SqliteKbLibraryStore(db);
+  kbLibraryStore.migrate();
+  const kbShareStore = new SqliteKbShareStore(db);
+  kbShareStore.migrate();
+  const kbRevisionStore = new SqliteKbRevisionStore(db);
+  kbRevisionStore.migrate();
+  const moduleConfigStore = new SqliteModuleConfigStore(db, loadOrGenerateAppSecret(db, "skill_secret_key").slice(0, 32));
+  moduleConfigStore.migrate();
+  const notificationStore = new SqliteNotificationStore(db);
+  notificationStore.migrate();
+  const notificationService = new NotificationService({ store: notificationStore });
   const commentStore = new SqliteCommentStore(db);
   commentStore.migrate();
   const transcriptStore = new SqliteTranscriptStore(db);
@@ -145,6 +170,12 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
     cliToken: CLI_TOKEN,
     agentStore,
     agentShareStore,
+    kbLibraryStore,
+    kbShareStore,
+    kbRevisionStore,
+    notificationService,
+    skillPackStore,
+    installer,
   });
   const orch = new Orchestrator({
     store,
@@ -163,6 +194,32 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
     agentShareStore,
     installer,
     skillPackStore,
+    kbLibraryStore,
+    kbShareStore,
+    kbRevisionStore,
+    workspaceDir: dir,
+    llm: loadConfig(process.env).llm,
+    memoryChannelMode: () => {
+      const v = moduleConfigStore.getFlag("memory.channel");
+      return v === "legacy" || v === "off" ? v : "curated";
+    },
+    platformEnvNotes: () => moduleConfigStore.getFlag("platform.envNotes"),
+    platformNotesStore: {
+      appendCandidate: (content: string, conversationId: string) => {
+        const key = "platform.envNotes.candidates";
+        let list: Array<{ content: string; conversationId: string; createdAt: string }> = [];
+        try {
+          list = JSON.parse(moduleConfigStore.getFlag(key) ?? "[]") as typeof list;
+        } catch {
+          list = [];
+        }
+        if (content.trim()) {
+          list.push({ content: content.trim(), conversationId, createdAt: new Date().toISOString() });
+        }
+        moduleConfigStore.setFlag(key, JSON.stringify(list.slice(-50)));
+      },
+    },
+    notificationService,
   });
   channel.onMessage((m) => void orch.handleMessage(m));
   channel.onCancel((conversationId) => orch.cancelConversation(conversationId));
@@ -183,9 +240,16 @@ export async function startLiveBackend(scheme: string): Promise<LiveBackend> {
     agentStore,
     installer,
     userHome: user.homeDir,
+    jwt: token,
+    auditStore,
+    moduleConfigStore,
+    workspaceDir: dir,
     stop: async () => {
       await Promise.race([channel.stop(), new Promise((r) => setTimeout(r, 3000))]);
-      rmSync(dir, { recursive: true, force: true });
+      // KEEP_LIVE_DIR=1 保留现场（真机排障用，事后手工清理）
+      if (process.env.KEEP_LIVE_DIR !== "1") {
+        rmSync(dir, { recursive: true, force: true });
+      }
     },
   };
 }
