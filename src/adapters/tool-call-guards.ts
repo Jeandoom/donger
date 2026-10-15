@@ -36,6 +36,25 @@ export interface GuardDenial {
   message: string;
 }
 
+/**
+ * 白名单命中判定，条目两形态：
+ * - 工具全名（内置工具名或 mcp__server__tool 三段名）：精确匹配；
+ * - MCP 服务器前缀（mcp__server 两段名）：放行该服务器全部工具——与 SDK allowedTools
+ *   的 server 级语义对齐（agent-builder 注释：server 级白名单 SDK 对其下工具自动放行）。
+ *   PreToolUse hook 必经守卫若仍按全名精确匹配，前缀条目下的 MCP 工具会被全数误拒
+ *   （排障 2026-10-14：知识库管家白名单 mcp__donger-kb，kb_* 调用全被拒——KB 会话无法查看库）。
+ * 前缀匹配以 __ 分隔符收口：mcp__a 不放行 mcp__ab__c 形似名。
+ */
+export function matchesToolWhitelist(toolName: string, allowedTools: readonly string[]): boolean {
+  return allowedTools.some((allowed) => {
+    if (allowed === toolName) return true;
+    if (allowed.startsWith("mcp__") && !allowed.includes("__", "mcp__".length)) {
+      return toolName.startsWith(`${allowed}__`);
+    }
+    return false;
+  });
+}
+
 export function runStaticToolGuards({
   toolName,
   input,
@@ -44,7 +63,7 @@ export function runStaticToolGuards({
   // 工具白名单强制：allowedTools 之外的工具一律 deny。
   // SDK 的 allowedTools 只约束自动允许集合，未列出的工具会落到权限回调——
   // 不在此处拦截的话，白名单形同虚设（曾导致只读 dispatcher 放行 Bash）。
-  if (opts.allowedTools && !opts.allowedTools.includes(toolName)) {
+  if (opts.allowedTools && !matchesToolWhitelist(toolName, opts.allowedTools)) {
     return {
       message: `工具 ${toolName} 不在该智能体的允许列表内（allowedTools）`,
     };
