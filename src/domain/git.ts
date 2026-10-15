@@ -251,3 +251,35 @@ export function extractBranchHeadSha(provider: string, body: string): string | u
     provider === "jihulab" ? (commit as { id?: unknown }).id : (commit as { sha?: unknown }).sha;
   return typeof sha === "string" && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : undefined;
 }
+
+/**
+ * 物化失败补救引导（纯函数，2026-10-15 预检去网络化后「已配但失效/私有仓未绑凭证」
+ * 的唯一提示位）。入参是 sanitizeGitError 后的 stderr 摘要；网络类瞬时失败不加引导。
+ * 「could not read Username」= git 根本没拿到凭证（模板未填值），与
+ * 「Authentication failed」= 供了凭证但被远端拒绝，引导动作不同，分开给。
+ * 返回可直接拼接在「必需仓库 X 准备失败：…」之后的「；…」片段，无需引导时空串。
+ */
+export function materializeFailureGuidance(
+  message: string,
+  repository: AgentGitRepository | undefined,
+  shared: boolean,
+): string {
+  const lower = message.toLowerCase();
+  if (/timed out|could not resolve|failed to connect|429|5\d\d/.test(lower)) return "";
+  if (/not found|repository does not exist|404/.test(lower)) {
+    return "；仓库不存在或已迁移，请检查仓库地址";
+  }
+  const code = repository?.credentialCode;
+  if (/could not read username/.test(lower)) {
+    if (!code) return "；该仓库需要访问凭证：请在智能体 Git 配置中为仓库绑定凭证模板";
+    return shared
+      ? `；缺少凭证：请联系分享者在「我的凭证」填写模板 ${code} 的值（key: access_token）`
+      : `；缺少凭证：请在「我的凭证」填写模板 ${code} 的值（key: access_token）`;
+  }
+  if (code) {
+    return shared
+      ? `；认证失败：请联系分享者检查「我的凭证」中模板 ${code} 的访问令牌`
+      : `；认证失败：请检查「我的凭证」中模板 ${code} 的访问令牌是否有效`;
+  }
+  return "；该仓库需要访问凭证：请在智能体 Git 配置中为仓库绑定凭证模板";
+}

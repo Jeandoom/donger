@@ -17,10 +17,9 @@ export function GitAccessBlocker(props: {
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
       <div className="w-full max-w-xl space-y-4 rounded-xl border border-border bg-card p-5 shadow-sm">
         <div>
-          <h2 className="font-semibold">需要配置 Git 仓库凭证</h2>
+          <h2 className="font-semibold">Git 仓库预检未通过</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            以下私有仓库校验未通过：请在「凭证管理」中配置对应仓库的 git
-            访问令牌（一仓一凭证），并确认智能体已绑定该凭证。
+            智能体绑定的 Git 仓库配置校验未通过：请检查仓库地址是否有效、是否在允许的访问范围内。
           </p>
         </div>
         {props.loading ? (

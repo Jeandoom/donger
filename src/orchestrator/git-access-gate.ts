@@ -1,7 +1,9 @@
-// GitAccessGate：对话前仓库访问校验（凭证桥单轨）。
-// GitConnection 平台连接/grant 模型已退役（spec 2026-09-10 §8）：
-// 公共仓库匿名可读即通过；私有仓库走 credentialCode 凭证桥现取，
-// 用户未配值时 pendingCredential（由 Orchestrator 挂起凭证缺失问询）。
+// GitAccessGate：对话前仓库就绪预检（纯本地，不发任何网络请求）。
+// 2026-10-15 预检去网络化：公共/私有判定与凭证有效性不再 ls-remote 前置探测——
+// 未配置的凭证由通用凭证预检（agent.credentials 三选问询）承接；已配但失效/私有仓
+// 未绑凭证由物化层现取现败，补救引导见 runtime-manager 的物化失败分类。
+// 本地仅保留两件事：URL/host 配置校验（内网守门 spec 2026-09-10 §5 R1）与
+// 凭证模板值解析（credentialCode → PAT，随 materializeItems 下发）。
 
 import type { Agent } from "../domain/agent.js";
 import { gitPatFromValues } from "../domain/credential.js";
@@ -19,7 +21,6 @@ import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type {
   GitProcessCredential,
   RepositoryMaterializeItem,
-  RepositoryMaterializer,
 } from "../ports/repository-materializer.js";
 
 export interface GitAccessCheck {
@@ -29,17 +30,13 @@ export interface GitAccessCheck {
 }
 
 export class GitAccessGate {
-  private readonly anonymousCache = new Map<string, { public: boolean; expiresAt: number }>();
-
   constructor(
-    private readonly materializer: RepositoryMaterializer,
     private readonly credentialSets?: CredentialSetStore,
-    private readonly cacheTtlMs = 600_000,
     /** 内网 host 守门（spec 2026-09-10 §5 R1）：缺省允许（本地部署定位） */
     private readonly allowPrivateHosts = true,
   ) {}
 
-  async check(user: User, agent: Agent, signal?: AbortSignal): Promise<GitAccessCheck> {
+  async check(user: User, agent: Agent): Promise<GitAccessCheck> {
     const failures: Array<{
       repository: AgentGitRepository;
       fingerprint: string;
@@ -47,81 +44,32 @@ export class GitAccessGate {
     }> = [];
     const materializeItems: RepositoryMaterializeItem[] = [];
     for (const repository of agent.gitRepositories) {
-      // host 守门：内网/元数据地址在多用户部署下默认拒绝（解析报错即视为不可用）
       const parsed = parseRepositoryUrl(repository.url);
       if (!parsed || isBlockedHost(parsed.host, this.allowPrivateHosts)) {
         failures.push({
           repository,
-          fingerprint: gitRepositoryFingerprint(repository),
+          fingerprint: fingerprintOf(repository),
           reason: "provider_unavailable",
         });
         continue;
       }
-      const fingerprint = gitRepositoryFingerprint(repository);
-      if (await this.isPublic(repository, fingerprint, signal)) {
-        materializeItems.push({ repository });
-        continue;
-      }
-      if (repository.credentialCode) {
-        const authorized = await this.checkWithCredential(repository, user, signal);
-        if ("reason" in authorized)
-          failures.push({ repository, fingerprint, reason: authorized.reason });
-        else if ("pendingCredential" in authorized) materializeItems.push({ repository });
-        else materializeItems.push({ repository, credential: authorized.credential });
-        continue;
-      }
-      // 无 credentialCode 的非公共仓库：统一引导配置凭证（平台连接/grant 流程已退役）
-      failures.push({ repository, fingerprint, reason: "access_denied" });
+      const credential = repository.credentialCode
+        ? await this.credentialFromTemplate(user.id, repository)
+        : undefined;
+      // 未填值不阻断（credential 为 undefined）：公开仓库匿名可读；私有仓库由物化层
+      // 报错并给补救引导，未配置的问询由通用凭证预检按 agent.credentials 承接
+      materializeItems.push(credential ? { repository, credential } : { repository });
     }
     const requirements = groupRequirements(failures);
     return { ready: requirements.length === 0, requirements, materializeItems };
-  }
-
-  private async isPublic(
-    repository: AgentGitRepository,
-    fingerprint: string,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    const cached = this.anonymousCache.get(fingerprint);
-    if (cached && cached.expiresAt > Date.now()) return cached.public;
-    const access = await this.materializer.checkRead(repository, undefined, signal);
-    const isPublic = access.ok;
-    this.anonymousCache.set(fingerprint, {
-      public: isPublic,
-      expiresAt: Date.now() + this.cacheTtlMs,
-    });
-    return isPublic;
-  }
-
-  /**
-   * 凭证集 PAT 桥：credentialCode 指定时的私有仓库校验。
-   * 用户未填该模板值时返回 pendingCredential——不在 Gate 硬阻断（否则会抢在凭证缺失
-   * 三选问询之前），credentialCode 已并入 agent.credentials，由 Orchestrator 预检挂起问询。
-   */
-  private async checkWithCredential(
-    repository: AgentGitRepository,
-    user: User,
-    signal?: AbortSignal,
-  ): Promise<
-    | { credential: GitProcessCredential }
-    | { pendingCredential: true }
-    | { reason: GitAccessFailureReason }
-  > {
-    const credential = await this.credentialFromTemplate(user.id, repository);
-    if (!credential) return { pendingCredential: true };
-    const access = await this.materializer.checkRead(repository, credential, signal);
-    if (!access.ok) return { reason: access.reason };
-    return { credential };
   }
 
   private async credentialFromTemplate(
     userId: string,
     repository: AgentGitRepository,
   ): Promise<GitProcessCredential | undefined> {
-    if (!this.credentialSets) return undefined;
-    const [filled] = await this.credentialSets.getFilledValues(userId, [
-      repository.credentialCode as string,
-    ]);
+    if (!this.credentialSets || !repository.credentialCode) return undefined;
+    const [filled] = await this.credentialSets.getFilledValues(userId, [repository.credentialCode]);
     const pat = gitPatFromValues(filled?.values);
     if (!pat) return undefined;
     return {
@@ -140,6 +88,15 @@ export function defaultGitUsername(provider: GitProvider): string {
       return "oauth2";
     case "gitee":
       return "x-token";
+  }
+}
+
+/** URL 解析失败时 gitRepositoryFingerprint 会抛错；指纹缺省回落原文，保预检不炸 */
+function fingerprintOf(repository: AgentGitRepository): string {
+  try {
+    return gitRepositoryFingerprint(repository);
+  } catch {
+    return repository.url;
   }
 }
 

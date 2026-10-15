@@ -205,10 +205,8 @@ describe("config Git 授权", () => {
       ...base,
       PUBLIC_BASE_URL: "https://donger.example/",
       GIT_CLONE_TIMEOUT_MS: "90000",
-      GIT_AUTH_CACHE_TTL_MS: "300000",
     });
     expect(cfg.publicBaseUrl).toBe("https://donger.example");
     expect(cfg.gitCloneTimeoutMs).toBe(90_000);
-    expect(cfg.gitAuthCacheTtlMs).toBe(300_000);
   });
 });

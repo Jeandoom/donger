@@ -11,7 +11,7 @@ import {
 } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
-import { SESSION_BRANCH_PREFIX } from "../domain/git.js";
+import { materializeFailureGuidance, SESSION_BRANCH_PREFIX } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { LlmSdkType } from "../domain/llm-platforms.js";
 import { parseModelRef } from "../domain/model-ref.js";
@@ -357,8 +357,21 @@ export class RuntimeManager {
       const blocking = repositories.find(
         (result) => result.status === "error" && requiredById.get(result.repositoryId),
       );
-      if (blocking)
-        throw new Error(`必需仓库 ${blocking.name} 准备失败：${blocking.message ?? "未知错误"}`);
+      if (blocking) {
+        // 预检去网络化后凭证失效/未绑凭证在这里现取现败：按 stderr 分类追加补救引导
+        // （共享智能体的凭证随分享者解析，引导文案相应分流）
+        const repo = opts.gitMaterializeItems?.find(
+          (item) => item.repository.id === blocking.repositoryId,
+        )?.repository;
+        const guidance = materializeFailureGuidance(
+          blocking.message ?? "",
+          repo,
+          opts.sharedAgentSkillOwner !== undefined,
+        );
+        throw new Error(
+          `必需仓库 ${blocking.name} 准备失败：${blocking.message ?? "未知错误"}${guidance}`,
+        );
+      }
       const repositoryPrompt = [
         "## 会话 Git 仓库",
         ...repositories.map(

@@ -6,6 +6,7 @@ import {
   gitRepositoryFingerprint,
   inferGitProvider,
   isBlockedHost,
+  materializeFailureGuidance,
   normalizeRepositoryIdentity,
   parseRepositoryUrl,
   validateGitCredentialBindings,
@@ -205,5 +206,69 @@ describe("凭证仓库绑定一致性（spec 2026-09-10 §3.3）", () => {
     expect(
       validateGitCredentialBindings([repo("https://jihulab.com/x/y.git", undefined)], templates),
     ).toEqual([]);
+  });
+});
+
+describe("materializeFailureGuidance（物化失败补救引导）", () => {
+  const withCred = { ...repository, credentialCode: "gitee-apt" };
+
+  it("网络类瞬时失败不加引导", () => {
+    expect(
+      materializeFailureGuidance("fatal: could not resolve host: gitee.com", withCred, false),
+    ).toBe("");
+    expect(
+      materializeFailureGuidance("fatal: unable to access ... timed out", withCred, false),
+    ).toBe("");
+  });
+
+  it("仓库不存在：指向仓库地址", () => {
+    const g = materializeFailureGuidance(
+      "fatal: repository 'https://x/y.git' not found",
+      withCred,
+      false,
+    );
+    expect(g).toContain("仓库不存在");
+  });
+
+  it("could not read Username=未供上凭证：绑了模板引导填值，没绑模板引导绑定", () => {
+    const filled = materializeFailureGuidance(
+      "fatal: could not read Username for 'https://gitee.com': terminal prompts disabled",
+      withCred,
+      false,
+    );
+    expect(filled).toContain("缺少凭证");
+    expect(filled).toContain("gitee-apt");
+    const unbound = materializeFailureGuidance(
+      "fatal: could not read Username for 'https://gitee.com'",
+      repository,
+      false,
+    );
+    expect(unbound).toContain("绑定凭证模板");
+  });
+
+  it("Authentication failed=供了凭证被拒：引导检查令牌有效性", () => {
+    const g = materializeFailureGuidance(
+      "fatal: Authentication failed for 'https://gitee.com/acme/backend.git/'",
+      withCred,
+      false,
+    );
+    expect(g).toContain("认证失败");
+    expect(g).toContain("gitee-apt");
+    expect(g).toContain("是否有效");
+  });
+
+  it("共享智能体：引导分流到分享者", () => {
+    const missing = materializeFailureGuidance(
+      "fatal: could not read Username for 'https://gitee.com'",
+      withCred,
+      true,
+    );
+    expect(missing).toContain("联系分享者");
+    const rejected = materializeFailureGuidance(
+      "fatal: Authentication failed for 'https://gitee.com/acme/backend.git/'",
+      withCred,
+      true,
+    );
+    expect(rejected).toContain("联系分享者");
   });
 });

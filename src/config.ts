@@ -84,7 +84,6 @@ const EnvSchema = z.object({
   SELF_IMPROVE_GIT_CREDENTIAL: z.string().optional(),
   PUBLIC_BASE_URL: z.string().optional().default(""),
   GIT_CLONE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
-  GIT_AUTH_CACHE_TTL_MS: z.coerce.number().int().positive().default(600_000),
   // 会话级 git worktree 隔离（2026-10-14 并行会话分支冲突轮）：仓库物化为每会话独立
   // worktree（主克隆只作同步基座），同 agent 并发会话不再共享工作树。false=回退共享目录旧行为
   GIT_SESSION_WORKTREE: z
@@ -200,7 +199,6 @@ export interface AppConfig {
   /** 限流取 IP 是否信任 X-Forwarded-For（仅反代部署开启） */
   trustProxy: boolean;
   gitCloneTimeoutMs: number;
-  gitAuthCacheTtlMs: number;
   /** 会话级 git worktree 隔离（GIT_SESSION_WORKTREE，默认 true） */
   gitSessionWorktree: boolean;
   gitAllowPrivateHosts: boolean;
@@ -272,7 +270,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     emailLoginEnabled: e.EMAIL_LOGIN_ENABLED,
     setupToken: e.SETUP_TOKEN.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
-    gitAuthCacheTtlMs: e.GIT_AUTH_CACHE_TTL_MS,
     gitSessionWorktree: e.GIT_SESSION_WORKTREE,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
     triggerAllowPrivateNet: e.TRIGGER_ALLOW_PRIVATE_NET,

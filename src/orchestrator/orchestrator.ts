@@ -11,7 +11,6 @@ import {
 } from "../domain/conversation-title.js";
 import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
-import { SSH_EGRESS_PATTERN } from "./default-gates.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import {
   collectPromptAllowSections,
@@ -33,7 +32,13 @@ import {
 import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
-import type { ApprovalDecision, IncomingMessage, RunnerEvent, Task, TaskStatus } from "../domain/types.js";
+import type {
+  ApprovalDecision,
+  IncomingMessage,
+  RunnerEvent,
+  Task,
+  TaskStatus,
+} from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import type { User } from "../domain/user.js";
 import { MemoryStore } from "../memory/memory-store.js";
@@ -75,6 +80,7 @@ import { materializeMessageFiles } from "./attachment-materializer.js";
 import { createAuditToolsServer } from "./audit-tools.js";
 import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent.js";
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
+import { SSH_EGRESS_PATTERN } from "./default-gates.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
@@ -423,10 +429,12 @@ export class Orchestrator {
       if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
         const gitAccess = await this.deps.gitAccessGate.check(user, agent);
         if (!gitAccess.ready) {
+          // 预检去网络化后未就绪只剩本地配置错误（URL 非法/host 被禁）；
+          // 凭证失效/未配置由物化层报错或通用凭证问询承接
           return {
             agent,
             gitBlocked:
-              "请先完成平台进化官所需 Git 仓库授权（凭证集配置 donger 仓库 PAT）后再对话。",
+              "平台进化官绑定的 Git 仓库地址无效或超出允许范围，请检查 SELF_IMPROVE_GIT_URL 配置。",
           };
         }
         return { agent, gitMaterializeItems: gitAccess.materializeItems };
@@ -452,12 +460,11 @@ export class Orchestrator {
       // 共享智能体的仓库凭证随分享者解析（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §2.5）
       const gitAccess = await this.deps.gitAccessGate.check(sharedAgentSkillOwner ?? user, agent);
       if (!gitAccess.ready) {
+        // 未就绪只剩本地配置错误（URL 非法/host 被禁）；凭证类问题由物化层报错分流
         return {
           agent,
           sharedAgentSkillOwner,
-          gitBlocked: sharedAgentSkillOwner
-            ? "分享者尚未完成该智能体所需 Git 仓库授权，请联系分享者配置后再对话。"
-            : "请先完成智能体所需 Git 仓库授权后再对话。",
+          gitBlocked: "智能体绑定的 Git 仓库地址无效或超出允许范围，请修正 Git 配置后再对话。",
         };
       }
       return { agent, sharedAgentSkillOwner, gitMaterializeItems: gitAccess.materializeItems };
@@ -669,7 +676,10 @@ export class Orchestrator {
               seq: -1,
               type: "inv_bypass",
               text: `风险门命中但 full_access 零拦截放行：${info.reason ?? "needsApprovalCheck 命中"}`,
-              toolInput: JSON.stringify({ tool: info.toolName, summary: info.summary.slice(0, 300) }),
+              toolInput: JSON.stringify({
+                tool: info.toolName,
+                summary: info.summary.slice(0, 300),
+              }),
               recordedAt: new Date().toISOString(),
             })
             .catch(() => {});
@@ -1370,10 +1380,17 @@ export class Orchestrator {
       if (!ok || resultText.length === 0 || resultText === "(无结果)") return;
       if (p.agent?.kbAutoLearn !== true) return;
       const routes = p.agent.learnRoutes ?? undefined;
-      const routeOn = routes ?? { memory: true, kbRecord: true, skillSuggestion: true, platformNote: true };
+      const routeOn = routes ?? {
+        memory: true,
+        kbRecord: true,
+        skillSuggestion: true,
+        platformNote: true,
+      };
       // 四路任一可用即可入队：kbRecord 需绑定库；memory 需个人库；suggestion/platformNote 由 agent 面决定
       const hasKbRoute =
-        routeOn.kbRecord && ((p.agent.kbWriteTargetId ?? undefined) !== undefined || (p.agent.knowledgeBaseIds ?? []).length > 0);
+        routeOn.kbRecord &&
+        ((p.agent.kbWriteTargetId ?? undefined) !== undefined ||
+          (p.agent.knowledgeBaseIds ?? []).length > 0);
       const hasMemoryRoute = routeOn.memory && libs !== undefined && workspaceDir !== undefined;
       const hasSuggestionRoute = routeOn.skillSuggestion && (p.agent.skills?.length ?? 0) > 0;
       const hasPlatformRoute = routeOn.platformNote && this.deps.platformNotesStore !== undefined;
@@ -1382,7 +1399,16 @@ export class Orchestrator {
         return;
       }
       if (process.env.KNOWLEDGE_DEBUG) {
-        console.error("[auto-learn] gate pass: kb=" + hasKbRoute + " mem=" + hasMemoryRoute + " sug=" + hasSuggestionRoute + " note=" + hasPlatformRoute);
+        console.error(
+          "[auto-learn] gate pass: kb=" +
+            hasKbRoute +
+            " mem=" +
+            hasMemoryRoute +
+            " sug=" +
+            hasSuggestionRoute +
+            " note=" +
+            hasPlatformRoute,
+        );
       }
       // 独立知识库（可写目标）：命中候选则收窄为该库；悬空/失权时回退全量可管理绑定库
       // （specs/2026-10-01-agent-own-kb-picker-design.md §2.3）
@@ -1408,7 +1434,9 @@ export class Orchestrator {
             curatedIndex = new MemoryStore(memoryRootDir).readCuratedIndex()?.text ?? null;
           }
           // 技能清单（skillSuggestion 判定目标；仅 paste/upload 源可修订）
-          let skillCatalog: Array<{ id: string; name: string; description: string; editable: boolean }> | undefined;
+          let skillCatalog:
+            | Array<{ id: string; name: string; description: string; editable: boolean }>
+            | undefined;
           if (routeOn.skillSuggestion && p.agent!.skills.length > 0) {
             const packs = await this.deps.skillPackStore?.listPacks(p.user.id);
             if (packs) {
@@ -1676,10 +1704,13 @@ export class Orchestrator {
     channel.pushResult?.(p.conversation.id, "success", r.resultText || "完成");
     if (p.memoryDump) {
       // legacy 倾倒：原文截断（知识体系轮 P1——倾倒只做恢复线索，不做沉淀主通道）
-      p.memoryDump.append({
-        summary: p.task.prompt.slice(0, 40),
-        detail: `prompt: ${p.task.prompt}\n结果: 成功\n${(r.resultText || "").slice(0, 500)}`,
-      }, { subdir: "auto" });
+      p.memoryDump.append(
+        {
+          summary: p.task.prompt.slice(0, 40),
+          detail: `prompt: ${p.task.prompt}\n结果: 成功\n${(r.resultText || "").slice(0, 500)}`,
+        },
+        { subdir: "auto" },
+      );
     }
     if ("finalizeCard" in channel && typeof channel.finalizeCard === "function") {
       await (channel as { finalizeCard: (id: string) => Promise<void> })
@@ -2299,10 +2330,13 @@ export class Orchestrator {
 
       // 记忆沉淀（仅 legacy 装配；curated/off 不倾倒，知识体系轮 P1）
       if (memoryDump) {
-        memoryDump.append({
-          summary: task.prompt.slice(0, 40),
-          detail: `prompt: ${task.prompt}\n结果: ${r.ok ? "成功" : "失败"}\n${(r.resultText || "").slice(0, 500)}`,
-        }, { subdir: "auto" });
+        memoryDump.append(
+          {
+            summary: task.prompt.slice(0, 40),
+            detail: `prompt: ${task.prompt}\n结果: ${r.ok ? "成功" : "失败"}\n${(r.resultText || "").slice(0, 500)}`,
+          },
+          { subdir: "auto" },
+        );
       }
 
       // 钉钉卡片：标记完成（streaming=false）

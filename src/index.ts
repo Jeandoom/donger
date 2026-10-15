@@ -13,7 +13,6 @@ import { CodexChatBridge } from "./adapters/codex-chat-bridge.js";
 import { DingTalkChannel } from "./adapters/dingtalk-channel.js";
 import { EngineRuntimeService } from "./adapters/engine-runtime-service.js";
 import { GitCliRepositoryMaterializer } from "./adapters/git-cli-repository-materializer.js";
-import { SSH_EGRESS_MODE_FLAG } from "./domain/host-exec-policy.js";
 import {
   migrateLegacyAgentHostExecAllowlists,
   seedBuiltinDenyRules,
@@ -68,20 +67,21 @@ import { WebChannel } from "./adapters/web-channel.js";
 import { setEngineCliResolver, ZcodeAgentRunner } from "./adapters/zcode-agent-runner.js";
 import { loadConfig } from "./config.js";
 import type { AgentGitRepository } from "./domain/git.js";
+import { SSH_EGRESS_MODE_FLAG } from "./domain/host-exec-policy.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
 import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
-import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
-import { startWorktreeGc } from "./orchestrator/worktree-gc.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
+import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import { SystemEventDispatcher } from "./orchestrator/system-event-dispatcher.js";
+import { startWorktreeGc } from "./orchestrator/worktree-gc.js";
 import { PluginHost } from "./plugins/plugin-host.js";
 import type { Channel } from "./ports/channel.js";
 import { loadOrGenerateAppSecret } from "./util/app-secret.js";
@@ -270,12 +270,7 @@ async function main(): Promise<void> {
   if (kbMigrate.renameFailed > 0) {
     log.warn(`${kbMigrate.renameFailed} 个用户的旧 knowledge_base/ 目录 rename 失败，下次启动重试`);
   }
-  const gitAccessGate = new GitAccessGate(
-    repositoryMaterializer,
-    credentialSets,
-    cfg.gitAuthCacheTtlMs,
-    cfg.gitAllowPrivateHosts,
-  );
+  const gitAccessGate = new GitAccessGate(credentialSets, cfg.gitAllowPrivateHosts);
 
   // JWT Session Store
   const jwtSecret = cfg.jwtSecret || loadOrGenerateJwtSecret(db);
@@ -441,7 +436,12 @@ async function main(): Promise<void> {
           } catch {
             list = [];
           }
-          if (content.trim()) list.push({ content: content.trim(), conversationId, createdAt: new Date().toISOString() });
+          if (content.trim())
+            list.push({
+              content: content.trim(),
+              conversationId,
+              createdAt: new Date().toISOString(),
+            });
           moduleConfigStore.setFlag(key, JSON.stringify(list.slice(-50)));
         },
       },
