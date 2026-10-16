@@ -58,12 +58,14 @@ run_once() {
   log "发现新 master $remote（当前状态 $state），触发发布"
   local lock="$STACK_DIR/.release-lock"
   mkdir "$lock" 2>/dev/null || { log "另一发布进行中，跳过"; return 0; }
+  # 崩溃安全：任何退出路径（含 set -e 中断）都释放锁，防孤儿锁死锁后续发布
+  trap 'rmdir "$lock" 2>/dev/null || true' EXIT
   local rc=0
   # RELEASE_HOST_RELEASE_ARGS：部署环境扩展参数（如 --port/--rehearsal-stack 覆盖，故意词分割）
   bash "$REPO/scripts/host-release.sh" --image "$image" --sha "$remote" --stack "$STACK_DIR" \
     --lock-dir "$lock" $RELEASE_HOST_RELEASE_ARGS || rc=$?
-  # 锁由 host-release 的 trap 释放；此处防御性再清一次
   rmdir "$lock" 2>/dev/null || true
+  trap - EXIT
 
   local status="deployed" reason=""
   case $rc in
