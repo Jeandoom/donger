@@ -32,6 +32,7 @@ STATE_FILE="${STATE_FILE:-$STACK_DIR/.release-state}"
 # 可选配置文件（钩子地址/令牌/仓库路径）
 [[ -f "$STACK_DIR/host-release.env" ]] && . "$STACK_DIR/host-release.env"
 RELEASE_REPOSITORY_PATH="${RELEASE_REPOSITORY_PATH:-}"
+RELEASE_HOST_RELEASE_ARGS="${RELEASE_HOST_RELEASE_ARGS:-}"
 
 log() { echo "[release-watcher $(date '+%m-%d %H:%M:%S')] $*"; }
 
