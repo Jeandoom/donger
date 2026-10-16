@@ -68,10 +68,17 @@ set_tag() { # $1=stack $2=image-or-tag
 
 log "== 开始发布 image=$IMAGE sha=${SHA:0:8} 生产=$STACK_DIR:$PORT"
 
-# 1) 备份（切流前最后一致快照）
+# 1) 备份（切流前最后一致快照）。卷时代（donger-db named volume）优先走栈内
+#    db-backup.ps1（docker exec 热备）；旧 bind mount 布局回退 docker-backup.sh
 if [[ $SKIP_BACKUP -eq 0 ]]; then
   log "== 步骤1 备份"
-  bash "$REPO/scripts/docker-backup.sh" "$STACK_DIR" || { log "!! 备份失败，中止（生产未触碰）"; exit 5; }
+  WIN_STACK_DIR="D:/${STACK_DIR#/d/}"
+  if [[ -f "$STACK_DIR/db-backup.ps1" ]]; then
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$WIN_STACK_DIR/db-backup.ps1" \
+      || { log "!! 备份失败，中止（生产未触碰）"; exit 5; }
+  else
+    bash "$REPO/scripts/docker-backup.sh" "$STACK_DIR" || { log "!! 备份失败，中止（生产未触碰）"; exit 5; }
+  fi
 else
   log "== 步骤1 备份跳过"
 fi
