@@ -211,6 +211,7 @@ import type { UsageStore } from "../ports/usage-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
+import type { ReleaseRunStore } from "../ports/release-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import {
   ForbiddenError,
@@ -590,6 +591,18 @@ export interface WebChannelDeps {
   };
   /** 进程内系统事件分发（feedback.created）；缺省=事件不触发 */
   systemEvents?: { dispatch(eventName: string, payload: string): Promise<void> };
+  /** L2 宿主管线结果回收（POST /api/internal/release-result）；缺省=端点关闭 */
+  releaseResultHandler?: {
+    handleReleaseResult(raw: unknown): Promise<{
+      ok: boolean;
+      status?: number;
+      body: Record<string, unknown>;
+    }>;
+  };
+  /** L2 回报端点 Bearer 令牌（DONGER_RELEASE_HOOK_TOKEN）；空=端点关闭（404 不暴露存在性） */
+  releaseHookToken?: string;
+  /** L2 自动发布执行记录（workflow 详情查询面）；缺省=release-runs 端点空列表 */
+  releaseRunStore?: ReleaseRunStore;
   /** 事件源探测参数（/test 端点；SSRF/工作区收口参数） */
   eventProbe?: { allowPrivateNet?: boolean; workspaceRoot: string };
   /** 会话实时执行状态查询（SDK 事件流推导，Observability 用）；缺省=端点 503 */
@@ -1264,6 +1277,13 @@ export class WebChannel implements Channel {
     if (url.startsWith("/api/")) {
       // 路由匹配基于 pathname（剥离查询串），以便 SSE 的 ?token= 不影响分发
       const pathname = url.split("?")[0] ?? url;
+
+      // L2 宿主管线回报（机器通道，spec 2026-10-16-feedback-auto-dev-deploy-l2-design §4.7）：
+      // Bearer token 鉴权，不进 viewer/route-guard 面；token 未配置=端点关闭（404 不暴露存在性）
+      if (req.method === "POST" && pathname === "/api/internal/release-result") {
+        await this.handleReleaseResultHook(req, res);
+        return;
+      }
 
       // 授权单点收口：未登记路由 404（fail-closed），owner/admin 判定统一在此执行。
       // 守卫通过后写回 req.userId，下游 handler 既有取身份逻辑不变。
@@ -6356,6 +6376,33 @@ export class WebChannel implements Channel {
     }
   }
 
+  /** POST /api/internal/release-result —— L2 宿主管线结果回报（Bearer 令牌；§4.7）。
+   * 机器通道：不进 viewer/guard 面；令牌未配置/不匹配一律 404（不暴露端点存在性）。
+   * 业务语义（状态推进/反馈回写/幂等）全部在 ReleaseService.handleReleaseResult。 */
+  private async handleReleaseResultHook(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const token = this.deps.releaseHookToken ?? "";
+    const handler = this.deps.releaseResultHandler;
+    const auth = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+    if (!token || !handler || auth !== `Bearer ${token}`) {
+      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await this.readBody(req));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "body must be JSON" }));
+      return;
+    }
+    const result = await handler.handleReleaseResult(raw);
+    res.writeHead(result.ok ? (result.status ?? 200) : (result.status ?? 500), {
+      "Content-Type": "application/json; charset=utf-8",
+    });
+    res.end(JSON.stringify(result.body));
+  }
+
   /** GET|POST /hooks/<随机路径> —— 调用事件入口，免认证（外部系统回调；D2/D3）。 */
   private async handleHook(req: HttpRequest, res: ServerResponse): Promise<void> {
     if (!this.deps.callEndpoint) {
@@ -6586,6 +6633,24 @@ export class WebChannel implements Channel {
       const awaiting = await this.awaitingApprovalThreadIds();
       this.json(res, {
         runs: runs.map((r) => decorateRunAwaiting(r, awaiting)),
+      });
+      return true;
+    }
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/release-runs$/);
+    if (m && req.method === "GET") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      const releaseRuns = (await this.deps.releaseRunStore?.listByWorkflow(wf.id, 100)) ?? [];
+      // policyVerdict 是 JSON 字符串：解析后下发（半截 JSON 容错降级原文）
+      this.json(res, {
+        releaseRuns: releaseRuns.map((r) => {
+          let verdict: unknown = r.policyVerdict;
+          try {
+            verdict = JSON.parse(r.policyVerdict);
+          } catch {
+            /* 保持原文 */
+          }
+          return { ...r, policyVerdict: verdict };
+        }),
       });
       return true;
     }

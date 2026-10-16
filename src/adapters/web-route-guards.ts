@@ -65,6 +65,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
   return [
     // ===== public（显式枚举）=====
     { method: "GET", pattern: "/api/health", access: { kind: "public" } },
+    // L2 宿主管线回报（机器通道）：鉴权=handler 内 Bearer 令牌（分流在 guard 之前返回），
+    // 此处登记为 public 仅为路由覆盖契约建档；令牌空缺时 handler 404 关闭端点
+    {
+      method: "POST",
+      pattern: "/api/internal/release-result",
+      access: { kind: "public" },
+    },
     { method: "POST", pattern: "/api/auth/exchange", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/register", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },
@@ -487,6 +494,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/workflows/:id/enable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/workflows/:id/disable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/workflows/:id/run", access: { kind: "authenticated" } },
+    { method: "GET", pattern: "/api/workflows/:id/release-runs", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/workflows/:id/runs", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/workflows/:id/runs/stats", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/workflows/:id/runs/:rid", access: { kind: "authenticated" } },
