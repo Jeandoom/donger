@@ -44,7 +44,7 @@ workflow 编辑页「自动发布（L2）」区：启用 + 三个上限（文件
 - release_runs：`needs_human → merged → deployed / rolled_back`（`merge_failed` 终态等人工）；同 MR 终身一行，按 (repositoryPath, mrNumber) 唯一。
 - 回报幂等：重复 deployed/rolled_back 上报直接 200；`build_failed` 维持 merged 仅记 detail（watcher 下轮对同一 SHA 重试，连续 3 次失败放弃并推进状态）。
 - 回滚冷却：rolled_back 后该 workflow 冷却 24h（策略可配）不再自动合并。
-- HEAD 未命中的回报返回 404（如平台侧从未记录该提案）。
+- HEAD 未命中的回报返回 404（如平台侧从未记录该提案）——**基础设施提交（非 autofix MR）的发布回报 404 属设计内**，watcher 记「回报未命中」即止。
 
 ## 安全边界（恒转人工，策略硬 deny）
 

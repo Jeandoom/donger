@@ -80,12 +80,21 @@ run_once() {
 
   # 结果回报（ReleaseResultSchema；repositoryPath 缺失时跳过回报仅记日志）
   if [[ -n "${RELEASE_HOOK_URL:-}" && -n "${RELEASE_HOOK_TOKEN:-}" && -n "$RELEASE_REPOSITORY_PATH" ]]; then
-    # -k：IP 直连/自签名部署形态（生产域名+有效证书时 -k 无额外风险面）
+    # -k：IP 直连/自签名部署形态（生产域名+有效证书时 -k 无额外风险面）。
+    # 404=该提交在平台无提案行（基础设施提交，设计内无害）；其余非零才值得排查。
+    local hook_rc=0
     curl -skf -m 15 -X POST "$RELEASE_HOOK_URL" \
       -H "Authorization: Bearer $RELEASE_HOOK_TOKEN" \
       -H "content-type: application/json" \
       -d "{\"repositoryPath\":\"$RELEASE_REPOSITORY_PATH\",\"headSha\":\"$remote\",\"status\":\"$status\",\"imageTag\":\"$image\",\"reason\":\"$reason\",\"slot\":\"prod\"}" \
-      || log "!! 回报失败（donger 不可达；状态机下次对账幂等）"
+      || hook_rc=$?
+    if (( hook_rc == 0 )); then
+      log "已回报平台：$status"
+    elif (( hook_rc == 22 )); then
+      log "回报未命中（HTTP 4xx；该提交无 autofix 提案行属设计内，状态机无需推进）"
+    else
+      log "!! 回报失败 curl_exit=$hook_rc（donger 不可达或令牌失效；状态机下次对账幂等）"
+    fi
   else
     log "未配置 RELEASE_HOOK_URL/TOKEN/REPOSITORY_PATH，跳过回报"
   fi
