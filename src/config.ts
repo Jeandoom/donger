@@ -112,6 +112,13 @@ const EnvSchema = z.object({
   // 触发事件队列单 loop pending 上限（超出落 dropped+告警；防 DoS 显式边界）
   /** 事件触发全局队列容量（D6 拍板默认 10）；超出时该次执行直接失败 */
   TRIGGER_QUEUE_MAX_PENDING: z.coerce.number().int().min(1).max(10_000).default(10),
+  // L2 kill-switch：开启后 ReleaseService 空转 + autoDev git 放行白名单全拒（auto-dev 链路总闸）
+  DONGER_AUTODEV_DISABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  // L2 宿主管线结果回报令牌（/api/internal/release-result Bearer）；空=端点关闭
+  DONGER_RELEASE_HOOK_TOKEN: z.string().optional(),
   // .env 不承载任何代理凭证（凭证走用户凭证集 + type=http 连接器；历史 app-proxy 已随应用模块移除）。
 });
 
@@ -219,6 +226,10 @@ export interface AppConfig {
    * 一律进审批（EGRESS_ALLOW_DOMAINS）。
    */
   egressAllowDomains: string[];
+  /** L2 auto-dev 总闸（DONGER_AUTODEV_DISABLED）：true=ReleaseService 空转+放行白名单全拒 */
+  autodevDisabled: boolean;
+  /** L2 宿主管线回报令牌（DONGER_RELEASE_HOOK_TOKEN）；空=回报端点关闭 */
+  releaseHookToken: string;
 }
 
 /**
@@ -281,6 +292,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       .split(",")
       .map((d) => d.trim().toLowerCase())
       .filter(Boolean),
+    autodevDisabled: e.DONGER_AUTODEV_DISABLED,
+    releaseHookToken: e.DONGER_RELEASE_HOOK_TOKEN ?? "",
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {

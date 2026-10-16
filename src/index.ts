@@ -37,6 +37,9 @@ import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteEngineRuntimeStore } from "./adapters/sqlite-engine-runtime-store.js";
 import { SqliteEventFiringStore } from "./adapters/sqlite-event-firing-store.js";
+import { SqliteReleaseRunStore } from "./adapters/sqlite-release-run-store.js";
+import { ReleaseService } from "./orchestrator/release-service.js";
+import { MemoryRateLimiter } from "./adapters/memory-rate-limiter.js";
 import { SqliteEventStore } from "./adapters/sqlite-event-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
 import { SqliteHostExecPolicyStore } from "./adapters/sqlite-host-exec-policy-store.js";
@@ -527,6 +530,9 @@ async function main(): Promise<void> {
   workflowRunStore.migrate();
   const eventFiringStore = new SqliteEventFiringStore(db);
   eventFiringStore.migrate();
+  // L2 自动发布执行记录（spec 2026-10-16-feedback-auto-dev-deploy-l2-design §4.5）
+  const releaseRunStore = new SqliteReleaseRunStore(db);
+  releaseRunStore.migrate();
 
   // 通知模块（spec 2026-09-28-notification-module-design）：站内信 + 订阅偏好 + 站外通道
   const notificationStore = new SqliteNotificationStore(db, secretCipher);
@@ -735,6 +741,22 @@ async function main(): Promise<void> {
       .dispatch(eventName, payload)
       .catch((e: Error) => log.error({ eventName, err: e.message }, "app event dispatch failed"));
   };
+  // L2 自动发布服务（spec 2026-10-16-feedback-auto-dev-deploy-l2-design §4.5）：
+  // 轮询 autoDev workflow 绑定仓库的 [autofix] MR → 策略评估 → 自动合并；宿主管线结果
+  // 经 /api/internal/release-result 回收（web-channel 接线）。kill-switch=DONGER_AUTODEV_DISABLED。
+  const releaseService = new ReleaseService({
+    workflowStore,
+    agentStore,
+    credentialSets,
+    releaseRunStore,
+    feedbackStore,
+    notifications: notificationService,
+    rateLimiter: new MemoryRateLimiter(),
+    logger: log,
+    disabled: () => cfg.autodevDisabled,
+    pollIntervalMs: 60_000,
+  });
+  releaseService.start();
   // ponytail: 回填同一 deps 对象，webChannel 通过 this.deps 读取
   webChannelDeps.scheduler = scheduler;
   // 插件 gate（M2）：event-sources 停用 → 外呼入口/事件源探测不装配（/hooks 免认证面收口）
@@ -747,6 +769,10 @@ async function main(): Promise<void> {
   }
   webChannelDeps.eventDispatcher = eventDispatcher;
   webChannelDeps.systemEvents = systemEvents;
+  // L2 宿主管线回报闭环（/api/internal/release-result；token 空=端点关闭）
+  webChannelDeps.releaseResultHandler = releaseService;
+  webChannelDeps.releaseHookToken = cfg.releaseHookToken;
+  webChannelDeps.releaseRunStore = releaseRunStore;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
   webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
@@ -779,6 +805,7 @@ async function main(): Promise<void> {
     log.info({ signal }, "关闭中");
     stopWorktreeGc();
     scheduler.stopAll();
+    releaseService.stop();
     // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
     await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);
     await Promise.race([webChannel.stop(), new Promise((resolve) => setTimeout(resolve, 500))]);

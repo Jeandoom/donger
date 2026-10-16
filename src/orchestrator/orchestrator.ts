@@ -94,6 +94,8 @@ import type { NotificationService } from "./notification-service.js";
 import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
 import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
+import { BUILTIN_AUTO_FIX_AGENT_ID, buildAutoFixAgent } from "./auto-fix-agent.js";
+import { autoDevGitAllowCheck } from "./autodev-gate.js";
 import { isSessionExpiredError } from "./session-expiry.js";
 import { BUILTIN_SKILL_FORGE_AGENT, BUILTIN_SKILL_FORGE_AGENT_ID } from "./skill-forge-agent.js";
 import { guardStreamStall } from "./stream-stall-guard.js";
@@ -180,6 +182,8 @@ export interface OrchestratorDeps {
   skillRepoSync?: { onChanged(userId: string): void };
   /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库，agent 不可推送） */
   selfImproveGitRepository?: AgentGitRepository;
+  /** L2 kill-switch（DONGER_AUTODEV_DISABLED）：开启时 autoDev git 放行白名单全拒 */
+  autodevDisabled?: () => boolean;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
   commentStore?: CommentStore;
   /** 通知内核（spec 2026-09-28-notification-module-design；缺省=不发站内信） */
@@ -213,6 +217,8 @@ export class Orchestrator {
   private readonly busyConversations = new Map<string, string>();
   // conversationId → 会话权限模式（轮启动时预热；web PATCH 即时更新，canUseTool 每次现取）
   private readonly permissionModes = new Map<string, AgentPermissionMode>();
+  // conversationId → autoDev 绑定仓库名（L2 §4.4：无人值守轮 git-write 门放行白名单依据）
+  private readonly autoDevGitRepos = new Map<string, string>();
   // 会话实时执行状态（SDK 事件流推导；观测态，不落库）
   private readonly activityTracker = new ActivityTracker();
 
@@ -435,6 +441,25 @@ export class Orchestrator {
             agent,
             gitBlocked:
               "平台进化官绑定的 Git 仓库地址无效或超出允许范围，请检查 SELF_IMPROVE_GIT_URL 配置。",
+          };
+        }
+        return { agent, gitMaterializeItems: gitAccess.materializeItems };
+      }
+      return { agent };
+    }
+    // 内置自动修复工程师（L2）：模板化派生自进化官——仅管理员、复用 SELF_IMPROVE_GIT_URL 绑定
+    if (agentId === BUILTIN_AUTO_FIX_AGENT_ID) {
+      if (user.role !== "admin") {
+        throw new ForbiddenError("AGENT_FORBIDDEN", "自动修复工程师仅管理员可用");
+      }
+      const agent = buildAutoFixAgent(this.deps.selfImproveGitRepository);
+      if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
+        const gitAccess = await this.deps.gitAccessGate.check(user, agent);
+        if (!gitAccess.ready) {
+          return {
+            agent,
+            gitBlocked:
+              "自动修复工程师绑定的 Git 仓库地址无效或超出允许范围，请检查 SELF_IMPROVE_GIT_URL 配置。",
           };
         }
         return { agent, gitMaterializeItems: gitAccess.materializeItems };
@@ -685,30 +710,56 @@ export class Orchestrator {
             .catch(() => {});
         },
       };
-      // 主机执行策略放行（含 force 门）：判定收窄在钩子内（工具名+hostCode+命令域函数），
-      // runner 侧不解释语义。M1 装配口径：仅 allow 免审；skip/deny 守卫接线在 M2/M3，
-      // 暂回审批门（fail-closed）。放行打标审计（fire-and-forget，失败不阻断执行）。
+      // 门放行装配（可组合）：主机执行策略 + autoDev git 放行（L2 §4.4）。判定收窄都在
+      // 钩子内（工具名+入参形状），runner 侧不解释语义；放行打标 policy_decision 审计
+      // （fire-and-forget，失败不阻断执行）。
+      const gateAllowChecks: Array<NonNullable<RunOptions["gateAllowCheck"]>> = [];
       if (hostPolicyRules.length > 0) {
-        base = {
-          ...base,
-          gateAllowCheck: (toolName, input) => {
-            const tool =
-              toolName === "mcp__donger-host__host_exec"
-                ? "host_exec"
-                : toolName === "mcp__donger-host__host_logs_clean"
-                  ? "host_logs_clean"
-                  : undefined;
-            if (!tool) return false;
-            const hostCode = typeof input.hostCode === "string" ? input.hostCode : "";
-            if (!hostCode) return false;
-            const command = typeof input.command === "string" ? input.command : "";
-            const verdict = resolveHostExecPolicy(hostPolicyRules, {
-              hostCode,
-              tool,
-              command,
-              ...hostPolicyCtx,
-            });
-            if (!verdict || verdict.decision !== "allow") return false;
+        gateAllowChecks.push((toolName, input) => {
+          const tool =
+            toolName === "mcp__donger-host__host_exec"
+              ? "host_exec"
+              : toolName === "mcp__donger-host__host_logs_clean"
+                ? "host_logs_clean"
+                : undefined;
+          if (!tool) return false;
+          const hostCode = typeof input.hostCode === "string" ? input.hostCode : "";
+          if (!hostCode) return false;
+          const command = typeof input.command === "string" ? input.command : "";
+          const verdict = resolveHostExecPolicy(hostPolicyRules, {
+            hostCode,
+            tool,
+            command,
+            ...hostPolicyCtx,
+          });
+          if (!verdict || verdict.decision !== "allow") return false;
+          void this.deps.auditStore
+            .record({
+              conversationId: p.conversation.id,
+              taskId: p.task.id,
+              userId: p.user.id,
+              seq: -1,
+              type: "policy_decision",
+              text: `主机命令策略放行：tool=${tool} host=${hostCode} policy=${verdict.policyId}`,
+              toolInput: JSON.stringify({ command: command.slice(0, 300) }),
+              recordedAt: new Date().toISOString(),
+            })
+            .catch(() => {});
+          return true;
+        });
+      }
+      const autoDevRepoName = this.autoDevGitRepos.get(p.conversation.id);
+      if (autoDevRepoName) {
+        gateAllowChecks.push((toolName, input) => {
+          const allowed = autoDevGitAllowCheck(
+            {
+              repositoryName: autoDevRepoName,
+              disabled: () => this.deps.autodevDisabled?.() ?? false,
+            },
+            toolName,
+            input,
+          );
+          if (allowed) {
             void this.deps.auditStore
               .record({
                 conversationId: p.conversation.id,
@@ -716,13 +767,20 @@ export class Orchestrator {
                 userId: p.user.id,
                 seq: -1,
                 type: "policy_decision",
-                text: `主机命令策略放行：tool=${tool} host=${hostCode} policy=${verdict.policyId}`,
-                toolInput: JSON.stringify({ command: command.slice(0, 300) }),
+                text: `autoDev 发布放行：${toolName}`,
+                toolInput: JSON.stringify(input).slice(0, 300),
                 recordedAt: new Date().toISOString(),
               })
               .catch(() => {});
-            return true;
-          },
+          }
+          return allowed;
+        });
+      }
+      if (gateAllowChecks.length > 0) {
+        base = {
+          ...base,
+          gateAllowCheck: (toolName, input) =>
+            gateAllowChecks.some((check) => check(toolName, input)),
         };
       }
       // 知识库挂载清单（spec §8）：会话绑定库 ∪ agent 绑定库 ∪ 个人库兜底（kbId 缺省=个人库，
@@ -2196,6 +2254,11 @@ export class Orchestrator {
         agentMode: agent?.defaultPermissionMode,
       });
       this.permissionModes.set(conversation.id, effectiveMode);
+      // L2 autoDev：登记本会话的放行白名单依据（绑定 agent 首仓库名；runTurn 组装钩子用）
+      if (msg.autoDev === true) {
+        const autoDevRepoName = agent?.gitRepositories?.[0]?.name;
+        if (autoDevRepoName) this.autoDevGitRepos.set(conversation.id, autoDevRepoName);
+      }
       if (msg.permissionMode) {
         void this.deps.auditStore
           .record({

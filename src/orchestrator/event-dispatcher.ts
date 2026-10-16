@@ -190,6 +190,8 @@ export class EventDispatcher {
         // （2026-10-14 拍板：配置缺省 full_access，orchestrator 据消息级值预热）
         unattended: true,
         permissionMode: wf.permissionMode,
+        // L2 autoDev：标记无人值守轮为自动发布链路（orchestrator 装配 git-write 放行白名单）
+        ...(wf.autoDev?.enabled ? { autoDev: true } : {}),
       });
       const finishedAt = new Date().toISOString();
       await runStore.updateRun(run.id, {

@@ -196,6 +196,8 @@ export const IncomingMessageSchema = z.object({
   unattended: z.boolean().optional(),
   /** 消息级权限模式覆盖（工作流派发注入；仅无人值守管线使用） */
   permissionMode: AgentPermissionModeSchema.optional(),
+  /** L2 autoDev 轮标记（工作流派发注入）：orchestrator 据此装配 git-write 放行白名单 */
+  autoDev: z.boolean().optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

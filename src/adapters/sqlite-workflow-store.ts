@@ -1,6 +1,6 @@
 import type { Database } from "better-sqlite3";
-import type { Workflow, WorkflowInput } from "../domain/workflow.js";
-import { WorkflowSchema } from "../domain/workflow.js";
+import type { AutoDevConfig, Workflow, WorkflowInput } from "../domain/workflow.js";
+import { AutoDevConfigSchema, WorkflowSchema } from "../domain/workflow.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import { NotFoundError } from "../util/errors.js";
 
@@ -14,11 +14,23 @@ interface WorkflowRow {
   permissionMode: string | null;
   promptTemplate: string;
   enabled: number;
+  autoDev: string | null;
   lastRunId: string | null;
   lastRunAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** autoDev JSON 列解析：非法/半截 JSON 一律降级 undefined（不阻断读取） */
+function parseAutoDev(raw: string | null): AutoDevConfig | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = AutoDevConfigSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export class SqliteWorkflowStore implements WorkflowStore {
@@ -47,6 +59,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         promptTemplate TEXT NOT NULL DEFAULT '{{triggerOutput}}',
         permissionMode TEXT NOT NULL DEFAULT 'full_access',
         enabled INTEGER NOT NULL DEFAULT 0,
+        autoDev TEXT,
         lastRunId TEXT, lastRunAt TEXT, lastError TEXT,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
       )
@@ -60,6 +73,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
       this.db.exec(
         "ALTER TABLE workflows ADD COLUMN permissionMode TEXT NOT NULL DEFAULT 'full_access'",
       );
+    }
+    // autoDev 列（L2 轮）：JSON 文本，按列存在性幂等补列
+    const hasAutoDev = (
+      this.db.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).some((c) => c.name === "autoDev");
+    if (!hasAutoDev) {
+      this.db.exec("ALTER TABLE workflows ADD COLUMN autoDev TEXT");
     }
     if (isLegacy) {
       // 旧表补列（CREATE TABLE IF NOT EXISTS 不会改既有表结构）
@@ -119,6 +139,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       permissionMode: row.permissionMode ?? undefined,
       promptTemplate: row.promptTemplate,
       enabled: row.enabled === 1,
+      autoDev: parseAutoDev(row.autoDev),
       lastRunId: row.lastRunId,
       lastRunAt: row.lastRunAt,
       lastError: row.lastError,
@@ -138,8 +159,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     this.db
       .prepare(
-        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, createdAt, updatedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, autoDev, createdAt, updatedAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         w.id,
@@ -151,6 +172,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         w.permissionMode,
         w.promptTemplate,
         w.enabled ? 1 : 0,
+        w.autoDev ? JSON.stringify(w.autoDev) : null,
         w.createdAt,
         w.updatedAt,
       );
@@ -179,17 +201,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async update(id: string, patch: Partial<WorkflowInput>): Promise<Workflow> {
     const cur = await this.get(id);
     if (!cur) throw new NotFoundError("WORKFLOW_NOT_FOUND", `workflow 不存在: ${id}`);
-    const next: Workflow = {
+    // schema.parse 归一：patch 里 z.input 形态的半省略字段（如 autoDev.policy）合并后
+    // 补齐缺省，避免 input/output 形态混写进库
+    const next: Workflow = WorkflowSchema.parse({
       ...cur,
       ...patch,
       id: cur.id,
       ownerId: cur.ownerId,
       createdAt: cur.createdAt,
       updatedAt: new Date().toISOString(),
-    };
+    });
     this.db
       .prepare(
-        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, updatedAt=? WHERE id=?`,
+        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, enabled=?, autoDev=?, updatedAt=? WHERE id=?`,
       )
       .run(
         next.name,
@@ -198,6 +222,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
         next.agentId,
         next.permissionMode,
         next.promptTemplate,
+        next.enabled ? 1 : 0,
+        next.autoDev ? JSON.stringify(next.autoDev) : null,
         next.updatedAt,
         next.id,
       );
