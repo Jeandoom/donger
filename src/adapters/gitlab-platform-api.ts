@@ -8,6 +8,7 @@ import type {
   CreateRepoInput,
   GetBranchInput,
   GetFileRawInput,
+  GetMrDiffInput,
   GetMrInput,
   GitPlatformApi,
   LatestPipelineInput,
@@ -134,6 +135,18 @@ export class GitLabPlatformApi implements GitPlatformApi {
     return apiGet(
       this.fetchImpl,
       this.projectUrl(`${this.ref(input)}`, `/merge_requests/${encodeURIComponent(input.number)}`),
+      this.headers(token),
+      "GitLab",
+    );
+  }
+
+  async getMrDiff(input: GetMrDiffInput, token: string): Promise<PlatformApiResult> {
+    return apiGet(
+      this.fetchImpl,
+      this.projectUrl(
+        `${this.ref(input)}`,
+        `/merge_requests/${encodeURIComponent(input.number)}/diffs`,
+      ),
       this.headers(token),
       "GitLab",
     );

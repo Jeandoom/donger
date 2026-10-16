@@ -199,6 +199,7 @@ describe("donger-git 平台工具", () => {
               getMr: async () => ({ ok: true, status: 200, body: "{}" }),
               latestPipeline: async () => ({ ok: false, status: 0, body: "不支持" }),
               getFileRaw: async () => ({ ok: true, status: 200, body: "x" }),
+              getMrDiff: async () => ({ ok: true, status: 200, body: "[]" }),
             }
           : undefined,
     });
@@ -247,6 +248,7 @@ describe("donger-git 平台工具", () => {
         getMr: async () => ({ ok: true, status: 200, body: "{}" }),
         latestPipeline: async () => ({ ok: false, status: 0, body: "不支持" }),
         getFileRaw: async () => ({ ok: true, status: 200, body: "x" }),
+        getMrDiff: async () => ({ ok: true, status: 200, body: "[]" }),
       }),
     });
     await findTool(tools, "git_create_branch").handler({

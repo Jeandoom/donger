@@ -67,6 +67,11 @@ export interface GetMrInput extends RepoRef {
   number: string;
 }
 
+/** MR 变更文件清单（含 patch/diff 文本；数值字段缺省时由调用方从 patch 统计） */
+export interface GetMrDiffInput extends RepoRef {
+  number: string;
+}
+
 export interface LatestPipelineInput extends RepoRef {
   ref?: string;
 }
@@ -86,6 +91,8 @@ export interface GitPlatformApi {
   getBranch(input: GetBranchInput, token: string): Promise<PlatformApiResult>;
   listMr(input: ListMrInput, token: string): Promise<PlatformApiResult>;
   getMr(input: GetMrInput, token: string): Promise<PlatformApiResult>;
+  /** 变更文件清单：github/gitee=pulls files 数组，jihulab=merge_requests diffs 数组 */
+  getMrDiff(input: GetMrDiffInput, token: string): Promise<PlatformApiResult>;
   latestPipeline(input: LatestPipelineInput, token: string): Promise<PlatformApiResult>;
   getFileRaw(input: GetFileRawInput, token: string): Promise<PlatformApiResult>;
 }

@@ -10,6 +10,7 @@ import type {
   CreateRepoInput,
   GetBranchInput,
   GetFileRawInput,
+  GetMrDiffInput,
   GetMrInput,
   GitPlatformApi,
   LatestPipelineInput,
@@ -128,6 +129,15 @@ export class GiteePlatformApi implements GitPlatformApi {
     return apiGet(
       this.fetchImpl,
       this.url(`${this.repo(input)}/pulls/${encodeURIComponent(input.number)}`, {}, token),
+      {},
+      "Gitee",
+    );
+  }
+
+  async getMrDiff(input: GetMrDiffInput, token: string): Promise<PlatformApiResult> {
+    return apiGet(
+      this.fetchImpl,
+      this.url(`${this.repo(input)}/pulls/${encodeURIComponent(input.number)}/files`, {}, token),
       {},
       "Gitee",
     );

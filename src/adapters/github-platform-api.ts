@@ -10,6 +10,7 @@ import type {
   CreateRepoInput,
   GetBranchInput,
   GetFileRawInput,
+  GetMrDiffInput,
   GetMrInput,
   GitPlatformApi,
   LatestPipelineInput,
@@ -151,6 +152,15 @@ export class GitHubPlatformApi implements GitPlatformApi {
     return apiGet(
       this.fetchImpl,
       `${this.repo(input)}/pulls/${encodeURIComponent(input.number)}`,
+      this.headers(token),
+      "GitHub",
+    );
+  }
+
+  async getMrDiff(input: GetMrDiffInput, token: string): Promise<PlatformApiResult> {
+    return apiGet(
+      this.fetchImpl,
+      `${this.repo(input)}/pulls/${encodeURIComponent(input.number)}/files?per_page=100`,
       this.headers(token),
       "GitHub",
     );
