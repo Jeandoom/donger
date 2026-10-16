@@ -35,6 +35,25 @@ interface WorkflowDTO {
   enabled: boolean;
   lastRunAt?: string | null;
   lastError?: string | null;
+  /** L2 自动发布配置（缺省关闭） */
+  autoDev?: {
+    enabled: boolean;
+    policy?: { maxFiles?: number; maxChangedLines?: number; dailyAutoMergeQuota?: number };
+  };
+}
+
+interface ReleaseRunDTO {
+  id: string;
+  repositoryPath: string;
+  mrNumber: string;
+  mrUrl: string;
+  sourceBranch: string;
+  headSha: string;
+  status: "needs_human" | "merged" | "merge_failed" | "deployed" | "rolled_back";
+  policyVerdict?: { allow?: boolean; reasons?: string[]; warnings?: string[] };
+  detail?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface RunStats {
@@ -70,6 +89,28 @@ function varsForEvent(type: EventType | undefined): string[] {
   return vars;
 }
 
+/** L2 发布记录状态展示口径（与后端 ReleaseRunStatus 对齐） */
+function releaseStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    needs_human: "待人工",
+    merged: "已合并待发布",
+    merge_failed: "合并失败",
+    deployed: "已发布",
+    rolled_back: "已回滚",
+  };
+  return map[status] ?? status;
+}
+function releaseStatusTone(status: string): "info" | "success" | "danger" | "warning" | "neutral" {
+  const map: Record<string, "info" | "success" | "danger" | "warning" | "neutral"> = {
+    needs_human: "warning",
+    merged: "info",
+    merge_failed: "danger",
+    deployed: "success",
+    rolled_back: "warning",
+  };
+  return map[status] ?? "neutral";
+}
+
 function durationText(startedAt?: string | null, finishedAt?: string | null): string {
   if (!startedAt) return "—";
   const end = finishedAt ? Date.parse(finishedAt) : Date.now();
@@ -89,6 +130,11 @@ export function WorkflowEditorPage() {
   const [permissionMode, setPermissionMode] = useState("full_access");
   const [promptTemplate, setPromptTemplate] = useState("{{triggerOutput}}");
   const [enabled, setEnabled] = useState(false);
+  // L2 自动发布
+  const [autoDevEnabled, setAutoDevEnabled] = useState(false);
+  const [maxFiles, setMaxFiles] = useState("15");
+  const [maxChangedLines, setMaxChangedLines] = useState("400");
+  const [dailyQuota, setDailyQuota] = useState("3");
   const [events, setEvents] = useState<EventOption[]>([]);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [refsError, setRefsError] = useState<string | null>(null);
@@ -103,6 +149,7 @@ export function WorkflowEditorPage() {
   // 执行记录
   const [stats, setStats] = useState<RunStats | null>(null);
   const [runs, setRuns] = useState<RunDTO[]>([]);
+  const [releaseRuns, setReleaseRuns] = useState<ReleaseRunDTO[]>([]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [runningNow, setRunningNow] = useState(false);
   const [canShowRecords, setCanShowRecords] = useState(Boolean(id));
@@ -114,6 +161,10 @@ export function WorkflowEditorPage() {
     agentId,
     permissionMode,
     promptTemplate,
+    autoDevEnabled,
+    maxFiles,
+    maxChangedLines,
+    dailyQuota,
   });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
@@ -160,6 +211,10 @@ export function WorkflowEditorPage() {
       setPermissionMode(w.permissionMode ?? "full_access");
       if (w.promptTemplate) setPromptTemplate(w.promptTemplate);
       setEnabled(w.enabled);
+      setAutoDevEnabled(w.autoDev?.enabled ?? false);
+      setMaxFiles(String(w.autoDev?.policy?.maxFiles ?? 15));
+      setMaxChangedLines(String(w.autoDev?.policy?.maxChangedLines ?? 400));
+      setDailyQuota(String(w.autoDev?.policy?.dailyAutoMergeQuota ?? 3));
       setLoaded(true);
       pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
     } catch (e) {
@@ -176,14 +231,19 @@ export function WorkflowEditorPage() {
   const refreshRuns = useCallback(async () => {
     if (!id) return;
     try {
-      const [sr, rr] = await Promise.all([
+      const [sr, rr, dr] = await Promise.all([
         apiFetch(`/api/workflows/${id}/runs/stats`),
         apiFetch(`/api/workflows/${id}/runs?limit=50`),
+        apiFetch(`/api/workflows/${id}/release-runs`),
       ]);
       if (sr.ok) setStats((await sr.json()) as RunStats);
       if (rr.ok) {
         const d = (await rr.json()) as { runs?: RunDTO[] };
         setRuns(d.runs ?? []);
+      }
+      if (dr.ok) {
+        const d = (await dr.json()) as { releaseRuns?: ReleaseRunDTO[] };
+        setReleaseRuns(d.releaseRuns ?? []);
       }
     } catch {
       // 记录面刷新失败不打断编辑
@@ -231,6 +291,14 @@ export function WorkflowEditorPage() {
           agentId,
           permissionMode,
           promptTemplate,
+          autoDev: {
+            enabled: autoDevEnabled,
+            policy: {
+              maxFiles: Number(maxFiles) || 15,
+              maxChangedLines: Number(maxChangedLines) || 400,
+              dailyAutoMergeQuota: Number(dailyQuota) || 3,
+            },
+          },
         }),
       });
       if (r.ok) {
@@ -469,10 +537,56 @@ export function WorkflowEditorPage() {
         </FormField>
       </FormSection>
 
+      <FormSection
+        id="wf-sec-autodev"
+        no="3"
+        title="自动发布（L2）"
+        description="启用后平台轮询该 Agent 首个绑定仓库的 [autofix] MR：策略命中即自动合并，宿主管线构建发布、失败自动回滚；未命中转人工。合并与部署不经 LLM"
+      >
+        <FormField label="启用自动发布">
+          <div className="flex items-center gap-2">
+            <Switch checked={autoDevEnabled} onCheckedChange={setAutoDevEnabled} />
+            <span className="text-xs text-muted-foreground">
+              {autoDevEnabled ? "策略命中即自动合并（全链无人值守）" : "关闭（仅提示，不自动合并）"}
+            </span>
+          </div>
+        </FormField>
+        <div className="grid grid-cols-3 gap-3">
+          <FormField label="文件数上限" hint="超过转人工">
+            <Input
+              type="number"
+              min={1}
+              value={maxFiles}
+              onChange={(e) => setMaxFiles(e.target.value)}
+            />
+          </FormField>
+          <FormField label="变更行数上限" hint="超过转人工">
+            <Input
+              type="number"
+              min={1}
+              value={maxChangedLines}
+              onChange={(e) => setMaxChangedLines(e.target.value)}
+            />
+          </FormField>
+          <FormField label="每日合并上限" hint="0=不限制">
+            <Input
+              type="number"
+              min={0}
+              value={dailyQuota}
+              onChange={(e) => setDailyQuota(e.target.value)}
+            />
+          </FormField>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          红线路径（安全门/部署/迁移/依赖清单/L2
+          自身机制）与「修改既有测试」恒转人工，不受上述数值影响。
+        </p>
+      </FormSection>
+
       {canShowRecords && (
         <FormSection
           id="wf-sec-runs"
-          no="3"
+          no="4"
           title="执行记录"
           description="每次执行一条记录（永久保留）；点开可看输入与完整对话"
           actions={
@@ -598,6 +712,68 @@ export function WorkflowEditorPage() {
             {!runs.length ? (
               <div className="p-8 text-center text-sm text-muted-foreground">
                 还没有执行记录（保存并启用后由事件触发，或点「立即运行一轮」）
+              </div>
+            ) : null}
+          </div>
+        </FormSection>
+      )}
+      {canShowRecords && autoDevEnabled && (
+        <FormSection
+          id="wf-sec-release-runs"
+          no="5"
+          title="自动发布记录"
+          description="策略评估与合并/发布状态（宿主管线回报后更新）"
+        >
+          <div className="overflow-hidden rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">时间</th>
+                  <th className="px-3 py-2 font-medium">MR</th>
+                  <th className="px-3 py-2 font-medium">状态</th>
+                  <th className="px-3 py-2 font-medium">策略判定</th>
+                </tr>
+              </thead>
+              <tbody>
+                {releaseRuns.map((r) => (
+                  <tr key={r.id} className="border-t border-border">
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {new Date(r.createdAt).toLocaleString()}
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.mrUrl ? (
+                        <a
+                          href={r.mrUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-primary hover:underline"
+                        >
+                          !{r.mrNumber}
+                        </a>
+                      ) : (
+                        `!${r.mrNumber}`
+                      )}
+                      <span className="ml-2 font-mono text-xs text-muted-foreground">
+                        {r.headSha.slice(0, 8)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <Badge tone={releaseStatusTone(r.status)}>
+                        {releaseStatusLabel(r.status)}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      {r.status === "needs_human" && r.policyVerdict?.reasons?.length
+                        ? r.policyVerdict.reasons.join("；").slice(0, 120)
+                        : releaseStatusLabel(r.status)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!releaseRuns.length ? (
+              <div className="p-8 text-center text-sm text-muted-foreground">
+                还没有自动发布记录（agent 提交 [autofix] MR 后由平台评估）
               </div>
             ) : null}
           </div>
