@@ -1,5 +1,6 @@
 // 本地 fs 的 FileBrowser 实现。多通道共享。
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { IGNORED_NAMES, resolveWithinRoots, scopeRoots } from "../domain/file-browser.js";
 import { mimeForExt } from "../domain/file-mime.js";
@@ -31,11 +32,15 @@ export class LocalFileBrowser implements FileBrowser {
     const { roots, labels } = await this.resolveRoots(userId, scope, conversationId);
     if (scope === "runtime") {
       // 拍平展示：直接返回会话工作区内容，不再包一层会话目录节点
-      return this.buildDirNode(roots[0] ?? "", "", "").children ?? [];
+      const root = await dirNodeAsync(roots[0] ?? "", "", "", 0, newTreeBudget());
+      return root.children ?? [];
     }
-    return roots.map((root, i) => this.buildDirNode(root, labels[i] ?? basename(root), ""));
+    return Promise.all(
+      roots.map((root, i) =>
+        dirNodeAsync(root, labels[i] ?? basename(root), "", 0, newTreeBudget()),
+      ),
+    );
   }
-
   async readFile(
     userId: string,
     scope: FileScope,
@@ -178,46 +183,80 @@ export class LocalFileBrowser implements FileBrowser {
     const labels = [".skills", ".agents", ".workflows", "knowledge_base"];
     return { roots, labels };
   }
-
-  private buildDirNode(abs: string, name: string, parentRel: string): FileNode {
-    return dirNode(abs, name, parentRel);
-  }
 }
 
-/** 递归构建目录树节点；跳过忽略项与 symlink（防逃逸） */
-function dirNode(abs: string, name: string, parentRel: string): FileNode {
+// ---- 目录树遍历上限（skill-scan 先例：无界遍历 = 全进程冻结 DoS，2026-10-16 生产事故实证）----
+// dirNode 曾是主线程同步递归，大工作区（9p 挂载 + 上万文件）单次 listTree 阻塞事件循环
+// 12~90s，全站请求超时。现改为 fs.promises 异步 + 三重上限 + 逐目录让出事件循环。
+const MAX_TREE_DEPTH = 10;
+const MAX_ENTRIES_PER_DIR = 500;
+const MAX_TREE_NODES = 5000;
+
+interface TreeBudget {
+  nodes: number;
+}
+
+function newTreeBudget(): TreeBudget {
+  return { nodes: 0 };
+}
+
+function yieldLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** 递归构建目录树节点；跳过忽略项与 symlink（防逃逸）；深度/条目/总量三重上限，超限置 truncated */
+async function dirNodeAsync(
+  abs: string,
+  name: string,
+  parentRel: string,
+  depth: number,
+  budget: TreeBudget,
+): Promise<FileNode> {
   const path = parentRel ? posixJoin(parentRel, name) : name;
+  if (depth > MAX_TREE_DEPTH || budget.nodes >= MAX_TREE_NODES) {
+    return { name, path, isDir: true, children: [], truncated: true };
+  }
   let entries: string[] = [];
   try {
-    entries = readdirSync(abs);
+    entries = await readdir(abs);
   } catch {
     return { name, path, isDir: true, children: [] };
   }
+  entries = entries.filter((e) => !IGNORED_NAMES.has(e));
+  let truncated = entries.length > MAX_ENTRIES_PER_DIR;
+  if (truncated) entries = entries.slice(0, MAX_ENTRIES_PER_DIR);
   const children: FileNode[] = [];
   for (const e of entries) {
-    if (IGNORED_NAMES.has(e)) continue;
+    if (budget.nodes >= MAX_TREE_NODES) {
+      truncated = true;
+      break;
+    }
     const childAbs = join(abs, e);
-    let st: ReturnType<typeof lstatSync>;
+    let st: Awaited<ReturnType<typeof lstat>>;
     try {
-      st = lstatSync(childAbs);
+      st = await lstat(childAbs);
     } catch {
       continue;
     }
     if (st.isSymbolicLink()) continue; // 跳过 symlink，防逃逸
+    budget.nodes++;
     if (st.isDirectory()) {
-      children.push(dirNode(childAbs, e, path));
+      children.push(await dirNodeAsync(childAbs, e, path, depth + 1, budget));
+      await yieldLoop(); // 让出事件循环：单次遍历再大也不冻结全站
     } else {
       children.push({ name: e, path: posixJoin(path, e), isDir: false, size: st.size });
     }
   }
-  return { name, path, isDir: true, children };
+  return truncated
+    ? { name, path, isDir: true, children, truncated }
+    : { name, path, isDir: true, children };
 }
 
 /**
- * 拍平根目录下全部文件（相对路径；忽略项/symlink 规则与目录树一致）。
+ * 拍平根目录下全部文件（相对路径；忽略项/symlink 规则与目录树一致，同样受三重上限约束）。
  * 供消息引用（mention）候选列表使用：给 @ 候选提供可搜索的扁平文件清单。
  */
-export function flattenWorkspaceFiles(absRoot: string): FileNode[] {
+export async function flattenWorkspaceFiles(absRoot: string): Promise<FileNode[]> {
   const out: FileNode[] = [];
   const visit = (node: FileNode): void => {
     for (const child of node.children ?? []) {
@@ -225,7 +264,7 @@ export function flattenWorkspaceFiles(absRoot: string): FileNode[] {
       else out.push(child);
     }
   };
-  visit(dirNode(absRoot, "", ""));
+  visit(await dirNodeAsync(absRoot, "", "", 0, newTreeBudget()));
   return out;
 }
 

@@ -9,6 +9,8 @@ export interface FileNode {
   /** 文件字节 */
   size?: number;
   children?: FileNode[];
+  /** 目录树超限截断标记（深度/单目录条目/总量任一触顶；2026-10-16 冻结事故后加界） */
+  truncated?: boolean;
 }
 
 export interface FileContent {

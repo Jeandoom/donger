@@ -28,6 +28,8 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/web/dist ./web/dist
 COPY --from=builder /app/package.json ./package.json
 COPY skills ./skills
+# 内置插件目录：缺它启动期报 ENOENT warning（plugin-host scandir，2026-10-15 生产实测）
+COPY plugins ./plugins
 # 非 git 资产：deploy/stage.ps1 备料（zcode CLI 纯 JS；.superpowers 为遗留插件目录）
 COPY deploy/assets/zcode-cli /opt/zcode-cli
 COPY deploy/assets/superpowers ./.superpowers

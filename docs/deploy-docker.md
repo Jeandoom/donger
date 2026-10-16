@@ -1,7 +1,7 @@
 # donger Docker 部署运维手册
 
 > 设计与验证记录：`docs/superpowers/specs/2026-10-10-docker-deploy-migration-design.md`（D1-D6 已拍板）
-> 形态：单机 Docker Desktop（WSL2）单容器；数据 bind mount 落宿主盘；对外 3330/HTTPS/域名零变化。
+> 形态：单机 Docker Desktop（WSL2）单容器；**/data（workspace+用户 homeDir 热路径）与 /db 均走 named volume**（`donger-data` 2026-10-16 迁入、`donger-db` 2026-10-15 迁入；9p bind mount 上先后实证两类冻结：SQLite 同步写停顿、dirNode 同步扫树 31s lstat）；证书/gitconfig 仍 bind mount；对外 3330/HTTPS/域名零变化。
 
 ## 拓扑与目录
 
@@ -110,6 +110,12 @@ host_exec 白名单语义：agent 的「本机」= 容器文件系统；查宿�
 
 ## 回退口径（D1 风险兜底）
 
-若 bind mount 上出现 SQLite 异常（IOErr/损坏）：compose.yaml 增加 `donger-db:/db` named volume 并把
-`DB_PATH=/db/donger.db`（workspace 保持 bind mount），一次性把 `data\donger.db*` 拷入卷即可，无需重做迁移。
+**2026-10-15/16 已执行迁移（原预案落地为现状）**：DB 在 named volume `donger-db`（`DB_PATH=/db/donger.db`），
+/data（workspace+用户 homeDir）在 named volume `donger-data`（2026-10-16 迁入，两遍 tar 法：运行时预拷+停服增量）。
+迁移时点快照在 `data-backups\donger.db.pre-volume-20261015-2018`；旧 bind mount `./data` 数据原样保留作回退。
+备份走每日 04:00 计划任务 `donger-db-backup`（`db-backup.ps1`，better-sqlite3 一致性快照 → `data-backups\donger-db-*.db`，保留 14 份）。
+**注意**：/data 迁卷后宿主 `./data` 目录与容器脱钩——往容器 /data 放文件须走 `docker exec`，不再写宿主目录。
+回退 bind mount = `docker compose down` → compose 挂载改回 `./data:/data`（旧数据在）→ `DB_PATH` 改回 `/data/donger.db` → `up -d`。
+**容器间整机迁移**：卷数据搬运用 `docker run --rm -v donger-data:/d ... tar` 导出导入（两卷同理）；
+`docker volume` 数据不随 `compose down` 丢失，但 `docker system prune` 会清未使用卷（卷名固定，见 compose volumes 声明）。
 M0 压测基线：9p 上 14,327 rows/s、busy=0、kill -9 崩溃恢复 integrity ok——正常运维无需回退。

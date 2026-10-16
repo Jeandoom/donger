@@ -7796,7 +7796,7 @@ export class WebChannel implements Channel {
           agentId: agent.id,
         })[0];
         if (root) {
-          for (const f of flattenWorkspaceFiles(root)) {
+          for (const f of await flattenWorkspaceFiles(root)) {
             if (lower && !f.path.toLowerCase().includes(lower)) continue;
             if (/\s/.test(f.path) || seen.has(f.path)) continue;
             seen.add(f.path);
