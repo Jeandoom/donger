@@ -233,7 +233,7 @@ async function bootHarness(): Promise<Harness> {
     flushQueues: (reason) => orch.flushPendingQueues(reason),
     markInterrupted: async () => {
       markInterruptedCalls += 1;
-      return 0;
+      return orch.interruptActiveTurns("服务更新排水超时");
     },
   });
   await web.ready();
@@ -411,6 +411,7 @@ describe("热发布优雅排水（M1 e2e）", () => {
 
   it("排水超时兜底：markInterrupted 被调用，drain 超时后放行退出", async () => {
     h = await bootHarness();
+    const sse = await subscribeSSE(h.port, "conv-drain");
 
     const p1 = h.orch.handleMessage({
       channelId: "web",
@@ -427,8 +428,21 @@ describe("热发布优雅排水（M1 e2e）", () => {
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(600);
     expect(h.hooks.markInterruptedCalls).toBe(1);
 
+    // 暂停标记落库（M2）：任务行 → interrupted（非终态，重启后续跑接管）
+    const running = await h.store.listByStatus("running");
+    const interrupted = await h.store.listByStatus("interrupted");
+    expect(running.length).toBe(0);
+    expect(interrupted.length).toBe(1);
+    // 会话内可见暂停提示（SSE text 事件）
+    await waitFor(() =>
+      sse.events.find(
+        (e) => e.type === "text" && String(e.text ?? "").includes("任务已暂停"),
+      ),
+    );
+
     // 收尾：release 让挂起轮落地，避免测试遗留未消费 gate
     h.runner.release();
     await p1;
+    sse.close();
   }, 15_000);
 });

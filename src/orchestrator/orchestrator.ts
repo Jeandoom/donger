@@ -205,6 +205,8 @@ export interface OrchestratorDeps {
 interface ActiveTaskEntry {
   taskId: string;
   conversationId: string;
+  /** 渠道回信线程（钉钉 threadId ≠ conversationId；web 二者同值）——排水中断提示的送达目标 */
+  threadId: string;
   /** 任务文本摘要（用户消息前 60 字），弹窗展示用 */
   taskExcerpt: string;
   /** 任务开始时间（ISO） */
@@ -1873,6 +1875,34 @@ export class Orchestrator {
   }
 
   /**
+   * 排水超时兜底（热发布 M2）：把仍在执行的轮标记 interrupted（暂停语义），进程随后退出，
+   * 新实例启动后 resume-service 自动续跑。awaiting_approval/awaiting_credentials 无 running
+   * 转换不在标记范围（前者由审批落库轮接管，后者保持「暂停等配置」既有语义）。
+   * 任务行尚未创建的极早阶段随进程死亡，由启动 sweep 兜底标 interrupted。返回标记数量。
+   */
+  async interruptActiveTurns(reason: string): Promise<number> {
+    let count = 0;
+    for (const tasks of this.userActiveTasks.values()) {
+      for (const entry of tasks.values()) {
+        if (!entry.taskId) continue;
+        try {
+          const task = await this.deps.store.get(entry.taskId);
+          if (!task || task.status !== "running") continue;
+          await this.deps.store.updateStatus(entry.taskId, nextStatus("running", "interrupt"));
+          await this.deps.channel.send(entry.threadId || entry.conversationId, {
+            text: `⏸ ${reason}，任务已暂停；服务恢复后将自动继续执行。`,
+          });
+          count += 1;
+        } catch (e) {
+          // 尽力而为：单个标记失败不阻断排水收尾
+          console.error("[orchestrator] 排水中断标记失败", entry.taskId, e);
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
    * 首条用户消息到达即自动命名会话：仍为占位标题（默认值 / 绑定 agent 名）时，
    * 取消息首个非空行截断为标题，落库并向打开该会话的客户端广播（侧栏实时刷新）。
    * fire-and-forget：与任务执行并行，任何失败仅记日志（标题保留占位，不影响主流程）。
@@ -1977,6 +2007,7 @@ export class Orchestrator {
     this.registerActive(user.id, {
       taskId: "",
       conversationId: conversation.id,
+      threadId: msg.threadId,
       taskExcerpt: (msg.text || conversation.title || "").slice(0, 60),
       startedAt: new Date().toISOString(),
     });
@@ -2130,27 +2161,39 @@ export class Orchestrator {
       const injectedFiles = msg.files?.length
         ? materializeMessageFiles(msg.files, attachmentCwd, conversation.id)
         : msg.files;
-      task = {
-        id: crypto.randomUUID(),
-        channelId: msg.channelId,
-        threadId: msg.threadId,
-        requesterId: msg.requesterId,
-        prompt: appendDefaultSkill(
-          appendMentions(
-            appendMessageFiles(msg.text, injectedFiles, attachmentCwd),
-            msg.mentions,
-            attachmentCwd,
+      if (msg.resumeTaskId) {
+        // 中断恢复续跑（热发布 M2/M3，spec 2026-10-16-hot-deploy-design）：复用原 task 行
+        // （D3 拍板）——interrupted/awaiting_approval --resume--> running；task.prompt 保持
+        // 原文（入库/审计/记忆不被污染），轮输入用 msg.text 合成指令（下方 firstTurnPrompt 消费）
+        const prev = await store.get(msg.resumeTaskId);
+        if (!prev) {
+          throw new RunnerError("TASK_NOT_FOUND", `恢复目标任务不存在: ${msg.resumeTaskId}`);
+        }
+        task = prev;
+        await store.updateStatus(task.id, nextStatus(prev.status, "resume"));
+      } else {
+        task = {
+          id: crypto.randomUUID(),
+          channelId: msg.channelId,
+          threadId: msg.threadId,
+          requesterId: msg.requesterId,
+          prompt: appendDefaultSkill(
+            appendMentions(
+              appendMessageFiles(msg.text, injectedFiles, attachmentCwd),
+              msg.mentions,
+              attachmentCwd,
+            ),
+            agent?.defaultSkill,
           ),
-          agent?.defaultSkill,
-        ),
-        status: "created",
-        skillChain: [],
-        // builder 自动重派的消息：串联回触发补建的原 task
-        ...(msg.builderFromTaskId ? { builderFromTaskId: msg.builderFromTaskId } : {}),
-        createdAt: now,
-        updatedAt: now,
-      };
-      await store.create(task);
+          status: "created",
+          skillChain: [],
+          // builder 自动重派的消息：串联回触发补建的原 task
+          ...(msg.builderFromTaskId ? { builderFromTaskId: msg.builderFromTaskId } : {}),
+          createdAt: now,
+          updatedAt: now,
+        };
+        await store.create(task);
+      }
       // 回填淘汰候选表的 taskId（registerActive 时任务尚未创建）
       const activeEntry = this.userActiveTasks.get(user.id)?.get(conversation.id);
       if (activeEntry) activeEntry.taskId = task.id;
@@ -2159,8 +2202,43 @@ export class Orchestrator {
       // 闲聊短路径先行：保守规则判「明显非任务」的输入直连 chat 兜底，省掉每消息固定的一跳
       // dispatcher LLM 调用（isLikelyChitchat 判定宁漏放不误收——误路由代价=真实任务进无工具 chat）
       let firstTurnPrompt: string | undefined;
+      // 恢复续跑：合成指令替代 task.prompt 作为本轮输入；不走闲聊判定与 dispatcher 重路由
+      if (msg.resumeTaskId) firstTurnPrompt = msg.text;
       let steps: FlowStep[] = task.steps ?? [];
-      if (
+      if (msg.resumeTaskId) {
+        // 恢复续跑：按原任务 agent 归属直连（不再过 dispatcher/闲聊判定）。
+        // 原归属已删除/无权 → 回退 chat 兜底（与闲聊短路径同源：resolveChainAgent 直取常量，
+        // 不经 resolveAgentForUse——内置 chat agent 不在仓库里）
+        let r: Awaited<ReturnType<typeof this.resolveAgentForUse>> | undefined;
+        if (task.agentId) {
+          try {
+            r = await this.resolveAgentForUse(task.agentId, user);
+          } catch {
+            r = undefined;
+          }
+        }
+        if (r) {
+          if (r.gitBlocked) {
+            throw new RunnerError(
+              "DISPATCH_FAILED",
+              `恢复的智能体仓库未授权：${r.gitBlocked}`,
+            );
+          }
+          ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
+        } else {
+          agent = await this.resolveChainAgent(
+            this.deps.agentChain?.chatAgentId,
+            BUILTIN_CHAT_AGENT,
+          );
+        }
+        steps = beginStep(steps, {
+          role: "agent",
+          agentId: agent.id,
+          conversationId: conversation.id,
+          startedAt: new Date().toISOString(),
+        });
+        await store.updateStatus(task.id, "planning", { steps });
+      } else if (
         (this.deps.chitchatShortPath ?? true) &&
         !conversation.agentId &&
         this.deps.agentStore &&

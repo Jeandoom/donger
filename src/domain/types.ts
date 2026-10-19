@@ -12,6 +12,8 @@ export const TaskStatusEnum = z.enum([
   "running",
   "awaiting_approval",
   "awaiting_credentials",
+  /** 排水超时/崩溃被暂停（热发布 M2，spec 2026-10-16-hot-deploy-design）：非终态，恢复服务自动续跑 */
+  "interrupted",
   "done",
   "failed",
   "canceled",
@@ -191,6 +193,12 @@ export const IncomingMessageSchema = z.object({
   modelRef: z.string().optional(),
   /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
   builderFromTaskId: z.string().optional(),
+  /**
+   * 系统内部：中断恢复续跑（热发布 M2/M3，spec 2026-10-16-hot-deploy-design）。
+   * 复用原 task 行（D3 拍板）：interrupted/awaiting_approval --resume--> running，
+   * 轮输入用 text 合成指令（经 firstTurnPrompt 注入），task.prompt 保持原文不污染。
+   */
+  resumeTaskId: z.string().optional(),
   /** 无人值守触发（定时/钩子/工作流）：缺省权限模式强制按变更前问询执行；
    *  工作流派发携带配置值（2026-10-14 拍板：以工作流配置为准，缺省完全权限），覆盖此缺省 */
   unattended: z.boolean().optional(),

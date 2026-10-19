@@ -81,6 +81,7 @@ import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
@@ -805,6 +806,14 @@ async function main(): Promise<void> {
     flushQueues: async (reason) => {
       await Promise.all([...orchestrators.values()].map((o) => o.flushPendingQueues(reason)));
     },
+    // 排水超时兜底（热发布 M2）：在途轮标 interrupted，新实例启动后自动续跑
+    markInterrupted: async () => {
+      let count = 0;
+      for (const orch of orchestrators.values()) {
+        count += await orch.interruptActiveTurns("服务更新排水超时");
+      }
+      return count;
+    },
   });
   webChannelDeps.drain = drain;
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
@@ -869,8 +878,8 @@ async function main(): Promise<void> {
     );
   }
 
-  // 启动清扫：遗留 running/awaiting_approval 任务无续跑依据，统一标失败并补提示；
-  // zcode 被杀轮顺带从 .zcode-home 补录已流出记录（spec 2026-09-29 M4a）
+  // 启动清扫（热发布 M2）：running 孤儿→interrupted（暂停语义），zcode 被杀轮补录；
+  // awaiting_approval→failed（M3 审批落库后改为重臂存活）
   const swept = await sweepInterruptedTasks({
     taskStore: store,
     messageStore,
@@ -878,9 +887,24 @@ async function main(): Promise<void> {
     conversationStore,
     userStore,
   });
-  if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
+  if (swept.interrupted > 0) log.warn({ count: swept.interrupted }, "已将遗留 running 任务标记为中断");
   if (swept.awaitingApproval > 0)
     log.warn({ count: swept.awaitingApproval }, "已将遗留审批挂起任务标记为中断");
+
+  // 中断自动续跑（热发布 M2）：interrupted 轮以合成指令续跑（复用原 task 行，D3）；
+  // 不可续跑（非 Web/归档/工作流会话/超上限/开关关）→ 标失败并通知重发
+  const resumed = await autoResumeInterruptedTasks({
+    taskStore: store,
+    conversationStore,
+    messageStore,
+    auditStore,
+    submit: (msg) => {
+      void webOrch.handleMessage(msg).catch((e) => console.error("[resume] 续跑轮失败", e));
+    },
+    autoResume: cfg.autoResumeInterrupted,
+  });
+  if (resumed.resumed > 0) log.warn({ count: resumed.resumed }, "已自动恢复中断任务");
+  if (resumed.abandoned > 0) log.warn({ count: resumed.abandoned }, "中断任务未续跑，已标失败");
 }
 
 /** 从 DB 读取或自动生成 JWT 密钥并持久化 */

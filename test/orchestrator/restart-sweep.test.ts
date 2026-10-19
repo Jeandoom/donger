@@ -4,7 +4,6 @@ import { InMemoryTaskStore } from "../../src/adapters/in-memory-task-store.js";
 import type { Task } from "../../src/domain/types.js";
 import {
   RESTART_AWAITING_REASON,
-  RESTART_INTERRUPTED_REASON,
   sweepInterruptedTasks,
 } from "../../src/orchestrator/restart-sweep.js";
 import type { StoredMessage } from "../../src/ports/message-store.js";
@@ -41,7 +40,7 @@ class FakeMessageStore {
 }
 
 describe("sweepInterruptedTasks", () => {
-  it("running/awaiting_approval 标失败并补收尾消息；awaiting_credentials 不再被清除", async () => {
+  it("running 孤儿→interrupted（暂停语义，不通知）；awaiting_approval 标失败并补收尾消息；awaiting_credentials 不再被清除", async () => {
     const store = new InMemoryTaskStore();
     await store.create(taskOf("t-running", "running"));
     await store.create(
@@ -63,14 +62,15 @@ describe("sweepInterruptedTasks", () => {
       auditStore: audit,
     });
 
-    expect(result).toMatchObject({ running: 1, awaitingApproval: 1 });
-    expect((await store.get("t-running"))?.status).toBe("failed");
+    expect(result).toMatchObject({ interrupted: 1, awaitingApproval: 1 });
+    // running 孤儿：暂停语义（非终态），续跑/通知由 resume-service 接手
+    expect((await store.get("t-running"))?.status).toBe("interrupted");
     expect((await store.get("t-gate"))?.status).toBe("failed");
     expect((await store.get("t-gate"))?.pendingGate).toBeUndefined();
     expect((await store.get("t-cred"))?.status).toBe("awaiting_credentials");
-    expect(messages.added.map((m) => m.conversationId)).toEqual(["conv-1", "conv-2"]);
-    expect(messages.added[0]?.text).toContain(RESTART_INTERRUPTED_REASON);
-    expect(messages.added[1]?.text).toContain("部署/发布/推送操作审批");
+    // sweep 只给 awaiting_approval 发通知；interrupted 的通知归 resume-service
+    expect(messages.added.map((m) => m.conversationId)).toEqual(["conv-2"]);
+    expect(messages.added[0]?.text).toContain("部署/发布/推送操作审批");
     // 审计补记（seq=-1 约定）
     const audits = await audit.listByConversation("conv-2");
     expect(audits.some((a) => a.text === RESTART_AWAITING_REASON)).toBe(true);

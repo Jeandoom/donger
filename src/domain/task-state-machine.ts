@@ -12,7 +12,9 @@ export type TaskEvent =
   | "bypass"
   | "finish"
   | "fail"
-  | "cancel";
+  | "cancel"
+  /** 排水超时/服务崩溃暂停（热发布 M2，spec 2026-10-16-hot-deploy-design） */
+  | "interrupt";
 
 const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = {
   created: { plan: "planning", cancel: "canceled" },
@@ -27,6 +29,7 @@ const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = 
     finish: "done",
     fail: "failed",
     cancel: "canceled",
+    interrupt: "interrupted",
   },
   awaiting_approval: {
     resume: "running",
@@ -38,6 +41,12 @@ const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskEvent, TaskStatus>>> = 
     /** bypass：缺失凭证问询中用户选择「继续执行」，带病运行（缺失凭证注入 _MISSING 标记） */
     bypass: "running",
     credentials_provided: "planning",
+    fail: "failed",
+    cancel: "canceled",
+  },
+  interrupted: {
+    /** resume-service 合成续跑（热发布 M2）；approved 审批续跑同走此转换（M3） */
+    resume: "running",
     fail: "failed",
     cancel: "canceled",
   },

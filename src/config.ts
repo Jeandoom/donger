@@ -97,6 +97,11 @@ const EnvSchema = z.object({
   // 排水上限（热发布优雅停机，spec 2026-10-16-hot-deploy-design）：SIGTERM 后等待在途轮
   // 自然完成的最长时间；超时未完成轮标 interrupted 重启续跑。须 < compose stop_grace_period
   DONGER_DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
+  // 中断轮自动续跑（热发布 M2）：启动后 interrupted 任务自动合成恢复指令续跑；false=标失败通知重发
+  DONGER_AUTO_RESUME: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
   // 会话空闲滚动：距会话最后活跃超过该小时数时重开新 SDK 会话（0=关闭）；
   // 防止低频闲聊会话跨天 resume 导致每轮全量重建超长上下文（实测"回复 OK"烧 32k 输入 token）
   SESSION_IDLE_ROLL_HOURS: z.coerce.number().int().nonnegative().default(168),
@@ -222,6 +227,8 @@ export interface AppConfig {
   turnStallTimeoutMs: number;
   /** 排水上限（毫秒；SIGTERM 后等在途轮的最长时间，热发布优雅停机） */
   drainTimeoutMs: number;
+  /** 中断轮自动续跑（热发布 M2；false=标失败通知重发） */
+  autoResumeInterrupted: boolean;
   /** 会话空闲滚动阈值（小时；0=关闭） */
   sessionIdleRollHours: number;
   /**
@@ -293,6 +300,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
     drainTimeoutMs: e.DONGER_DRAIN_TIMEOUT_MS,
+    autoResumeInterrupted: e.DONGER_AUTO_RESUME,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,
     egressAllowDomains: (e.EGRESS_ALLOW_DOMAINS ?? "")
       .split(",")
