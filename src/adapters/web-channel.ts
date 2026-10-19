@@ -218,6 +218,7 @@ import {
   NotFoundError,
   PayloadTooLargeError,
   ValidationError,
+  describeZodError,
 } from "../util/errors.js";
 import {
   buildGithubAuthorizeUrl,
@@ -6023,8 +6024,11 @@ export class WebChannel implements Channel {
     else if (e instanceof PayloadTooLargeError) status = 413;
     else if (e instanceof SyntaxError) status = 400;
     else if (e instanceof ZodError) status = 400;
+    // ZodError 裸 message 是 issue JSON 串（前端红条不可读），映射为「字段+中文原因」单行
+    const message =
+      e instanceof ZodError ? describeZodError(e) : e instanceof Error ? e.message : String(e);
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+    res.end(JSON.stringify({ error: message }));
   }
 
   /**
