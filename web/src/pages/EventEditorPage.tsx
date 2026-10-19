@@ -10,6 +10,7 @@ import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { Select } from "../components/ui/select";
 import { apiFetch } from "../lib/auth";
+import { validateCron } from "../lib/cronBuilder";
 import { runStatusLabel, runStatusTone } from "../lib/runStatus";
 
 type EventType = "system" | "schedule" | "call";
@@ -126,6 +127,33 @@ function buildMatcherPayload(kind: MatcherKind, m: MatcherFields): MatcherDTO {
       return { kind, field: m.field ?? "", value: m.value ?? "" };
     case "headerEq":
       return { kind, header: m.header ?? "", value: m.value ?? "" };
+  }
+}
+
+/** 匹配器必填字段校验：不填全的匹配器后端 zod 会 400（如 jsonPath path 空），在保存前给出人话 */
+function matcherIssue(kind: MatcherKind, m: MatcherFields): string | null {
+  switch (kind) {
+    case "always":
+      return null;
+    case "statusEq":
+      return /^\d+$/.test((m.value ?? "").trim()) ? null : "匹配条件：状态码需为非负整数";
+    case "bodyContains":
+      return (m.keyword ?? "").trim() ? null : "匹配条件：请填写关键词";
+    case "bodyRegex":
+      return (m.pattern ?? "").trim() ? null : "匹配条件：请填写正则表达式";
+    case "jsonPathEq":
+    case "jsonPathGt":
+      if (!/^\$\.[a-zA-Z0-9_.]+$/.test((m.path ?? "").trim())) {
+        return "匹配条件：JSON Path 需为 $.a.b.c 形式";
+      }
+      if (kind === "jsonPathGt" && !/^-?\d+(\.\d+)?$/.test((m.value ?? "").trim())) {
+        return "匹配条件：比较值需为数字";
+      }
+      return null;
+    case "bodyFieldEq":
+      return (m.field ?? "").trim() ? null : "匹配条件：请填写顶层字段名";
+    case "headerEq":
+      return (m.header ?? "").trim() ? null : "匹配条件：请填写 Header 名";
   }
 }
 
@@ -255,7 +283,7 @@ export function EventEditorPage() {
         name,
         type,
         schedule: {
-          cron,
+          cron: cron.trim(),
           mode: scheduleMode,
           ...(scheduleMode === "conditional"
             ? {
@@ -297,6 +325,9 @@ export function EventEditorPage() {
     if (!name.trim()) return "请填写名称";
     if (type === "schedule") {
       if (!cron.trim()) return "请配置定时表达式";
+      // 语法门（与后端同构）：语法错的表达式过去能存进去但调度器静默跳过，永不触发
+      const cronErr = validateCron(cron);
+      if (cronErr) return `定时表达式非法：${cronErr}`;
       if (
         scheduleMode === "conditional" &&
         sourceType === "http" &&
@@ -307,6 +338,18 @@ export function EventEditorPage() {
       if (scheduleMode === "conditional" && sourceType === "file" && !filePath.trim()) {
         return "有条件定时需填写文件路径";
       }
+      if (scheduleMode === "conditional") {
+        const mErr = matcherIssue(scheduleMatcher.kind, scheduleMatcher.fields);
+        if (mErr) return mErr;
+      }
+    }
+    if (type === "call") {
+      const mErr = matcherIssue(callMatcher.kind, callMatcher.fields);
+      if (mErr) return mErr;
+    }
+    if (type === "system") {
+      const mErr = matcherIssue(systemMatcher.kind, systemMatcher.fields);
+      if (mErr) return mErr;
     }
     return null;
   };

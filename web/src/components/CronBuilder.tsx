@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "./ui/input";
 import { Select } from "./ui/select";
 import {
@@ -7,6 +7,9 @@ import {
   defaultPreset,
   describeCron,
   FIELD_META,
+  matchPreset,
+  parseFieldsFromExpr,
+  serializeField,
   validateCron,
   WEEK_DAY_LABELS,
   type FieldState,
@@ -14,14 +17,16 @@ import {
   type PresetState,
 } from "../lib/cronBuilder";
 
-const PRESET_OPTIONS: Array<{ value: PresetKind; label: string }> = [
+const PRESET_OPTIONS: Array<{ value: PresetKind | "raw"; label: string }> = [
   { value: "everyNMinutes", label: "每隔 N 分钟" },
+  { value: "everyNHours", label: "每隔 N 小时" },
   { value: "hourly", label: "每小时" },
   { value: "daily", label: "每天" },
   { value: "weekly", label: "每周" },
   { value: "monthly", label: "每月" },
   { value: "yearly", label: "每年" },
   { value: "custom", label: "自定义（高级）" },
+  { value: "raw", label: "表达式直输" },
 ];
 
 interface CronBuilderProps {
@@ -30,15 +35,49 @@ interface CronBuilderProps {
 }
 
 /**
- * Cron 交互式配置（spec §5.1）：预设模式覆盖常见形态；高级模式五字段逐字段四模式
- * （每/范围/列表/步进）笛卡尔组合可表达全部标准 5 字段 cron。受控组件：
- * value=cron 字符串，onChange 回传表达式。输入解析宽容——无法解析时保留表达式原文。
+ * Cron 交互式配置（spec §5.1；2026-10-19 单一真源修订）：预设模式覆盖常见形态；
+ * 高级模式五字段逐字段四模式（每/范围/列表/步进）笛卡尔组合可表达全部标准 5 字段 cron；
+ * 表达式框可直接编辑（直输模式）。受控组件：value=cron 字符串，onChange 回传表达式。
+ *
+ * 单一真源：外部 value 变化（页面加载/回填）且非本组件刚上抛的值时，反填内部状态——
+ * 显示恒等于真实存储值；否则编辑页会显示组件默认值（如每天 9:00）造成「没保存上」假象，
+ * 且一动控件即整体覆写真实表达式。无法反填的表达式落直输模式保留原文。
  */
 export function CronBuilder({ value, onChange }: CronBuilderProps) {
   const [preset, setPreset] = useState<PresetState>(defaultPreset);
   const [fields, setFields] = useState(defaultFields);
-  const [mode, setMode] = useState<"preset" | "custom">("preset");
+  const [mode, setMode] = useState<"preset" | "custom" | "raw">("preset");
   const [manual, setManual] = useState<string | null>(null);
+  const seenValueRef = useRef(value);
+  const emittedRef = useRef<string | null>(null);
+
+  /** 以表达式反填内部状态：预设反填 → 高级五字段 → 直输原文（三级尽力） */
+  const backfill = (expr: string) => {
+    const matched = matchPreset(expr);
+    if (matched) {
+      setPreset(matched);
+      setMode("preset");
+      setManual(null);
+      return;
+    }
+    const parsed = parseFieldsFromExpr(expr);
+    if (parsed) {
+      setFields(parsed);
+      setMode("custom");
+      setManual(null);
+      return;
+    }
+    setMode("raw");
+    setManual(expr);
+  };
+
+  useEffect(() => {
+    if (value === seenValueRef.current) return;
+    seenValueRef.current = value;
+    if (value === emittedRef.current) return; // 本组件刚上抛的回流，不重置
+    backfill(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
 
   const generated = useMemo(
     () => (mode === "preset" ? buildCron(preset, fields) : (manual ?? value)),
@@ -47,11 +86,24 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
   const error = validateCron(generated);
   const description = error ? "表达式非法" : describeCron(generated);
 
-  const emit = (expr: string) => onChange(expr);
+  const emit = (expr: string) => {
+    emittedRef.current = expr;
+    onChange(expr);
+  };
 
   const applyPreset = (kind: PresetKind) => {
+    const current = manual ?? value;
+    if (kind === "custom") {
+      // 进入高级模式：以当前表达式反填字段（保留既有配置），解析不了才落默认值
+      const parsed = parseFieldsFromExpr(current);
+      if (parsed) setFields(parsed);
+      setMode("custom");
+      setManual(null);
+      setPreset((p) => ({ ...p, kind }));
+      return;
+    }
     setPreset((p) => ({ ...p, kind }));
-    setMode(kind === "custom" ? "custom" : "preset");
+    setMode("preset");
     setManual(null);
     emit(buildCron({ ...preset, kind }, fields));
   };
@@ -66,32 +118,40 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
     const next = { ...fields, [key]: { ...fields[key as keyof typeof fields], ...patch } };
     setFields(next);
     if (mode === "custom") {
-      const expr = FIELD_META.map((meta) => serialize(next[meta.key], meta.min, meta.max)).join(" ");
+      const expr = FIELD_META.map((meta) => serializeField(next[meta.key], meta.min, meta.max)).join(" ");
       setManual(expr);
       emit(expr);
     }
+  };
+
+  const editRaw = (text: string) => {
+    setMode("raw");
+    setManual(text);
+    emit(text);
   };
 
   const loadFromExpr = () => {
     // 以当前表达式反填高级编辑器（尽力解析；解析不了的段保留原值提示手改）
     const parts = (manual ?? value).trim().split(/\s+/);
     if (parts.length !== 5) return;
-    const next = { ...fields };
-    FIELD_META.forEach((meta, i) => {
-      const parsed = tryParseField(parts[i] ?? "*", meta.min, meta.max);
-      if (parsed) next[meta.key] = parsed;
-    });
-    setFields(next);
+    const parsed = parseFieldsFromExpr(manual ?? value);
+    if (parsed) setFields(parsed);
     setMode("custom");
   };
+
+  const selectValue: PresetKind | "raw" = mode === "raw" ? "raw" : preset.kind;
 
   return (
     <div className="space-y-2.5">
       <div className="grid gap-2.5 sm:grid-cols-2">
         <Select
           aria-label="定时模式"
-          value={preset.kind}
-          onChange={(e) => applyPreset(e.target.value as PresetKind)}
+          value={selectValue}
+          onChange={(e) => {
+            const v = e.target.value as PresetKind | "raw";
+            if (v === "raw") editRaw(manual ?? value);
+            else applyPreset(v);
+          }}
         >
           {PRESET_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -99,17 +159,49 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
             </option>
           ))}
         </Select>
-        <Input readOnly mono value={generated} aria-label="Cron 表达式" />
+        <Input
+          mono
+          value={generated}
+          aria-label="Cron 表达式"
+          spellCheck={false}
+          aria-invalid={Boolean(error)}
+          onChange={(e) => editRaw(e.target.value)}
+        />
       </div>
 
       {preset.kind === "everyNMinutes" && (
-        <NumberRow
-          label="间隔（分钟）"
-          min={1}
-          max={59}
-          value={preset.n}
-          onChange={(n) => updatePreset({ n })}
-        />
+        <>
+          <NumberRow
+            label="间隔（分钟）"
+            min={1}
+            max={59}
+            value={preset.n}
+            onChange={(n) => updatePreset({ n })}
+          />
+          {preset.n > 59 && (
+            <p className="text-xs text-destructive">
+              间隔上限 59 分钟（当前按 59 生效）；更长周期请改用「每隔 N 小时」或自定义。
+            </p>
+          )}
+        </>
+      )}
+      {preset.kind === "everyNHours" && (
+        <>
+          <NumberRow
+            label="间隔（小时）"
+            min={1}
+            max={23}
+            value={preset.nHours}
+            onChange={(nHours) => updatePreset({ nHours })}
+          />
+          <NumberRow
+            label="第几分钟"
+            min={0}
+            max={59}
+            value={preset.minute}
+            onChange={(minute) => updatePreset({ minute })}
+          />
+        </>
       )}
       {preset.kind === "hourly" && (
         <NumberRow
@@ -166,7 +258,7 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
           <TimeRow hour={preset.hour} minute={preset.minute} onChange={updatePreset} />
         </>
       )}
-      {preset.kind === "custom" && (
+      {(preset.kind === "custom" || mode === "custom") && (
         <div className="space-y-2.5 rounded-lg border border-border p-3">
           {FIELD_META.map((meta) => {
             const f = fields[meta.key];
@@ -203,6 +295,13 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
                         max={meta.max}
                         onChange={(to) => updateField(meta.key, { to })}
                       />
+                      <NumInput
+                        label="步长"
+                        value={f.step}
+                        min={1}
+                        max={meta.max}
+                        onChange={(step) => updateField(meta.key, { step })}
+                      />
                     </>
                   )}
                   {f.type === "step" && (
@@ -234,7 +333,8 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
             );
           })}
           <p className="text-xs text-muted-foreground">
-            五段分别为 分钟(0-59) 小时(0-23) 日(1-31) 月(1-12) 星期(0-7, 0=周日)；四种模式组合可表达全部 cron。
+            五段分别为 分钟(0-59) 小时(0-23) 日(1-31) 月(1-12) 星期(0-7, 0=周日)；
+            范围+步长可表达工作时段周期（如小时 9-18 步长 4 = 9-18 点每 4 小时）。
           </p>
         </div>
       )}
@@ -252,65 +352,6 @@ export function CronBuilder({ value, onChange }: CronBuilderProps) {
           按表达式编辑
         </button>
       </div>
-    </div>
-  );
-}
-
-function serialize(f: FieldState, min: number, max: number): string {
-  const clamp = (v: number) => Math.min(max, Math.max(min, Math.floor(v) || min));
-  switch (f.type) {
-    case "every":
-      return "*";
-    case "range":
-      return `${clamp(f.from)}-${clamp(f.to)}`;
-    case "step":
-      return `*/${clamp(f.step) || 1}`;
-    case "list":
-      return f.list.length ? [...new Set(f.list.map(clamp))].sort((a, b) => a - b).join(",") : "*";
-  }
-}
-
-function tryParseField(expr: string, min: number, max: number): FieldState | null {
-  if (expr === "*") return { type: "every", from: min, to: max, step: 1, list: [min] };
-  if (/^\*\/\d+$/.test(expr)) {
-    return { type: "step", from: min, to: max, step: Number(expr.slice(2)), list: [min] };
-  }
-  if (/^\d+(,\d+)+$/.test(expr)) {
-    return { type: "list", from: min, to: max, step: 1, list: expr.split(",").map(Number) };
-  }
-  const range = expr.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
-  if (range) {
-    return {
-      type: "range",
-      from: Number(range[1]),
-      to: Number(range[2]),
-      step: range[3] ? Number(range[3]) : 1,
-      list: [min],
-    };
-  }
-  const single = expr.match(/^\d+$/);
-  if (single) return { type: "list", from: min, to: max, step: 1, list: [Number(expr)] };
-  return null;
-}
-
-function NumberRow(props: {
-  label: string;
-  min: number;
-  max: number;
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-24 shrink-0 text-xs text-muted-foreground">{props.label}</span>
-      <Input
-        type="number"
-        min={props.min}
-        max={props.max}
-        value={props.value}
-        onChange={(e) => props.onChange(Number(e.target.value))}
-        className="w-24"
-      />
     </div>
   );
 }
@@ -334,6 +375,28 @@ function NumInput(props: {
         className="w-20"
       />
     </label>
+  );
+}
+
+function NumberRow(props: {
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">{props.label}</span>
+      <Input
+        type="number"
+        min={props.min}
+        max={props.max}
+        value={props.value}
+        onChange={(e) => props.onChange(Number(e.target.value))}
+        className="w-24"
+      />
+    </div>
   );
 }
 
