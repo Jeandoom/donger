@@ -288,6 +288,25 @@ export function useWebChat() {
       }
     });
 
+    // 排水广播（热发布优雅停机）：服务更新中，横幅提示；新实例接管后 onopen 会清除
+    eventSource.addEventListener("server_draining", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as SSEEvent;
+        if (data.type === "server_draining") {
+          const minutes = data.deadline
+            ? Math.max(1, Math.round((data.deadline - Date.now()) / 60_000))
+            : 10;
+          dispatch({
+            type: "set_error",
+            key: "stream",
+            message: `🚧 服务正在更新发布：进行中的对话将继续完成（约 ${minutes} 分钟内）后切换，新消息请稍候重发`,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     eventSource.addEventListener("result", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -519,31 +538,54 @@ export function useWebChat() {
       const id = makeId();
       const token = getToken();
       dispatch({ type: "user_message", id, text, files });
-      try {
-        const response = await apiFetch(`/api/conversations/${conversationId}/messages`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({
-            text,
-            files,
-            ...(mentions && mentions.length > 0 ? { mentions } : {}),
-            ...(modelRef ? { modelRef } : {}),
-          }),
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        dispatch({ type: "message_delivery", id, delivery: "accepted" });
-        // 活跃度触达：与后端「消息落库刷新会话 updatedAt」对齐，发消息后该会话实时排到列表最前
-        dispatch({
-          type: "update_conversation",
-          conversationId,
-          patch: { updatedAt: new Date().toISOString() },
-        });
-      } catch {
-        dispatch({ type: "message_delivery", id, delivery: "failed" });
-      }
+      const payload = JSON.stringify({
+        text,
+        files,
+        ...(mentions && mentions.length > 0 ? { mentions } : {}),
+        ...(modelRef ? { modelRef } : {}),
+      });
+      // 排水期自动重试（热发布优雅停机）：503 draining 时保留「发送中」态，
+      // 按 Retry-After 重发（上限 3 次 ≈ 覆盖换槽真空窗）；耗尽才置失败
+      const post = async (attempt: number): Promise<void> => {
+        try {
+          const response = await apiFetch(`/api/conversations/${conversationId}/messages`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: payload,
+          });
+          if (response.status === 503) {
+            const body = (await response.json().catch(() => ({}))) as {
+              draining?: boolean;
+              retryAfter?: number;
+              error?: string;
+            };
+            if (body.draining && attempt < 3) {
+              dispatch({
+                type: "set_error",
+                key: "stream",
+                message: "🚧 服务正在更新发布，消息将在恢复后自动发送…",
+              });
+              setTimeout(() => void post(attempt + 1), ((body.retryAfter ?? 5) + 1) * 1000);
+              return;
+            }
+            throw new Error(body.error ?? `HTTP ${response.status}`);
+          }
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          dispatch({ type: "message_delivery", id, delivery: "accepted" });
+          // 活跃度触达：与后端「消息落库刷新会话 updatedAt」对齐，发消息后该会话实时排到列表最前
+          dispatch({
+            type: "update_conversation",
+            conversationId,
+            patch: { updatedAt: new Date().toISOString() },
+          });
+        } catch {
+          dispatch({ type: "message_delivery", id, delivery: "failed" });
+        }
+      };
+      await post(0);
     },
     [
       modelRef,

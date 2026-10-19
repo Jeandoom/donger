@@ -2984,11 +2984,11 @@ describe("WebChannel 审批实例生命周期（approval_closed 撤卡事件）"
       | { approvalId?: string }
       | undefined;
     // 挂起恢复端点能看到活实例
-    expect(web.getPendingApproval(convId)?.approvalId).toBe(card?.approvalId);
+    expect((await web.getPendingApproval(convId))?.approvalId).toBe(card?.approvalId);
 
     web.cancelPendingApprovals(convId);
     await expect(decision).resolves.toEqual({ approved: false, reason: "任务已中断" });
-    expect(web.getPendingApproval(convId)).toBeNull();
+    expect(await web.getPendingApproval(convId)).toBeNull();
 
     const closed = events.filter((e) => e.type === "approval_closed");
     expect(closed).toHaveLength(1);

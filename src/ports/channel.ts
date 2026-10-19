@@ -75,7 +75,15 @@ export interface Channel {
     title: string,
     summary: string,
   ): Promise<void>;
-  requestApproval(threadId: string, card: ApprovalCard): Promise<ApprovalResult>;
+  /**
+   * 推审批卡并等决议。approvalId（热发布 M3）：approval-flow 生成并与 approval_requests
+   * 落库行同键传入；渠道缺省时自造一次性 id（多会话防键冲突）。可选参数保持旧渠道兼容。
+   */
+  requestApproval(
+    threadId: string,
+    card: ApprovalCard,
+    approvalId?: string,
+  ): Promise<ApprovalResult>;
   /**
    * 停止任务时解开该会话全部挂起审批（Web 实现）：审批不设超时后，这是 abort 路径
    * 解开 canUseTool await 的唯一通道——否则挂审批时点停止，轮次收口会永久卡住。

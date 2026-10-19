@@ -12,6 +12,8 @@ export const TaskStatusEnum = z.enum([
   "running",
   "awaiting_approval",
   "awaiting_credentials",
+  /** 排水超时/崩溃被暂停（热发布 M2，spec 2026-10-16-hot-deploy-design）：非终态，恢复服务自动续跑 */
+  "interrupted",
   "done",
   "failed",
   "canceled",
@@ -148,7 +150,11 @@ export interface AuditEvent {
     | "inv_bypass"
     /** zcode 轮末对账标记（specs/2026-09-29-zcode-record-fidelity-design.md M1；
      *  text=补录统计 JSON。幂等键：同 taskId 再对账时发现此行即整体跳过） */
-    | "zcode_reconcile";
+    | "zcode_reconcile"
+    /** 审批决议落痕（热发布 M3，spec 2026-10-16-hot-deploy-design §6.2；seq=-1 执行外事件；
+     *  text=决议摘要，toolInput=JSON {gateId,approved,reason?,responderId?}。
+     *  此前批/拒动作完全无痕，M3 补全合规留痕） */
+    | "approval_decision";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;
@@ -191,6 +197,12 @@ export const IncomingMessageSchema = z.object({
   modelRef: z.string().optional(),
   /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
   builderFromTaskId: z.string().optional(),
+  /**
+   * 系统内部：中断恢复续跑（热发布 M2/M3，spec 2026-10-16-hot-deploy-design）。
+   * 复用原 task 行（D3 拍板）：interrupted/awaiting_approval --resume--> running，
+   * 轮输入用 text 合成指令（经 firstTurnPrompt 注入），task.prompt 保持原文不污染。
+   */
+  resumeTaskId: z.string().optional(),
   /** 无人值守触发（定时/钩子/工作流）：缺省权限模式强制按变更前问询执行；
    *  工作流派发携带配置值（2026-10-14 拍板：以工作流配置为准，缺省完全权限），覆盖此缺省 */
   unattended: z.boolean().optional(),

@@ -10,6 +10,7 @@ import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
 import { Select } from "../components/ui/select";
 import { apiFetch } from "../lib/auth";
+import { fetchAgents } from "../lib/agents";
 import { validateCron } from "../lib/cronBuilder";
 import { runStatusLabel, runStatusTone } from "../lib/runStatus";
 
@@ -42,7 +43,12 @@ interface EventDTO {
   id: string;
   name: string;
   type: EventType;
-  system?: { name: string; matcher: MatcherDTO };
+  system?: {
+    name: string;
+    matcher?: MatcherDTO;
+    subjects?: string[];
+    timing?: "all" | "success" | "failed" | "stopped";
+  };
   schedule?: {
     cron: string;
     mode: "unconditional" | "conditional";
@@ -75,10 +81,16 @@ interface TestResult {
   error?: string;
 }
 
-/** 与后端 SYSTEM_EVENT_NAMES 注册表两端语义一致 */
+/** 与后端 SYSTEM_EVENT_NAMES 注册表两端语义一致；
+ * 完成事件（spec 2026-10-19-execution-completion-events-design）走 subjects/timing 过滤 */
 const SYSTEM_EVENT_OPTIONS: { value: string; label: string }[] = [
-  { value: "feedback.created", label: "新反馈提交" },
+  { value: "feedback.created", label: "新反馈提交（管理员）" },
+  { value: "agent.execution.completed", label: "智能体执行完成" },
+  { value: "workflow.execution.completed", label: "工作流执行完成" },
 ];
+
+const COMPLETION_EVENT_NAMES = ["agent.execution.completed", "workflow.execution.completed"];
+const isCompletionEventName = (name: string) => COMPLETION_EVENT_NAMES.includes(name);
 
 const MATCHER_OPTIONS: { value: MatcherKind; label: string }[] = [
   { value: "always", label: "总是触发" },
@@ -186,6 +198,10 @@ export function EventEditorPage() {
     kind: "always",
     fields: {},
   });
+  // 完成事件：主体多选 + 触发时机（D1/D8）
+  const [subjects, setSubjects] = useState<string[]>([]);
+  const [timing, setTiming] = useState("all");
+  const [subjectOptions, setSubjectOptions] = useState<Array<{ id: string; name: string }>>([]);
 
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
@@ -215,6 +231,8 @@ export function EventEditorPage() {
     callMatcher,
     systemName,
     systemMatcher,
+    subjects,
+    timing,
   });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
@@ -253,6 +271,8 @@ export function EventEditorPage() {
       }
       if (e.system) {
         setSystemName(e.system.name);
+        setSubjects(e.system.subjects ?? []);
+        setTiming(e.system.timing ?? "all");
         setSystemMatcher(toMatcherFields(e.system.matcher));
       }
       setLoaded(true);
@@ -277,6 +297,36 @@ export function EventEditorPage() {
     void load();
   }, [load]);
 
+  // 完成事件主体候选：智能体=我可使用（自有+共享）；工作流=本人所有（D4）
+  const isCompletion = type === "system" && isCompletionEventName(systemName);
+  useEffect(() => {
+    if (type !== "system" || !isCompletionEventName(systemName)) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (systemName === "agent.execution.completed") {
+          const ag = await fetchAgents();
+          if (!cancelled) {
+            setSubjectOptions(
+              ag.map((a) => ({ id: a.id, name: a._mine ? a.name : `${a.name}（共享）` })),
+            );
+          }
+        } else {
+          const r = await apiFetch("/api/workflows");
+          const d = (await r.json()) as { workflows?: Array<{ id: string; name: string }> };
+          if (!cancelled) {
+            setSubjectOptions((d.workflows ?? []).map((w) => ({ id: w.id, name: w.name })));
+          }
+        }
+      } catch {
+        if (!cancelled) setSubjectOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [type, systemName]);
+
   const buildPayload = () => {
     if (type === "schedule") {
       return {
@@ -298,6 +348,9 @@ export function EventEditorPage() {
       };
     }
     if (type === "system") {
+      if (isCompletionEventName(systemName)) {
+        return { name, type, system: { name: systemName, subjects, timing } };
+      }
       return {
         name,
         type,
@@ -348,6 +401,10 @@ export function EventEditorPage() {
       if (mErr) return mErr;
     }
     if (type === "system") {
+      if (isCompletionEventName(systemName)) {
+        if (!subjects.length) return "完成事件请至少选择一个主体";
+        return null;
+      }
       const mErr = matcherIssue(systemMatcher.kind, systemMatcher.fields);
       if (mErr) return mErr;
     }
@@ -472,7 +529,9 @@ export function EventEditorPage() {
             ? "到点触发；可带数据源做条件判定"
             : type === "call"
               ? "外部系统通过随机回调地址触发（GET/POST）"
-              : "订阅平台内部事件（仅管理员可用）"
+              : isCompletion
+                ? "上游执行完成时触发（可多选智能体或工作流）"
+                : "订阅平台内部事件"
         }
         actions={
           <>
@@ -610,15 +669,76 @@ export function EventEditorPage() {
             </FormField>
           </>
         ) : (
-          <FormField label="平台事件" required hint="事件发生时把载荷 JSON 交给触发条件判定">
-            <Select value={systemName} onChange={(e) => setSystemName(e.target.value)}>
-              {SYSTEM_EVENT_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          </FormField>
+          <>
+            <FormField
+              label="平台事件"
+              required
+              hint={
+                isCompletion
+                  ? "上游执行完成时触发；按下方所选主体与时机过滤"
+                  : "事件发生时把载荷 JSON 交给触发条件判定"
+              }
+            >
+              <Select
+                value={systemName}
+                onChange={(e) => {
+                  const prev = isCompletionEventName(systemName);
+                  const next = isCompletionEventName(e.target.value);
+                  if (prev !== next) setSubjects([]);
+                  setSystemName(e.target.value);
+                }}
+              >
+                {SYSTEM_EVENT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+            {isCompletion && (
+              <>
+                <FormField
+                  label={systemName === "agent.execution.completed" ? "智能体（可多选）" : "工作流（可多选）"}
+                  required
+                  hint="候选 = 我可使用（自有或被分享）；只有我名下的执行会触发本事件"
+                >
+                  {subjectOptions.length ? (
+                    <div className="grid max-h-52 gap-1.5 overflow-y-auto sm:grid-cols-2">
+                      {subjectOptions.map((o) => (
+                        <label
+                          key={o.id}
+                          className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-sm hover:bg-muted/40"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={subjects.includes(o.id)}
+                            onChange={(e) =>
+                              setSubjects((s) =>
+                                e.target.checked
+                                  ? [...s, o.id]
+                                  : s.filter((x) => x !== o.id),
+                              )
+                            }
+                          />
+                          <span className="truncate">{o.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">暂无可选主体</p>
+                  )}
+                </FormField>
+                <FormField label="触发时机" hint="上游以什么状态完成时触发">
+                  <Select value={timing} onChange={(e) => setTiming(e.target.value)}>
+                    <option value="all">全部（成功 / 失败 / 终止）</option>
+                    <option value="success">仅成功时</option>
+                    <option value="failed">仅失败时</option>
+                    <option value="stopped">仅终止时</option>
+                  </Select>
+                </FormField>
+              </>
+            )}
+          </>
         )}
       </FormSection>
 
@@ -627,12 +747,16 @@ export function EventEditorPage() {
         no="3"
         title="触发条件"
         description={
-          type === "schedule" && scheduleMode === "unconditional"
-            ? "纯定时无需条件（到点即触发）"
-            : "对事件上下文做匹配，命中才进入工作流"
+          isCompletion
+            ? "完成事件按所选主体与触发时机过滤，无需匹配条件"
+            : type === "schedule" && scheduleMode === "unconditional"
+              ? "纯定时无需条件（到点即触发）"
+              : "对事件上下文做匹配，命中才进入工作流"
         }
       >
-        {type === "schedule" && scheduleMode === "unconditional" ? (
+        {isCompletion ? (
+          <p className="text-sm text-muted-foreground">无需配置触发条件。</p>
+        ) : type === "schedule" && scheduleMode === "unconditional" ? (
           <p className="text-sm text-muted-foreground">纯定时无需配置触发条件。</p>
         ) : (
           <>

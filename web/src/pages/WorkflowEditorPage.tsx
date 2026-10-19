@@ -21,7 +21,22 @@ interface EventOption {
   id: string;
   name: string;
   type: EventType;
+  system?: { name: string; subjects?: string[]; timing?: string };
 }
+
+/** 执行完成事件（spec 2026-10-19-execution-completion-events-design）：与后端
+ * event-payloads.ts 的 EXECUTION_COMPLETION_EVENT_NAMES 语义一致 */
+const COMPLETION_EVENT_SYSTEM_NAMES = ["agent.execution.completed", "workflow.execution.completed"];
+
+/** 与后端 WORKFLOW_COMPLETION_BRIEFING_TEMPLATE 保持一致：下游收自然语言简报而非 JSON */
+const COMPLETION_BRIEFING_TEMPLATE = `【上游完成通知】工作流「{{workflowName}}」中的智能体「{{agentName}}」已{{statusWord}}（耗时 {{durationText}}）。
+结论：
+{{outputSummary}}
+
+交付文件：
+{{filesManifest}}
+
+请基于上游执行结论继续任务。`;
 
 interface WorkflowDTO {
   id: string;
@@ -81,11 +96,22 @@ interface RunDTO {
   finishedAt?: string | null;
 }
 
-/** 各事件类型的提示词可用变量（与后端 buildPromptVars 契约一致） */
+/** 各事件类型的提示词可用变量（与后端 buildPromptVars 契约一致；
+ * 完成事件追加简报变量，见 spec §6） */
 const VAR_BASE = ["triggerOutput", "firedAt", "eventName"];
-function varsForEvent(type: EventType | undefined): string[] {
+function varsForEvent(event?: EventOption): string[] {
   const vars = [...VAR_BASE];
-  if (type === "call") vars.push("query", "data");
+  if (event?.type === "call") vars.push("query", "data");
+  if (event?.system && COMPLETION_EVENT_SYSTEM_NAMES.includes(event.system.name)) {
+    vars.push(
+      "workflowName",
+      "agentName",
+      "statusWord",
+      "durationText",
+      "outputSummary",
+      "filesManifest",
+    );
+  }
   return vars;
 }
 
@@ -400,7 +426,10 @@ export function WorkflowEditorPage() {
   }
 
   const selectedEvent = events.find((e) => e.id === eventId);
-  const vars = varsForEvent(selectedEvent?.type);
+  const isCompletionSubscription =
+    selectedEvent?.system != null &&
+    COMPLETION_EVENT_SYSTEM_NAMES.includes(selectedEvent.system.name);
+  const vars = varsForEvent(selectedEvent);
 
   return (
     <div className="mx-auto max-w-2xl flex-1 flex-col gap-5 overflow-y-auto p-7">
@@ -467,8 +496,28 @@ export function WorkflowEditorPage() {
           </button>
         ) : (
           <>
-            <FormField label="订阅事件" required>
-              <Select value={eventId} onChange={(e) => setEventId(e.target.value)}>
+            <FormField
+              label="订阅事件"
+              required
+              hint="执行完成事件：上游工作流/智能体跑完即触发本工作流（级联编排）"
+            >
+              <Select
+                value={eventId}
+                onChange={(e) => {
+                  setEventId(e.target.value);
+                  // 选中的是完成事件且模板仍是原始缺省 → 预填简报模板（spec §6）
+                  const next = events.find((ev) => ev.id === e.target.value);
+                  const nextIsCompletion =
+                    next?.system != null &&
+                    COMPLETION_EVENT_SYSTEM_NAMES.includes(next.system.name);
+                  if (
+                    nextIsCompletion &&
+                    (promptTemplate === "{{triggerOutput}}" || !promptTemplate.trim())
+                  ) {
+                    setPromptTemplate(COMPLETION_BRIEFING_TEMPLATE);
+                  }
+                }}
+              >
                 <option value="">— 选择 —</option>
                 {(["schedule", "call", "system"] as const).map((group) => {
                   const items = events.filter((e) => e.type === group);
@@ -525,6 +574,15 @@ export function WorkflowEditorPage() {
                   {`{{${v}}}`}
                 </button>
               ))}
+              {isCompletionSubscription && (
+                <button
+                  type="button"
+                  className="mx-1 rounded bg-primary-soft px-1.5 py-0.5 text-xs text-primary hover:underline"
+                  onClick={() => setPromptTemplate(COMPLETION_BRIEFING_TEMPLATE)}
+                >
+                  填入完成简报模板
+                </button>
+              )}
             </>
           }
         >

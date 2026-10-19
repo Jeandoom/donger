@@ -14,6 +14,8 @@ interface WorkflowRunRow {
   renderedPrompt: string | null;
   conversationId: string | null;
   error: string | null;
+  causedByRunId: string | null;
+  cascadeDepth: number | null;
   queuedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -36,9 +38,21 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
         firingId TEXT, eventName TEXT NOT NULL DEFAULT 'manual',
         status TEXT NOT NULL DEFAULT 'queued',
         context TEXT, renderedPrompt TEXT, conversationId TEXT, error TEXT,
+        causedByRunId TEXT, cascadeDepth INTEGER NOT NULL DEFAULT 0,
         queuedAt TEXT NOT NULL, startedAt TEXT, finishedAt TEXT
       )
     `);
+    // 级联链路两列（spec 2026-10-19-execution-completion-events-design §8）：幂等加列
+    const cols = this.db.prepare("PRAGMA table_info(workflow_runs)").all() as Array<{
+      name: string;
+    }>;
+    const has = (name: string) => cols.some((c) => c.name === name);
+    if (!has("causedByRunId")) {
+      this.db.exec("ALTER TABLE workflow_runs ADD COLUMN causedByRunId TEXT");
+    }
+    if (!has("cascadeDepth")) {
+      this.db.exec("ALTER TABLE workflow_runs ADD COLUMN cascadeDepth INTEGER NOT NULL DEFAULT 0");
+    }
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflowId, queuedAt DESC)",
     );
@@ -101,6 +115,8 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
       renderedPrompt: row.renderedPrompt,
       conversationId: row.conversationId,
       error: row.error,
+      causedByRunId: row.causedByRunId,
+      cascadeDepth: row.cascadeDepth ?? 0,
       queuedAt: row.queuedAt,
       startedAt: row.startedAt,
       finishedAt: row.finishedAt,
@@ -111,8 +127,8 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
     const r = WorkflowRunSchema.parse(run);
     this.db
       .prepare(
-        `INSERT INTO workflow_runs (id, workflowId, eventId, firingId, eventName, status, context, renderedPrompt, conversationId, error, queuedAt, startedAt, finishedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO workflow_runs (id, workflowId, eventId, firingId, eventName, status, context, renderedPrompt, conversationId, error, causedByRunId, cascadeDepth, queuedAt, startedAt, finishedAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         r.id,
@@ -125,6 +141,8 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
         r.renderedPrompt ?? null,
         r.conversationId ?? null,
         r.error ?? null,
+        r.causedByRunId ?? null,
+        r.cascadeDepth ?? 0,
         r.queuedAt,
         r.startedAt ?? null,
         r.finishedAt ?? null,

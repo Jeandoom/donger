@@ -18,6 +18,7 @@ export type NotificationEvent =
   | "credential.missing"
   | "feedback.replied"
   | "approval.requested"
+  | "approval.decided"
   | "system.announcement"
   | "deploy.detected"
   | "deploy.succeeded"
@@ -103,6 +104,12 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     // 强制站内信：审批不决议 = workflow 永久挂起（2026-10-10 生产实证），不允许被组偏好静音
     mandatoryInapp: true,
     label: "等待审批",
+  },
+  "approval.decided": {
+    group: "task",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "审批已决议",
   },
   "system.announcement": {
     group: "system",

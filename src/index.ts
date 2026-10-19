@@ -28,6 +28,7 @@ import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { SkillJobRunner } from "./adapters/skill-jobs.js";
 import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
+import { SqliteApprovalStore } from "./adapters/sqlite-approval-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
@@ -76,10 +77,12 @@ import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
+import { DrainManager } from "./orchestrator/drain-manager.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
@@ -180,6 +183,10 @@ async function main(): Promise<void> {
     return info ? { path: info.path, pinned: info.pinned } : undefined;
   });
   const commentStore = new SqliteCommentStore(db);
+  // 审批决议落库（热发布 M3，spec 2026-10-16-hot-deploy-design §6）：请求即落库 +
+  // 决议幂等 + 重启重臂；跨重启决议续跑见下方 onApprovalDecision 装配
+  const approvalStore = new SqliteApprovalStore(db);
+  approvalStore.migrate();
   commentStore.migrate();
   const feedbackStore = new SqliteFeedbackStore(db);
   feedbackStore.migrate();
@@ -391,7 +398,7 @@ async function main(): Promise<void> {
       extensionDirectoryResolver,
       isPluginEnabled: pluginGate,
     });
-    return new Orchestrator({
+    const orch = new Orchestrator({
       store,
       userStore,
       conversationStore,
@@ -420,6 +427,7 @@ async function main(): Promise<void> {
       credentialSets,
       sshRunner,
       hostExecPolicies: hostExecPolicyStore,
+      approvalStore,
       // SSH 出站档位（旁门治理 M2）：app_config flag 现取（同步读），改即生效
       sshEgressMode: () =>
         moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask",
@@ -470,6 +478,9 @@ async function main(): Promise<void> {
         if (dispatch) dispatch(eventName, payload);
       },
     });
+    // 排水拒入闸：全部渠道实例（web/钉钉）统一注入，排水期 handleMessage 拒入新消息
+    orch.setDrainGate(drain);
+    return orch;
   }
 
   // 技能 store/installer（WebChannel 与 Orchestrator 共享同一实例）
@@ -557,6 +568,10 @@ async function main(): Promise<void> {
 
   // 渠道 → orchestrator 登记表（web 常驻；dingtalk 经 applyDingTalkChannel 运行时装配）
   const orchestrators = new Map<string, Orchestrator>();
+
+  // 排水管理器（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：早建晚绑——
+  // 此处先创建供 createOrch 注入拒入闸；hooks 在 scheduler/eventDispatcher 装配完成后绑定
+  const drain = new DrainManager();
 
   // 钉钉机器人消息通道运行时控制器（授权页「应用」即生效，无需重启；spec §3.5）：
   // 配置齐全→重建通道并转移 recipients；清空/不完整→停用；配置未变→no-op
@@ -667,7 +682,7 @@ async function main(): Promise<void> {
 
   // 记忆闲时整理器（知识体系轮 P5）：低峰（无 running task）执行归档/索引重排，
   // 动作记 memory-consolidation 修订；索引超限 warn 通知库属主
-  startMemoryConsolidator({
+  const stopMemoryConsolidator = startMemoryConsolidator({
     kbLibraryStore: kbLibraryStore,
     workspaceDir: cfg.workspaceDir,
     revisionStore: kbRevisionStore,
@@ -713,6 +728,10 @@ async function main(): Promise<void> {
     logger: log,
     maxQueuePending: cfg.triggerQueueMaxPending,
     notifications: notificationService,
+    // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5）：
+    // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
+    messageStore,
+    agentStore,
   });
   const scheduler = new SchedulerService({
     eventStore,
@@ -735,6 +754,8 @@ async function main(): Promise<void> {
     dispatcher: eventDispatcher,
     logger: log,
   });
+  // run 终态 emit 完成事件的回填通道（构造顺序解环：dispatcher 先于 systemEvents）
+  eventDispatcher.setSystemEventSink(systemEvents);
   // 应用管家制（spec §6）：orchestrator 的 app 工具事件晚绑定到 dispatcher
   eventEmitRef.current = (eventName, payload) => {
     if (!workflowsEnabled()) return;
@@ -775,11 +796,107 @@ async function main(): Promise<void> {
   webChannelDeps.releaseHookToken = cfg.releaseHookToken;
   webChannelDeps.releaseRunStore = releaseRunStore;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
+  // 排水 hooks 晚绑定（热发布优雅停机）：常驻组件至此全部就绪；webChannel 侧的
+  // 503 拒入/health 排水标志读同一实例（webChannelDeps.drain 构造后回填，运行时动态读取）
+  drain.setHooks({
+    stopBackgroundJobs: () => {
+      stopWorktreeGc();
+      stopMemoryConsolidator();
+      scheduler.stopAll();
+      eventDispatcher.pause();
+    },
+    broadcastDraining: (status) => webChannel.broadcastDraining(status),
+    activeTurnCount: () => {
+      let count = 0;
+      for (const orch of orchestrators.values()) count += orch.activeTurnCount();
+      return count;
+    },
+    queuedMessageCount: () => {
+      let count = 0;
+      for (const orch of orchestrators.values()) count += orch.queuedMessageCount();
+      return count;
+    },
+    flushQueues: async (reason) => {
+      await Promise.all([...orchestrators.values()].map((o) => o.flushPendingQueues(reason)));
+    },
+    // 排水超时兜底（热发布 M2）：在途轮标 interrupted，新实例启动后自动续跑
+    markInterrupted: async () => {
+      let count = 0;
+      for (const orch of orchestrators.values()) {
+        count += await orch.interruptActiveTurns("服务更新排水超时");
+      }
+      return count;
+    },
+  });
+  webChannelDeps.drain = drain;
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
   webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
     webOrch.setPermissionMode(conversationId, mode);
   // 回调链路专用投递：await 整轮，失败把错误落为 bot 消息（结果查询端点据此收敛 status）
   webChannelDeps.conversationBusyGetter = (conversationId) => webOrch.isBusy(conversationId);
+  // 审批决议落库（热发布 M3）：幂等落库在 respond 路由内；这里接决议后置效果——
+  // 审计落痕 + approval.decided 通知（两条路径都发）+ 跨重启续跑（hadResolver=false）
+  webChannelDeps.approvalStore = approvalStore;
+  webChannelDeps.onApprovalDecision = async (d) => {
+    try {
+      const row = await approvalStore.get(d.approvalId);
+      const task = row ? await store.get(row.taskId) : undefined;
+      // 审计落痕（此前批/拒完全无痕，M3 补全）
+      if (row) {
+        await auditStore
+          .record({
+            conversationId: d.conversationId,
+            taskId: row.taskId,
+            userId: d.responderId ?? task?.requesterId ?? "unknown",
+            seq: -1,
+            type: "approval_decision",
+            text: `审批${d.approved ? "通过" : "驳回"}：${row.title}`,
+            toolInput: JSON.stringify({
+              gateId: row.gateId,
+              approved: d.approved,
+              ...(d.reason ? { reason: d.reason } : {}),
+              ...(d.responderId ? { responderId: d.responderId } : {}),
+            }),
+            recordedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+      // 决议侧通知（此前只有请求侧 approval.requested）
+      if (task) {
+        void notificationService
+          .notify({
+            event: "approval.decided",
+            recipients: [{ kind: "user", userId: task.requesterId }],
+            title: `审批已${d.approved ? "通过" : "驳回"}：${row?.title ?? ""}`,
+            body: d.reason ? String(d.reason).slice(0, 400) : "",
+            link: `/?conv=${d.conversationId}`,
+            dedupeKey: `approval-decided:${d.approvalId}`,
+          })
+          .catch((e) => console.error("[web] 审批决议通知失败", e));
+      }
+      // 跨重启续跑：内存 resolver 已续原轮的（hadResolver=true）不重复触发
+      if (!d.hadResolver && row) {
+        let reqInput: unknown;
+        try {
+          reqInput = row.payload ? (JSON.parse(row.payload) as { input?: unknown }).input : undefined;
+        } catch {
+          reqInput = undefined;
+        }
+        await webOrch.resumeAfterApproval({
+          taskId: row.taskId,
+          gateId: row.gateId,
+          gateTitle: row.title,
+          approved: d.approved,
+          ...(d.reason ? { reason: d.reason } : {}),
+          ...(d.adoptPrefix ? { adoptPrefix: d.adoptPrefix } : {}),
+          ...(reqInput !== undefined ? { reqInput } : {}),
+          ...(row.tool ? { tool: row.tool } : {}),
+        });
+      }
+    } catch (e) {
+      console.error("[web] 审批决议后置处理失败", e);
+    }
+  };
   webChannelDeps.callbackSubmit = async (msg) => {
     const conversationId = msg.conversationId ?? msg.threadId;
     try {
@@ -801,11 +918,16 @@ async function main(): Promise<void> {
     log.warn("工作流模块已停用：定时触发器与执行队列未恢复（重启进程后恢复）");
   }
 
-  // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
+  // 进程关闭（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：
+  // 排水（stopBackgroundJobs 停常驻 → 广播发布中 → 等在途轮自然完成，超时标 interrupted）
+  // → 审计冲刷 → 关 HTTP。compose stop_grace_period 必须 > DONGER_DRAIN_TIMEOUT_MS（SIGKILL 纯兜底）
   const shutdown = async (signal: string) => {
-    log.info({ signal }, "关闭中");
-    stopWorktreeGc();
-    scheduler.stopAll();
+    log.info({ signal }, "关闭中（先排水）");
+    try {
+      await drain.beginDrain({ timeoutMs: cfg.drainTimeoutMs, reason: `signal:${signal}` });
+    } catch (e) {
+      log.error({ err: e instanceof Error ? e.message : String(e) }, "排水异常，强制进入关停");
+    }
     releaseService.stop();
     // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
     await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);
@@ -832,18 +954,36 @@ async function main(): Promise<void> {
     );
   }
 
-  // 启动清扫：遗留 running/awaiting_approval 任务无续跑依据，统一标失败并补提示；
-  // zcode 被杀轮顺带从 .zcode-home 补录已流出记录（spec 2026-09-29 M4a）
+  // 启动清扫（热发布 M2）：running 孤儿→interrupted（暂停语义），zcode 被杀轮补录；
+  // awaiting_approval→failed（M3 审批落库后改为重臂存活）
   const swept = await sweepInterruptedTasks({
     taskStore: store,
     messageStore,
     auditStore,
+    approvalStore,
     conversationStore,
     userStore,
   });
-  if (swept.running > 0) log.warn({ count: swept.running }, "已将遗留 running 任务标记为中断");
-  if (swept.awaitingApproval > 0)
-    log.warn({ count: swept.awaitingApproval }, "已将遗留审批挂起任务标记为中断");
+  if (swept.interrupted > 0) log.warn({ count: swept.interrupted }, "已将遗留 running 任务标记为中断");
+  if (swept.approvalRearmed > 0)
+    log.warn({ count: swept.approvalRearmed }, "遗留审批挂起任务已重臂（决议后自动续跑）");
+  if (swept.approvalFailed > 0)
+    log.warn({ count: swept.approvalFailed }, "遗留审批挂起任务无落库行，已标失败");
+
+  // 中断自动续跑（热发布 M2）：interrupted 轮以合成指令续跑（复用原 task 行，D3）；
+  // 不可续跑（非 Web/归档/工作流会话/超上限/开关关）→ 标失败并通知重发
+  const resumed = await autoResumeInterruptedTasks({
+    taskStore: store,
+    conversationStore,
+    messageStore,
+    auditStore,
+    submit: (msg) => {
+      void webOrch.handleMessage(msg).catch((e) => console.error("[resume] 续跑轮失败", e));
+    },
+    autoResume: cfg.autoResumeInterrupted,
+  });
+  if (resumed.resumed > 0) log.warn({ count: resumed.resumed }, "已自动恢复中断任务");
+  if (resumed.abandoned > 0) log.warn({ count: resumed.abandoned }, "中断任务未续跑，已标失败");
 }
 
 /** 从 DB 读取或自动生成 JWT 密钥并持久化 */

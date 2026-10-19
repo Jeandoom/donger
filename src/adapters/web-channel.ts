@@ -54,7 +54,7 @@ import {
   withKindKeySpecs,
 } from "../domain/credential.js";
 import { type Event, generateCallPath, parseEventInput } from "../domain/event.js";
-import { buildFeedbackCreatedPayload } from "../domain/event-payloads.js";
+import { buildFeedbackCreatedPayload, isExecutionCompletedEventName } from "../domain/event-payloads.js";
 import {
   AgentExtensionDirectoriesInputSchema,
   isRelativeExtensionPath,
@@ -438,11 +438,22 @@ type SSEEvent =
       canceledAt: string;
     }
   | { type: "conversation_title"; conversationId: string; title: string }
+  | {
+      /** 排水广播（热发布优雅停机，spec 2026-10-16-hot-deploy-design）：前端进「发布中」态 */
+      type: "server_draining";
+      deadline?: number;
+      reason?: string;
+    }
+  | {
+      /** 断流重连缺口已超缓冲（热发布 M4）：客户端放弃 Last-Event-ID 增量，全量补拉 */
+      type: "stream_resync";
+      lastSeq: number;
+    }
   | { type: "error"; error: string };
 
-/** 向 SSE 客户端写事件的回调 */
+/** 向 SSE 客户端写事件的回调（seq=流内单调序号，热发布 M4 断流重放用） */
 type SSEClient = {
-  write(event: SSEEvent): void;
+  write(event: SSEEvent, seq?: number): void;
   close(): void;
 };
 
@@ -563,6 +574,24 @@ export interface WebChannelDeps {
   agentCallbackStore?: AgentCallbackStore;
   /** 会话忙碌查询（回调结果查询的 status 判定用）；缺省=一律视为不忙 */
   conversationBusyGetter?: (conversationId: string) => boolean;
+  /**
+   * 审批决议落库（热发布 M3，spec 2026-10-16-hot-deploy-design §6）；缺省=决议仅内存。
+   * 装配后：respond 路由幂等落库（pending→decided 单条事务）、重启重臂（getPendingApproval
+   * 从 DB 回卡）、决议审计/通知/跨重启续跑经 onApprovalDecision 回调由装配方接手。
+   */
+  approvalStore?: import("../ports/approval-store.js").ApprovalStore;
+  /** 审批决议后置回调（两条路径都触发）：审计落痕 + approval.decided 通知 + 跨重启续跑 */
+  onApprovalDecision?: (d: {
+    approvalId: string;
+    conversationId: string;
+    approved: boolean;
+    reason?: string;
+    comment?: string;
+    responderId?: string;
+    adoptPrefix?: string;
+    /** true=本进程内存 resolver 已续原轮（无需续跑）；false=重启重臂，需接续跑 */
+    hadResolver: boolean;
+  }) => Promise<void>;
   /** 回调链路专用投递：await 整轮、失败落 bot 错误消息（区别于普通通道的 fire-and-forget）；缺省=端点 503 */
   callbackSubmit?: (msg: IncomingMessage) => Promise<void>;
   /** 回调发起限流（次/分钟/token，默认 10） */
@@ -610,6 +639,20 @@ export interface WebChannelDeps {
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
   /** 会话权限模式切换回调（PATCH 即时通知 orchestrator 内存 registry）；缺省=仅落库，下轮生效 */
   onPermissionModeChange?: (conversationId: string, mode: AgentPermissionMode) => void;
+  /**
+   * 排水状态（热发布优雅停机，spec 2026-10-16-hot-deploy-design）；缺省=永不排水。
+   * 发送路由 503 拒入 + /api/health 附带排水标志共用。
+   */
+  drain?: {
+    shouldRejectNewTurn(): boolean;
+    status(): {
+      draining: boolean;
+      activeTurns: number;
+      queuedMessages: number;
+      deadline?: number;
+      reason?: string;
+    };
+  };
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
@@ -958,10 +1001,12 @@ export class WebChannel implements Channel {
   async requestApproval(
     threadId: string,
     card: ApprovalCard,
+    approvalIdParam?: string,
   ): Promise<{ approved: boolean; reason?: string; adoptPrefix?: string }> {
     // 审批实例 id 用一次性随机值：gateId 是全局静态常量（deploy/authoring/git-write），
-    // 以它做 Map 键会被并发会话互相覆盖，造成「人审的卡片与实际放行的命令不一致」
-    const approvalId = crypto.randomUUID();
+    // 以它做 Map 键会被并发会话互相覆盖，造成「人审的卡片与实际放行的命令不一致」。
+    // 热发布 M3：approval-flow 生成并与 approval_requests 落库行同键传入（缺省=旧渠道自造）
+    const approvalId = approvalIdParam ?? crypto.randomUUID();
     // V21 修复：先把审批卡广播给会话订阅者（此前卡片从不推送，前端/CLI 全程看不到门）
     this.broadcastToConversation(threadId, {
       type: "approval_card",
@@ -1009,6 +1054,10 @@ export class WebChannel implements Channel {
       });
       pending.resolve({ approved: false, reason: "任务已中断" });
     }
+    // 落库行同步收口（热发布 M3）：pending 行不收会变成重启后的僵尸重臂卡
+    void this.deps.approvalStore
+      ?.cancelByConversation(conversationId)
+      .catch((e) => console.error("[web] 审批行取消失败", e));
   }
 
   /** 并发淘汰通知：SSE 推给（新任务的）目标会话，前端弹窗展示被强制结束任务的详情 */
@@ -1047,15 +1096,17 @@ export class WebChannel implements Channel {
 
   /**
    * 会话当前挂起审批（GET pending-approval 用）：刷新/换端后据此恢复锚定审批卡。
+   * 双源（热发布 M3）：内存活实例优先；miss 查 DB pending 行（重启重臂——原轮的
+   * resolver 已随进程消失，但卡片凭落库行重新锚定，决议走跨重启续跑）。
    * 属主判定由 routeGuard 执行，与 pending-question 同模式。
    */
-  getPendingApproval(conversationId: string): {
+  async getPendingApproval(conversationId: string): Promise<{
     approvalId: string;
     gateId: string;
     title: string;
     summary: string;
     adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
-  } | null {
+  } | null> {
     for (const [approvalId, pending] of this.pendingApprovalResolves) {
       if (pending.conversationId === conversationId) {
         return {
@@ -1067,7 +1118,29 @@ export class WebChannel implements Channel {
         };
       }
     }
-    return null;
+    const rows = this.deps.approvalStore
+      ? await this.deps.approvalStore.listPendingByConversation(conversationId)
+      : [];
+    const row = rows[0];
+    if (!row) return null;
+    let adoptDraft: { hostCode: string; prefix: string; agentId?: string } | undefined;
+    if (row.payload) {
+      try {
+        const parsed = JSON.parse(row.payload) as {
+          adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
+        };
+        if (parsed.adoptDraft) adoptDraft = parsed.adoptDraft;
+      } catch {
+        // payload 损坏按无草稿处理
+      }
+    }
+    return {
+      approvalId: row.id,
+      gateId: row.gateId,
+      title: row.title,
+      summary: row.summary ?? "",
+      ...(adoptDraft ? { adoptDraft } : {}),
+    };
   }
 
   /**
@@ -1175,16 +1248,47 @@ export class WebChannel implements Channel {
     });
   }
 
+  /** 每会话流内单调 seq（断流重放游标）+ 环形缓冲（热发布 M4） */
+  private readonly streamSeqs = new Map<string, number>();
+  private readonly streamBuffers = new Map<string, Array<{ seq: number; event: SSEEvent; at: number }>>();
+  /** 缓冲上限：500 条或 15 分钟（先到先裁；超出 → stream_resync 全量补拉兜底） */
+  private static readonly STREAM_BUFFER_MAX = 500;
+  private static readonly STREAM_BUFFER_TTL_MS = 15 * 60 * 1000;
+
   /** 向特定会话广播事件 */
   private broadcastToConversation(conversationId: string, event: SSEEvent): void {
     const clients = this.sseClients.get(conversationId);
-    if (!clients) return;
+    if (!clients || clients.size === 0) return;
+    // 无订阅者不占 seq；有订阅者才进缓冲（重放只服务「断线窗口内」的事件）
+    const seq = (this.streamSeqs.get(conversationId) ?? 0) + 1;
+    this.streamSeqs.set(conversationId, seq);
+    const buffer = this.streamBuffers.get(conversationId) ?? [];
+    const now = Date.now();
+    buffer.push({ seq, event, at: now });
+    while (
+      buffer.length > WebChannel.STREAM_BUFFER_MAX ||
+      (buffer.length > 1 && now - (buffer[0]?.at ?? now) > WebChannel.STREAM_BUFFER_TTL_MS)
+    ) {
+      buffer.shift();
+    }
+    this.streamBuffers.set(conversationId, buffer);
     for (const client of clients) {
       try {
-        client.write(event);
+        client.write(event, seq);
       } catch {
         // 客户端可能已断开，忽略错误
       }
+    }
+  }
+
+  /** 排水广播（热发布优雅停机）：所有打开的会话流收到提示，前端进「发布中」态 */
+  broadcastDraining(status: { deadline?: number; reason?: string }): void {
+    for (const conversationId of this.sseClients.keys()) {
+      this.broadcastToConversation(conversationId, {
+        type: "server_draining",
+        ...(status.deadline !== undefined ? { deadline: status.deadline } : {}),
+        ...(status.reason !== undefined ? { reason: status.reason } : {}),
+      });
     }
   }
 
@@ -1521,8 +1625,9 @@ export class WebChannel implements Channel {
     });
 
     const client: SSEClient = {
-      write: (event: SSEEvent) => {
-        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      write: (event: SSEEvent, seq?: number) => {
+        const idLine = seq !== undefined ? `id: ${seq}\n` : "";
+        res.write(`${idLine}event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       },
       close: () => {
         try {
@@ -1534,6 +1639,28 @@ export class WebChannel implements Channel {
     };
 
     this.subscribeSSE(conversationId, client);
+
+    // 断流重放（热发布 M4，spec 2026-10-16-hot-deploy-design §7.2）：浏览器 EventSource
+    // 重连自动携带 Last-Event-ID；缓冲能接上则按序重放缺口（结构化事件零丢失），
+    // 缺口已超出缓冲裁剪线 → stream_resync 让客户端全量补拉
+    const lastEventIdHeader = req.headers["last-event-id"];
+    const lastEventId =
+      typeof lastEventIdHeader === "string" ? Number.parseInt(lastEventIdHeader, 10) : Number.NaN;
+    if (Number.isFinite(lastEventId)) {
+      const buffered = this.streamBuffers.get(conversationId) ?? [];
+      const replayable = buffered.filter((e) => e.seq > lastEventId);
+      const oldest = buffered[0]?.seq;
+      if (
+        buffered.length > 0 &&
+        replayable.length > 0 &&
+        oldest !== undefined &&
+        oldest <= lastEventId + 1
+      ) {
+        for (const entry of replayable) client.write(entry.event, entry.seq);
+      } else {
+        client.write({ type: "stream_resync", lastSeq: lastEventId });
+      }
+    }
 
     // 发送连接确认
     client.write({ type: "text", text: "" });
@@ -1595,31 +1722,29 @@ export class WebChannel implements Channel {
     };
 
     const pending = this.pendingApprovalResolves.get(approvalId);
-    if (!pending) {
-      // 审批决议的 resolver 在内存中；进程重启后原审批卡已失效（重启清扫会标失败任务）
+    // 双源查找（热发布 M3）：内存活实例（本进程轮在等）或 DB pending 行（重启重臂）
+    const row =
+      pending || !this.deps.approvalStore
+        ? undefined
+        : await this.deps.approvalStore.get(approvalId);
+    if (!pending && (!row || row.status !== "pending")) {
+      // 既无内存 resolver 也无 pending 行：审批实例已消亡（已决议/被取消/未落库的升级前存量）
       res.writeHead(404);
       res.end(JSON.stringify({ error: "approval not found or expired" }));
       return;
     }
+    const conversationId = pending?.conversationId ?? row?.conversationId ?? "";
     // 会话属主校验（多用户隔离）：仅会话 owner 可决议；会话查不到按 fail-closed 拒绝
     //（内存 pending 与会话行生命周期不同步，取不到时放行 = 任意登录用户可决议他人审批门）
     if (this.sessionStore) {
-      const conv = await this.deps.conversationStore?.get(pending.conversationId);
+      const conv = await this.deps.conversationStore?.get(conversationId);
       if (!conv || !authUserId || conv.userId !== authUserId) {
         res.writeHead(403);
         res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
         return;
       }
     }
-    this.pendingApprovalResolves.delete(approvalId);
-    // 一次性实例已被本端消费：同会话其余在看的标签页据事件撤卡，避免点击残卡得到 404
-    this.broadcastToConversation(pending.conversationId, {
-      type: "approval_closed",
-      approvalId,
-      reason: body.approved ? "已通过" : "已驳回",
-    });
-    // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
-    pending.resolve({
+    const decisionPayload = {
       approved: body.approved,
       reason: body.reason,
       comment: body.comment?.trim() || undefined,
@@ -1629,7 +1754,74 @@ export class WebChannel implements Channel {
         typeof body.adoptPrefix === "string" && body.adoptPrefix.trim()
           ? body.adoptPrefix.trim()
           : undefined,
-    });
+    };
+    // 重臂路径 + 会话忙（热发布 M3）：用户重启后已发新任务再点旧卡 → 拒绝决议，
+    // 行保持 pending（用户可取消旧任务收口），旧任务不与新任务抢会话
+    if (!pending && row) {
+      const busy = this.deps.conversationBusyGetter?.(conversationId) ?? false;
+      if (busy) {
+        res.writeHead(409);
+        res.end(
+          JSON.stringify({
+            error: "该会话已有新任务在执行，旧审批不再续跑；请先处理新任务，或从执行列表取消旧任务。",
+          }),
+        );
+        return;
+      }
+    }
+    // DB 先行（热发布 M3）：单条事务 pending→decided，changes=0 即他端已决议 → 409 幂等。
+    // 落库成功后才解内存 resolver/触发续跑——进程在两者之间死亡，重启后按已决议行收口。
+    if (this.deps.approvalStore) {
+      const ok = await this.deps.approvalStore.decide(
+        approvalId,
+        decisionPayload.approved ? "approved" : "rejected",
+        {
+          approved: decisionPayload.approved,
+          ...(decisionPayload.reason ? { reason: decisionPayload.reason } : {}),
+          ...(decisionPayload.comment ? { comment: decisionPayload.comment } : {}),
+          ...(decisionPayload.responderId ? { responderId: decisionPayload.responderId } : {}),
+          ...(decisionPayload.adoptPrefix ? { adoptPrefix: decisionPayload.adoptPrefix } : {}),
+        },
+        new Date().toISOString(),
+      );
+      if (!ok) {
+        res.writeHead(409);
+        res.end(JSON.stringify({ error: "该审批已被决议（他端已处理），请刷新" }));
+        return;
+      }
+    }
+    if (pending) {
+      this.pendingApprovalResolves.delete(approvalId);
+      // 一次性实例已被本端消费：同会话其余在看的标签页据事件撤卡，避免点击残卡得到 404
+      this.broadcastToConversation(pending.conversationId, {
+        type: "approval_closed",
+        approvalId,
+        reason: body.approved ? "已通过" : "已驳回",
+      });
+      // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
+      pending.resolve(decisionPayload);
+    } else if (row) {
+      // 重臂路径（热发布 M3）：无内存 resolver 可解，撤残卡 + 走跨重启续跑回调
+      this.broadcastToConversation(conversationId, {
+        type: "approval_closed",
+        approvalId,
+        reason: body.approved ? "已通过" : "已驳回",
+      });
+    }
+    // 决议后置回调（两条路径都触发）：审计落痕 + approval.decided 通知；
+    // hadResolver=false 时由装配方接跨重启续跑（resumeAfterApproval）
+    void this.deps
+      .onApprovalDecision?.({
+        approvalId,
+        conversationId,
+        approved: decisionPayload.approved,
+        ...(decisionPayload.reason ? { reason: decisionPayload.reason } : {}),
+        ...(decisionPayload.comment ? { comment: decisionPayload.comment } : {}),
+        ...(decisionPayload.responderId ? { responderId: decisionPayload.responderId } : {}),
+        ...(decisionPayload.adoptPrefix ? { adoptPrefix: decisionPayload.adoptPrefix } : {}),
+        hadResolver: !!pending,
+      })
+      .catch((e) => console.error("[web] 审批决议回调失败", e));
     res.writeHead(200);
     res.end(JSON.stringify({ ok: true }));
   }
@@ -1764,6 +1956,22 @@ export class WebChannel implements Channel {
     if (!match) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: "invalid conversation url" }));
+      return;
+    }
+    // 排水期拒入（热发布优雅停机）：必须在持久化用户消息之前拒绝，
+    // 否则消息落库却无人处理（断链）。前端按 Retry-After 自动重试。
+    if (this.deps.drain?.shouldRejectNewTurn()) {
+      const status = this.deps.drain.status();
+      res.writeHead(503, { "Retry-After": "5" });
+      res.end(
+        JSON.stringify({
+          error: "服务正在更新发布，请稍后自动重试",
+          draining: true,
+          retryAfter: 5,
+          activeTurns: status.activeTurns,
+          ...(status.deadline !== undefined ? { deadline: status.deadline } : {}),
+        }),
+      );
       return;
     }
     const conversationId = match[1] ?? "";
@@ -3853,7 +4061,7 @@ export class WebChannel implements Channel {
     const pendingAMatch = url.match(/^\/api\/conversations\/([\w-]+)\/pending-approval$/);
     if (pendingAMatch && req.method === "GET") {
       const conversationId = pendingAMatch[1] ?? "";
-      this.json(res, { approval: this.getPendingApproval(conversationId) });
+      this.json(res, { approval: await this.getPendingApproval(conversationId) });
       return;
     }
 
@@ -5945,8 +6153,24 @@ export class WebChannel implements Channel {
 
     // GET /api/health
     if (url === "/api/health") {
+      // 排水期必须保持 200：compose healthcheck 与宿主监控不因发布误报；
+      // 排水详情放 body 供观测
+      const drain = this.deps.drain?.status();
       res.writeHead(200);
-      res.end(JSON.stringify({ ok: true, channel: "web" }));
+      res.end(
+        JSON.stringify({
+          ok: true,
+          channel: "web",
+          ...(drain?.draining
+            ? {
+                draining: true,
+                activeTurns: drain.activeTurns,
+                queuedMessages: drain.queuedMessages,
+                ...(drain.deadline !== undefined ? { deadline: drain.deadline } : {}),
+              }
+            : {}),
+        }),
+      );
       return;
     }
 
@@ -5992,14 +6216,36 @@ export class WebChannel implements Channel {
    * workflow 引用校验：事件必须本人所有（事件不可共享）；agent 必须本人可使用
    * （自有或被分享启用）。零校验时执行可借他人 workflow 携带的 agent/事件装备运行
    * （2026-09-24 审计，语义沿用）。
+   * 完成事件自订阅静态拒绝（spec 2026-10-19-execution-completion-events-design §8，
+   * D5）：订阅「本工作流自身」或「本工作流绑定智能体」的完成事件会无限自触发。
    */
   private async assertWorkflowRefsUsable(
     input: Pick<Workflow, "eventId" | "agentId">,
     uid: string,
+    workflowId?: string,
   ): Promise<void> {
     const event = await this.deps.eventStore?.get(input.eventId);
     if (!event || event.ownerId !== uid) {
       throw new ValidationError("EVENT_REF_INVALID", "workflow 订阅的事件不存在或非本人所有");
+    }
+    if (event.type === "system" && event.system && isExecutionCompletedEventName(event.system.name)) {
+      const subjects = event.system.subjects ?? [];
+      if (event.system.name === "agent.execution.completed" && subjects.includes(input.agentId)) {
+        throw new ValidationError(
+          "SELF_SUBSCRIPTION_INVALID",
+          "不能订阅本工作流自身智能体的完成事件（每次执行都会再次触发自身，无限循环）",
+        );
+      }
+      if (
+        event.system.name === "workflow.execution.completed" &&
+        workflowId &&
+        subjects.includes(workflowId)
+      ) {
+        throw new ValidationError(
+          "SELF_SUBSCRIPTION_INVALID",
+          "不能订阅本工作流自身的完成事件（每次执行都会再次触发自身，无限循环）",
+        );
+      }
     }
     if (this.deps.agentStore) {
       const agent = await this.deps.agentStore.get(input.agentId);
@@ -6011,6 +6257,45 @@ export class WebChannel implements Channel {
         : false;
       if (!canUseAgent(agent, { id: uid, role: "user" }, granted)) {
         throw new ValidationError("AGENT_REF_INVALID", "workflow 引用的 agent 不可用");
+      }
+    }
+  }
+
+  /**
+   * 完成事件主体校验（spec §4.2，D4）：智能体须本人可使用（自有或被分享，对齐
+   * assertWorkflowRefsUsable 的 canUse 口径）；工作流须本人所有（他人工作流的 run
+   * 属主非本人，订阅了也永不命中，直接拒绝避免误导）。
+   */
+  private async assertExecutionEventSubjects(
+    system: { name: string; subjects?: string[] },
+    uid: string,
+  ): Promise<void> {
+    const subjects = system.subjects ?? [];
+    if (system.name === "agent.execution.completed") {
+      for (const agentId of subjects) {
+        const agent = await this.deps.agentStore?.get(agentId);
+        if (!agent) {
+          throw new ValidationError("SUBJECT_REF_INVALID", "完成事件引用的智能体不存在");
+        }
+        const granted = this.deps.agentShareStore
+          ? await this.deps.agentShareStore.isGranted(agentId, uid)
+          : false;
+        if (!canUseAgent(agent, { id: uid, role: "user" }, granted)) {
+          throw new ValidationError(
+            "SUBJECT_REF_INVALID",
+            "完成事件引用的智能体不可用（需本人所有或被分享）",
+          );
+        }
+      }
+      return;
+    }
+    for (const workflowId of subjects) {
+      const w = await this.deps.workflowStore?.get(workflowId);
+      if (!w || w.ownerId !== uid) {
+        throw new ValidationError(
+          "SUBJECT_REF_INVALID",
+          "完成事件引用的工作流不存在或非本人所有",
+        );
       }
     }
   }
@@ -6470,12 +6755,25 @@ export class WebChannel implements Channel {
     }
     if (pathname === "/api/events" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      // system 事件 admin-only：事件 payload 含全体用户反馈正文，放开 member 即跨用户泄漏
-      //（语义沿 spec 2026-09-28-event-trigger-feedback-design §6）
-      if (body.type === "system" && this.currentViewer(req).role !== "admin") {
-        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "系统事件仅管理员可创建");
+      // system 事件权限按名字分流（spec 2026-10-19-execution-completion-events-design D9）：
+      // feedback.created admin-only（payload 含全体用户反馈正文，放开 member 即跨用户泄漏）；
+      // 两个执行完成事件全员可建（场景主体=普通用户订阅自己的智能体/工作流）
+      const systemName =
+        typeof (body.system as { name?: unknown } | undefined)?.name === "string"
+          ? ((body.system as { name: string }).name as string)
+          : "";
+      if (
+        body.type === "system" &&
+        systemName === "feedback.created" &&
+        this.currentViewer(req).role !== "admin"
+      ) {
+        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "该系统事件仅管理员可创建");
       }
       const input = parseEventInput(body);
+      // 完成事件主体校验（D4）：智能体须本人可使用（自有或被分享），工作流须本人所有
+      if (input.type === "system" && input.system && isExecutionCompletedEventName(input.system.name)) {
+        await this.assertExecutionEventSubjects(input.system, uid);
+      }
       // call path 服务端生成（D2）：每事件独立随机路径，客户端不可指定
       if (input.type === "call" && input.call) {
         input.call = { ...input.call, path: generateCallPath() };
@@ -6494,13 +6792,21 @@ export class WebChannel implements Channel {
       // PUT = 全量替换：parseEventInput 要求完整对象（name/type + 对应配置）。
       const existing = await this.requireOwnedEvent(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const effectiveSystemName =
+        typeof (body.system as { name?: unknown } | undefined)?.name === "string"
+          ? ((body.system as { name: string }).name as string)
+          : (existing.system?.name ?? "");
       if (
         (existing.type === "system" || body.type === "system") &&
+        effectiveSystemName === "feedback.created" &&
         this.currentViewer(req).role !== "admin"
       ) {
-        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "系统事件仅管理员可编辑");
+        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "该系统事件仅管理员可编辑");
       }
       const parsed = parseEventInput(body);
+      if (parsed.type === "system" && parsed.system && isExecutionCompletedEventName(parsed.system.name)) {
+        await this.assertExecutionEventSubjects(parsed.system, uid);
+      }
       // call path 服务端所有（D2）：更新不换路径，外部回调地址稳定
       if (parsed.type === "call" && parsed.call) {
         parsed.call = { ...parsed.call, path: existing.call?.path ?? generateCallPath() };
@@ -6580,7 +6886,7 @@ export class WebChannel implements Channel {
       const existing = await this.requireOwnedWorkflow(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
       const input = parseWorkflowInput({ ...body, ownerId: uid });
-      await this.assertWorkflowRefsUsable(input, uid);
+      await this.assertWorkflowRefsUsable(input, uid, m[1] ?? "");
       const updated = await ws?.update(m[1] ?? "", input);
       // 订阅事件变更时两侧调度都刷新（旧事件可能因此无人订阅 → 注销 cron）
       if (existing.eventId !== updated?.eventId) {
@@ -8314,11 +8620,17 @@ export class WebChannel implements Channel {
 
   /**
    * 关闭 HTTP 服务，resolve 时所有 in-flight 连接已收尾。
+   * 排水完成后调用：close() 停止受理新连接，closeAllConnections() 掐断
+   * keep-alive 与 SSE 残留（排水后它们本就该断，客户端自动重连到新实例），
+   * 否则 SSE 长连接会让 close 回调永不触发。
    * 调用方可 race 一个超时兜底，避免卡死进程退出。
    */
   stop(): Promise<void> {
+    const server = this.server;
+    if (!server) return Promise.resolve();
     return new Promise((resolve) => {
-      this.server?.close(() => resolve());
+      server.close(() => resolve());
+      server.closeAllConnections();
     });
   }
 }

@@ -16,7 +16,6 @@ import {
   collectPromptAllowSections,
   type HostExecPolicyRule,
   resolveHostExecPolicy,
-  validateAdoptPrefix,
 } from "../domain/host-exec-policy.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
@@ -55,6 +54,7 @@ import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { ApprovalStore } from "../ports/approval-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { HostExecPolicyStore } from "../ports/host-exec-policy-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
@@ -74,6 +74,7 @@ import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
+import { adoptHostExecPolicy } from "./approval-adopt.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { materializeMessageFiles } from "./attachment-materializer.js";
@@ -82,6 +83,7 @@ import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { SSH_EGRESS_PATTERN } from "./default-gates.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
+import type { DrainGate } from "./drain-manager.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
@@ -128,6 +130,11 @@ export interface OrchestratorDeps {
    * hostExecAllowlist 旧行为（合成等价规则），装配后策略表为单一真源。
    */
   hostExecPolicies?: HostExecPolicyStore;
+  /**
+   * 审批决议落库（热发布 M3，spec 2026-10-16-hot-deploy-design §6）：请求即落库 + 决议幂等；
+   * 缺省=决议仅内存（重启后审批挂起态丢失，sweep 标 failed 旧口径）。
+   */
+  approvalStore?: ApprovalStore;
   /**
    * SSH 出站档位取值器（旁门治理 M2，specs/2026-10-12 §7；app_config ssh_egress.mode）：
    * "ask"（缺省）=ssh 系 Bash 命令走 ssh-egress force 审批门；"deny"=审批 resolver 侧
@@ -204,6 +211,8 @@ export interface OrchestratorDeps {
 interface ActiveTaskEntry {
   taskId: string;
   conversationId: string;
+  /** 渠道回信线程（钉钉 threadId ≠ conversationId；web 二者同值）——排水中断提示的送达目标 */
+  threadId: string;
   /** 任务文本摘要（用户消息前 60 字），弹窗展示用 */
   taskExcerpt: string;
   /** 任务开始时间（ISO） */
@@ -365,6 +374,50 @@ export class Orchestrator {
   /** 会话是否正在处理消息（web 回调结果查询的 status 判定用） */
   isBusy(conversationId: string): boolean {
     return this.isConversationBusy(conversationId);
+  }
+
+  // 排水拒入闸（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：index.ts 装配后注入
+  private drainGate?: DrainGate;
+
+  /** 注入排水闸：handleMessage 拒入新消息 + dispatchQueue 不再接续队列 */
+  setDrainGate(gate: DrainGate): void {
+    this.drainGate = gate;
+  }
+
+  /** 在途轮总数（排水判定：活跃任务跨用户扁平化） */
+  activeTurnCount(): number {
+    let count = 0;
+    for (const tasks of this.userActiveTasks.values()) count += tasks.size;
+    return count;
+  }
+
+  /** busy 会话排队中的消息总数（排水判定须连同队列一起清零） */
+  queuedMessageCount(): number {
+    let count = 0;
+    for (const queue of this.pendingQueues.values()) count += queue.length;
+    return count;
+  }
+
+  /**
+   * 排水期退回全部排队消息：消息本体已在发送时落库（web-channel 持久化先于 handler），
+   * 这里补一条「未执行」提示，不静默丢；幂等，可重复调用。
+   */
+  async flushPendingQueues(reason: string): Promise<void> {
+    const { channel, messageStore } = this.deps;
+    const entries = [...this.pendingQueues.entries()];
+    this.pendingQueues.clear();
+    for (const [conversationId, queue] of entries) {
+      for (const item of queue) {
+        const text = `🚧 ${reason}，该消息未被执行，请稍后重发。`;
+        try {
+          await channel.send(item.msg.threadId, { text });
+          channel.pushResult?.(conversationId, "error", text);
+          await messageStore?.add(conversationId, "bot", text);
+        } catch (e) {
+          console.error("[orchestrator] 排水退回排队消息失败", e);
+        }
+      }
+    }
   }
 
   /** 标记会话繁忙 */
@@ -974,6 +1027,7 @@ export class Orchestrator {
       this.deps.notificationService,
       p.user.id,
       p.user.role,
+      this.deps.approvalStore,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
     const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);
@@ -1044,63 +1098,19 @@ export class Orchestrator {
         clearPending();
       }
       // 一键成策略（M2，specs/2026-10-12 §8.1）：admin 轮批准 host_exec 且勾选「记住」→
-      // 前缀落策略表（agent 作用域优先；同型规则已存在则跳过防重复）。落库失败不影响
+      // 前缀落策略表（热发布 M3 抽出共享：跨重启审批续跑同走此路径）。落库失败不影响
       // 已批准的执行。
-      if (
-        decision.approved &&
-        decision.adoptPrefix &&
-        p.user.role === "admin" &&
-        req.tool === "mcp__donger-host__host_exec" &&
-        this.deps.hostExecPolicies
-      ) {
-        const prefixError = validateAdoptPrefix(decision.adoptPrefix);
-        const hostCode = typeof req.input.hostCode === "string" ? req.input.hostCode : "";
-        if (!prefixError && hostCode) {
-          try {
-            const matchValue = decision.adoptPrefix.trim();
-            const existing = await this.deps.hostExecPolicies.list();
-            const duplicate = existing.some(
-              (r) =>
-                r.enabled &&
-                r.hostCode === hostCode &&
-                r.tool === "host_exec" &&
-                r.matchKind === "prefix" &&
-                r.decision === "allow" &&
-                r.scopeKind === (p.agent ? "agent" : "user") &&
-                r.scopeRef === (p.agent?.id ?? p.user.id) &&
-                r.matchValue === matchValue,
-            );
-            if (!duplicate) {
-              const rule = await this.deps.hostExecPolicies.create(
-                {
-                  hostCode,
-                  tool: "host_exec",
-                  scopeKind: p.agent ? "agent" : "user",
-                  scopeRef: p.agent?.id ?? p.user.id,
-                  matchKind: "prefix",
-                  matchValue,
-                  decision: "allow",
-                  unattended: "inherit",
-                  note: `审批卡一键放行（来源：${String(req.input.command ?? "").slice(0, 120)}）`,
-                },
-                { createdBy: p.user.id },
-              );
-              void this.deps.auditStore
-                .record({
-                  conversationId: p.conversation.id,
-                  taskId: p.task.id,
-                  userId: p.user.id,
-                  seq: -1,
-                  type: "policy_decision",
-                  text: `审批卡一键成策略：host=${hostCode} policy=${rule.id} prefix=${matchValue}`,
-                  recordedAt: new Date().toISOString(),
-                })
-                .catch(() => {});
-            }
-          } catch {
-            // 策略落库失败不阻断已批准的命令执行
-          }
-        }
+      if (decision.approved && decision.adoptPrefix) {
+        await adoptHostExecPolicy({
+          hostExecPolicies: this.deps.hostExecPolicies,
+          auditStore: this.deps.auditStore,
+          user: p.user,
+          agent: p.agent,
+          req,
+          conversationId: p.conversation.id,
+          taskId: p.task.id,
+          prefix: decision.adoptPrefix,
+        });
       }
       return decision;
     };
@@ -1781,6 +1791,15 @@ export class Orchestrator {
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
     const { conversationStore } = this.deps;
 
+    // 排水期拒入（热发布优雅停机）：任何渠道的新消息一律不接受，提示稍后重发；
+    // web 渠道在路由层 503 更早拦截，这里是钉钉/回调等其余渠道的兜底
+    if (this.drainGate?.shouldRejectNewTurn()) {
+      const text = "🚧 服务正在更新发布，新消息暂不接受；通常数十秒内完成，请稍后重发。";
+      await this.deps.channel.send(msg.threadId, { text });
+      this.deps.channel.pushResult?.(msg.threadId, "error", text);
+      return undefined;
+    }
+
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
     const user = await this.resolveUser(msg);
 
@@ -1816,6 +1835,122 @@ export class Orchestrator {
       return await this.enqueueMessage(user, msg, conversation);
     }
     return await this.runExclusive(user, msg, conversation);
+  }
+
+  /**
+   * 排水超时兜底（热发布 M2）：把仍在执行的轮标记 interrupted（暂停语义），进程随后退出，
+   * 新实例启动后 resume-service 自动续跑。awaiting_approval/awaiting_credentials 无 running
+   * 转换不在标记范围（前者由审批落库轮接管，后者保持「暂停等配置」既有语义）。
+   * 任务行尚未创建的极早阶段随进程死亡，由启动 sweep 兜底标 interrupted。返回标记数量。
+   */
+  async interruptActiveTurns(reason: string): Promise<number> {
+    let count = 0;
+    for (const tasks of this.userActiveTasks.values()) {
+      for (const entry of tasks.values()) {
+        if (!entry.taskId) continue;
+        try {
+          const task = await this.deps.store.get(entry.taskId);
+          if (!task || task.status !== "running") continue;
+          await this.deps.store.updateStatus(entry.taskId, nextStatus("running", "interrupt"));
+          await this.deps.channel.send(entry.threadId || entry.conversationId, {
+            text: `⏸ ${reason}，任务已暂停；服务恢复后将自动继续执行。`,
+          });
+          count += 1;
+        } catch (e) {
+          // 尽力而为：单个标记失败不阻断排水收尾
+          console.error("[orchestrator] 排水中断标记失败", entry.taskId, e);
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * 跨重启审批续跑（热发布 M3）：重启重臂的审批被决议后由 web-channel 决议回调调用。
+   * 复用原 task 行（D3：awaiting_approval --resume--> running），以合成决议指令经
+   * handleMessage 续跑——agent 靠 resume 指针看得到中断前的全部会话上下文。
+   * adoptPrefix（通过并记住）走与轮内一致的共享策略落库。
+   */
+  async resumeAfterApproval(params: {
+    taskId: string;
+    gateId: string;
+    gateTitle: string;
+    approved: boolean;
+    reason?: string;
+    adoptPrefix?: string;
+    /** 审批行 payload 还原的 req.input（adopt 策略落库所需；hostCode/command） */
+    reqInput?: unknown;
+    tool?: string;
+  }): Promise<{ resumed: boolean; reason?: string }> {
+    const task = await this.deps.store.get(params.taskId);
+    if (!task) return { resumed: false, reason: "task_not_found" };
+    if (task.status !== "awaiting_approval") {
+      // 已被取消/失败/完成：决议迟到，行收口即可不续跑
+      return { resumed: false, reason: `task_status_${task.status}` };
+    }
+    const conversation = await this.deps.conversationStore.get(task.threadId);
+    if (!conversation) return { resumed: false, reason: "conversation_not_found" };
+    // 双保险（respond 路由已 409 拦过）：会话忙（用户已发新任务）时不抢
+    if (this.isConversationBusy(task.threadId)) {
+      return { resumed: false, reason: "conversation_busy" };
+    }
+    // adopt（通过并记住）：payload 还原 req 供策略落库（与轮内同一路径）
+    if (
+      params.approved &&
+      params.adoptPrefix &&
+      params.reqInput &&
+      typeof params.reqInput === "object"
+    ) {
+      const user = await this.deps.userStore.get(task.requesterId);
+      const agent = task.agentId ? await this.deps.agentStore?.get(task.agentId) : undefined;
+      if (user) {
+        await adoptHostExecPolicy({
+          hostExecPolicies: this.deps.hostExecPolicies,
+          auditStore: this.deps.auditStore,
+          user,
+          ...(agent ? { agent } : {}),
+          req: {
+            taskId: task.id,
+            gateId: params.gateId,
+            tool: params.tool ?? "",
+            toolUseId: "",
+            input: params.reqInput as Record<string, unknown>,
+            summary: params.gateTitle,
+          },
+          conversationId: task.threadId,
+          taskId: task.id,
+          prefix: params.adoptPrefix,
+        });
+      }
+    }
+    // 会话内可见的决议通知（尽力而为）
+    await this.deps.messageStore
+      ?.add(
+        task.threadId,
+        "bot",
+        params.approved
+          ? `✅ 审批「${params.gateTitle}」已通过（服务重启后决议），任务自动继续。`
+          : `❌ 审批「${params.gateTitle}」已驳回（服务重启后决议），任务将按驳回调整。`,
+      )
+      .catch(() => undefined);
+    const text = `[审批决议] 你此前在「${params.gateTitle}」处请求审批，用户已${
+      params.approved ? "批准" : "驳回"
+    }${params.reason ? `（理由：${params.reason}）` : ""}。${
+      params.approved
+        ? "该操作允许执行，请从中断处继续任务，不要重复已完成的步骤。"
+        : "该操作不得执行，请调整方案或向用户说明受阻点。"
+    }`;
+    void this
+      .handleMessage({
+        channelId: "web",
+        threadId: task.threadId,
+        conversationId: task.threadId,
+        requesterId: task.requesterId,
+        text,
+        resumeTaskId: task.id,
+      })
+      .catch((e) => console.error("[approval-resume] 审批续跑轮失败", e));
+    return { resumed: true };
   }
 
   /**
@@ -1923,6 +2058,7 @@ export class Orchestrator {
     this.registerActive(user.id, {
       taskId: "",
       conversationId: conversation.id,
+      threadId: msg.threadId,
       taskExcerpt: (msg.text || conversation.title || "").slice(0, 60),
       startedAt: new Date().toISOString(),
     });
@@ -1957,6 +2093,14 @@ export class Orchestrator {
 
   /** 当前任务结束后的接续：同会话队列非空则取出下一条继续独占执行。 */
   private dispatchQueue(conversationId: string): void {
+    // 排水期不接续队列：退回余量（flushPendingQueues 幂等；排水起点的首次退回可能
+    // 早于本条入队——轮收尾时 builder 重派等路径仍会追加）
+    if (this.drainGate?.shouldRejectNewTurn()) {
+      void this.flushPendingQueues("服务正在更新发布").catch((e) =>
+        console.error("[orchestrator] 排水期队列退回失败", e),
+      );
+      return;
+    }
     const queue = this.pendingQueues.get(conversationId);
     const next = queue?.shift();
     if (!next) {
@@ -2068,27 +2212,39 @@ export class Orchestrator {
       const injectedFiles = msg.files?.length
         ? materializeMessageFiles(msg.files, attachmentCwd, conversation.id)
         : msg.files;
-      task = {
-        id: crypto.randomUUID(),
-        channelId: msg.channelId,
-        threadId: msg.threadId,
-        requesterId: msg.requesterId,
-        prompt: appendDefaultSkill(
-          appendMentions(
-            appendMessageFiles(msg.text, injectedFiles, attachmentCwd),
-            msg.mentions,
-            attachmentCwd,
+      if (msg.resumeTaskId) {
+        // 中断恢复续跑（热发布 M2/M3，spec 2026-10-16-hot-deploy-design）：复用原 task 行
+        // （D3 拍板）——interrupted/awaiting_approval --resume--> running；task.prompt 保持
+        // 原文（入库/审计/记忆不被污染），轮输入用 msg.text 合成指令（下方 firstTurnPrompt 消费）
+        const prev = await store.get(msg.resumeTaskId);
+        if (!prev) {
+          throw new RunnerError("TASK_NOT_FOUND", `恢复目标任务不存在: ${msg.resumeTaskId}`);
+        }
+        task = prev;
+        await store.updateStatus(task.id, nextStatus(prev.status, "resume"));
+      } else {
+        task = {
+          id: crypto.randomUUID(),
+          channelId: msg.channelId,
+          threadId: msg.threadId,
+          requesterId: msg.requesterId,
+          prompt: appendDefaultSkill(
+            appendMentions(
+              appendMessageFiles(msg.text, injectedFiles, attachmentCwd),
+              msg.mentions,
+              attachmentCwd,
+            ),
+            agent?.defaultSkill,
           ),
-          agent?.defaultSkill,
-        ),
-        status: "created",
-        skillChain: [],
-        // builder 自动重派的消息：串联回触发补建的原 task
-        ...(msg.builderFromTaskId ? { builderFromTaskId: msg.builderFromTaskId } : {}),
-        createdAt: now,
-        updatedAt: now,
-      };
-      await store.create(task);
+          status: "created",
+          skillChain: [],
+          // builder 自动重派的消息：串联回触发补建的原 task
+          ...(msg.builderFromTaskId ? { builderFromTaskId: msg.builderFromTaskId } : {}),
+          createdAt: now,
+          updatedAt: now,
+        };
+        await store.create(task);
+      }
       // 回填淘汰候选表的 taskId（registerActive 时任务尚未创建）
       const activeEntry = this.userActiveTasks.get(user.id)?.get(conversation.id);
       if (activeEntry) activeEntry.taskId = task.id;
@@ -2097,8 +2253,43 @@ export class Orchestrator {
       // 闲聊短路径先行：保守规则判「明显非任务」的输入直连 chat 兜底，省掉每消息固定的一跳
       // dispatcher LLM 调用（isLikelyChitchat 判定宁漏放不误收——误路由代价=真实任务进无工具 chat）
       let firstTurnPrompt: string | undefined;
+      // 恢复续跑：合成指令替代 task.prompt 作为本轮输入；不走闲聊判定与 dispatcher 重路由
+      if (msg.resumeTaskId) firstTurnPrompt = msg.text;
       let steps: FlowStep[] = task.steps ?? [];
-      if (
+      if (msg.resumeTaskId) {
+        // 恢复续跑：按原任务 agent 归属直连（不再过 dispatcher/闲聊判定）。
+        // 原归属已删除/无权 → 回退 chat 兜底（与闲聊短路径同源：resolveChainAgent 直取常量，
+        // 不经 resolveAgentForUse——内置 chat agent 不在仓库里）
+        let r: Awaited<ReturnType<typeof this.resolveAgentForUse>> | undefined;
+        if (task.agentId) {
+          try {
+            r = await this.resolveAgentForUse(task.agentId, user);
+          } catch {
+            r = undefined;
+          }
+        }
+        if (r) {
+          if (r.gitBlocked) {
+            throw new RunnerError(
+              "DISPATCH_FAILED",
+              `恢复的智能体仓库未授权：${r.gitBlocked}`,
+            );
+          }
+          ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
+        } else {
+          agent = await this.resolveChainAgent(
+            this.deps.agentChain?.chatAgentId,
+            BUILTIN_CHAT_AGENT,
+          );
+        }
+        steps = beginStep(steps, {
+          role: "agent",
+          agentId: agent.id,
+          conversationId: conversation.id,
+          startedAt: new Date().toISOString(),
+        });
+        await store.updateStatus(task.id, "planning", { steps });
+      } else if (
         (this.deps.chitchatShortPath ?? true) &&
         !conversation.agentId &&
         this.deps.agentStore &&

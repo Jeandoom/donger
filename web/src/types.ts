@@ -56,6 +56,8 @@ export type SSEEvent =
     }
   /** 首条用户消息后后端异步自动改名：侧栏/头部标题实时刷新 */
   | { type: "conversation_title"; conversationId: string; title: string }
+  /** 排水广播（热发布优雅停机）：服务更新中，当前对话完成后切换、新消息暂缓 */
+  | { type: "server_draining"; deadline?: number; reason?: string }
   | { type: "error"; error: string };
 
 /** 并发淘汰通知（eviction_notice 事件的前端形态，弹窗展示用） */
