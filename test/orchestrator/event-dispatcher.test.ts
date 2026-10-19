@@ -35,6 +35,7 @@ interface Setup {
   orchestrator: { handleMessage: ReturnType<typeof vi.fn> };
   conversationStore: { createWithAgent: ReturnType<typeof vi.fn> };
   canceller: { cancelPendingApprovals: ReturnType<typeof vi.fn> };
+  messageStore: { add: ReturnType<typeof vi.fn> };
 }
 
 function setup(over: { maxQueuePending?: number } = {}): Setup {
@@ -50,6 +51,10 @@ function setup(over: { maxQueuePending?: number } = {}): Setup {
   const orchestrator = { handleMessage: vi.fn().mockResolvedValue(undefined) };
   const conversationStore = { createWithAgent: vi.fn().mockResolvedValue({ id: "conv-1" }) };
   const canceller = { cancelPendingApprovals: vi.fn() };
+  const messageStore = {
+    add: vi.fn().mockResolvedValue({}),
+    listByConversation: vi.fn().mockResolvedValue([]),
+  };
   const dispatcher = new EventDispatcher({
     eventStore,
     workflowStore,
@@ -58,6 +63,7 @@ function setup(over: { maxQueuePending?: number } = {}): Setup {
     orchestrator,
     conversationStore,
     canceller,
+    messageStore,
     logger,
     maxQueuePending: over.maxQueuePending,
   });
@@ -71,6 +77,7 @@ function setup(over: { maxQueuePending?: number } = {}): Setup {
     orchestrator,
     conversationStore,
     canceller,
+    messageStore,
   };
 }
 
@@ -123,6 +130,22 @@ describe("EventDispatcher", () => {
     expect(run.renderedPrompt).toContain("hello");
     // workflow 运行态回写
     expect((await s.workflowStore.get(wf.id))?.lastRunId).toBe(run.id);
+  });
+
+  it("运行 prompt 以 user 消息落库：对话记录含第一句 query（2026-10-19 反馈）", async () => {
+    const s = setup();
+    const { event, wf } = await makeSubscribed(s, "do: {{triggerOutput}}");
+    await s.dispatcher.fire(event.id, { payload: "hello" }, "schedule");
+    const run = await waitFor(async () => {
+      const list = await runsOf(s, wf.id);
+      return list[0]?.status === "success" ? list[0] : undefined;
+    });
+    expect(s.messageStore.add).toHaveBeenCalledTimes(1);
+    expect(s.messageStore.add).toHaveBeenCalledWith("conv-1", "user", run.renderedPrompt);
+    expect(run.renderedPrompt).toContain("hello");
+    const persistOrder = s.messageStore.add.mock.invocationCallOrder[0] ?? 0;
+    const handleOrder = s.orchestrator.handleMessage.mock.invocationCallOrder[0] ?? 0;
+    expect(persistOrder).toBeLessThan(handleOrder);
   });
 
   it("权限模式以工作流配置为准（2026-10-14）：schema 缺省 full_access，显式配置透传消息级", async () => {

@@ -727,6 +727,7 @@ async function main(): Promise<void> {
     workflowStore,
     runStore: workflowRunStore,
     firingStore: eventFiringStore,
+    messageStore,
     orchestrator: webOrch,
     conversationStore: conversationStore,
     canceller: webChannel,
@@ -735,7 +736,6 @@ async function main(): Promise<void> {
     notifications: notificationService,
     // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5）：
     // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
-    messageStore,
     agentStore,
   });
   const scheduler = new SchedulerService({

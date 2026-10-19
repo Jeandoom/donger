@@ -19,6 +19,7 @@ import type { Workflow } from "../domain/workflow.js";
 import type { WorkflowRun } from "../domain/workflow-run.js";
 import type { EventFiringStore } from "../ports/event-firing-store.js";
 import type { EventStore } from "../ports/event-store.js";
+import type { MessageStore } from "../ports/message-store.js";
 import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import { NotFoundError, ValidationError } from "../util/errors.js";
@@ -55,9 +56,7 @@ export interface EventDispatcherDeps {
    */
   systemEventSink?: { dispatch(eventName: string, payload: string): Promise<void> };
   /** 消息读取：run 终态抽取最终 assistant 回复填 payload（缺省=text 置空） */
-  messageStore?: {
-    listByConversation(id: string): Promise<Array<{ role: string; text: string }>>;
-  };
+  messageStore?: MessageStore;
   /** 智能体档案：payload 的 agentName（缺省降级 agentId） */
   agentStore?: { get(id: string): Promise<{ name?: string } | undefined> };
 }
@@ -248,6 +247,16 @@ export class EventDispatcher {
         conversationId: conv?.id ?? run.conversationId ?? null,
         renderedPrompt: prompt,
       });
+      if (conv && this.deps.messageStore) {
+        await this.deps.messageStore
+          .add(conv.id, "user", prompt)
+          .catch((e: Error) =>
+            this.deps.logger.error(
+              { runId: run.id, err: e.message },
+              "workflow run: persist user prompt failed",
+            ),
+          );
+      }
       const agentConversationId = await orchestrator.handleMessage({
         channelId: "web",
         threadId: conv?.id ?? run.id,
