@@ -16,7 +16,6 @@ import {
   collectPromptAllowSections,
   type HostExecPolicyRule,
   resolveHostExecPolicy,
-  validateAdoptPrefix,
 } from "../domain/host-exec-policy.js";
 import type { KbLibrary } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
@@ -55,6 +54,7 @@ import type { Channel } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
+import type { ApprovalStore } from "../ports/approval-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { HostExecPolicyStore } from "../ports/host-exec-policy-store.js";
 import type { KbLibraryStore, KbRevisionStore, KbShareStore } from "../ports/kb-store.js";
@@ -74,6 +74,7 @@ import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
 import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
+import { adoptHostExecPolicy } from "./approval-adopt.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
 import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { materializeMessageFiles } from "./attachment-materializer.js";
@@ -129,6 +130,11 @@ export interface OrchestratorDeps {
    * hostExecAllowlist 旧行为（合成等价规则），装配后策略表为单一真源。
    */
   hostExecPolicies?: HostExecPolicyStore;
+  /**
+   * 审批决议落库（热发布 M3，spec 2026-10-16-hot-deploy-design §6）：请求即落库 + 决议幂等；
+   * 缺省=决议仅内存（重启后审批挂起态丢失，sweep 标 failed 旧口径）。
+   */
+  approvalStore?: ApprovalStore;
   /**
    * SSH 出站档位取值器（旁门治理 M2，specs/2026-10-12 §7；app_config ssh_egress.mode）：
    * "ask"（缺省）=ssh 系 Bash 命令走 ssh-egress force 审批门；"deny"=审批 resolver 侧
@@ -1021,6 +1027,7 @@ export class Orchestrator {
       this.deps.notificationService,
       p.user.id,
       p.user.role,
+      this.deps.approvalStore,
     );
     // AskUserQuestion 交互桥：渠道未实现 requestUserInput 时 resolver 内部空答案降级
     const innerQuestionResolver = makeQuestionResolver(channel, p.threadId);
@@ -1091,63 +1098,19 @@ export class Orchestrator {
         clearPending();
       }
       // 一键成策略（M2，specs/2026-10-12 §8.1）：admin 轮批准 host_exec 且勾选「记住」→
-      // 前缀落策略表（agent 作用域优先；同型规则已存在则跳过防重复）。落库失败不影响
+      // 前缀落策略表（热发布 M3 抽出共享：跨重启审批续跑同走此路径）。落库失败不影响
       // 已批准的执行。
-      if (
-        decision.approved &&
-        decision.adoptPrefix &&
-        p.user.role === "admin" &&
-        req.tool === "mcp__donger-host__host_exec" &&
-        this.deps.hostExecPolicies
-      ) {
-        const prefixError = validateAdoptPrefix(decision.adoptPrefix);
-        const hostCode = typeof req.input.hostCode === "string" ? req.input.hostCode : "";
-        if (!prefixError && hostCode) {
-          try {
-            const matchValue = decision.adoptPrefix.trim();
-            const existing = await this.deps.hostExecPolicies.list();
-            const duplicate = existing.some(
-              (r) =>
-                r.enabled &&
-                r.hostCode === hostCode &&
-                r.tool === "host_exec" &&
-                r.matchKind === "prefix" &&
-                r.decision === "allow" &&
-                r.scopeKind === (p.agent ? "agent" : "user") &&
-                r.scopeRef === (p.agent?.id ?? p.user.id) &&
-                r.matchValue === matchValue,
-            );
-            if (!duplicate) {
-              const rule = await this.deps.hostExecPolicies.create(
-                {
-                  hostCode,
-                  tool: "host_exec",
-                  scopeKind: p.agent ? "agent" : "user",
-                  scopeRef: p.agent?.id ?? p.user.id,
-                  matchKind: "prefix",
-                  matchValue,
-                  decision: "allow",
-                  unattended: "inherit",
-                  note: `审批卡一键放行（来源：${String(req.input.command ?? "").slice(0, 120)}）`,
-                },
-                { createdBy: p.user.id },
-              );
-              void this.deps.auditStore
-                .record({
-                  conversationId: p.conversation.id,
-                  taskId: p.task.id,
-                  userId: p.user.id,
-                  seq: -1,
-                  type: "policy_decision",
-                  text: `审批卡一键成策略：host=${hostCode} policy=${rule.id} prefix=${matchValue}`,
-                  recordedAt: new Date().toISOString(),
-                })
-                .catch(() => {});
-            }
-          } catch {
-            // 策略落库失败不阻断已批准的命令执行
-          }
-        }
+      if (decision.approved && decision.adoptPrefix) {
+        await adoptHostExecPolicy({
+          hostExecPolicies: this.deps.hostExecPolicies,
+          auditStore: this.deps.auditStore,
+          user: p.user,
+          agent: p.agent,
+          req,
+          conversationId: p.conversation.id,
+          taskId: p.task.id,
+          prefix: decision.adoptPrefix,
+        });
       }
       return decision;
     };
@@ -1900,6 +1863,94 @@ export class Orchestrator {
       }
     }
     return count;
+  }
+
+  /**
+   * 跨重启审批续跑（热发布 M3）：重启重臂的审批被决议后由 web-channel 决议回调调用。
+   * 复用原 task 行（D3：awaiting_approval --resume--> running），以合成决议指令经
+   * handleMessage 续跑——agent 靠 resume 指针看得到中断前的全部会话上下文。
+   * adoptPrefix（通过并记住）走与轮内一致的共享策略落库。
+   */
+  async resumeAfterApproval(params: {
+    taskId: string;
+    gateId: string;
+    gateTitle: string;
+    approved: boolean;
+    reason?: string;
+    adoptPrefix?: string;
+    /** 审批行 payload 还原的 req.input（adopt 策略落库所需；hostCode/command） */
+    reqInput?: unknown;
+    tool?: string;
+  }): Promise<{ resumed: boolean; reason?: string }> {
+    const task = await this.deps.store.get(params.taskId);
+    if (!task) return { resumed: false, reason: "task_not_found" };
+    if (task.status !== "awaiting_approval") {
+      // 已被取消/失败/完成：决议迟到，行收口即可不续跑
+      return { resumed: false, reason: `task_status_${task.status}` };
+    }
+    const conversation = await this.deps.conversationStore.get(task.threadId);
+    if (!conversation) return { resumed: false, reason: "conversation_not_found" };
+    // 双保险（respond 路由已 409 拦过）：会话忙（用户已发新任务）时不抢
+    if (this.isConversationBusy(task.threadId)) {
+      return { resumed: false, reason: "conversation_busy" };
+    }
+    // adopt（通过并记住）：payload 还原 req 供策略落库（与轮内同一路径）
+    if (
+      params.approved &&
+      params.adoptPrefix &&
+      params.reqInput &&
+      typeof params.reqInput === "object"
+    ) {
+      const user = await this.deps.userStore.get(task.requesterId);
+      const agent = task.agentId ? await this.deps.agentStore?.get(task.agentId) : undefined;
+      if (user) {
+        await adoptHostExecPolicy({
+          hostExecPolicies: this.deps.hostExecPolicies,
+          auditStore: this.deps.auditStore,
+          user,
+          ...(agent ? { agent } : {}),
+          req: {
+            taskId: task.id,
+            gateId: params.gateId,
+            tool: params.tool ?? "",
+            toolUseId: "",
+            input: params.reqInput as Record<string, unknown>,
+            summary: params.gateTitle,
+          },
+          conversationId: task.threadId,
+          taskId: task.id,
+          prefix: params.adoptPrefix,
+        });
+      }
+    }
+    // 会话内可见的决议通知（尽力而为）
+    await this.deps.messageStore
+      ?.add(
+        task.threadId,
+        "bot",
+        params.approved
+          ? `✅ 审批「${params.gateTitle}」已通过（服务重启后决议），任务自动继续。`
+          : `❌ 审批「${params.gateTitle}」已驳回（服务重启后决议），任务将按驳回调整。`,
+      )
+      .catch(() => undefined);
+    const text = `[审批决议] 你此前在「${params.gateTitle}」处请求审批，用户已${
+      params.approved ? "批准" : "驳回"
+    }${params.reason ? `（理由：${params.reason}）` : ""}。${
+      params.approved
+        ? "该操作允许执行，请从中断处继续任务，不要重复已完成的步骤。"
+        : "该操作不得执行，请调整方案或向用户说明受阻点。"
+    }`;
+    void this
+      .handleMessage({
+        channelId: "web",
+        threadId: task.threadId,
+        conversationId: task.threadId,
+        requesterId: task.requesterId,
+        text,
+        resumeTaskId: task.id,
+      })
+      .catch((e) => console.error("[approval-resume] 审批续跑轮失败", e));
+    return { resumed: true };
   }
 
   /**

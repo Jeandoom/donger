@@ -28,6 +28,7 @@ import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { SkillJobRunner } from "./adapters/skill-jobs.js";
 import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
+import { SqliteApprovalStore } from "./adapters/sqlite-approval-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
@@ -182,6 +183,10 @@ async function main(): Promise<void> {
     return info ? { path: info.path, pinned: info.pinned } : undefined;
   });
   const commentStore = new SqliteCommentStore(db);
+  // 审批决议落库（热发布 M3，spec 2026-10-16-hot-deploy-design §6）：请求即落库 +
+  // 决议幂等 + 重启重臂；跨重启决议续跑见下方 onApprovalDecision 装配
+  const approvalStore = new SqliteApprovalStore(db);
+  approvalStore.migrate();
   commentStore.migrate();
   const feedbackStore = new SqliteFeedbackStore(db);
   feedbackStore.migrate();
@@ -422,6 +427,7 @@ async function main(): Promise<void> {
       credentialSets,
       sshRunner,
       hostExecPolicies: hostExecPolicyStore,
+      approvalStore,
       // SSH 出站档位（旁门治理 M2）：app_config flag 现取（同步读），改即生效
       sshEgressMode: () =>
         moduleConfigStore.getFlag(SSH_EGRESS_MODE_FLAG) === "deny" ? "deny" : "ask",
@@ -821,6 +827,69 @@ async function main(): Promise<void> {
     webOrch.setPermissionMode(conversationId, mode);
   // 回调链路专用投递：await 整轮，失败把错误落为 bot 消息（结果查询端点据此收敛 status）
   webChannelDeps.conversationBusyGetter = (conversationId) => webOrch.isBusy(conversationId);
+  // 审批决议落库（热发布 M3）：幂等落库在 respond 路由内；这里接决议后置效果——
+  // 审计落痕 + approval.decided 通知（两条路径都发）+ 跨重启续跑（hadResolver=false）
+  webChannelDeps.approvalStore = approvalStore;
+  webChannelDeps.onApprovalDecision = async (d) => {
+    try {
+      const row = await approvalStore.get(d.approvalId);
+      const task = row ? await store.get(row.taskId) : undefined;
+      // 审计落痕（此前批/拒完全无痕，M3 补全）
+      if (row) {
+        await auditStore
+          .record({
+            conversationId: d.conversationId,
+            taskId: row.taskId,
+            userId: d.responderId ?? task?.requesterId ?? "unknown",
+            seq: -1,
+            type: "approval_decision",
+            text: `审批${d.approved ? "通过" : "驳回"}：${row.title}`,
+            toolInput: JSON.stringify({
+              gateId: row.gateId,
+              approved: d.approved,
+              ...(d.reason ? { reason: d.reason } : {}),
+              ...(d.responderId ? { responderId: d.responderId } : {}),
+            }),
+            recordedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+      // 决议侧通知（此前只有请求侧 approval.requested）
+      if (task) {
+        void notificationService
+          .notify({
+            event: "approval.decided",
+            recipients: [{ kind: "user", userId: task.requesterId }],
+            title: `审批已${d.approved ? "通过" : "驳回"}：${row?.title ?? ""}`,
+            body: d.reason ? String(d.reason).slice(0, 400) : "",
+            link: `/?conv=${d.conversationId}`,
+            dedupeKey: `approval-decided:${d.approvalId}`,
+          })
+          .catch((e) => console.error("[web] 审批决议通知失败", e));
+      }
+      // 跨重启续跑：内存 resolver 已续原轮的（hadResolver=true）不重复触发
+      if (!d.hadResolver && row) {
+        let reqInput: unknown;
+        try {
+          reqInput = row.payload ? (JSON.parse(row.payload) as { input?: unknown }).input : undefined;
+        } catch {
+          reqInput = undefined;
+        }
+        await webOrch.resumeAfterApproval({
+          taskId: row.taskId,
+          gateId: row.gateId,
+          gateTitle: row.title,
+          approved: d.approved,
+          ...(d.reason ? { reason: d.reason } : {}),
+          ...(d.adoptPrefix ? { adoptPrefix: d.adoptPrefix } : {}),
+          ...(reqInput !== undefined ? { reqInput } : {}),
+          ...(row.tool ? { tool: row.tool } : {}),
+        });
+      }
+    } catch (e) {
+      console.error("[web] 审批决议后置处理失败", e);
+    }
+  };
   webChannelDeps.callbackSubmit = async (msg) => {
     const conversationId = msg.conversationId ?? msg.threadId;
     try {
@@ -884,12 +953,15 @@ async function main(): Promise<void> {
     taskStore: store,
     messageStore,
     auditStore,
+    approvalStore,
     conversationStore,
     userStore,
   });
   if (swept.interrupted > 0) log.warn({ count: swept.interrupted }, "已将遗留 running 任务标记为中断");
-  if (swept.awaitingApproval > 0)
-    log.warn({ count: swept.awaitingApproval }, "已将遗留审批挂起任务标记为中断");
+  if (swept.approvalRearmed > 0)
+    log.warn({ count: swept.approvalRearmed }, "遗留审批挂起任务已重臂（决议后自动续跑）");
+  if (swept.approvalFailed > 0)
+    log.warn({ count: swept.approvalFailed }, "遗留审批挂起任务无落库行，已标失败");
 
   // 中断自动续跑（热发布 M2）：interrupted 轮以合成指令续跑（复用原 task 行，D3）；
   // 不可续跑（非 Web/归档/工作流会话/超上限/开关关）→ 标失败并通知重发

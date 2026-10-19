@@ -569,6 +569,24 @@ export interface WebChannelDeps {
   agentCallbackStore?: AgentCallbackStore;
   /** 会话忙碌查询（回调结果查询的 status 判定用）；缺省=一律视为不忙 */
   conversationBusyGetter?: (conversationId: string) => boolean;
+  /**
+   * 审批决议落库（热发布 M3，spec 2026-10-16-hot-deploy-design §6）；缺省=决议仅内存。
+   * 装配后：respond 路由幂等落库（pending→decided 单条事务）、重启重臂（getPendingApproval
+   * 从 DB 回卡）、决议审计/通知/跨重启续跑经 onApprovalDecision 回调由装配方接手。
+   */
+  approvalStore?: import("../ports/approval-store.js").ApprovalStore;
+  /** 审批决议后置回调（两条路径都触发）：审计落痕 + approval.decided 通知 + 跨重启续跑 */
+  onApprovalDecision?: (d: {
+    approvalId: string;
+    conversationId: string;
+    approved: boolean;
+    reason?: string;
+    comment?: string;
+    responderId?: string;
+    adoptPrefix?: string;
+    /** true=本进程内存 resolver 已续原轮（无需续跑）；false=重启重臂，需接续跑 */
+    hadResolver: boolean;
+  }) => Promise<void>;
   /** 回调链路专用投递：await 整轮、失败落 bot 错误消息（区别于普通通道的 fire-and-forget）；缺省=端点 503 */
   callbackSubmit?: (msg: IncomingMessage) => Promise<void>;
   /** 回调发起限流（次/分钟/token，默认 10） */
@@ -978,10 +996,12 @@ export class WebChannel implements Channel {
   async requestApproval(
     threadId: string,
     card: ApprovalCard,
+    approvalIdParam?: string,
   ): Promise<{ approved: boolean; reason?: string; adoptPrefix?: string }> {
     // 审批实例 id 用一次性随机值：gateId 是全局静态常量（deploy/authoring/git-write），
-    // 以它做 Map 键会被并发会话互相覆盖，造成「人审的卡片与实际放行的命令不一致」
-    const approvalId = crypto.randomUUID();
+    // 以它做 Map 键会被并发会话互相覆盖，造成「人审的卡片与实际放行的命令不一致」。
+    // 热发布 M3：approval-flow 生成并与 approval_requests 落库行同键传入（缺省=旧渠道自造）
+    const approvalId = approvalIdParam ?? crypto.randomUUID();
     // V21 修复：先把审批卡广播给会话订阅者（此前卡片从不推送，前端/CLI 全程看不到门）
     this.broadcastToConversation(threadId, {
       type: "approval_card",
@@ -1029,6 +1049,10 @@ export class WebChannel implements Channel {
       });
       pending.resolve({ approved: false, reason: "任务已中断" });
     }
+    // 落库行同步收口（热发布 M3）：pending 行不收会变成重启后的僵尸重臂卡
+    void this.deps.approvalStore
+      ?.cancelByConversation(conversationId)
+      .catch((e) => console.error("[web] 审批行取消失败", e));
   }
 
   /** 并发淘汰通知：SSE 推给（新任务的）目标会话，前端弹窗展示被强制结束任务的详情 */
@@ -1067,15 +1091,17 @@ export class WebChannel implements Channel {
 
   /**
    * 会话当前挂起审批（GET pending-approval 用）：刷新/换端后据此恢复锚定审批卡。
+   * 双源（热发布 M3）：内存活实例优先；miss 查 DB pending 行（重启重臂——原轮的
+   * resolver 已随进程消失，但卡片凭落库行重新锚定，决议走跨重启续跑）。
    * 属主判定由 routeGuard 执行，与 pending-question 同模式。
    */
-  getPendingApproval(conversationId: string): {
+  async getPendingApproval(conversationId: string): Promise<{
     approvalId: string;
     gateId: string;
     title: string;
     summary: string;
     adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
-  } | null {
+  } | null> {
     for (const [approvalId, pending] of this.pendingApprovalResolves) {
       if (pending.conversationId === conversationId) {
         return {
@@ -1087,7 +1113,29 @@ export class WebChannel implements Channel {
         };
       }
     }
-    return null;
+    const rows = this.deps.approvalStore
+      ? await this.deps.approvalStore.listPendingByConversation(conversationId)
+      : [];
+    const row = rows[0];
+    if (!row) return null;
+    let adoptDraft: { hostCode: string; prefix: string; agentId?: string } | undefined;
+    if (row.payload) {
+      try {
+        const parsed = JSON.parse(row.payload) as {
+          adoptDraft?: { hostCode: string; prefix: string; agentId?: string };
+        };
+        if (parsed.adoptDraft) adoptDraft = parsed.adoptDraft;
+      } catch {
+        // payload 损坏按无草稿处理
+      }
+    }
+    return {
+      approvalId: row.id,
+      gateId: row.gateId,
+      title: row.title,
+      summary: row.summary ?? "",
+      ...(adoptDraft ? { adoptDraft } : {}),
+    };
   }
 
   /**
@@ -1626,31 +1674,29 @@ export class WebChannel implements Channel {
     };
 
     const pending = this.pendingApprovalResolves.get(approvalId);
-    if (!pending) {
-      // 审批决议的 resolver 在内存中；进程重启后原审批卡已失效（重启清扫会标失败任务）
+    // 双源查找（热发布 M3）：内存活实例（本进程轮在等）或 DB pending 行（重启重臂）
+    const row =
+      pending || !this.deps.approvalStore
+        ? undefined
+        : await this.deps.approvalStore.get(approvalId);
+    if (!pending && (!row || row.status !== "pending")) {
+      // 既无内存 resolver 也无 pending 行：审批实例已消亡（已决议/被取消/未落库的升级前存量）
       res.writeHead(404);
       res.end(JSON.stringify({ error: "approval not found or expired" }));
       return;
     }
+    const conversationId = pending?.conversationId ?? row?.conversationId ?? "";
     // 会话属主校验（多用户隔离）：仅会话 owner 可决议；会话查不到按 fail-closed 拒绝
     //（内存 pending 与会话行生命周期不同步，取不到时放行 = 任意登录用户可决议他人审批门）
     if (this.sessionStore) {
-      const conv = await this.deps.conversationStore?.get(pending.conversationId);
+      const conv = await this.deps.conversationStore?.get(conversationId);
       if (!conv || !authUserId || conv.userId !== authUserId) {
         res.writeHead(403);
         res.end(JSON.stringify({ error: "forbidden: 仅会话属主可审批" }));
         return;
       }
     }
-    this.pendingApprovalResolves.delete(approvalId);
-    // 一次性实例已被本端消费：同会话其余在看的标签页据事件撤卡，避免点击残卡得到 404
-    this.broadcastToConversation(pending.conversationId, {
-      type: "approval_closed",
-      approvalId,
-      reason: body.approved ? "已通过" : "已驳回",
-    });
-    // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
-    pending.resolve({
+    const decisionPayload = {
       approved: body.approved,
       reason: body.reason,
       comment: body.comment?.trim() || undefined,
@@ -1660,7 +1706,74 @@ export class WebChannel implements Channel {
         typeof body.adoptPrefix === "string" && body.adoptPrefix.trim()
           ? body.adoptPrefix.trim()
           : undefined,
-    });
+    };
+    // 重臂路径 + 会话忙（热发布 M3）：用户重启后已发新任务再点旧卡 → 拒绝决议，
+    // 行保持 pending（用户可取消旧任务收口），旧任务不与新任务抢会话
+    if (!pending && row) {
+      const busy = this.deps.conversationBusyGetter?.(conversationId) ?? false;
+      if (busy) {
+        res.writeHead(409);
+        res.end(
+          JSON.stringify({
+            error: "该会话已有新任务在执行，旧审批不再续跑；请先处理新任务，或从执行列表取消旧任务。",
+          }),
+        );
+        return;
+      }
+    }
+    // DB 先行（热发布 M3）：单条事务 pending→decided，changes=0 即他端已决议 → 409 幂等。
+    // 落库成功后才解内存 resolver/触发续跑——进程在两者之间死亡，重启后按已决议行收口。
+    if (this.deps.approvalStore) {
+      const ok = await this.deps.approvalStore.decide(
+        approvalId,
+        decisionPayload.approved ? "approved" : "rejected",
+        {
+          approved: decisionPayload.approved,
+          ...(decisionPayload.reason ? { reason: decisionPayload.reason } : {}),
+          ...(decisionPayload.comment ? { comment: decisionPayload.comment } : {}),
+          ...(decisionPayload.responderId ? { responderId: decisionPayload.responderId } : {}),
+          ...(decisionPayload.adoptPrefix ? { adoptPrefix: decisionPayload.adoptPrefix } : {}),
+        },
+        new Date().toISOString(),
+      );
+      if (!ok) {
+        res.writeHead(409);
+        res.end(JSON.stringify({ error: "该审批已被决议（他端已处理），请刷新" }));
+        return;
+      }
+    }
+    if (pending) {
+      this.pendingApprovalResolves.delete(approvalId);
+      // 一次性实例已被本端消费：同会话其余在看的标签页据事件撤卡，避免点击残卡得到 404
+      this.broadcastToConversation(pending.conversationId, {
+        type: "approval_closed",
+        approvalId,
+        reason: body.approved ? "已通过" : "已驳回",
+      });
+      // 审批可带评论（T17.3）：resolver 侧按 taskId 落 task_comments
+      pending.resolve(decisionPayload);
+    } else if (row) {
+      // 重臂路径（热发布 M3）：无内存 resolver 可解，撤残卡 + 走跨重启续跑回调
+      this.broadcastToConversation(conversationId, {
+        type: "approval_closed",
+        approvalId,
+        reason: body.approved ? "已通过" : "已驳回",
+      });
+    }
+    // 决议后置回调（两条路径都触发）：审计落痕 + approval.decided 通知；
+    // hadResolver=false 时由装配方接跨重启续跑（resumeAfterApproval）
+    void this.deps
+      .onApprovalDecision?.({
+        approvalId,
+        conversationId,
+        approved: decisionPayload.approved,
+        ...(decisionPayload.reason ? { reason: decisionPayload.reason } : {}),
+        ...(decisionPayload.comment ? { comment: decisionPayload.comment } : {}),
+        ...(decisionPayload.responderId ? { responderId: decisionPayload.responderId } : {}),
+        ...(decisionPayload.adoptPrefix ? { adoptPrefix: decisionPayload.adoptPrefix } : {}),
+        hadResolver: !!pending,
+      })
+      .catch((e) => console.error("[web] 审批决议回调失败", e));
     res.writeHead(200);
     res.end(JSON.stringify({ ok: true }));
   }
@@ -3900,7 +4013,7 @@ export class WebChannel implements Channel {
     const pendingAMatch = url.match(/^\/api\/conversations\/([\w-]+)\/pending-approval$/);
     if (pendingAMatch && req.method === "GET") {
       const conversationId = pendingAMatch[1] ?? "";
-      this.json(res, { approval: this.getPendingApproval(conversationId) });
+      this.json(res, { approval: await this.getPendingApproval(conversationId) });
       return;
     }
 
