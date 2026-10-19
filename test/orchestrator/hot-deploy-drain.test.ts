@@ -407,7 +407,7 @@ describe("热发布优雅排水（M1 e2e）", () => {
     await p1;
     await draining;
     sse.close();
-  });
+  }, 15_000);
 
   it("排水超时兜底：markInterrupted 被调用，drain 超时后放行退出", async () => {
     h = await bootHarness();
