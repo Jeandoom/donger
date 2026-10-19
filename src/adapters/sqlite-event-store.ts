@@ -70,7 +70,7 @@ export class SqliteEventStore implements EventStore {
           const sched = cfg.scheduler as Record<string, unknown> | undefined;
           type = "schedule";
           nextCfg = {
-            cron: sched?.cron ?? "@daily",
+            cron: sched?.cron ?? "0 9 * * *",
             mode: "conditional",
             source: sched?.source,
             matcher: sched?.matcher,

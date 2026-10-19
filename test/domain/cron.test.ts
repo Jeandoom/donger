@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { nextCronFire, validateCronExpr } from "../../src/orchestrator/cron-next.js";
+import { nextCronFire, validateCronExpr } from "../../src/domain/cron.js";
 
-describe("cron-next", () => {
+describe("domain/cron", () => {
   it("validateCronExpr：合法与非法边界", () => {
     expect(validateCronExpr("*/5 * * * *")).toBe(true);
     expect(validateCronExpr("0 9 * * 1-5")).toBe(true);
