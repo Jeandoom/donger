@@ -44,10 +44,30 @@ interface CronBuilderProps {
  * 且一动控件即整体覆写真实表达式。无法反填的表达式落直输模式保留原文。
  */
 export function CronBuilder({ value, onChange }: CronBuilderProps) {
-  const [preset, setPreset] = useState<PresetState>(defaultPreset);
-  const [fields, setFields] = useState(defaultFields);
-  const [mode, setMode] = useState<"preset" | "custom" | "raw">("preset");
-  const [manual, setManual] = useState<string | null>(null);
+  // 挂载初值反填（2026-10-19 编辑页回填 bug 修复）：编辑页在 load 完成后才渲染表单，
+  // 本组件挂载时 value 首帧即存量表达式；此前内部状态恒用默认值，generated 恒显示
+  // 构建器默认（如每天 9:00），造成「保存成功但刷新又变回去」的假象。三级尽力：
+  // 预设反填 → 高级五字段 → 直输原文。新建事件（默认 0 9 * * *）行为不变。
+  const [initialState] = useState(() => {
+    const matched = matchPreset(value);
+    if (matched) {
+      return { preset: matched, fields: defaultFields(), mode: "preset" as const, manual: null as string | null };
+    }
+    const parsed = parseFieldsFromExpr(value);
+    if (parsed) {
+      return {
+        preset: { ...defaultPreset(), kind: "custom" as const },
+        fields: parsed,
+        mode: "custom" as const,
+        manual: null as string | null,
+      };
+    }
+    return { preset: defaultPreset(), fields: defaultFields(), mode: "raw" as const, manual: value };
+  });
+  const [preset, setPreset] = useState<PresetState>(initialState.preset);
+  const [fields, setFields] = useState(initialState.fields);
+  const [mode, setMode] = useState<"preset" | "custom" | "raw">(initialState.mode);
+  const [manual, setManual] = useState<string | null>(initialState.manual);
   const seenValueRef = useRef(value);
   const emittedRef = useRef<string | null>(null);
 
