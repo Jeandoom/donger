@@ -54,7 +54,7 @@ import {
   withKindKeySpecs,
 } from "../domain/credential.js";
 import { type Event, generateCallPath, parseEventInput } from "../domain/event.js";
-import { buildFeedbackCreatedPayload } from "../domain/event-payloads.js";
+import { buildFeedbackCreatedPayload, isExecutionCompletedEventName } from "../domain/event-payloads.js";
 import {
   AgentExtensionDirectoriesInputSchema,
   isRelativeExtensionPath,
@@ -444,11 +444,16 @@ type SSEEvent =
       deadline?: number;
       reason?: string;
     }
+  | {
+      /** 断流重连缺口已超缓冲（热发布 M4）：客户端放弃 Last-Event-ID 增量，全量补拉 */
+      type: "stream_resync";
+      lastSeq: number;
+    }
   | { type: "error"; error: string };
 
-/** 向 SSE 客户端写事件的回调 */
+/** 向 SSE 客户端写事件的回调（seq=流内单调序号，热发布 M4 断流重放用） */
 type SSEClient = {
-  write(event: SSEEvent): void;
+  write(event: SSEEvent, seq?: number): void;
   close(): void;
 };
 
@@ -1243,13 +1248,33 @@ export class WebChannel implements Channel {
     });
   }
 
+  /** 每会话流内单调 seq（断流重放游标）+ 环形缓冲（热发布 M4） */
+  private readonly streamSeqs = new Map<string, number>();
+  private readonly streamBuffers = new Map<string, Array<{ seq: number; event: SSEEvent; at: number }>>();
+  /** 缓冲上限：500 条或 15 分钟（先到先裁；超出 → stream_resync 全量补拉兜底） */
+  private static readonly STREAM_BUFFER_MAX = 500;
+  private static readonly STREAM_BUFFER_TTL_MS = 15 * 60 * 1000;
+
   /** 向特定会话广播事件 */
   private broadcastToConversation(conversationId: string, event: SSEEvent): void {
     const clients = this.sseClients.get(conversationId);
-    if (!clients) return;
+    if (!clients || clients.size === 0) return;
+    // 无订阅者不占 seq；有订阅者才进缓冲（重放只服务「断线窗口内」的事件）
+    const seq = (this.streamSeqs.get(conversationId) ?? 0) + 1;
+    this.streamSeqs.set(conversationId, seq);
+    const buffer = this.streamBuffers.get(conversationId) ?? [];
+    const now = Date.now();
+    buffer.push({ seq, event, at: now });
+    while (
+      buffer.length > WebChannel.STREAM_BUFFER_MAX ||
+      (buffer.length > 1 && now - (buffer[0]?.at ?? now) > WebChannel.STREAM_BUFFER_TTL_MS)
+    ) {
+      buffer.shift();
+    }
+    this.streamBuffers.set(conversationId, buffer);
     for (const client of clients) {
       try {
-        client.write(event);
+        client.write(event, seq);
       } catch {
         // 客户端可能已断开，忽略错误
       }
@@ -1600,8 +1625,9 @@ export class WebChannel implements Channel {
     });
 
     const client: SSEClient = {
-      write: (event: SSEEvent) => {
-        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      write: (event: SSEEvent, seq?: number) => {
+        const idLine = seq !== undefined ? `id: ${seq}\n` : "";
+        res.write(`${idLine}event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       },
       close: () => {
         try {
@@ -1613,6 +1639,28 @@ export class WebChannel implements Channel {
     };
 
     this.subscribeSSE(conversationId, client);
+
+    // 断流重放（热发布 M4，spec 2026-10-16-hot-deploy-design §7.2）：浏览器 EventSource
+    // 重连自动携带 Last-Event-ID；缓冲能接上则按序重放缺口（结构化事件零丢失），
+    // 缺口已超出缓冲裁剪线 → stream_resync 让客户端全量补拉
+    const lastEventIdHeader = req.headers["last-event-id"];
+    const lastEventId =
+      typeof lastEventIdHeader === "string" ? Number.parseInt(lastEventIdHeader, 10) : Number.NaN;
+    if (Number.isFinite(lastEventId)) {
+      const buffered = this.streamBuffers.get(conversationId) ?? [];
+      const replayable = buffered.filter((e) => e.seq > lastEventId);
+      const oldest = buffered[0]?.seq;
+      if (
+        buffered.length > 0 &&
+        replayable.length > 0 &&
+        oldest !== undefined &&
+        oldest <= lastEventId + 1
+      ) {
+        for (const entry of replayable) client.write(entry.event, entry.seq);
+      } else {
+        client.write({ type: "stream_resync", lastSeq: lastEventId });
+      }
+    }
 
     // 发送连接确认
     client.write({ type: "text", text: "" });
@@ -6168,14 +6216,36 @@ export class WebChannel implements Channel {
    * workflow 引用校验：事件必须本人所有（事件不可共享）；agent 必须本人可使用
    * （自有或被分享启用）。零校验时执行可借他人 workflow 携带的 agent/事件装备运行
    * （2026-09-24 审计，语义沿用）。
+   * 完成事件自订阅静态拒绝（spec 2026-10-19-execution-completion-events-design §8，
+   * D5）：订阅「本工作流自身」或「本工作流绑定智能体」的完成事件会无限自触发。
    */
   private async assertWorkflowRefsUsable(
     input: Pick<Workflow, "eventId" | "agentId">,
     uid: string,
+    workflowId?: string,
   ): Promise<void> {
     const event = await this.deps.eventStore?.get(input.eventId);
     if (!event || event.ownerId !== uid) {
       throw new ValidationError("EVENT_REF_INVALID", "workflow 订阅的事件不存在或非本人所有");
+    }
+    if (event.type === "system" && event.system && isExecutionCompletedEventName(event.system.name)) {
+      const subjects = event.system.subjects ?? [];
+      if (event.system.name === "agent.execution.completed" && subjects.includes(input.agentId)) {
+        throw new ValidationError(
+          "SELF_SUBSCRIPTION_INVALID",
+          "不能订阅本工作流自身智能体的完成事件（每次执行都会再次触发自身，无限循环）",
+        );
+      }
+      if (
+        event.system.name === "workflow.execution.completed" &&
+        workflowId &&
+        subjects.includes(workflowId)
+      ) {
+        throw new ValidationError(
+          "SELF_SUBSCRIPTION_INVALID",
+          "不能订阅本工作流自身的完成事件（每次执行都会再次触发自身，无限循环）",
+        );
+      }
     }
     if (this.deps.agentStore) {
       const agent = await this.deps.agentStore.get(input.agentId);
@@ -6187,6 +6257,45 @@ export class WebChannel implements Channel {
         : false;
       if (!canUseAgent(agent, { id: uid, role: "user" }, granted)) {
         throw new ValidationError("AGENT_REF_INVALID", "workflow 引用的 agent 不可用");
+      }
+    }
+  }
+
+  /**
+   * 完成事件主体校验（spec §4.2，D4）：智能体须本人可使用（自有或被分享，对齐
+   * assertWorkflowRefsUsable 的 canUse 口径）；工作流须本人所有（他人工作流的 run
+   * 属主非本人，订阅了也永不命中，直接拒绝避免误导）。
+   */
+  private async assertExecutionEventSubjects(
+    system: { name: string; subjects?: string[] },
+    uid: string,
+  ): Promise<void> {
+    const subjects = system.subjects ?? [];
+    if (system.name === "agent.execution.completed") {
+      for (const agentId of subjects) {
+        const agent = await this.deps.agentStore?.get(agentId);
+        if (!agent) {
+          throw new ValidationError("SUBJECT_REF_INVALID", "完成事件引用的智能体不存在");
+        }
+        const granted = this.deps.agentShareStore
+          ? await this.deps.agentShareStore.isGranted(agentId, uid)
+          : false;
+        if (!canUseAgent(agent, { id: uid, role: "user" }, granted)) {
+          throw new ValidationError(
+            "SUBJECT_REF_INVALID",
+            "完成事件引用的智能体不可用（需本人所有或被分享）",
+          );
+        }
+      }
+      return;
+    }
+    for (const workflowId of subjects) {
+      const w = await this.deps.workflowStore?.get(workflowId);
+      if (!w || w.ownerId !== uid) {
+        throw new ValidationError(
+          "SUBJECT_REF_INVALID",
+          "完成事件引用的工作流不存在或非本人所有",
+        );
       }
     }
   }
@@ -6646,12 +6755,25 @@ export class WebChannel implements Channel {
     }
     if (pathname === "/api/events" && req.method === "POST") {
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      // system 事件 admin-only：事件 payload 含全体用户反馈正文，放开 member 即跨用户泄漏
-      //（语义沿 spec 2026-09-28-event-trigger-feedback-design §6）
-      if (body.type === "system" && this.currentViewer(req).role !== "admin") {
-        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "系统事件仅管理员可创建");
+      // system 事件权限按名字分流（spec 2026-10-19-execution-completion-events-design D9）：
+      // feedback.created admin-only（payload 含全体用户反馈正文，放开 member 即跨用户泄漏）；
+      // 两个执行完成事件全员可建（场景主体=普通用户订阅自己的智能体/工作流）
+      const systemName =
+        typeof (body.system as { name?: unknown } | undefined)?.name === "string"
+          ? ((body.system as { name: string }).name as string)
+          : "";
+      if (
+        body.type === "system" &&
+        systemName === "feedback.created" &&
+        this.currentViewer(req).role !== "admin"
+      ) {
+        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "该系统事件仅管理员可创建");
       }
       const input = parseEventInput(body);
+      // 完成事件主体校验（D4）：智能体须本人可使用（自有或被分享），工作流须本人所有
+      if (input.type === "system" && input.system && isExecutionCompletedEventName(input.system.name)) {
+        await this.assertExecutionEventSubjects(input.system, uid);
+      }
       // call path 服务端生成（D2）：每事件独立随机路径，客户端不可指定
       if (input.type === "call" && input.call) {
         input.call = { ...input.call, path: generateCallPath() };
@@ -6670,13 +6792,21 @@ export class WebChannel implements Channel {
       // PUT = 全量替换：parseEventInput 要求完整对象（name/type + 对应配置）。
       const existing = await this.requireOwnedEvent(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const effectiveSystemName =
+        typeof (body.system as { name?: unknown } | undefined)?.name === "string"
+          ? ((body.system as { name: string }).name as string)
+          : (existing.system?.name ?? "");
       if (
         (existing.type === "system" || body.type === "system") &&
+        effectiveSystemName === "feedback.created" &&
         this.currentViewer(req).role !== "admin"
       ) {
-        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "系统事件仅管理员可编辑");
+        throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "该系统事件仅管理员可编辑");
       }
       const parsed = parseEventInput(body);
+      if (parsed.type === "system" && parsed.system && isExecutionCompletedEventName(parsed.system.name)) {
+        await this.assertExecutionEventSubjects(parsed.system, uid);
+      }
       // call path 服务端所有（D2）：更新不换路径，外部回调地址稳定
       if (parsed.type === "call" && parsed.call) {
         parsed.call = { ...parsed.call, path: existing.call?.path ?? generateCallPath() };
@@ -6756,7 +6886,7 @@ export class WebChannel implements Channel {
       const existing = await this.requireOwnedWorkflow(m[1] ?? "", uid);
       const body = JSON.parse(await this.readBody(req));
       const input = parseWorkflowInput({ ...body, ownerId: uid });
-      await this.assertWorkflowRefsUsable(input, uid);
+      await this.assertWorkflowRefsUsable(input, uid, m[1] ?? "");
       const updated = await ws?.update(m[1] ?? "", input);
       // 订阅事件变更时两侧调度都刷新（旧事件可能因此无人订阅 → 注销 cron）
       if (existing.eventId !== updated?.eventId) {

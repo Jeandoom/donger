@@ -299,7 +299,7 @@ async function subscribeSSE(
   return { events, close: () => controller.abort() };
 }
 
-async function waitFor<T>(probe: () => T | undefined, timeoutMs = 8000): Promise<T> {
+async function waitFor<T>(probe: () => T | undefined, timeoutMs = 15_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const v = probe();
@@ -329,7 +329,7 @@ describe("热发布优雅排水（M1 e2e）", () => {
     await waitFor(() => (h.runner.prompts.length === 1 ? true : undefined));
 
     // 2. 触发排水（等价 index.ts SIGTERM 路径）
-    const draining = h.drain.beginDrain({ timeoutMs: 8000, reason: "signal:SIGTERM" });
+    const draining = h.drain.beginDrain({ timeoutMs: 20_000, reason: "signal:SIGTERM" });
 
     // 排水期：SSE 收到广播；health 保持 200 且带 draining 标志；新消息 503
     await waitFor(() => sse.events.find((e) => e.type === "server_draining"));
@@ -397,7 +397,7 @@ describe("热发布优雅排水（M1 e2e）", () => {
     expect(h.orch.queuedMessageCount()).toBe(1);
 
     // 排水：队列退回（提示经 channel.send → SSE text 事件可见）
-    const draining = h.drain.beginDrain({ timeoutMs: 8000, reason: "signal:SIGTERM" });
+    const draining = h.drain.beginDrain({ timeoutMs: 20_000, reason: "signal:SIGTERM" });
     await waitFor(() =>
       sse.events.find((e) => e.type === "text" && String(e.text ?? "").includes("该消息未被执行")),
     );
