@@ -564,6 +564,12 @@ async function main(): Promise<void> {
     workspaceDir: cfg.workspaceDir,
     agentStore,
     extensionDirectoryResolver,
+    // 文件目录只露本会话（2026-10-19 串会话轮）：沙箱=本会话 worktree 区
+    // （<agent workspace>/worktrees/<convId>，与 RuntimeManager 物化位同源）；
+    // 未开 worktree 隔离不注入，回退共享根
+    conversationSandboxDir: cfg.gitSessionWorktree
+      ? ({ runtimeRoot, conversationId }) => join(runtimeRoot, "worktrees", conversationId)
+      : undefined,
   });
 
   // 渠道 → orchestrator 登记表（web 常驻；dingtalk 经 applyDingTalkChannel 运行时装配）

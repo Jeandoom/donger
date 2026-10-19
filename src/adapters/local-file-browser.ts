@@ -1,5 +1,5 @@
 // 本地 fs 的 FileBrowser 实现。多通道共享。
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { IGNORED_NAMES, resolveWithinRoots, scopeRoots } from "../domain/file-browser.js";
@@ -23,6 +23,12 @@ export interface LocalFileBrowserDeps {
   workspaceDir: string;
   agentStore?: AgentStore;
   extensionDirectoryResolver?: ExtensionDirectoryResolver;
+  /**
+   * 会话沙箱解析器（2026-10-19 文件目录串会话轮）：返回本会话专属目录（存在时作为
+   * runtime 唯一根），null/undefined=回退默认根。装配方负责开关判定（如
+   * GIT_SESSION_WORKTREE），这里只认目录存在性。
+   */
+  conversationSandboxDir?: (args: { runtimeRoot: string; conversationId: string }) => string | null;
 }
 
 export class LocalFileBrowser implements FileBrowser {
@@ -172,6 +178,16 @@ export class LocalFileBrowser implements FileBrowser {
         conversationId,
         agentId: conv.agentId || undefined,
       });
+      // 根下沉（2026-10-19 文件目录串会话轮）：默认根是 agent 级共享工作区，会把同 agent
+      // 其他会话的 worktree 与散文件一并列出；本会话沙箱已物化时以它为唯一根，目录树只含
+      // 本会话文件。沙箱不存在（未绑仓库/被 GC/开关关闭）回退默认根。
+      const sandbox = this.deps.conversationSandboxDir?.({
+        runtimeRoot: roots[0] ?? "",
+        conversationId,
+      });
+      if (sandbox && existsSync(sandbox)) {
+        return { roots: [sandbox], labels: [conversationId] };
+      }
       return { roots, labels: [conversationId] };
     }
     const user = await this.deps.userStore.get(userId);

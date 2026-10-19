@@ -193,6 +193,66 @@ describe("LocalFileBrowser runtime scope", () => {
   });
 });
 
+describe("LocalFileBrowser 会话沙箱（conversationSandboxDir）", () => {
+  /** 与生产装配同款解析器：沙箱 = <agent workspace>/worktrees/<convId> */
+  function browserWithSandbox(): LocalFileBrowser {
+    return new LocalFileBrowser({
+      userStore,
+      conversationStore: convStore,
+      workspaceDir: tmp,
+      conversationSandboxDir: ({ runtimeRoot, conversationId }) =>
+        join(runtimeRoot, "worktrees", conversationId),
+    });
+  }
+
+  it("沙箱已物化 → 只露本会话 worktree，屏蔽共享根散文件与兄弟会话 worktree", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const convA = await convStore.createWithAgent(user.id, "web", "t", "agent-s1");
+    const convB = await convStore.createWithAgent(user.id, "web", "t", "agent-s1");
+    // 共享根散文件（历史/其他会话产物）
+    write(user.homeDir, join("agents", "agent-s1", "workspace", "loose.md"), "shared");
+    // 本会话 + 兄弟会话 worktree
+    write(
+      user.homeDir,
+      join("agents", "agent-s1", "workspace", "worktrees", convA.id, "repos", "proj", "a.md"),
+      "mine",
+    );
+    write(
+      user.homeDir,
+      join("agents", "agent-s1", "workspace", "worktrees", convB.id, "repos", "proj", "b.md"),
+      "sibling",
+    );
+    const tree = await browserWithSandbox().listTree(user.id, "runtime", convA.id);
+    expect(tree.map((n) => n.name)).toEqual(["repos"]);
+    const a = tree[0]?.children?.[0]?.children?.[0];
+    expect(a?.path).toBe("repos/proj/a.md");
+    expect(JSON.stringify(tree)).not.toContain("loose.md");
+    expect(JSON.stringify(tree)).not.toContain("b.md");
+    const c = await browserWithSandbox().readFile(user.id, "runtime", "repos/proj/a.md", convA.id);
+    expect(c.buffer.toString("utf8")).toBe("mine");
+    // 兄弟会话的文件相对本会话沙箱不可达
+    await expect(
+      browserWithSandbox().readFile(user.id, "runtime", "repos/proj/b.md", convA.id),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("沙箱不存在（未绑仓库/被 GC）→ 回退共享根", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.createWithAgent(user.id, "web", "t", "agent-s2");
+    write(user.homeDir, join("agents", "agent-s2", "workspace", "loose.md"), "shared");
+    const tree = await browserWithSandbox().listTree(user.id, "runtime", conv.id);
+    expect(tree.map((n) => n.name)).toEqual(["loose.md"]);
+  });
+
+  it("未注入解析器（worktree 隔离关闭）→ 维持共享根现状", async () => {
+    const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
+    const conv = await convStore.createWithAgent(user.id, "web", "t", "agent-s3");
+    write(user.homeDir, join("agents", "agent-s3", "workspace", "loose.md"), "shared");
+    const tree = await browser.listTree(user.id, "runtime", conv.id);
+    expect(tree.map((n) => n.name)).toEqual(["loose.md"]);
+  });
+});
+
 describe("LocalFileBrowser resolveFilePath（@引用 解析）", () => {
   it("runtime scope 相对路径 → 绝对路径", async () => {
     const user = await userStore.getOrCreateByIdentity("internal", "u1", "alice");
