@@ -43,7 +43,6 @@ export interface EventDispatcherDeps {
   };
   /** 任务停止通道：停止时解开该会话挂起审批（abort 通道工作流执行未接，降级标记停止） */
   canceller?: { cancelPendingApprovals(conversationId: string): void };
-  messageStore?: MessageStore;
   /** 通知内核（缺省=不发站内信） */
   notifications?: NotificationService;
   logger: Logger;
@@ -57,9 +56,7 @@ export interface EventDispatcherDeps {
    */
   systemEventSink?: { dispatch(eventName: string, payload: string): Promise<void> };
   /** 消息读取：run 终态抽取最终 assistant 回复填 payload（缺省=text 置空） */
-  messageStore?: {
-    listByConversation(id: string): Promise<Array<{ role: string; text: string }>>;
-  };
+  messageStore?: MessageStore;
   /** 智能体档案：payload 的 agentName（缺省降级 agentId） */
   agentStore?: { get(id: string): Promise<{ name?: string } | undefined> };
 }

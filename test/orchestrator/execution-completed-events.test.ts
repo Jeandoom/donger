@@ -41,7 +41,7 @@ interface Setup {
   dispatcher: EventDispatcher;
   systemEvents: SystemEventDispatcher;
   orchestrator: { handleMessage: ReturnType<typeof vi.fn> };
-  messageStore: { listByConversation: ReturnType<typeof vi.fn> };
+  messageStore: { add: ReturnType<typeof vi.fn>; listByConversation: ReturnType<typeof vi.fn> };
 }
 
 function setup(over: { maxCascadeDepth?: number } = {}): Setup {
@@ -57,6 +57,7 @@ function setup(over: { maxCascadeDepth?: number } = {}): Setup {
   const orchestrator = { handleMessage: vi.fn().mockResolvedValue("conv-1") };
   const conversationStore = { createWithAgent: vi.fn().mockResolvedValue({ id: "conv-1" }) };
   const messageStore = {
+    add: vi.fn().mockResolvedValue({}),
     listByConversation: vi.fn().mockResolvedValue([{ role: "bot", text: "A 的结论：修复完成" }]),
   };
   const agentStore = {
