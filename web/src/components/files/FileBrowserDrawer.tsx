@@ -4,10 +4,20 @@ import { getToken } from "../../lib/auth";
 import { contentUrl, type FileNode, type FileScope, fetchTree } from "../../lib/files";
 import { cn } from "../../lib/utils";
 import { FileChangesTab } from "./FileChangesTab";
-import { FilePreview } from "./FilePreview";
+import { FilePreviewModal } from "./FilePreviewModal";
 import { FileTree } from "./FileTree";
 
 type DrawerTab = "files" | "changes";
+
+/** 树展示序的扁平文件列表（弹窗内 上一个/下一个 的导航顺序） */
+function flattenFilePaths(nodes: FileNode[]): string[] {
+  const out: string[] = [];
+  for (const n of nodes) {
+    if (n.isDir) out.push(...flattenFilePaths(n.children ?? []));
+    else out.push(n.path);
+  }
+  return out;
+}
 
 export function FileBrowserDrawer(props: {
   open: boolean;
@@ -22,7 +32,7 @@ export function FileBrowserDrawer(props: {
   const [tab, setTab] = useState<DrawerTab>("files");
   const [scope, setScope] = useState<FileScope>("runtime");
   const [nodes, setNodes] = useState<FileNode[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
@@ -64,7 +74,7 @@ export function FileBrowserDrawer(props: {
 
   function switchScope(s: FileScope): void {
     setScope(s);
-    setSelected(null);
+    setPreviewPath(null);
   }
 
   function switchTab(t: DrawerTab): void {
@@ -72,9 +82,7 @@ export function FileBrowserDrawer(props: {
     if (t === "changes") setRefreshTick((n) => n + 1); // 每次进入变更 tab 重新拉取
   }
 
-  const dl = selected
-    ? contentUrl({ scope, path: selected, conversationId: convId, token, download: true })
-    : "";
+  const filePaths = flattenFilePaths(nodes);
 
   return (
     <>
@@ -91,7 +99,7 @@ export function FileBrowserDrawer(props: {
         onClick={onClose}
       />
       {/* 抽屉：关闭后滑出视口并从无障碍树/Tab 序移除（visibility 延迟到动画结束）；
-          变更 tab 需要并排列表+diff，加宽一档 */}
+          预览已改为弹窗，抽屉回归纯树浏览，保持窄档 */}
       <div
         role="dialog"
         aria-modal="true"
@@ -179,7 +187,6 @@ export function FileBrowserDrawer(props: {
               <div className="bg-destructive-soft px-3 py-1 text-xs text-destructive">{error}</div>
             )}
 
-            {/* 树区 */}
             <div className="flex-1 overflow-y-auto">
               {loading ? (
                 <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
@@ -191,32 +198,29 @@ export function FileBrowserDrawer(props: {
               ) : (
                 <FileTree
                   nodes={nodes}
-                  selectedPath={selected ?? undefined}
-                  onSelect={setSelected}
+                  selectedPath={previewPath ?? undefined}
+                  onSelect={setPreviewPath}
                   downloadUrlFor={(p) =>
                     contentUrl({ scope, path: p, conversationId: convId, token, download: true })
                   }
                 />
               )}
             </div>
-
-            {/* 预览区 */}
-            {selected && (
-              <div className="max-h-[55%] shrink-0 overflow-y-auto border-t border-border">
-                <div className="flex items-center justify-between border-b border-border px-2 py-1 text-xs text-muted-foreground">
-                  <span className="truncate">{selected}</span>
-                  {dl && (
-                    <a href={dl} className="text-primary underline" title="下载">
-                      下载
-                    </a>
-                  )}
-                </div>
-                <FilePreview scope={scope} path={selected} conversationId={convId} />
-              </div>
-            )}
           </>
         )}
       </div>
+
+      {/* 预览弹窗：与抽屉并存（弹窗在上层），关闭后回到树 */}
+      {open && previewPath && (
+        <FilePreviewModal
+          scope={scope}
+          path={previewPath}
+          files={filePaths}
+          conversationId={convId}
+          onNavigate={setPreviewPath}
+          onClose={() => setPreviewPath(null)}
+        />
+      )}
     </>
   );
 }

@@ -1,5 +1,6 @@
 // 前端预览类别判定（镜像自 src/domain/file-mime.ts 的 previewKindForExt）。
-// web 是独立子包，不 import 后端 domain；两份保持同步（后端为权威 MIME 源）。
+// web 是独立子包，不 import 后端 domain；image/markdown/text/binary 四类与后端保持同步
+//（后端为权威 MIME 源），docx/xlsx 是前端渲染扩展（有对应在线预览渲染器），后端镜像不含。
 
 const IMAGE_EXT = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg"]);
 
@@ -102,7 +103,10 @@ const TEXT_EXT = new Set([
   "patch",
 ]);
 
-export type PreviewKind = "image" | "markdown" | "text" | "binary";
+export type PreviewKind = "image" | "markdown" | "text" | "docx" | "xlsx" | "binary";
+
+const DOCX_EXT = new Set(["docx"]);
+const XLSX_EXT = new Set(["xlsx", "xlsm"]);
 
 /** 按扩展名（不含点）返回渲染类别。无扩展名文件由调用方先取整个文件名传入。 */
 export function previewKindForExt(ext: string): PreviewKind {
@@ -110,5 +114,7 @@ export function previewKindForExt(ext: string): PreviewKind {
   if (IMAGE_EXT.has(e)) return "image";
   if (e === "md" || e === "markdown") return "markdown";
   if (TEXT_EXT.has(e)) return "text";
+  if (DOCX_EXT.has(e)) return "docx";
+  if (XLSX_EXT.has(e)) return "xlsx";
   return "binary";
 }
