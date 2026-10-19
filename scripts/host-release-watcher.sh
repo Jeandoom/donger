@@ -57,14 +57,29 @@ run_once() {
 
   log "发现新 master $remote（当前状态 $state），触发发布"
   local lock="$STACK_DIR/.release-lock"
-  mkdir "$lock" 2>/dev/null || { log "另一发布进行中，跳过"; return 0; }
-  # 崩溃安全：任何退出路径（含 set -e 中断）都释放锁，防孤儿锁死锁后续发布
+  if ! mkdir "$lock" 2>/dev/null; then
+    # 孤儿锁治理：进程被硬 kill 绕过 trap 时锁会残留——锁龄超 30 分钟（远超一次发布
+    # 上限）视为崩溃残留，清除后重试一次；其余情况仍按「另一发布进行中」跳过
+    local lock_age=0
+    [[ -d "$lock" ]] && lock_age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo "$(date +%s)") ))
+    if (( lock_age > 1800 )); then
+      log "锁龄 ${lock_age}s（>30min）视为孤儿锁，清除重试"
+      rmdir "$lock" 2>/dev/null
+      mkdir "$lock" 2>/dev/null || { log "锁仍无法获取，跳过"; return 0; }
+    else
+      log "另一发布进行中，跳过"; return 0
+    fi
+  fi
   trap 'rmdir "$lock" 2>/dev/null || true' EXIT
   local rc=0
-  # RELEASE_HOST_RELEASE_ARGS：部署环境扩展参数（如 --port/--rehearsal-stack 覆盖，故意词分割）
+  # RELEASE_HOST_RELEASE_ARGS：部署环境扩展参数（如 --port/--rehearsal-stack 覆盖，故意词分割）。
+  # 全量输出落每轮独立日志（任务 stdout 附加会丢步骤级取证）
+  local run_log="$STACK_DIR/release-$sha8.log"
   bash "$REPO/scripts/host-release.sh" --image "$image" --sha "$remote" --stack "$STACK_DIR" \
-    --lock-dir "$lock" $RELEASE_HOST_RELEASE_ARGS || rc=$?
+    --lock-dir "$lock" $RELEASE_HOST_RELEASE_ARGS >"$run_log" 2>&1 || rc=$?
+  log "host-release 步骤日志：$run_log（尾行：$(tail -1 "$run_log" 2>/dev/null | head -c 120)）"
   rmdir "$lock" 2>/dev/null || true
+  trap - EXIT
   trap - EXIT
 
   local status="deployed" reason=""
