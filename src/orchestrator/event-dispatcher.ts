@@ -1,6 +1,18 @@
 import type { Event, FireContext } from "../domain/event.js";
 import { buildPromptVars, renderPromptTemplate } from "../domain/event.js";
 import { FIRING_CONTEXT_MAX_BYTES } from "../domain/event-firing.js";
+import {
+  AGENT_EXECUTION_COMPLETED_EVENT,
+  EXECUTION_COMPLETION_EVENT_NAMES,
+  type ExecutionCompletedFact,
+  type ExecutionCompletionStatus,
+  buildExecutionCompletedPayload,
+  buildExecutionFilesManifest,
+  executionStatusWord,
+  formatExecutionDuration,
+  parseExecutionCompletedPayload,
+  truncateExecutionResultText,
+} from "../domain/event-payloads.js";
 import type { IncomingMessage } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
 import type { Workflow } from "../domain/workflow.js";
@@ -35,10 +47,26 @@ export interface EventDispatcherDeps {
   logger: Logger;
   /** 全局事件队列容量（D6 拍板=10）：超出时该次执行直接失败，原因进执行记录 */
   maxQueuePending?: number;
+  /** 级联深度上限（spec 2026-10-19-execution-completion-events-design §8，缺省 5） */
+  maxCascadeDepth?: number;
+  /**
+   * 系统事件分发回填（index.ts 构造 SystemEventDispatcher 后 setSystemEventSink 晚绑定，
+   * 与 webChannelDeps.systemEvents 同款时序）：run 终态 emit 完成事件用
+   */
+  systemEventSink?: { dispatch(eventName: string, payload: string): Promise<void> };
+  /** 消息读取：run 终态抽取最终 assistant 回复填 payload（缺省=text 置空） */
+  messageStore?: {
+    listByConversation(id: string): Promise<Array<{ role: string; text: string }>>;
+  };
+  /** 智能体档案：payload 的 agentName（缺省降级 agentId） */
+  agentStore?: { get(id: string): Promise<{ name?: string } | undefined> };
 }
 
 /** 全局事件队列容量（D6）：事件触发的执行共用一个队列 */
 export const EVENT_QUEUE_CAPACITY = 10;
+
+/** 级联深度上限（D5）：根=0，超限拒绝入队（防 A↔B 互订/自订烧 token） */
+export const MAX_CASCADE_DEPTH = 5;
 
 /**
  * 统一触发管线（spec 2026-10-09-events-workflows-refactor-design §4）：
@@ -66,6 +94,15 @@ export class EventDispatcher {
     return this.deps.maxQueuePending ?? EVENT_QUEUE_CAPACITY;
   }
 
+  private get maxCascadeDepth(): number {
+    return this.deps.maxCascadeDepth ?? MAX_CASCADE_DEPTH;
+  }
+
+  /** 系统事件分发器晚绑定（index.ts：SystemEventDispatcher 构造在 EventDispatcher 之后） */
+  setSystemEventSink(sink: NonNullable<EventDispatcherDeps["systemEventSink"]>): void {
+    this.deps.systemEventSink = sink;
+  }
+
   /** 事件触发入口：三个分发器（定时/调用/系统）共用 */
   async fire(eventId: string, ctx: FireContext, source: string): Promise<void> {
     const event = await this.deps.eventStore.get(eventId);
@@ -82,8 +119,10 @@ export class EventDispatcher {
       firedAt,
     });
     await this.deps.eventStore.updateRuntimeState(eventId, { lastFiredAt: firedAt });
+    // 完成事件载荷 → 级联链信息（runId/链深）；非完成事件为 null（链根）
+    const chain = parseExecutionCompletedPayload(ctx.payload);
     for (const wf of workflows) {
-      await this.enqueueRun(wf, event, ctx, source, firing.id, false);
+      await this.enqueueRun(wf, event, ctx, source, firing.id, false, chain);
     }
     this.pump();
   }
@@ -96,14 +135,14 @@ export class EventDispatcher {
     const wf = await this.deps.workflowStore.get(workflowId);
     if (!wf) throw new NotFoundError("WORKFLOW_NOT_FOUND", `workflow 不存在: ${workflowId}`);
     const event = wf.eventId ? await this.deps.eventStore.get(wf.eventId) : undefined;
-    const run = await this.enqueueRun(wf, event, ctx, "manual", null, true);
+    const run = await this.enqueueRun(wf, event, ctx, "manual", null, true, null);
     this.pump();
     return run;
   }
 
   /**
    * 入队：容量判定只约束事件触发（D6）——超出时该次任务直接失败并落执行记录
-   * （失败原因在记录中可见）+ 走 run_failed 通知。
+   * （失败原因在记录中可见）+ 走 run_failed 通知。级联深度超限同路径截断（D5）。
    */
   private async enqueueRun(
     wf: Workflow,
@@ -112,8 +151,10 @@ export class EventDispatcher {
     source: string,
     firingId: string | null,
     bypassCapacity: boolean,
+    chain: ExecutionCompletedFact | null,
   ): Promise<WorkflowRun> {
     const now = new Date().toISOString();
+    const nextDepth = chain ? chain.trigger.cascadeDepth + 1 : 0;
     const base = {
       id: crypto.randomUUID(),
       workflowId: wf.id,
@@ -121,8 +162,26 @@ export class EventDispatcher {
       firingId,
       eventName: source,
       context: ctx.payload,
+      causedByRunId: chain?.runId ?? null,
+      cascadeDepth: nextDepth,
       queuedAt: now,
     };
+    if (chain && nextDepth > this.maxCascadeDepth) {
+      const err = `级联深度超限（上限 ${this.maxCascadeDepth}），已截断链式触发`;
+      const run = await this.deps.runStore.insert({
+        ...base,
+        status: "failed",
+        error: err,
+        finishedAt: now,
+      });
+      await this.deps.workflowStore.updateRuntimeState(wf.id, {
+        lastRunId: run.id,
+        lastRunAt: now,
+        lastError: err,
+      });
+      this.notify(wf, run, `「${wf.name}」级联深度超限`, err);
+      return run;
+    }
     if (!bypassCapacity && (await this.deps.runStore.countQueued()) >= this.capacity) {
       const err = `触发事件队列已满（容量 ${this.capacity}），本次执行未运行`;
       const run = await this.deps.runStore.insert({
@@ -203,10 +262,11 @@ export class EventDispatcher {
         ...(wf.autoDev?.enabled ? { autoDev: true } : {}),
       });
       const finishedAt = new Date().toISOString();
+      const finalConvId = agentConversationId ?? conv?.id ?? null;
       await runStore.updateRun(run.id, {
         status: "success",
         finishedAt,
-        conversationId: agentConversationId ?? conv?.id ?? null,
+        conversationId: finalConvId,
       });
       await workflowStore.updateRuntimeState(wf.id, {
         lastRunId: run.id,
@@ -214,6 +274,15 @@ export class EventDispatcher {
         lastError: null,
       });
       this.notify(wf, { ...run, status: "success" }, `「${wf.name}」执行成功`, "");
+      // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5.1，fail-open）：
+      // 先落库后分发；text=最终 assistant 回复
+      const replyText = await this.lastReplyText(finalConvId);
+      await this.emitExecutionCompleted(
+        wf,
+        { ...run, status: "success", conversationId: finalConvId },
+        "success",
+        { startedAt, finishedAt, error: null, text: replyText },
+      );
       logger.info({ runId: run.id, workflowId: wf.id }, "workflow run succeeded");
     } catch (e) {
       const err = (e as Error).message;
@@ -222,7 +291,8 @@ export class EventDispatcher {
     }
   }
 
-  /** 变量表渲染：外部内容（triggerOutput/query/data）逐项 wrapUntrusted 定界注入 */
+  /** 变量表渲染：外部内容（triggerOutput/query/data）逐项 wrapUntrusted 定界注入。
+   * 完成事件上下文追加简报变量（spec §6）：下游 LLM 默认收到自然语言简报而非 JSON */
   private buildRenderVars(run: WorkflowRun, event: Event | undefined, firedAt: string) {
     const ctx: FireContext = { payload: run.context ?? "" };
     if (event?.type === "call" && run.context) {
@@ -238,11 +308,32 @@ export class EventDispatcher {
       }
     }
     const vars = buildPromptVars(ctx, firedAt);
+    // 完成事件事实 → 简报变量（M1 files 恒空，清单兜底「（无）」；M2 物化后含本地路径）
+    let briefing: Record<string, string> = {};
+    if (event?.type === "system" && run.context) {
+      const fact = parseExecutionCompletedPayload(run.context);
+      if (fact) {
+        const manifest = buildExecutionFilesManifest(fact.result.files);
+        briefing = {
+          workflowName: fact.workflowName,
+          agentName: fact.agentName,
+          statusWord: executionStatusWord(fact.status),
+          durationText: formatExecutionDuration(fact.durationMs),
+          outputSummary: fact.result.text,
+          filesManifest: manifest || "（无）",
+        };
+      }
+    }
     return {
       ...vars,
+      ...briefing,
       triggerOutput: wrapUntrusted(vars.triggerOutput ?? "", "event").wrapped,
       query: wrapUntrusted(vars.query ?? "", "event:query").wrapped,
       data: wrapUntrusted(vars.data ?? "", "event:data").wrapped,
+      // 上游结论是不可信外部内容，与 triggerOutput 同规则定界
+      outputSummary: wrapUntrusted(briefing.outputSummary ?? "", "event:output").wrapped,
+      // filesManifest 为平台生成的清单文本（M2 物化时对文件名另行清洗）
+      filesManifest: briefing.filesManifest ?? "",
     };
   }
 
@@ -260,6 +351,88 @@ export class EventDispatcher {
         lastError: err,
       });
       this.notify(wf, { ...run, status: "failed" }, `「${wf.name}」执行失败`, err);
+      // 失败同样 emit（失败接管/监督者模式依赖）；text 置空，错误在 error 字段
+      await this.emitExecutionCompleted(wf, { ...run, status: "failed" }, "failed", {
+        startedAt: run.startedAt ?? run.queuedAt,
+        finishedAt,
+        error: err,
+        text: "",
+      });
+    }
+  }
+
+  /** 最终 assistant 回复文本（payload 的 result.text；读取失败置空兜底，不阻塞 emit） */
+  private async lastReplyText(
+    conversationId: string | null | undefined,
+  ): Promise<string> {
+    if (!conversationId || !this.deps.messageStore) return "";
+    try {
+      const msgs = await this.deps.messageStore.listByConversation(conversationId);
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i]?.role === "bot") return msgs[i]?.text ?? "";
+      }
+    } catch {
+      // 转录读取失败：text 置空（spec §5.2）
+    }
+    return "";
+  }
+
+  /**
+   * run 终态 emit 完成事件（spec §5）：同一事实以两个事件名各分发一次（智能体视角 /
+   * 工作流视角，D1），SystemEventDispatcher 按 subjects/timing/owner 过滤扇出。
+   * fire-and-forget 语义由 dispatch 内部保证；这里只保证 dispatch 调用本身不抛。
+   */
+  private async emitExecutionCompleted(
+    wf: Workflow,
+    run: WorkflowRun,
+    status: ExecutionCompletionStatus,
+    info: { startedAt: string; finishedAt: string; error: string | null; text: string },
+  ): Promise<void> {
+    const sink = this.deps.systemEventSink;
+    if (!sink) return;
+    const agent = this.deps.agentStore
+      ? await this.deps.agentStore.get(wf.agentId).catch(() => undefined)
+      : undefined;
+    const startedMs = Date.parse(info.startedAt);
+    const endedMs = Date.parse(info.finishedAt);
+    const base: Omit<ExecutionCompletedFact, "event"> = {
+      schemaVersion: 1,
+      runId: run.id,
+      agentId: wf.agentId,
+      agentName: agent?.name ?? wf.agentId,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      ownerId: wf.ownerId,
+      status,
+      startedAt: info.startedAt,
+      endedAt: info.finishedAt,
+      durationMs:
+        Number.isFinite(startedMs) && Number.isFinite(endedMs)
+          ? Math.max(0, endedMs - startedMs)
+          : 0,
+      error: info.error,
+      trigger: {
+        // system（或 system:<事件名>）→ event（由某事件触发）；其余原样（manual/schedule/call）
+        source:
+          run.eventName === "system" || run.eventName.startsWith("system:")
+            ? "event"
+            : run.eventName,
+        eventId: run.eventId || null,
+        causedByRunId: run.causedByRunId ?? null,
+        cascadeDepth: run.cascadeDepth ?? 0,
+      },
+      result: { text: truncateExecutionResultText(info.text), files: [] },
+    };
+    for (const eventName of EXECUTION_COMPLETION_EVENT_NAMES) {
+      const payload = buildExecutionCompletedPayload({ ...base, event: eventName });
+      void sink
+        .dispatch(eventName, payload)
+        .catch((e: Error) =>
+          this.deps.logger.error(
+            { runId: run.id, eventName, err: e.message },
+            "执行完成事件分发失败",
+          ),
+        );
     }
   }
 
@@ -294,11 +467,22 @@ export class EventDispatcher {
       this.deps.canceller?.cancelPendingApprovals(run.conversationId);
     }
     const finishedAt = new Date().toISOString();
+    const stopError = run.status === "queued" ? "手动停止（排队中取消）" : "手动停止";
     await this.deps.runStore.updateRun(run.id, {
       status: "stopped",
-      error: run.status === "queued" ? "手动停止（排队中取消）" : "手动停止",
+      error: stopError,
       finishedAt,
     });
+    // 终止同样 emit（状态机完备，D8）；text 置空
+    const wf = await this.deps.workflowStore.get(workflowId).catch(() => undefined);
+    if (wf) {
+      await this.emitExecutionCompleted(wf, { ...run, status: "stopped" }, "stopped", {
+        startedAt: run.startedAt ?? run.queuedAt,
+        finishedAt,
+        error: stopError,
+        text: "",
+      });
+    }
     return (await this.deps.runStore.getRun(runId)) ?? { ...run, status: "stopped", finishedAt };
   }
 

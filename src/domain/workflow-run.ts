@@ -30,6 +30,11 @@ export const WorkflowRunSchema = z.object({
   /** 本次执行的独立运行会话（执行记录点开跳转 D4） */
   conversationId: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
+  /** 级联链路（spec 2026-10-19-execution-completion-events-design §8）：上游完成事件的
+   * 来源 run id；链根（手动/定时/调用/feedback）为 null */
+  causedByRunId: z.string().nullable().optional(),
+  /** 级联深度：根=0，由完成事件触发的轮 = 上游 depth+1，超限拒绝入队 */
+  cascadeDepth: z.number().int().min(0).optional(),
   queuedAt: z.string(),
   startedAt: z.string().nullable().optional(),
   finishedAt: z.string().nullable().optional(),

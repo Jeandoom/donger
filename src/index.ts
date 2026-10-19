@@ -727,6 +727,10 @@ async function main(): Promise<void> {
     logger: log,
     maxQueuePending: cfg.triggerQueueMaxPending,
     notifications: notificationService,
+    // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5）：
+    // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
+    messageStore,
+    agentStore,
   });
   const scheduler = new SchedulerService({
     eventStore,
@@ -749,6 +753,8 @@ async function main(): Promise<void> {
     dispatcher: eventDispatcher,
     logger: log,
   });
+  // run 终态 emit 完成事件的回填通道（构造顺序解环：dispatcher 先于 systemEvents）
+  eventDispatcher.setSystemEventSink(systemEvents);
   // 应用管家制（spec §6）：orchestrator 的 app 工具事件晚绑定到 dispatcher
   eventEmitRef.current = (eventName, payload) => {
     if (!workflowsEnabled()) return;

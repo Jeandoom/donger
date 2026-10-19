@@ -1,6 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { validateCronExpr } from "./cron.js";
+import {
+  AGENT_EXECUTION_COMPLETED_EVENT,
+  WORKFLOW_EXECUTION_COMPLETED_EVENT,
+  isExecutionCompletedEventName,
+} from "./event-payloads.js";
 import { TriggerMatcherSchema } from "./event-matcher.js";
 
 export type { TriggerMatcher } from "./event-matcher.js";
@@ -15,9 +20,18 @@ export { TriggerMatcherSchema } from "./event-matcher.js";
  */
 
 /** 进程内系统事件名注册表；新事件源（KB 变更/会话完结等）在此追加即可复用整条投递管线。
- * payload 契约见 domain/event-payloads.ts */
-export const SYSTEM_EVENT_NAMES = ["feedback.created"] as const;
+ * payload 契约见 domain/event-payloads.ts。两个完成事件（spec
+ * 2026-10-19-execution-completion-events-design）走 subjects/timing 一等过滤，不走 matcher */
+export const SYSTEM_EVENT_NAMES = [
+  "feedback.created",
+  AGENT_EXECUTION_COMPLETED_EVENT,
+  WORKFLOW_EXECUTION_COMPLETED_EVENT,
+] as const;
 export type SystemEventName = (typeof SYSTEM_EVENT_NAMES)[number];
+
+/** 完成事件触发时机（D8：缺省 all） */
+export const EXECUTION_TIMING_VALUES = ["all", "success", "failed", "stopped"] as const;
+export type ExecutionEventTiming = (typeof EXECUTION_TIMING_VALUES)[number];
 
 /** 调用事件支持的 HTTP 方法（D3：GET+POST 同时开放，随机路径+限流兜底） */
 export const CALL_EVENT_METHODS = ["GET", "POST"] as const;
@@ -67,10 +81,17 @@ export const EventCallConfigSchema = z.object({
 });
 export type EventCallConfig = z.infer<typeof EventCallConfigSchema>;
 
-/** 系统事件配置：订阅注册表中的进程内事件，matcher 判定事件 payload JSON */
+/** 系统事件配置：订阅注册表中的进程内事件。
+ * feedback.created 用 matcher 判定 payload JSON；两个完成事件（spec
+ * 2026-10-19-execution-completion-events-design §4）用 subjects/timing 一等字段，
+ * dispatch 按 run 行字段过滤，不走 matcher（D2） */
 export const EventSystemConfigSchema = z.object({
   name: z.enum(SYSTEM_EVENT_NAMES),
-  matcher: TriggerMatcherSchema.default({ kind: "always" }),
+  matcher: TriggerMatcherSchema.optional(),
+  /** 完成事件订阅主体：智能体 id / 工作流 id 多选（D1） */
+  subjects: z.array(z.string().min(1)).min(1).optional(),
+  /** 触发时机：缺省 all（D8） */
+  timing: z.enum(EXECUTION_TIMING_VALUES).optional(),
 });
 export type EventSystemConfig = z.infer<typeof EventSystemConfigSchema>;
 
@@ -102,6 +123,25 @@ function eventTypeRefine(
   }
   if (t.type === "call" && !t.call) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "call 类型必须提供 call 配置" });
+  }
+  const sys = t.system as EventSystemConfig | undefined;
+  if (t.type === "system" && sys) {
+    if (isExecutionCompletedEventName(sys.name)) {
+      if (!sys.subjects?.length) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "完成事件必须至少选择一个主体" });
+      }
+      if (sys.matcher && sys.matcher.kind !== "always") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "完成事件按所选主体与时机过滤，不支持匹配条件",
+        });
+      }
+    } else if (sys.subjects || sys.timing) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "该系统事件不支持主体/时机配置",
+      });
+    }
   }
   const sched = t.schedule as EventScheduleConfig | undefined;
   if (t.type === "schedule" && sched) {
