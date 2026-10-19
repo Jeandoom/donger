@@ -49,9 +49,7 @@ export class CredentialRequiredError extends AppError {}
  */
 export function describeZodError(e: ZodError): string {
   const part = (issue: ZodIssue): string => {
-    const path = issue.path
-      .filter((p) => typeof p === "string" || typeof p === "number")
-      .join(".");
+    const path = issue.path.filter((p) => typeof p === "string" || typeof p === "number").join(".");
     const where = path ? `${path} ` : "";
     switch (issue.code) {
       case "custom":

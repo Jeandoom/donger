@@ -4,13 +4,13 @@ import {
   AppError,
   ChannelError,
   ConfigError,
+  describeZodError,
   ForbiddenError,
   NotFoundError,
   PayloadTooLargeError,
   RunnerError,
   TaskError,
   ValidationError,
-  describeZodError,
 } from "../../src/util/errors.js";
 
 describe("AppError", () => {

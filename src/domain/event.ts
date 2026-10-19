@@ -46,10 +46,10 @@ export type EventSource = z.infer<typeof EventSourceSchema>;
  * cron 保存即语法门（与 scheduler 的 node-cron 同为 5 字段标准语法，见 domain/cron.ts）：
  * 语法错的表达式过去能存进去但调度器静默跳过（只打 warn），表现为「保存了但永不触发」。 */
 export const EventScheduleConfigSchema = z.object({
-  cron: z.string().min(1).refine(
-    validateCronExpr,
-    "cron 表达式非法：需 5 段（分 时 日 月 周），支持 * , - / 与数字",
-  ),
+  cron: z
+    .string()
+    .min(1)
+    .refine(validateCronExpr, "cron 表达式非法：需 5 段（分 时 日 月 周），支持 * , - / 与数字"),
   mode: z.enum(["unconditional", "conditional"]).default("conditional"),
   source: EventSourceSchema.optional(),
   matcher: TriggerMatcherSchema.optional(),
