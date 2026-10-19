@@ -438,6 +438,12 @@ type SSEEvent =
       canceledAt: string;
     }
   | { type: "conversation_title"; conversationId: string; title: string }
+  | {
+      /** 排水广播（热发布优雅停机，spec 2026-10-16-hot-deploy-design）：前端进「发布中」态 */
+      type: "server_draining";
+      deadline?: number;
+      reason?: string;
+    }
   | { type: "error"; error: string };
 
 /** 向 SSE 客户端写事件的回调 */
@@ -610,6 +616,20 @@ export interface WebChannelDeps {
   activityGetter?: (conversationId: string) => ActivitySnapshot | undefined;
   /** 会话权限模式切换回调（PATCH 即时通知 orchestrator 内存 registry）；缺省=仅落库，下轮生效 */
   onPermissionModeChange?: (conversationId: string, mode: AgentPermissionMode) => void;
+  /**
+   * 排水状态（热发布优雅停机，spec 2026-10-16-hot-deploy-design）；缺省=永不排水。
+   * 发送路由 503 拒入 + /api/health 附带排水标志共用。
+   */
+  drain?: {
+    shouldRejectNewTurn(): boolean;
+    status(): {
+      draining: boolean;
+      activeTurns: number;
+      queuedMessages: number;
+      deadline?: number;
+      reason?: string;
+    };
+  };
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
@@ -1185,6 +1205,17 @@ export class WebChannel implements Channel {
       } catch {
         // 客户端可能已断开，忽略错误
       }
+    }
+  }
+
+  /** 排水广播（热发布优雅停机）：所有打开的会话流收到提示，前端进「发布中」态 */
+  broadcastDraining(status: { deadline?: number; reason?: string }): void {
+    for (const conversationId of this.sseClients.keys()) {
+      this.broadcastToConversation(conversationId, {
+        type: "server_draining",
+        ...(status.deadline !== undefined ? { deadline: status.deadline } : {}),
+        ...(status.reason !== undefined ? { reason: status.reason } : {}),
+      });
     }
   }
 
@@ -1764,6 +1795,22 @@ export class WebChannel implements Channel {
     if (!match) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: "invalid conversation url" }));
+      return;
+    }
+    // 排水期拒入（热发布优雅停机）：必须在持久化用户消息之前拒绝，
+    // 否则消息落库却无人处理（断链）。前端按 Retry-After 自动重试。
+    if (this.deps.drain?.shouldRejectNewTurn()) {
+      const status = this.deps.drain.status();
+      res.writeHead(503, { "Retry-After": "5" });
+      res.end(
+        JSON.stringify({
+          error: "服务正在更新发布，请稍后自动重试",
+          draining: true,
+          retryAfter: 5,
+          activeTurns: status.activeTurns,
+          ...(status.deadline !== undefined ? { deadline: status.deadline } : {}),
+        }),
+      );
       return;
     }
     const conversationId = match[1] ?? "";
@@ -5945,8 +5992,24 @@ export class WebChannel implements Channel {
 
     // GET /api/health
     if (url === "/api/health") {
+      // 排水期必须保持 200：compose healthcheck 与宿主监控不因发布误报；
+      // 排水详情放 body 供观测
+      const drain = this.deps.drain?.status();
       res.writeHead(200);
-      res.end(JSON.stringify({ ok: true, channel: "web" }));
+      res.end(
+        JSON.stringify({
+          ok: true,
+          channel: "web",
+          ...(drain?.draining
+            ? {
+                draining: true,
+                activeTurns: drain.activeTurns,
+                queuedMessages: drain.queuedMessages,
+                ...(drain.deadline !== undefined ? { deadline: drain.deadline } : {}),
+              }
+            : {}),
+        }),
+      );
       return;
     }
 
@@ -8314,11 +8377,17 @@ export class WebChannel implements Channel {
 
   /**
    * 关闭 HTTP 服务，resolve 时所有 in-flight 连接已收尾。
+   * 排水完成后调用：close() 停止受理新连接，closeAllConnections() 掐断
+   * keep-alive 与 SSE 残留（排水后它们本就该断，客户端自动重连到新实例），
+   * 否则 SSE 长连接会让 close 回调永不触发。
    * 调用方可 race 一个超时兜底，避免卡死进程退出。
    */
   stop(): Promise<void> {
+    const server = this.server;
+    if (!server) return Promise.resolve();
     return new Promise((resolve) => {
-      this.server?.close(() => resolve());
+      server.close(() => resolve());
+      server.closeAllConnections();
     });
   }
 }

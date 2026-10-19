@@ -8,7 +8,10 @@ services:
     image: donger:${DONGER_IMAGE_TAG:?请在栈目录 .env 设置 DONGER_IMAGE_TAG，如 20261011-1200}
     container_name: donger-app${DONGER_SLOT_SUFFIX:-}
     restart: unless-stopped
-    stop_grace_period: 120s
+    # 排水宽限期（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：
+    # 必须 > DONGER_DRAIN_TIMEOUT_MS（默认 600000=10min）+ 60s 缓冲，否则 docker SIGKILL
+    # 会拦腰砍断排水中断标记。栈目录 .env 可覆盖（DONGER_STOP_GRACE）
+    stop_grace_period: ${DONGER_STOP_GRACE:-660s}
     ports:
       - "${DONGER_PORT:-3330}:${DONGER_PORT:-3330}"
     env_file:

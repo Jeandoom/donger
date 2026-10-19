@@ -94,6 +94,9 @@ const EnvSchema = z.object({
   CALLBACK_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   // LLM 流停摆看门狗：轮内超过该毫秒数无任何事件视为挂死，中断并立即收尾（0=关闭）
   TURN_STALL_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(600_000),
+  // 排水上限（热发布优雅停机，spec 2026-10-16-hot-deploy-design）：SIGTERM 后等待在途轮
+  // 自然完成的最长时间；超时未完成轮标 interrupted 重启续跑。须 < compose stop_grace_period
+  DONGER_DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
   // 会话空闲滚动：距会话最后活跃超过该小时数时重开新 SDK 会话（0=关闭）；
   // 防止低频闲聊会话跨天 resume 导致每轮全量重建超长上下文（实测"回复 OK"烧 32k 输入 token）
   SESSION_IDLE_ROLL_HOURS: z.coerce.number().int().nonnegative().default(168),
@@ -217,6 +220,8 @@ export interface AppConfig {
   callbackRateLimitPerMin: number;
   /** LLM 流停摆看门狗阈值（毫秒；0=关闭） */
   turnStallTimeoutMs: number;
+  /** 排水上限（毫秒；SIGTERM 后等在途轮的最长时间，热发布优雅停机） */
+  drainTimeoutMs: number;
   /** 会话空闲滚动阈值（小时；0=关闭） */
   sessionIdleRollHours: number;
   /**
@@ -287,6 +292,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     triggerQueueMaxPending: e.TRIGGER_QUEUE_MAX_PENDING,
     callbackRateLimitPerMin: e.CALLBACK_RATE_LIMIT_PER_MIN,
     turnStallTimeoutMs: e.TURN_STALL_TIMEOUT_MS,
+    drainTimeoutMs: e.DONGER_DRAIN_TIMEOUT_MS,
     sessionIdleRollHours: e.SESSION_IDLE_ROLL_HOURS,
     egressAllowDomains: (e.EGRESS_ALLOW_DOMAINS ?? "")
       .split(",")

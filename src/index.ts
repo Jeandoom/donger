@@ -76,6 +76,7 @@ import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
+import { DrainManager } from "./orchestrator/drain-manager.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
@@ -391,7 +392,7 @@ async function main(): Promise<void> {
       extensionDirectoryResolver,
       isPluginEnabled: pluginGate,
     });
-    return new Orchestrator({
+    const orch = new Orchestrator({
       store,
       userStore,
       conversationStore,
@@ -470,6 +471,9 @@ async function main(): Promise<void> {
         if (dispatch) dispatch(eventName, payload);
       },
     });
+    // 排水拒入闸：全部渠道实例（web/钉钉）统一注入，排水期 handleMessage 拒入新消息
+    orch.setDrainGate(drain);
+    return orch;
   }
 
   // 技能 store/installer（WebChannel 与 Orchestrator 共享同一实例）
@@ -557,6 +561,10 @@ async function main(): Promise<void> {
 
   // 渠道 → orchestrator 登记表（web 常驻；dingtalk 经 applyDingTalkChannel 运行时装配）
   const orchestrators = new Map<string, Orchestrator>();
+
+  // 排水管理器（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：早建晚绑——
+  // 此处先创建供 createOrch 注入拒入闸；hooks 在 scheduler/eventDispatcher 装配完成后绑定
+  const drain = new DrainManager();
 
   // 钉钉机器人消息通道运行时控制器（授权页「应用」即生效，无需重启；spec §3.5）：
   // 配置齐全→重建通道并转移 recipients；清空/不完整→停用；配置未变→no-op
@@ -667,7 +675,7 @@ async function main(): Promise<void> {
 
   // 记忆闲时整理器（知识体系轮 P5）：低峰（无 running task）执行归档/索引重排，
   // 动作记 memory-consolidation 修订；索引超限 warn 通知库属主
-  startMemoryConsolidator({
+  const stopMemoryConsolidator = startMemoryConsolidator({
     kbLibraryStore: kbLibraryStore,
     workspaceDir: cfg.workspaceDir,
     revisionStore: kbRevisionStore,
@@ -774,6 +782,31 @@ async function main(): Promise<void> {
   webChannelDeps.releaseHookToken = cfg.releaseHookToken;
   webChannelDeps.releaseRunStore = releaseRunStore;
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
+  // 排水 hooks 晚绑定（热发布优雅停机）：常驻组件至此全部就绪；webChannel 侧的
+  // 503 拒入/health 排水标志读同一实例（webChannelDeps.drain 构造后回填，运行时动态读取）
+  drain.setHooks({
+    stopBackgroundJobs: () => {
+      stopWorktreeGc();
+      stopMemoryConsolidator();
+      scheduler.stopAll();
+      eventDispatcher.pause();
+    },
+    broadcastDraining: (status) => webChannel.broadcastDraining(status),
+    activeTurnCount: () => {
+      let count = 0;
+      for (const orch of orchestrators.values()) count += orch.activeTurnCount();
+      return count;
+    },
+    queuedMessageCount: () => {
+      let count = 0;
+      for (const orch of orchestrators.values()) count += orch.queuedMessageCount();
+      return count;
+    },
+    flushQueues: async (reason) => {
+      await Promise.all([...orchestrators.values()].map((o) => o.flushPendingQueues(reason)));
+    },
+  });
+  webChannelDeps.drain = drain;
   // 权限模式 PATCH 即时生效：通知 orchestrator 内存 registry（进行中轮的下一次工具调用即按新模式校验）
   webChannelDeps.onPermissionModeChange = (conversationId, mode) =>
     webOrch.setPermissionMode(conversationId, mode);
@@ -800,11 +833,16 @@ async function main(): Promise<void> {
     log.warn("工作流模块已停用：定时触发器与执行队列未恢复（重启进程后恢复）");
   }
 
-  // 进程关闭：先停 scheduler 防止新触发，再关 HTTP；500ms 超时兜底避免卡死
+  // 进程关闭（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：
+  // 排水（stopBackgroundJobs 停常驻 → 广播发布中 → 等在途轮自然完成，超时标 interrupted）
+  // → 审计冲刷 → 关 HTTP。compose stop_grace_period 必须 > DONGER_DRAIN_TIMEOUT_MS（SIGKILL 纯兜底）
   const shutdown = async (signal: string) => {
-    log.info({ signal }, "关闭中");
-    stopWorktreeGc();
-    scheduler.stopAll();
+    log.info({ signal }, "关闭中（先排水）");
+    try {
+      await drain.beginDrain({ timeoutMs: cfg.drainTimeoutMs, reason: `signal:${signal}` });
+    } catch (e) {
+      log.error({ err: e instanceof Error ? e.message : String(e) }, "排水异常，强制进入关停");
+    }
     releaseService.stop();
     // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
     await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);

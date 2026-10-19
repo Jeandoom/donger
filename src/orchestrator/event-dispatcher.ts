@@ -51,8 +51,16 @@ export const EVENT_QUEUE_CAPACITY = 10;
 export class EventDispatcher {
   /** 全局泵守卫：至多一个 drain 循环在认领 */
   private pumping = false;
+  // 排水期暂停认领（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：
+  // queued 行留库，新实例 restore() 重投（at-least-once 语义不变）
+  private paused = false;
 
   constructor(private readonly deps: EventDispatcherDeps) {}
+
+  /** 排水起点调用：泵停止认领新 queued 行；已认领在执行的轮交给排水等待自然完成 */
+  pause(): void {
+    this.paused = true;
+  }
 
   private get capacity(): number {
     return this.deps.maxQueuePending ?? EVENT_QUEUE_CAPACITY;
@@ -145,6 +153,7 @@ export class EventDispatcher {
 
   private async drain(): Promise<void> {
     for (;;) {
+      if (this.paused) return;
       const run = await this.deps.runStore.claimNextRunnable();
       if (!run) return;
       // 异步执行不阻塞认领循环；完成后再唤泵抽同 workflow 的后续排队行

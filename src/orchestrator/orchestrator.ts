@@ -82,6 +82,7 @@ import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent
 import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { SSH_EGRESS_PATTERN } from "./default-gates.js";
 import { buildDispatcherAgent } from "./dispatch-flow.js";
+import type { DrainGate } from "./drain-manager.js";
 import { bridgeEvents } from "./event-bridge.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
@@ -365,6 +366,50 @@ export class Orchestrator {
   /** 会话是否正在处理消息（web 回调结果查询的 status 判定用） */
   isBusy(conversationId: string): boolean {
     return this.isConversationBusy(conversationId);
+  }
+
+  // 排水拒入闸（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：index.ts 装配后注入
+  private drainGate?: DrainGate;
+
+  /** 注入排水闸：handleMessage 拒入新消息 + dispatchQueue 不再接续队列 */
+  setDrainGate(gate: DrainGate): void {
+    this.drainGate = gate;
+  }
+
+  /** 在途轮总数（排水判定：活跃任务跨用户扁平化） */
+  activeTurnCount(): number {
+    let count = 0;
+    for (const tasks of this.userActiveTasks.values()) count += tasks.size;
+    return count;
+  }
+
+  /** busy 会话排队中的消息总数（排水判定须连同队列一起清零） */
+  queuedMessageCount(): number {
+    let count = 0;
+    for (const queue of this.pendingQueues.values()) count += queue.length;
+    return count;
+  }
+
+  /**
+   * 排水期退回全部排队消息：消息本体已在发送时落库（web-channel 持久化先于 handler），
+   * 这里补一条「未执行」提示，不静默丢；幂等，可重复调用。
+   */
+  async flushPendingQueues(reason: string): Promise<void> {
+    const { channel, messageStore } = this.deps;
+    const entries = [...this.pendingQueues.entries()];
+    this.pendingQueues.clear();
+    for (const [conversationId, queue] of entries) {
+      for (const item of queue) {
+        const text = `🚧 ${reason}，该消息未被执行，请稍后重发。`;
+        try {
+          await channel.send(item.msg.threadId, { text });
+          channel.pushResult?.(conversationId, "error", text);
+          await messageStore?.add(conversationId, "bot", text);
+        } catch (e) {
+          console.error("[orchestrator] 排水退回排队消息失败", e);
+        }
+      }
+    }
   }
 
   /** 标记会话繁忙 */
@@ -1781,6 +1826,15 @@ export class Orchestrator {
   async handleMessage(msg: IncomingMessage): Promise<string | undefined> {
     const { conversationStore } = this.deps;
 
+    // 排水期拒入（热发布优雅停机）：任何渠道的新消息一律不接受，提示稍后重发；
+    // web 渠道在路由层 503 更早拦截，这里是钉钉/回调等其余渠道的兜底
+    if (this.drainGate?.shouldRejectNewTurn()) {
+      const text = "🚧 服务正在更新发布，新消息暂不接受；通常数十秒内完成，请稍后重发。";
+      await this.deps.channel.send(msg.threadId, { text });
+      this.deps.channel.pushResult?.(msg.threadId, "error", text);
+      return undefined;
+    }
+
     // 用户解析：按通道决定 provider + externalId（统一走 identity 模型）。
     const user = await this.resolveUser(msg);
 
@@ -1957,6 +2011,14 @@ export class Orchestrator {
 
   /** 当前任务结束后的接续：同会话队列非空则取出下一条继续独占执行。 */
   private dispatchQueue(conversationId: string): void {
+    // 排水期不接续队列：退回余量（flushPendingQueues 幂等；排水起点的首次退回可能
+    // 早于本条入队——轮收尾时 builder 重派等路径仍会追加）
+    if (this.drainGate?.shouldRejectNewTurn()) {
+      void this.flushPendingQueues("服务正在更新发布").catch((e) =>
+        console.error("[orchestrator] 排水期队列退回失败", e),
+      );
+      return;
+    }
     const queue = this.pendingQueues.get(conversationId);
     const next = queue?.shift();
     if (!next) {
