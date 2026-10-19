@@ -706,6 +706,7 @@ async function main(): Promise<void> {
     workflowStore,
     runStore: workflowRunStore,
     firingStore: eventFiringStore,
+    messageStore,
     orchestrator: webOrch,
     conversationStore: conversationStore,
     canceller: webChannel,

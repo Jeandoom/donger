@@ -7,6 +7,7 @@ import type { Workflow } from "../domain/workflow.js";
 import type { WorkflowRun } from "../domain/workflow-run.js";
 import type { EventFiringStore } from "../ports/event-firing-store.js";
 import type { EventStore } from "../ports/event-store.js";
+import type { MessageStore } from "../ports/message-store.js";
 import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import { NotFoundError, ValidationError } from "../util/errors.js";
@@ -30,6 +31,7 @@ export interface EventDispatcherDeps {
   };
   /** 任务停止通道：停止时解开该会话挂起审批（abort 通道工作流执行未接，降级标记停止） */
   canceller?: { cancelPendingApprovals(conversationId: string): void };
+  messageStore?: MessageStore;
   /** 通知内核（缺省=不发站内信） */
   notifications?: NotificationService;
   logger: Logger;
@@ -180,6 +182,16 @@ export class EventDispatcher {
         conversationId: conv?.id ?? run.conversationId ?? null,
         renderedPrompt: prompt,
       });
+      if (conv && this.deps.messageStore) {
+        await this.deps.messageStore
+          .add(conv.id, "user", prompt)
+          .catch((e: Error) =>
+            this.deps.logger.error(
+              { runId: run.id, err: e.message },
+              "workflow run: persist user prompt failed",
+            ),
+          );
+      }
       const agentConversationId = await orchestrator.handleMessage({
         channelId: "web",
         threadId: conv?.id ?? run.id,
