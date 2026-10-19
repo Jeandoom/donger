@@ -1,7 +1,7 @@
 /**
  * 轻量 cron 下次触发时间计算 + 表达式校验（node-cron 无 next 接口；调度本体仍由
- * node-cron 承担，本模块只服务「下次触发」展示与 CronBuilder 前端同构校验）。
- * 支持 5 字段标准语法（* , - / 与数字）；逐分钟步进探测，上限 366 天。
+ * node-cron 承担，本模块只服务「下次触发」展示、schema 保存语法门与 CronBuilder
+ * 前端同构校验）。支持 5 字段标准语法（* , - / 与数字）；逐分钟步进探测，上限 366 天。
  */
 
 type Field = { values: Set<number>; wildcard: boolean };
