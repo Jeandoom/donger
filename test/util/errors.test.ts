@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   AppError,
   ChannelError,
@@ -9,6 +10,7 @@ import {
   RunnerError,
   TaskError,
   ValidationError,
+  describeZodError,
 } from "../../src/util/errors.js";
 
 describe("AppError", () => {
@@ -46,5 +48,29 @@ describe("AppError", () => {
     const p = new PayloadTooLargeError("TOO_LARGE", "超 5MB");
     expect(p.code).toBe("TOO_LARGE");
     expect(p.name).toBe("PayloadTooLargeError");
+  });
+});
+
+describe("describeZodError", () => {
+  it("refine（custom）issue 保留中文原文，带字段路径前缀", () => {
+    const r = z
+      .object({ cron: z.string().refine(() => false, "cron 表达式非法：需 5 段") })
+      .safeParse({ cron: "bad" });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(describeZodError(r.error)).toBe("参数校验未通过：cron cron 表达式非法：需 5 段");
+    }
+  });
+
+  it("invalid_type 映射中文；多 issue 取前三并带总数", () => {
+    const schema = z.object({ a: z.string(), b: z.number(), c: z.boolean(), d: z.string() });
+    const r = schema.safeParse({ a: 1, b: "x", c: "y", d: 5 });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const msg = describeZodError(r.error);
+      expect(msg).toContain("等 4 处");
+      expect(msg).toContain("类型不正确");
+      expect(msg.split("；").length).toBe(3);
+    }
   });
 });
