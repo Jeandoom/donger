@@ -82,6 +82,7 @@ import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { createWakeFileWriter } from "./domain/release-webhook.js";
 import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
@@ -800,6 +801,19 @@ async function main(): Promise<void> {
   webChannelDeps.releaseResultHandler = releaseService;
   webChannelDeps.releaseHookToken = cfg.releaseHookToken;
   webChannelDeps.releaseRunStore = releaseRunStore;
+  // 发布 webhook 三平台唤醒通道（spec 2026-10-20-release-webhook-design §5.1）；
+  // wakeDir 空=通道整体关闭（404），容器内路径由 compose 挂 ./release-wake 提供
+  if (cfg.releaseWakeDir) {
+    webChannelDeps.releaseWebhook = {
+      disabled: cfg.releaseWebhookDisabled,
+      secrets: {
+        ...(cfg.releaseWebhookSecretGitee ? { gitee: cfg.releaseWebhookSecretGitee } : {}),
+        ...(cfg.releaseWebhookSecretGithub ? { github: cfg.releaseWebhookSecretGithub } : {}),
+        ...(cfg.releaseWebhookSecretJihulab ? { jihulab: cfg.releaseWebhookSecretJihulab } : {}),
+      },
+      wake: createWakeFileWriter(cfg.releaseWakeDir),
+    };
+  }
   webChannelDeps.activityGetter = (conversationId) => webOrch.getActivity(conversationId);
   // 排水 hooks 晚绑定（热发布优雅停机）：常驻组件至此全部就绪；webChannel 侧的
   // 503 拒入/health 排水标志读同一实例（webChannelDeps.drain 构造后回填，运行时动态读取）

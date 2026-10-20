@@ -46,6 +46,11 @@ import { substituteCredentialRefs } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import { DEFAULT_CONVERSATION_TITLE } from "../domain/conversation-title.js";
 import {
+  type ReleaseWebhookSecrets,
+  type ReleaseWakeWriter,
+  verifyReleaseWebhook,
+} from "../domain/release-webhook.js";
+import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
   CredentialValueInputSchema,
@@ -631,6 +636,16 @@ export interface WebChannelDeps {
   };
   /** L2 回报端点 Bearer 令牌（DONGER_RELEASE_HOOK_TOKEN）；空=端点关闭（404 不暴露存在性） */
   releaseHookToken?: string;
+  /**
+   * 发布 webhook 三平台 push 唤醒（POST /api/webhooks/release/:provider；
+   * spec 2026-10-20-release-webhook-design §5.1）；缺省=端点 404 关闭。
+   * 验签/限流在 handler 内；payload 只承载唤醒不做部署决策（agent 醒来自行 fetch）。
+   */
+  releaseWebhook?: {
+    disabled: boolean;
+    secrets: ReleaseWebhookSecrets;
+    wake: ReleaseWakeWriter;
+  };
   /** L2 自动发布执行记录（workflow 详情查询面）；缺省=release-runs 端点空列表 */
   releaseRunStore?: ReleaseRunStore;
   /** 事件源探测参数（/test 端点；SSRF/工作区收口参数） */
@@ -1387,6 +1402,14 @@ export class WebChannel implements Channel {
       // Bearer token 鉴权，不进 viewer/route-guard 面；token 未配置=端点关闭（404 不暴露存在性）
       if (req.method === "POST" && pathname === "/api/internal/release-result") {
         await this.handleReleaseResultHook(req, res);
+        return;
+      }
+
+      // 发布 webhook（三平台 push 唤醒通道，机器通道同上；验签在 handler 内，spec §5.1）
+      const releaseWhMatch =
+        req.method === "POST" ? pathname.match(/^\/api\/webhooks\/release\/([\w-]+)$/) : null;
+      if (releaseWhMatch) {
+        await this.handleReleaseWebhook(req, res, releaseWhMatch[1] ?? "");
         return;
       }
 
@@ -6690,6 +6713,60 @@ export class WebChannel implements Channel {
       "Content-Type": "application/json; charset=utf-8",
     });
     res.end(JSON.stringify(result.body));
+  }
+
+  /**
+   * POST /api/webhooks/release/:provider —— git 平台 push 唤醒（spec 2026-10-20-release-webhook-design §5.1）。
+   * 验签/限流/唤醒投递全在此；payload 只承载唤醒信号不做部署决策（agent 醒来自行 fetch）。
+   * provider 未知或未配置密钥=404 不暴露；总闸=503；验签失败=403；非 master push=202 静默；
+   * 唤醒投递失败仅记日志仍 202（轮询兜底）。 */
+  private async handleReleaseWebhook(
+    req: HttpRequest,
+    res: ServerResponse,
+    provider: string,
+  ): Promise<void> {
+    const respond = (status: number, body: Record<string, unknown>): void => {
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(body));
+    };
+    const cfg = this.deps.releaseWebhook;
+    if (!cfg) return respond(404, { error: "not found" });
+    if (cfg.disabled) return respond(503, { error: "release webhook disabled" });
+    if (!cfg.secrets[provider as keyof ReleaseWebhookSecrets]) {
+      return respond(404, { error: "not found" });
+    }
+    // 每 provider+IP 限流：秘钥泄露场景下防 fetch 风暴的唯一闸门（spec §7）
+    if (
+      !this.rateLimiter.hit(`release-webhook:${provider}:${this.clientIp(req)}`, 60_000, 30)
+    ) {
+      return respond(429, { error: "rate limited" });
+    }
+    let raw = "";
+    try {
+      raw = await this.readBody(req);
+    } catch (e) {
+      const status = e instanceof PayloadTooLargeError ? 413 : 400;
+      return respond(status, {
+        error: status === 413 ? "payload too large" : "invalid body",
+      });
+    }
+    const verdict = verifyReleaseWebhook({
+      provider,
+      secrets: cfg.secrets,
+      headers: req.headers,
+      rawBody: raw,
+    });
+    if (!verdict.ok) return respond(verdict.status, { error: verdict.error ?? "rejected" });
+    if (!verdict.shouldWake || !verdict.wake) return respond(202, { woke: false });
+    try {
+      await cfg.wake.write(verdict.wake);
+    } catch (e) {
+      console.warn(
+        `[release-webhook] 唤醒投递失败（轮询兜底）: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return respond(202, { woke: false, error: "wake delivery failed" });
+    }
+    return respond(202, { woke: true });
   }
 
   /** GET|POST /hooks/<随机路径> —— 调用事件入口，免认证（外部系统回调；D2/D3）。 */
