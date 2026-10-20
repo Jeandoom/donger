@@ -35,6 +35,12 @@ export const WorkflowRunSchema = z.object({
   causedByRunId: z.string().nullable().optional(),
   /** 级联深度：根=0，由完成事件触发的轮 = 上游 depth+1，超限拒绝入队 */
   cascadeDepth: z.number().int().min(0).optional(),
+  /**
+   * 轮种类（2026-10-20 反馈闭环 M2）：workflow=业务执行轮（终态发完成事件、回写
+   * lastRun）；notify=通知投递轮（写手产出→多通道投递；不发完成事件、不回写 lastRun，
+   * 杜绝「通知写手再被订阅」级联环）。
+   */
+  kind: z.enum(["workflow", "notify"]).default("workflow"),
   queuedAt: z.string(),
   startedAt: z.string().nullable().optional(),
   finishedAt: z.string().nullable().optional(),

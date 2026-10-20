@@ -3,14 +3,16 @@ import { buildPromptVars, renderPromptTemplate } from "../domain/event.js";
 import { FIRING_CONTEXT_MAX_BYTES } from "../domain/event-firing.js";
 import {
   AGENT_EXECUTION_COMPLETED_EVENT,
+  buildExecutionCompletedPayload,
+  buildExecutionFilesManifest,
   EXECUTION_COMPLETION_EVENT_NAMES,
   type ExecutionCompletedFact,
   type ExecutionCompletionStatus,
-  buildExecutionCompletedPayload,
-  buildExecutionFilesManifest,
   executionStatusWord,
   extractExecutionCorrelation,
   formatExecutionDuration,
+  NOTIFY_WRITER_TEMPLATE,
+  type NotifyRunContext,
   parseExecutionCompletedPayload,
   truncateExecutionResultText,
 } from "../domain/event-payloads.js";
@@ -164,6 +166,7 @@ export class EventDispatcher {
       context: ctx.payload,
       causedByRunId: chain?.runId ?? null,
       cascadeDepth: nextDepth,
+      kind: "workflow" as const,
       queuedAt: now,
     };
     if (chain && nextDepth > this.maxCascadeDepth) {
@@ -225,6 +228,11 @@ export class EventDispatcher {
   }
 
   private async execute(run: WorkflowRun): Promise<void> {
+    // 通知投递轮（notifyPolicy 派生，M2）：独立执行路径——不发完成事件、不回写 lastRun
+    if (run.kind === "notify") {
+      await this.executeNotifyRun(run);
+      return;
+    }
     const { workflowStore, runStore, orchestrator, logger } = this.deps;
     const wf = await workflowStore.get(run.workflowId);
     const event = run.eventId ? await this.deps.eventStore.get(run.eventId) : undefined;
@@ -235,9 +243,7 @@ export class EventDispatcher {
     try {
       const startedAt = new Date().toISOString();
       // 反馈闭环 M1：从触发载荷白名单提取业务因果键（feedback.created → feedbackId/submitterId）
-      const feedbackCorrelation = run.context
-        ? extractExecutionCorrelation(run.context)
-        : null;
+      const feedbackCorrelation = run.context ? extractExecutionCorrelation(run.context) : null;
       const title = `⚙️ ${wf.name} · ${startedAt.slice(5, 16).replace("T", " ")}`;
       const conv = this.deps.conversationStore
         ? await this.deps.conversationStore.createWithAgent(wf.ownerId, "web", title, wf.agentId)
@@ -300,6 +306,14 @@ export class EventDispatcher {
         "success",
         { startedAt, finishedAt, error: null, text: replyText },
       );
+      // 通知策略派生（2026-10-20 反馈闭环 M2）：命中 policy.on 的终态 → 派生 notify 轮
+      await this.scheduleNotify(wf, "success", {
+        status: "success",
+        outputSummary: replyText,
+        error: null,
+        sourceRunId: run.id,
+        sourceContext: run.context,
+      });
       logger.info({ runId: run.id, workflowId: wf.id }, "workflow run succeeded");
     } catch (e) {
       const err = (e as Error).message;
@@ -378,13 +392,18 @@ export class EventDispatcher {
         error: err,
         text: "",
       });
+      await this.scheduleNotify(wf, "failed", {
+        status: "failed",
+        outputSummary: "",
+        error: err,
+        sourceRunId: run.id,
+        sourceContext: run.context,
+      });
     }
   }
 
   /** 最终 assistant 回复文本（payload 的 result.text；读取失败置空兜底，不阻塞 emit） */
-  private async lastReplyText(
-    conversationId: string | null | undefined,
-  ): Promise<string> {
+  private async lastReplyText(conversationId: string | null | undefined): Promise<string> {
     if (!conversationId || !this.deps.messageStore) return "";
     try {
       const msgs = await this.deps.messageStore.listByConversation(conversationId);
@@ -460,6 +479,186 @@ export class EventDispatcher {
     }
   }
 
+  /**
+   * 通知策略派生（2026-10-20 反馈闭环 M2）：主 run 终态后检查 notifyPolicy，命中则
+   * 派生 notify 轮入同一队列。收件人在派生时解析完成（"correlation" 模式无法定位时
+   * notify 轮直接 failed 落行——可见可排障，不空跑写手烧 token）。
+   */
+  private async scheduleNotify(
+    wf: Workflow,
+    status: ExecutionCompletionStatus,
+    info: {
+      status: ExecutionCompletionStatus;
+      outputSummary: string;
+      error: string | null;
+      sourceRunId: string;
+      sourceContext: string | null | undefined;
+    },
+  ): Promise<void> {
+    const policy = wf.notifyPolicy;
+    if (!policy?.enabled || !policy.on.includes(status)) return;
+    let recipients: string[];
+    let correlation: NotifyRunContext["correlation"] = null;
+    if (policy.recipients === "owner") {
+      recipients = [wf.ownerId];
+    } else if (Array.isArray(policy.recipients)) {
+      recipients = [...policy.recipients];
+    } else {
+      correlation = info.sourceContext ? extractExecutionCorrelation(info.sourceContext) : null;
+      if (!correlation) {
+        const now = new Date().toISOString();
+        const run = await this.deps.runStore.insert({
+          id: crypto.randomUUID(),
+          workflowId: wf.id,
+          eventId: "",
+          eventName: "notify",
+          status: "failed",
+          error: "无法解析收件人（事件载荷无 correlation）",
+          causedByRunId: info.sourceRunId,
+          cascadeDepth: 0,
+          kind: "notify",
+          queuedAt: now,
+          finishedAt: now,
+        });
+        void run;
+        this.deps.logger.warn(
+          { workflowId: wf.id, sourceRunId: info.sourceRunId },
+          "notify: 无法解析收件人，通知轮置失败",
+        );
+        return;
+      }
+      recipients = [correlation.submitterId];
+    }
+    const ctx: NotifyRunContext = {
+      recipients,
+      title: policy.title ?? "",
+      status,
+      outputSummary: truncateExecutionResultText(info.outputSummary),
+      error: info.error,
+      correlation,
+    };
+    await this.deps.runStore.insert({
+      id: crypto.randomUUID(),
+      workflowId: wf.id,
+      eventId: "",
+      eventName: "notify",
+      status: "queued",
+      context: JSON.stringify(ctx),
+      causedByRunId: info.sourceRunId,
+      cascadeDepth: 0,
+      kind: "notify",
+      queuedAt: new Date().toISOString(),
+    });
+    this.pump();
+  }
+
+  /**
+   * 通知投递轮执行：写手 agent 跑一轮产出文案 → 站内信投递（M2 仅 inapp；站外通道由
+   * NotificationService 按用户偏好附带）。与业务 run 的差异：不发完成事件（杜绝「通知
+   * 写手再被订阅」级联环）、不回写工作流 lastRun、自身失败不再派生通知（防递归）。
+   */
+  private async executeNotifyRun(run: WorkflowRun): Promise<void> {
+    const { workflowStore, runStore, orchestrator, logger } = this.deps;
+    const now0 = new Date().toISOString();
+    const fail = async (error: string): Promise<void> => {
+      await runStore.updateRun(run.id, { status: "failed", error, finishedAt: now0 });
+    };
+    const wf = await workflowStore.get(run.workflowId);
+    if (!wf || !wf.notifyPolicy?.enabled) {
+      await fail("通知策略不存在或已关闭");
+      return;
+    }
+    let ctx: NotifyRunContext;
+    try {
+      ctx = JSON.parse(run.context ?? "") as NotifyRunContext;
+      if (!Array.isArray(ctx.recipients) || ctx.recipients.length === 0) {
+        throw new Error("empty recipients");
+      }
+    } catch {
+      await fail("通知上下文缺失（无收件人）");
+      return;
+    }
+    try {
+      const startedAt = new Date().toISOString();
+      const policy = wf.notifyPolicy;
+      const writerAgentId = policy.writerAgentId ?? wf.agentId;
+      const conv = this.deps.conversationStore
+        ? await this.deps.conversationStore.createWithAgent(
+            wf.ownerId,
+            "web",
+            `🔔 ${wf.name} · 结果通知 · ${startedAt.slice(5, 16).replace("T", " ")}`,
+            writerAgentId,
+          )
+        : undefined;
+      const statusWord = executionStatusWord(ctx.status);
+      const prompt = renderPromptTemplate(
+        policy.promptTemplate?.trim() ? policy.promptTemplate : NOTIFY_WRITER_TEMPLATE,
+        {
+          workflowName: wf.name,
+          statusWord,
+          outputSummary: wrapUntrusted(
+            ctx.outputSummary || ctx.error || "（无结论）",
+            "event:notify",
+          ).wrapped,
+          feedbackSection: ctx.correlation
+            ? `【关联反馈】${ctx.correlation.feedbackId}（提交人 ${ctx.correlation.submitterId}）`
+            : "",
+        },
+      );
+      await runStore.updateRun(run.id, {
+        status: "running",
+        startedAt,
+        conversationId: conv?.id ?? run.conversationId ?? null,
+        renderedPrompt: prompt,
+      });
+      if (conv && this.deps.messageStore) {
+        await this.deps.messageStore
+          .add(conv.id, "user", prompt)
+          .catch((e: Error) =>
+            logger.error({ runId: run.id, err: e.message }, "notify run: persist prompt failed"),
+          );
+      }
+      const agentConversationId = await orchestrator.handleMessage({
+        channelId: "web",
+        threadId: conv?.id ?? run.id,
+        ...(conv ? { conversationId: conv.id } : {}),
+        requesterId: wf.ownerId,
+        text: prompt,
+        unattended: true,
+        permissionMode: wf.permissionMode,
+      });
+      const finishedAt = new Date().toISOString();
+      const finalConvId = agentConversationId ?? conv?.id ?? null;
+      await runStore.updateRun(run.id, {
+        status: "success",
+        finishedAt,
+        conversationId: finalConvId,
+      });
+      const body = await this.lastReplyText(finalConvId);
+      await this.deps.notifications
+        ?.notify({
+          event: "workflow.result_notified",
+          recipients: ctx.recipients.map((userId) => ({ kind: "user" as const, userId })),
+          title: ctx.title || `「${wf.name}」结果通知`,
+          body: body.slice(0, 400),
+          link: `/workflows/${wf.id}`,
+          dedupeKey: `notify:${run.id}`,
+        })
+        .catch((e: unknown) =>
+          logger.error({ runId: run.id, err: String(e) }, "notify run: 投递失败"),
+        );
+      logger.info({ runId: run.id, workflowId: wf.id }, "notify run delivered");
+    } catch (e) {
+      const finishedAt = new Date().toISOString();
+      await runStore.updateRun(run.id, {
+        status: "failed",
+        error: (e as Error).message,
+        finishedAt,
+      });
+      logger.error({ runId: run.id, err: (e as Error).message }, "notify run failed");
+    }
+  }
+
   /** 运行结果 → 站内信（沿用 loop.* 通知事件键避免用户偏好迁移；通知目录文案已改工作流口径） */
   private notify(wf: Workflow, run: WorkflowRun, title: string, body: string): void {
     void this.deps.notifications
@@ -497,9 +696,9 @@ export class EventDispatcher {
       error: stopError,
       finishedAt,
     });
-    // 终止同样 emit（状态机完备，D8）；text 置空
+    // 终止同样 emit（状态机完备，D8）；text 置空。notify 轮终止不 emit（防级联环，M2）
     const wf = await this.deps.workflowStore.get(workflowId).catch(() => undefined);
-    if (wf) {
+    if (wf && run.kind !== "notify") {
       await this.emitExecutionCompleted(wf, { ...run, status: "stopped" }, "stopped", {
         startedAt: run.startedAt ?? run.queuedAt,
         finishedAt,

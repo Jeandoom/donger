@@ -23,6 +23,7 @@ export type NotificationEvent =
   | "deploy.detected"
   | "deploy.succeeded"
   | "deploy.failed"
+  | "workflow.result_notified"
   | "agent.skill_issue_reported"
   | "agent.skill_suggestion";
 
@@ -134,6 +135,12 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     severity: "critical",
     mandatoryInapp: false,
     label: "部署失败",
+  },
+  "workflow.result_notified": {
+    group: "task",
+    severity: "info",
+    mandatoryInapp: false,
+    label: "工作流结果通知",
   },
   "agent.skill_issue_reported": {
     group: "share",
