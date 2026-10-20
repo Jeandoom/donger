@@ -181,6 +181,7 @@ export class CodexAgentRunner implements AgentRunner {
       opts.hostTools,
       opts.kbTools,
       opts.auditTools,
+      opts.feedbackTools,
     ]) {
       if (!sdkTools) continue;
       const url = await this.bridge.mountMcp(

@@ -210,6 +210,12 @@ export const IncomingMessageSchema = z.object({
   permissionMode: AgentPermissionModeSchema.optional(),
   /** L2 autoDev 轮标记（工作流派发注入）：orchestrator 据此装配 git-write 放行白名单 */
   autoDev: z.boolean().optional(),
+  /**
+   * 业务因果键（工作流派发注入，2026-10-20 反馈闭环 M1）：EventDispatcher 从触发载荷
+   * 白名单提取。orchestrator 据此给反馈工具（mcp__donger-feedback）绑定写边界——
+   * 工具只可操作此 feedbackId，普通聊天轮不携带、不挂载。
+   */
+  feedbackCorrelation: z.object({ feedbackId: z.string().min(1) }).optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

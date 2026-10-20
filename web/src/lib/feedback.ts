@@ -68,7 +68,8 @@ export interface FeedbackReplyDTO {
   userId: string;
   /** 回复人姓名（服务端按 userId 补齐；取不到时回退 userId） */
   authorName?: string;
-  authorRole: "admin" | "user";
+  /** system=无人值守处理链路的自动结论（2026-10-20 反馈闭环） */
+  authorRole: "admin" | "user" | "system";
   content: string;
   createdAt: string;
 }

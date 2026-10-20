@@ -9,6 +9,7 @@ import {
   buildExecutionCompletedPayload,
   buildExecutionFilesManifest,
   executionStatusWord,
+  extractExecutionCorrelation,
   formatExecutionDuration,
   parseExecutionCompletedPayload,
   truncateExecutionResultText,
@@ -233,6 +234,10 @@ export class EventDispatcher {
     }
     try {
       const startedAt = new Date().toISOString();
+      // 反馈闭环 M1：从触发载荷白名单提取业务因果键（feedback.created → feedbackId/submitterId）
+      const feedbackCorrelation = run.context
+        ? extractExecutionCorrelation(run.context)
+        : null;
       const title = `⚙️ ${wf.name} · ${startedAt.slice(5, 16).replace("T", " ")}`;
       const conv = this.deps.conversationStore
         ? await this.deps.conversationStore.createWithAgent(wf.ownerId, "web", title, wf.agentId)
@@ -269,6 +274,9 @@ export class EventDispatcher {
         permissionMode: wf.permissionMode,
         // L2 autoDev：标记无人值守轮为自动发布链路（orchestrator 装配 git-write 放行白名单）
         ...(wf.autoDev?.enabled ? { autoDev: true } : {}),
+        // 反馈闭环 M1：feedback.created 因果键透传（orchestrator 据此装配
+        // donger-feedback 工具并绑定写边界）
+        ...(feedbackCorrelation ? { feedbackCorrelation } : {}),
       });
       const finishedAt = new Date().toISOString();
       const finalConvId = agentConversationId ?? conv?.id ?? null;
@@ -323,6 +331,7 @@ export class EventDispatcher {
       const fact = parseExecutionCompletedPayload(run.context);
       if (fact) {
         const manifest = buildExecutionFilesManifest(fact.result.files);
+        const corr = extractExecutionCorrelation(run.context);
         briefing = {
           workflowName: fact.workflowName,
           agentName: fact.agentName,
@@ -330,6 +339,8 @@ export class EventDispatcher {
           durationText: formatExecutionDuration(fact.durationMs),
           outputSummary: fact.result.text,
           filesManifest: manifest || "（无）",
+          // 反馈闭环 M1：因果键暴露给级联模板（平台内部 id，不属不可信外部内容）
+          ...(corr ? { feedbackId: corr.feedbackId, submitterId: corr.submitterId } : {}),
         };
       }
     }
@@ -431,6 +442,10 @@ export class EventDispatcher {
         cascadeDepth: run.cascadeDepth ?? 0,
       },
       result: { text: truncateExecutionResultText(info.text), files: [] },
+      // 反馈闭环 M1：业务因果键随信封透传（白名单提取，非 feedback 触发为 undefined）
+      ...(run.context
+        ? { correlation: extractExecutionCorrelation(run.context) ?? undefined }
+        : {}),
     };
     for (const eventName of EXECUTION_COMPLETION_EVENT_NAMES) {
       const payload = buildExecutionCompletedPayload({ ...base, event: eventName });

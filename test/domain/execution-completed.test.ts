@@ -124,3 +124,41 @@ describe("EventSystemConfig schema refine（完成事件 subjects/timing）", ()
     ).not.toThrow();
   });
 });
+
+// ===== correlation 白名单透传（2026-10-20 反馈闭环 M1）=====
+import { buildFeedbackCreatedPayload, extractExecutionCorrelation } from "../../src/domain/event-payloads.js";
+
+describe("execution correlation 提取与透传", () => {
+  const fbPayload = buildFeedbackCreatedPayload({
+    id: "fb-9",
+    category: "ui",
+    status: "open",
+    content: "按钮失灵",
+    submitterId: "u-9",
+    submitterName: "提交人甲",
+    imageCount: 0,
+    createdAt: "2026-10-20T00:00:00Z",
+  });
+
+  it("extractExecutionCorrelation：feedback.created → 因果键；其余 → null", () => {
+    expect(extractExecutionCorrelation(fbPayload)).toEqual({
+      feedbackId: "fb-9",
+      submitterId: "u-9",
+    });
+    expect(extractExecutionCorrelation('{"event":"loop.tick"}')).toBeNull();
+    expect(extractExecutionCorrelation('{"event":"feedback.created","feedback":{}}')).toBeNull();
+    expect(extractExecutionCorrelation("not json")).toBeNull();
+  });
+
+  it("信封带 correlation 往返；坏 correlation 剥除", () => {
+    const withCorr = { ...fact, correlation: { feedbackId: "fb-9", submitterId: "u-9" } };
+    const payload = buildExecutionCompletedPayload(withCorr);
+    expect(parseExecutionCompletedPayload(payload)).toEqual(withCorr);
+
+    const badCorr = JSON.stringify({
+      ...fact,
+      correlation: { feedbackId: 42 },
+    });
+    expect(parseExecutionCompletedPayload(badCorr)?.correlation).toBeUndefined();
+  });
+});

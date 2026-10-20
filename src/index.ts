@@ -409,6 +409,8 @@ async function main(): Promise<void> {
       // zcode 会话指针条目落 transcript（sdkSessionId 丢失时反查自愈，spec 2026-09-29 M3）
       transcriptStore,
       notificationService,
+      // 反馈闭环 M1：反馈工具（donger-feedback）落库出口
+      feedbackStore,
       gates: createDefaultGates(),
       // 三引擎路由（specs/2026-09-21-codex-openai-runner-design.md §6、
       // specs/2026-09-25-zcode-engine-integration.md §4.1）：
