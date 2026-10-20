@@ -22,15 +22,17 @@ import { LlmProviderTester } from "./adapters/llm-provider-tester.js";
 import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-directory-resolver.js";
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
+import { MemoryRateLimiter } from "./adapters/memory-rate-limiter.js";
 import { DingTalkNotificationAdapter } from "./adapters/notif-dingtalk.js";
+import { EmailNotificationAdapter } from "./adapters/notif-email.js";
 import { WebhookNotificationAdapter } from "./adapters/notif-webhook.js";
 import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { SkillJobRunner } from "./adapters/skill-jobs.js";
 import { SkillRepoSyncService } from "./adapters/skill-repo-sync.js";
 import { SqliteAgentCallbackStore } from "./adapters/sqlite-agent-callback-store.js";
-import { SqliteApprovalStore } from "./adapters/sqlite-approval-store.js";
 import { SqliteAgentShareStore } from "./adapters/sqlite-agent-share-store.js";
 import { SqliteAgentStore } from "./adapters/sqlite-agent-store.js";
+import { SqliteApprovalStore } from "./adapters/sqlite-approval-store.js";
 import { SqliteAuditStore } from "./adapters/sqlite-audit-store.js";
 import { SqliteCommentStore } from "./adapters/sqlite-comment-store.js";
 import { SqliteConnectorStore } from "./adapters/sqlite-connector-store.js";
@@ -38,9 +40,6 @@ import { SqliteConversationStore } from "./adapters/sqlite-conversation-store.js
 import { SqliteCredentialSetStore } from "./adapters/sqlite-credential-set-store.js";
 import { SqliteEngineRuntimeStore } from "./adapters/sqlite-engine-runtime-store.js";
 import { SqliteEventFiringStore } from "./adapters/sqlite-event-firing-store.js";
-import { SqliteReleaseRunStore } from "./adapters/sqlite-release-run-store.js";
-import { ReleaseService } from "./orchestrator/release-service.js";
-import { MemoryRateLimiter } from "./adapters/memory-rate-limiter.js";
 import { SqliteEventStore } from "./adapters/sqlite-event-store.js";
 import { SqliteFeedbackStore } from "./adapters/sqlite-feedback-store.js";
 import { SqliteHostExecPolicyStore } from "./adapters/sqlite-host-exec-policy-store.js";
@@ -56,6 +55,7 @@ import { SqliteMessageStore } from "./adapters/sqlite-message-store.js";
 import { SqliteModuleConfigStore } from "./adapters/sqlite-module-config-store.js";
 import { SqliteNotificationStore } from "./adapters/sqlite-notification-store.js";
 import { SqlitePluginStore } from "./adapters/sqlite-plugin-store.js";
+import { SqliteReleaseRunStore } from "./adapters/sqlite-release-run-store.js";
 import { SqliteSkillPackStore } from "./adapters/sqlite-skill-pack-store.js";
 import { SqliteSystemEventStore } from "./adapters/sqlite-system-event-store.js";
 import { SqliteTaskStore } from "./adapters/sqlite-task-store.js";
@@ -76,14 +76,15 @@ import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config
 import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
-import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { DrainManager } from "./orchestrator/drain-manager.js";
+import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
-import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
+import { ReleaseService } from "./orchestrator/release-service.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
+import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import { SystemEventDispatcher } from "./orchestrator/system-event-dispatcher.js";
@@ -555,8 +556,12 @@ async function main(): Promise<void> {
     adapters: [
       new DingTalkNotificationAdapter(() => moduleConfigStore?.getDingTalk()),
       new WebhookNotificationAdapter({ allowPrivateNet: cfg.triggerAllowPrivateNet }),
+      new EmailNotificationAdapter(() => moduleConfigStore?.getEmail()),
     ],
     getIdentities: (userId) => userStore.getIdentities(userId),
+    // 邮箱注册身份即投递地址（users 表无 email 列，邮箱身份在 identities）
+    getUserEmail: async (userId) =>
+      (await userStore.getIdentities(userId)).find((i) => i.provider === "email")?.externalId,
   });
 
   // Web Channel（始终启动）
@@ -885,7 +890,9 @@ async function main(): Promise<void> {
       if (!d.hadResolver && row) {
         let reqInput: unknown;
         try {
-          reqInput = row.payload ? (JSON.parse(row.payload) as { input?: unknown }).input : undefined;
+          reqInput = row.payload
+            ? (JSON.parse(row.payload) as { input?: unknown }).input
+            : undefined;
         } catch {
           reqInput = undefined;
         }
@@ -971,7 +978,8 @@ async function main(): Promise<void> {
     conversationStore,
     userStore,
   });
-  if (swept.interrupted > 0) log.warn({ count: swept.interrupted }, "已将遗留 running 任务标记为中断");
+  if (swept.interrupted > 0)
+    log.warn({ count: swept.interrupted }, "已将遗留 running 任务标记为中断");
   if (swept.approvalRearmed > 0)
     log.warn({ count: swept.approvalRearmed }, "遗留审批挂起任务已重臂（决议后自动续跑）");
   if (swept.approvalFailed > 0)

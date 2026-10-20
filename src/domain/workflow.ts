@@ -29,8 +29,11 @@ export const NotifyPolicySchema = z.object({
   promptTemplate: z.string().max(4000).optional(),
   /** 通知标题；空=「工作流「{name}」结果通知」 */
   title: z.string().max(120).optional(),
-  /** 投递通道（M2 值域仅站内信；M3 放开站外）；站外仍受用户偏好与地址验证约束 */
-  channels: z.array(z.literal("inapp")).min(1).default(["inapp"]),
+  /** 投递通道白名单；站外仍受用户偏好订阅与地址绑定约束（M3 值域全量） */
+  channels: z
+    .array(z.enum(["inapp", "dingtalk", "webhook", "email"]))
+    .min(1)
+    .default(["inapp"]),
   /** 收件人：correlation=事件因果提交人；owner=工作流属主；显式 userId 列表 */
   recipients: z
     .union([z.literal("correlation"), z.literal("owner"), z.array(z.string().min(1)).min(1)])

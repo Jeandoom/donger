@@ -40,11 +40,11 @@ export type NotificationEventGroup =
 export type NotificationSeverity = "info" | "warn" | "critical";
 
 /** 投递通道：站内信恒开；站外通道用户显式订阅（opt-in，spec §4.4） */
-export type NotificationChannelId = "inapp" | "dingtalk" | "webhook";
+export type NotificationChannelId = "inapp" | "dingtalk" | "webhook" | "email";
 
 export type OutboundChannelId = Exclude<NotificationChannelId, "inapp">;
 
-export const OUTBOUND_CHANNELS: OutboundChannelId[] = ["dingtalk", "webhook"];
+export const OUTBOUND_CHANNELS: OutboundChannelId[] = ["dingtalk", "webhook", "email"];
 
 export interface NotificationEventSpec {
   group: NotificationEventGroup;
@@ -189,6 +189,11 @@ export interface NotificationIntent {
   link?: string;
   /** 结构化载荷（M2 webhook JSON 体用；只允许显式声明的字符串字段） */
   data?: Record<string, string>;
+  /**
+   * 通道白名单（2026-10-20 反馈闭环 M3，notifyPolicy.channels 传入）：缺省=全部通道
+   * 按用户偏好分发；给定时站内仅在其含 "inapp" 时发，站外取交集（偏好仍须启用）。
+   */
+  channels?: NotificationChannelId[];
 }
 
 export type RecipientRef = { kind: "user"; userId: string };
@@ -216,7 +221,7 @@ export interface NotificationPrefsEntry {
 
 export const NotificationPrefInputSchema = z.object({
   eventGroup: z.enum(["task", "loop", "system", "account", "feedback", "deploy", "share"]),
-  channel: z.enum(["inapp", "dingtalk", "webhook"]),
+  channel: z.enum(["inapp", "dingtalk", "webhook", "email"]),
   enabled: z.boolean(),
 });
 

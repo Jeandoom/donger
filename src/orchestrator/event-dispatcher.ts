@@ -640,6 +640,8 @@ export class EventDispatcher {
           event: "workflow.result_notified",
           recipients: ctx.recipients.map((userId) => ({ kind: "user" as const, userId })),
           title: ctx.title || `「${wf.name}」结果通知`,
+          // 通道白名单（M3）：policy.channels ∩ 用户偏好
+          channels: [...policy.channels],
           body: body.slice(0, 400),
           link: `/workflows/${wf.id}`,
           dedupeKey: `notify:${run.id}`,

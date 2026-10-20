@@ -62,7 +62,7 @@ interface WorkflowDTO {
     writerAgentId?: string;
     promptTemplate?: string;
     title?: string;
-    channels?: Array<"inapp">;
+    channels?: Array<"inapp" | "dingtalk" | "webhook" | "email">;
     recipients?: "correlation" | "owner" | string[];
   };
 }
@@ -180,6 +180,10 @@ export function WorkflowEditorPage() {
   const [notifyTitle, setNotifyTitle] = useState("");
   const [notifyPrompt, setNotifyPrompt] = useState("");
   const [notifyRecipients, setNotifyRecipients] = useState<"correlation" | "owner">("correlation");
+  const [notifyInapp, setNotifyInapp] = useState(true);
+  const [notifyDingtalk, setNotifyDingtalk] = useState(false);
+  const [notifyWebhook, setNotifyWebhook] = useState(false);
+  const [notifyEmail, setNotifyEmail] = useState(false);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [refsError, setRefsError] = useState<string | null>(null);
@@ -218,6 +222,10 @@ export function WorkflowEditorPage() {
     notifyTitle,
     notifyPrompt,
     notifyRecipients,
+    notifyInapp,
+    notifyDingtalk,
+    notifyWebhook,
+    notifyEmail,
   });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
@@ -279,6 +287,10 @@ export function WorkflowEditorPage() {
       setNotifyRecipients(
         np?.recipients === "owner" || Array.isArray(np?.recipients) ? "owner" : "correlation",
       );
+      setNotifyInapp(!np?.channels?.length || np.channels.includes("inapp"));
+      setNotifyDingtalk(np?.channels?.includes("dingtalk") ?? false);
+      setNotifyWebhook(np?.channels?.includes("webhook") ?? false);
+      setNotifyEmail(np?.channels?.includes("email") ?? false);
       setLoaded(true);
       pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
     } catch (e) {
@@ -346,6 +358,16 @@ export function WorkflowEditorPage() {
       setError("通知策略至少勾选一种触发时机");
       return;
     }
+    if (
+      notifyEnabled &&
+      !notifyInapp &&
+      !notifyDingtalk &&
+      !notifyWebhook &&
+      !notifyEmail
+    ) {
+      setError("通知策略至少选择一个投递通道");
+      return;
+    }
     setSaving(true);
     try {
       const url = id ? `/api/workflows/${id}` : "/api/workflows";
@@ -378,7 +400,12 @@ export function WorkflowEditorPage() {
             ...(notifyWriterAgentId ? { writerAgentId: notifyWriterAgentId } : {}),
             ...(notifyTitle.trim() ? { title: notifyTitle.trim() } : {}),
             ...(notifyPrompt.trim() ? { promptTemplate: notifyPrompt } : {}),
-            channels: ["inapp"],
+            channels: [
+              ...(notifyInapp ? ["inapp"] : []),
+              ...(notifyDingtalk ? ["dingtalk"] : []),
+              ...(notifyWebhook ? ["webhook"] : []),
+              ...(notifyEmail ? ["email"] : []),
+            ],
             recipients: notifyRecipients,
           },
         }),
@@ -746,12 +773,26 @@ export function WorkflowEditorPage() {
                 <option value="owner">工作流属主（我自己）</option>
               </Select>
             </FormField>
-            <FormField label="通知通道">
-              <div className="flex items-center gap-2 text-sm">
-                <Badge tone="info">站内信</Badge>
-                <span className="text-xs text-muted-foreground">
-                  更多通道（钉钉 / 邮件）即将开放；收件人的站外订阅偏好不受此处影响
-                </span>
+            <FormField label="通知通道" hint="站外通道还需收件人本人订阅启用（钉钉需绑定地址；邮件需管理员配置 SMTP）">
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                {(
+                  [
+                    ["inapp", "站内信", notifyInapp, setNotifyInapp],
+                    ["dingtalk", "钉钉", notifyDingtalk, setNotifyDingtalk],
+                    ["webhook", "Webhook", notifyWebhook, setNotifyWebhook],
+                    ["email", "邮件", notifyEmail, setNotifyEmail],
+                  ] as const
+                ).map(([key, label, checked, set]) => (
+                  <label key={key} className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => set(e.target.checked)}
+                      className="accent-primary"
+                    />
+                    {label}
+                  </label>
+                ))}
               </div>
             </FormField>
             <FormField

@@ -54,7 +54,10 @@ import {
   withKindKeySpecs,
 } from "../domain/credential.js";
 import { type Event, generateCallPath, parseEventInput } from "../domain/event.js";
-import { buildFeedbackCreatedPayload, isExecutionCompletedEventName } from "../domain/event-payloads.js";
+import {
+  buildFeedbackCreatedPayload,
+  isExecutionCompletedEventName,
+} from "../domain/event-payloads.js";
 import {
   AgentExtensionDirectoriesInputSchema,
   isRelativeExtensionPath,
@@ -202,6 +205,7 @@ import type { McpTokenStore } from "../ports/mcp-token-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { ModuleConfigStore } from "../ports/module-config-store.js";
 import { type RateLimiter, RateLimitKeys } from "../ports/rate-limiter.js";
+import type { ReleaseRunStore } from "../ports/release-run-store.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SkillInstaller } from "../ports/skill-installer.js";
 import type { SkillPackStore } from "../ports/skill-pack-store.js";
@@ -211,14 +215,13 @@ import type { UsageStore } from "../ports/usage-store.js";
 import type { UserSkillRepoStore } from "../ports/user-skill-repo-store.js";
 import type { UserStore } from "../ports/user-store.js";
 import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
-import type { ReleaseRunStore } from "../ports/release-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import {
+  describeZodError,
   ForbiddenError,
   NotFoundError,
   PayloadTooLargeError,
   ValidationError,
-  describeZodError,
 } from "../util/errors.js";
 import {
   buildGithubAuthorizeUrl,
@@ -247,6 +250,7 @@ import { handleMcpMessage } from "./mcp/rpc.js";
 import { buildMcpTools } from "./mcp/tools.js";
 import { MemoryRateLimiter } from "./memory-rate-limiter.js";
 import {
+  handleApplySuggestion,
   handleHostSkill,
   handleInstall,
   handleInstallToAgent,
@@ -257,7 +261,6 @@ import {
   handleSetSkillEnabled,
   handleUninstall,
   handleUpdate,
-  handleApplySuggestion,
   type SkillApiDeps,
 } from "./skill-api.js";
 import type { SkillJobRunner } from "./skill-jobs.js";
@@ -1250,7 +1253,10 @@ export class WebChannel implements Channel {
 
   /** 每会话流内单调 seq（断流重放游标）+ 环形缓冲（热发布 M4） */
   private readonly streamSeqs = new Map<string, number>();
-  private readonly streamBuffers = new Map<string, Array<{ seq: number; event: SSEEvent; at: number }>>();
+  private readonly streamBuffers = new Map<
+    string,
+    Array<{ seq: number; event: SSEEvent; at: number }>
+  >();
   /** 缓冲上限：500 条或 15 分钟（先到先裁；超出 → stream_resync 全量补拉兜底） */
   private static readonly STREAM_BUFFER_MAX = 500;
   private static readonly STREAM_BUFFER_TTL_MS = 15 * 60 * 1000;
@@ -1763,7 +1769,8 @@ export class WebChannel implements Channel {
         res.writeHead(409);
         res.end(
           JSON.stringify({
-            error: "该会话已有新任务在执行，旧审批不再续跑；请先处理新任务，或从执行列表取消旧任务。",
+            error:
+              "该会话已有新任务在执行，旧审批不再续跑；请先处理新任务，或从执行列表取消旧任务。",
           }),
         );
         return;
@@ -3097,7 +3104,10 @@ export class WebChannel implements Channel {
     }
 
     // POST /api/admin/platform-notes/merge-candidate —— { index, action: "merge" | "dismiss" }
-    if (url.split("?")[0] === "/api/admin/platform-notes/merge-candidate" && req.method === "POST") {
+    if (
+      url.split("?")[0] === "/api/admin/platform-notes/merge-candidate" &&
+      req.method === "POST"
+    ) {
       if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
       let body: { index?: unknown; action?: unknown };
       try {
@@ -3187,7 +3197,10 @@ export class WebChannel implements Channel {
           personal: l.personal,
           entries,
           ...usage,
-          readRatio: usage.read + usage.search > 0 ? Number(((usage.read + usage.search) / Math.max(entries, 1)).toFixed(2)) : 0,
+          readRatio:
+            usage.read + usage.search > 0
+              ? Number(((usage.read + usage.search) / Math.max(entries, 1)).toFixed(2))
+              : 0,
         };
       });
       return this.json(res, { metrics });
@@ -3260,6 +3273,17 @@ export class WebChannel implements Channel {
         email: {
           signupAllowedDomains: email?.signupAllowedDomains ?? [],
           loginEnabled: email?.loginEnabled !== false,
+          // SMTP 出站（M3 邮件通知通道）：password 永不回显，只回是否已设置
+          smtp: email?.smtp
+            ? {
+                host: email.smtp.host,
+                port: email.smtp.port,
+                secure: email.smtp.secure ?? false,
+                username: email.smtp.username ?? "",
+                from: email.smtp.from,
+                smtpPasswordSet: !!email.smtp.password,
+              }
+            : null,
         },
       });
     }
@@ -3347,10 +3371,16 @@ export class WebChannel implements Channel {
       return this.json(res, { ok: true });
     }
 
-    // PUT /api/admin/auth-configs/email —— 域名白名单 + 登录开关
+    // PUT /api/admin/auth-configs/email —— 域名白名单 + 登录开关 + SMTP 出站（M3）。
+    // smtp 语义：缺省=保留现值（只改白名单不误清 SMTP）；null=显式清空；对象=合并
+    // （password 留空=沿用已存密码，防回显缺口导致误清）
     if (url.split("?")[0] === "/api/admin/auth-configs/email" && req.method === "PUT") {
       if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
-      let body: { signupAllowedDomains?: unknown; loginEnabled?: unknown };
+      let body: {
+        signupAllowedDomains?: unknown;
+        loginEnabled?: unknown;
+        smtp?: Record<string, unknown> | null;
+      };
       try {
         body = JSON.parse(await this.readBody(req));
       } catch {
@@ -3361,9 +3391,35 @@ export class WebChannel implements Channel {
       if (typeof rawDomains !== "string" && !Array.isArray(rawDomains)) {
         return this.json(res, { error: "signupAllowedDomains 须为字符串或字符串数组" }, 400);
       }
+      const cur = this.deps.moduleConfigStore.getEmail();
+      let smtp = cur?.smtp;
+      if (body.smtp === null) {
+        smtp = undefined;
+      } else if (body.smtp && typeof body.smtp === "object") {
+        const s = body.smtp;
+        const host = typeof s.host === "string" ? s.host.trim() : "";
+        const port = typeof s.port === "number" ? s.port : Number(s.port);
+        const from = typeof s.from === "string" ? s.from.trim() : "";
+        if (!host || !Number.isFinite(port) || port <= 0 || !from) {
+          return this.json(res, { error: "SMTP 配置须含 host、正整数 port 与发件人 from" }, 400);
+        }
+        const password = typeof s.password === "string" ? s.password : "";
+        smtp = {
+          host,
+          port,
+          ...(s.secure === true ? { secure: true } : {}),
+          ...(typeof s.username === "string" && s.username.trim()
+            ? { username: s.username.trim() }
+            : {}),
+          // 留空=沿用已存密码（表单不回显明文）
+          ...(password ? { password } : cur?.smtp?.password ? { password: cur.smtp.password } : {}),
+          from,
+        };
+      }
       this.deps.moduleConfigStore.putEmail({
         signupAllowedDomains: parseSignupDomains(rawDomains),
         loginEnabled: body.loginEnabled !== false,
+        ...(smtp ? { smtp } : {}),
       });
       return this.json(res, { ok: true });
     }
@@ -4833,6 +4889,7 @@ export class WebChannel implements Channel {
             saved.find((p) => p.eventGroup === g && p.channel === "dingtalk")?.enabled ?? false,
           webhook:
             saved.find((p) => p.eventGroup === g && p.channel === "webhook")?.enabled ?? false,
+          email: saved.find((p) => p.eventGroup === g && p.channel === "email")?.enabled ?? false,
         },
       }));
       return this.json(res, { groups });
@@ -5595,7 +5652,10 @@ export class WebChannel implements Channel {
       const mem = new MemoryStore(join(kbRootDir(this.workspaceDir, id), "memory"));
       const idx = mem.readCuratedIndex();
       return this.json(res, {
-        mode: this.deps.moduleConfigStore?.getFlag("memory.channel") === "legacy" ? "legacy" : "curated",
+        mode:
+          this.deps.moduleConfigStore?.getFlag("memory.channel") === "legacy"
+            ? "legacy"
+            : "curated",
         curated: mem.listCurated(),
         indexLines: idx?.lines ?? 0,
         indexTruncated: idx?.truncated ?? false,
@@ -6228,7 +6288,11 @@ export class WebChannel implements Channel {
     if (!event || event.ownerId !== uid) {
       throw new ValidationError("EVENT_REF_INVALID", "workflow 订阅的事件不存在或非本人所有");
     }
-    if (event.type === "system" && event.system && isExecutionCompletedEventName(event.system.name)) {
+    if (
+      event.type === "system" &&
+      event.system &&
+      isExecutionCompletedEventName(event.system.name)
+    ) {
       const subjects = event.system.subjects ?? [];
       if (event.system.name === "agent.execution.completed" && subjects.includes(input.agentId)) {
         throw new ValidationError(
@@ -6292,10 +6356,7 @@ export class WebChannel implements Channel {
     for (const workflowId of subjects) {
       const w = await this.deps.workflowStore?.get(workflowId);
       if (!w || w.ownerId !== uid) {
-        throw new ValidationError(
-          "SUBJECT_REF_INVALID",
-          "完成事件引用的工作流不存在或非本人所有",
-        );
+        throw new ValidationError("SUBJECT_REF_INVALID", "完成事件引用的工作流不存在或非本人所有");
       }
     }
   }
@@ -6771,7 +6832,11 @@ export class WebChannel implements Channel {
       }
       const input = parseEventInput(body);
       // 完成事件主体校验（D4）：智能体须本人可使用（自有或被分享），工作流须本人所有
-      if (input.type === "system" && input.system && isExecutionCompletedEventName(input.system.name)) {
+      if (
+        input.type === "system" &&
+        input.system &&
+        isExecutionCompletedEventName(input.system.name)
+      ) {
         await this.assertExecutionEventSubjects(input.system, uid);
       }
       // call path 服务端生成（D2）：每事件独立随机路径，客户端不可指定
@@ -6804,7 +6869,11 @@ export class WebChannel implements Channel {
         throw new ForbiddenError("SYSTEM_EVENT_ADMIN_ONLY", "该系统事件仅管理员可编辑");
       }
       const parsed = parseEventInput(body);
-      if (parsed.type === "system" && parsed.system && isExecutionCompletedEventName(parsed.system.name)) {
+      if (
+        parsed.type === "system" &&
+        parsed.system &&
+        isExecutionCompletedEventName(parsed.system.name)
+      ) {
         await this.assertExecutionEventSubjects(parsed.system, uid);
       }
       // call path 服务端所有（D2）：更新不换路径，外部回调地址稳定
@@ -7007,7 +7076,9 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify(r.json));
     };
     // POST /api/skills/packs/:pid/skills/:name/apply-suggestion —— 萃取建议晋升（知识体系轮 P4）
-    const applySugMatch = match(/^\/api\/skills\/packs\/([\w-]+)\/skills\/([^/]+)\/apply-suggestion$/);
+    const applySugMatch = match(
+      /^\/api\/skills\/packs\/([\w-]+)\/skills\/([^/]+)\/apply-suggestion$/,
+    );
     if (applySugMatch && req.method === "POST") {
       if (!deps) {
         send({ status: 404, json: { error: "技能 API 未装配" } });
@@ -7060,7 +7131,9 @@ export class WebChannel implements Channel {
         }
       };
       const suggestions = allSuggestions.filter(hitSkill);
-      const hitPromotions = promotions.filter((e) => hitSkill({ text: e.text, toolInput: e.toolInput }));
+      const hitPromotions = promotions.filter((e) =>
+        hitSkill({ text: e.text, toolInput: e.toolInput }),
+      );
       send({
         status: 200,
         json: {
@@ -8431,8 +8504,7 @@ export class WebChannel implements Channel {
     if (!this.deps.skillPackStore || !this.deps.userStore || agent.skills.length === 0) return [];
     try {
       const owner =
-        (await this.deps.userStore.get(actorId)) ??
-        (await this.deps.userStore.get(agent.ownerId));
+        (await this.deps.userStore.get(actorId)) ?? (await this.deps.userStore.get(agent.ownerId));
       if (!owner) return [];
       const packs = await this.deps.skillPackStore.listPacks(owner.id);
       const bySlug = new Map(packs.map((p) => [p.slug, p]));

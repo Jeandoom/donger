@@ -43,6 +43,7 @@ const CHANNEL_COLUMNS: Array<{ id: NotificationChannel; label: string; hint: str
   { id: "inapp", label: "站内信", hint: "站内通知中心" },
   { id: "dingtalk", label: "钉钉", hint: "需绑定钉钉地址" },
   { id: "webhook", label: "Webhook", hint: "需配置出站端点" },
+  { id: "email", label: "邮件", hint: "邮箱注册身份即收件地址；管理员在授权页配 SMTP" },
 ];
 
 export function NotificationPage() {

@@ -28,6 +28,20 @@ export interface EmailModuleConfig {
   signupAllowedDomains: string[];
   /** 邮箱登录开关（false=登录页不展示邮箱表单） */
   loginEnabled: boolean;
+  /**
+   * SMTP 出站（2026-10-20 反馈闭环 M3：邮件通知通道）：缺省=邮件通道不可用（fail-open）。
+   * password 机密经 module_config_secret_key AES-GCM 加密落库，接口不回显。
+   */
+  smtp?: {
+    host: string;
+    port: number;
+    /** true=465 直连 TLS；缺省 false=STARTTLS（587） */
+    secure?: boolean;
+    username?: string;
+    password?: string;
+    /** 发件人（如 "donger <no-reply@example.com>"） */
+    from: string;
+  };
 }
 
 export interface ProxyModuleConfig {

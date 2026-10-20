@@ -31,6 +31,8 @@ export interface NotificationServiceDeps {
   adapters?: NotificationChannelAdapter[];
   /** 用户外部身份读取（钉钉 staffId 优先取钉钉登录身份） */
   getIdentities?: (userId: string) => Promise<Array<{ provider: string; externalId: string }>>;
+  /** 用户注册邮箱读取（email 通道投递地址；登录通道本身可信，无需地址簿绑定） */
+  getUserEmail?: (userId: string) => Promise<string | undefined>;
   /** 站外投递失败重试退避（默认 2s/8s；测试注入 [0,0] 提速） */
   retryDelaysMs?: number[];
 }
@@ -91,6 +93,8 @@ export class NotificationService {
     const inappIds = new Map<string, string>();
     for (const userId of userIds) {
       if (!userId || !(await this.enabledFor(userId, spec.group, spec.mandatoryInapp))) continue;
+      // 通道白名单（M3 notifyPolicy.channels）：不含站内信则跳过站内落库
+      if (intent.channels && !intent.channels.includes("inapp")) continue;
       const unread = await this.deps.store.unreadCount(userId);
       if (unread >= this.maxUnread) {
         console.warn(
@@ -146,6 +150,8 @@ export class NotificationService {
     for (const userId of userIds) {
       const prefs = await this.deps.store.getPrefs(userId);
       for (const channelId of OUTBOUND_CHANNELS) {
+        // 通道白名单交集（M3）：policy 未指定=全量按偏好；指定时偏好仍须启用
+        if (intent.channels && !intent.channels.includes(channelId)) continue;
         const adapter = this.adapters.find((a) => a.id === channelId);
         const enabled = prefs.some(
           (p) => p.eventGroup === group && p.channel === channelId && p.enabled,
@@ -270,6 +276,10 @@ export class NotificationService {
       const identities = (await this.deps.getIdentities?.(userId)) ?? [];
       const dt = identities.find((i) => i.provider === "dingtalk");
       if (dt?.externalId) return { address: dt.externalId };
+    }
+    if (channel === "email") {
+      const email = await this.deps.getUserEmail?.(userId);
+      return email ? { address: email } : undefined;
     }
     const row = await this.deps.store.getAddress(userId, channel);
     if (!row) return undefined;

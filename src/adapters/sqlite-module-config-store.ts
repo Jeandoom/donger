@@ -140,6 +140,9 @@ export class SqliteModuleConfigStore implements ModuleConfigStore {
   getEmail(): EmailModuleConfig | undefined {
     const raw = this.read("email");
     if (!raw) return undefined;
+    // SMTP password 机密同 appSecret 口径：密文损坏按未配置处理（fail-open 降级）
+    const rawSmtp = raw.smtp as Record<string, unknown> | undefined;
+    const smtpPassword = this.decryptSecret(rawSmtp?.password);
     return {
       signupAllowedDomains: Array.isArray(raw.signupAllowedDomains)
         ? (raw.signupAllowedDomains as unknown[]).filter(
@@ -147,6 +150,25 @@ export class SqliteModuleConfigStore implements ModuleConfigStore {
           )
         : [],
       loginEnabled: raw.loginEnabled !== false,
+      ...(rawSmtp &&
+      typeof rawSmtp.host === "string" &&
+      rawSmtp.host &&
+      typeof rawSmtp.port === "number" &&
+      typeof rawSmtp.from === "string" &&
+      rawSmtp.from
+        ? {
+            smtp: {
+              host: rawSmtp.host,
+              port: rawSmtp.port,
+              ...(rawSmtp.secure === true ? { secure: true } : {}),
+              ...(typeof rawSmtp.username === "string" && rawSmtp.username
+                ? { username: rawSmtp.username }
+                : {}),
+              ...(smtpPassword ? { password: smtpPassword } : {}),
+              from: rawSmtp.from,
+            },
+          }
+        : {}),
     };
   }
 
@@ -154,6 +176,20 @@ export class SqliteModuleConfigStore implements ModuleConfigStore {
     this.write("email", {
       signupAllowedDomains: cfg.signupAllowedDomains,
       loginEnabled: cfg.loginEnabled,
+      ...(cfg.smtp
+        ? {
+            smtp: {
+              host: cfg.smtp.host,
+              port: cfg.smtp.port,
+              ...(cfg.smtp.secure ? { secure: true } : {}),
+              ...(cfg.smtp.username ? { username: cfg.smtp.username } : {}),
+              ...(cfg.smtp.password
+                ? { password: encryptValue(this.keyHex, cfg.smtp.password) }
+                : {}),
+              from: cfg.smtp.from,
+            },
+          }
+        : {}),
     });
   }
 

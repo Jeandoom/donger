@@ -41,7 +41,18 @@ interface AuthConfigsView {
     callbackUrl: string;
   };
   github: { clientId: string; clientSecretSet: boolean; callbackUrl: string };
-  email: { signupAllowedDomains: string[]; loginEnabled: boolean };
+  email: {
+    signupAllowedDomains: string[];
+    loginEnabled: boolean;
+    smtp?: {
+      host: string;
+      port: number;
+      secure: boolean;
+      username: string;
+      from: string;
+      smtpPasswordSet: boolean;
+    } | null;
+  };
 }
 
 interface EmailVerification {
@@ -359,6 +370,12 @@ function GithubSection({ view, onReload }: { view: AuthConfigsView | null; onRel
 function EmailSection({ view, onReload }: { view: AuthConfigsView | null; onReload: () => void }) {
   const [domainsText, setDomainsText] = useState("");
   const [loginEnabled, setLoginEnabled] = useState(true);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("587");
+  const [smtpSecure, setSmtpSecure] = useState(false);
+  const [smtpUsername, setSmtpUsername] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [smtpFrom, setSmtpFrom] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const loaded = view !== null;
@@ -367,6 +384,13 @@ function EmailSection({ view, onReload }: { view: AuthConfigsView | null; onRelo
     if (!view) return;
     setDomainsText(view.email.signupAllowedDomains.join("\n"));
     setLoginEnabled(view.email.loginEnabled);
+    const smtp = view.email.smtp;
+    setSmtpHost(smtp?.host ?? "");
+    setSmtpPort(String(smtp?.port ?? 587));
+    setSmtpSecure(smtp?.secure ?? false);
+    setSmtpUsername(smtp?.username ?? "");
+    setSmtpFrom(smtp?.from ?? "");
+    setSmtpPassword(""); // 密码永不回显；留空=沿用已存密码
   }, [view]);
 
   const apply = () => {
@@ -376,12 +400,27 @@ function EmailSection({ view, onReload }: { view: AuthConfigsView | null; onRelo
     void apiFetch("/api/admin/auth-configs/email", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ signupAllowedDomains: domainsText, loginEnabled }),
+      body: JSON.stringify({
+          signupAllowedDomains: domainsText,
+          loginEnabled,
+          // 全空=不动 SMTP；填了 host/发件人即提交（密码留空沿用已存值）
+          smtp:
+            !smtpHost.trim() && !smtpFrom.trim()
+              ? undefined
+              : {
+                  host: smtpHost.trim(),
+                  port: Number(smtpPort) || 587,
+                  secure: smtpSecure,
+                  username: smtpUsername.trim(),
+                  password: smtpPassword,
+                  from: smtpFrom.trim(),
+                },
+        }),
     })
       .then(async (r) => {
         const data = (await r.json().catch(() => ({}))) as { error?: string };
         if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
-        setMsg({ ok: true, text: "已应用：注册白名单与登录开关即时生效" });
+        setMsg({ ok: true, text: "已应用：注册白名单与登录开关即时生效；SMTP 变更影响邮件通知通道" });
         onReload();
       })
       .catch((reason: unknown) =>
@@ -420,6 +459,45 @@ function EmailSection({ view, onReload }: { view: AuthConfigsView | null; onRelo
         />
         启用邮箱登录（登录页展示邮箱表单）
       </label>
+      <div className="space-y-2 rounded-lg border border-border p-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] font-semibold">SMTP 出站（邮件通知通道）</span>
+          <span className="text-xs text-muted-foreground">
+            {view?.email.smtp ? `已配置 ${view.email.smtp.host}:${view.email.smtp.port}` : "未配置"}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          收件地址=用户邮箱注册身份；host 与发件人都留空=不修改 SMTP。密码不回显，留空沿用已存值。
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-xs text-muted-foreground">SMTP 主机</span>
+            <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.example.com" />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-xs text-muted-foreground">端口</span>
+            <Input value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} placeholder="587" />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-xs text-muted-foreground">账号（可选）</span>
+            <Input value={smtpUsername} onChange={(e) => setSmtpUsername(e.target.value)} autoComplete="off" />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-xs text-muted-foreground">
+              密码{view?.email.smtp?.smtpPasswordSet ? "（已设置）" : ""}
+            </span>
+            <Input type="password" value={smtpPassword} onChange={(e) => setSmtpPassword(e.target.value)} autoComplete="new-password" />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-xs text-muted-foreground">发件人</span>
+            <Input value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder="donger <no-reply@example.com>" />
+          </label>
+          <label className="flex items-end gap-2 pb-1 text-sm">
+            <Switch checked={smtpSecure} onCheckedChange={setSmtpSecure} aria-label="SSL 直连" />
+            SSL 直连（465）
+          </label>
+        </div>
+      </div>
       <ApplyMsg msg={msg} />
       <Button onClick={apply} disabled={busy || !loaded}>
         {busy ? "应用中…" : "应用"}
