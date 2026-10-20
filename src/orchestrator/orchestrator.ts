@@ -235,6 +235,10 @@ export class Orchestrator {
   private readonly permissionModes = new Map<string, AgentPermissionMode>();
   // conversationId → autoDev 绑定仓库名（L2 §4.4：无人值守轮 git-write 门放行白名单依据）
   private readonly autoDevGitRepos = new Map<string, string>();
+  // conversationId → 反馈因果键（2026-10-20 反馈闭环 M1）：donger-feedback 工具写边界依据。
+  // 与 permissionModes 同款旁路——dispatcher 轮经 runPhases 进 runTurn，参数直传会断链，
+  // 会话级 Map 在 handleMessage 入口登记、runTurn 装配钩子现取。
+  private readonly feedbackCorrelations = new Map<string, string>();
   // 会话实时执行状态（SDK 事件流推导；观测态，不落库）
   private readonly activityTracker = new ActivityTracker();
 
@@ -938,8 +942,14 @@ export class Orchestrator {
       // 反馈闭环工具（donger-feedback，2026-10-20 反馈闭环 M1）：仅反馈处理链路
       // （工作流派发携带 feedbackCorrelation）+ agent 白名单声明 + feedbackStore 已装配
       // 三条件同时成立才挂载；写边界（allowedFeedbackId）闭包绑定本 run 的反馈单。
+      // correlation 取值双路：runTurn 参数直传（handleMessage 主轮）∥ 会话 Map 旁路
+      // （runPhases 分支，与 permissionModes 同款）。
+      const e2eCorrelationId =
+        p.feedbackCorrelation?.feedbackId ??
+        this.feedbackCorrelations.get(p.conversation.id) ??
+        null;
       if (
-        p.feedbackCorrelation &&
+        e2eCorrelationId &&
         this.deps.feedbackStore &&
         p.agent?.tools.mode === "whitelist" &&
         p.agent.tools.whitelist.some((t) => t.startsWith("mcp__donger-feedback"))
@@ -950,7 +960,7 @@ export class Orchestrator {
             viewer: { id: p.user.id },
             feedbackStore: this.deps.feedbackStore,
             notifications: this.deps.notificationService,
-            allowedFeedbackId: p.feedbackCorrelation.feedbackId,
+            allowedFeedbackId: e2eCorrelationId,
           }),
         };
       }
@@ -2473,6 +2483,11 @@ export class Orchestrator {
         agentMode: agent?.defaultPermissionMode,
       });
       this.permissionModes.set(conversation.id, effectiveMode);
+      // 反馈闭环 M1：登记本会话的反馈因果键（donger-feedback 工具写边界依据；
+      // 与 permissionModes 同款会话旁路，runPhases 分支不断链）
+      if (msg.feedbackCorrelation) {
+        this.feedbackCorrelations.set(conversation.id, msg.feedbackCorrelation.feedbackId);
+      }
       // L2 autoDev：登记本会话的放行白名单依据（绑定 agent 首仓库名；runTurn 组装钩子用）
       if (msg.autoDev === true) {
         const autoDevRepoName = agent?.gitRepositories?.[0]?.name;
