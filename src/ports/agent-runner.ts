@@ -107,6 +107,11 @@ export interface RunOptions {
   /** in-process 审计读取 MCP server（内置审计/技能工坊智能体注入；viewer 在构造时闭包绑定） */
   auditTools?: McpSdkServerConfigWithInstance;
   /**
+   * in-process 反馈工具 MCP server（donger-feedback）：仅反馈处理链路（feedbackCorrelation
+   * 存在）+ agent 白名单声明时挂载；写边界（allowedFeedbackId）构造时闭包绑定。
+   */
+  feedbackTools?: McpSdkServerConfigWithInstance;
+  /**
    * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
    * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按
    * 原样放行（空答案 → 模型收到 "The user did not answer the questions."，即历史行为）。

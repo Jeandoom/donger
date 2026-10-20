@@ -26,6 +26,7 @@ export const EVENT_NAME_LABEL: Record<string, string> = {
   schedule: "定时",
   call: "调用",
   system: "系统",
+  notify: "结果通知",
 };
 
 export function eventNameLabel(name: string): string {

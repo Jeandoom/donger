@@ -55,6 +55,16 @@ interface WorkflowDTO {
     enabled: boolean;
     policy?: { maxFiles?: number; maxChangedLines?: number; dailyAutoMergeQuota?: number };
   };
+  /** 通知策略（2026-10-20 反馈闭环 M2）：run 终态后由平台派生通知轮投递结果 */
+  notifyPolicy?: {
+    enabled: boolean;
+    on?: Array<"success" | "failed" | "stopped">;
+    writerAgentId?: string;
+    promptTemplate?: string;
+    title?: string;
+    channels?: Array<"inapp" | "dingtalk" | "webhook" | "email">;
+    recipients?: "correlation" | "owner" | string[];
+  };
 }
 
 interface ReleaseRunDTO {
@@ -161,6 +171,19 @@ export function WorkflowEditorPage() {
   const [maxFiles, setMaxFiles] = useState("15");
   const [maxChangedLines, setMaxChangedLines] = useState("400");
   const [dailyQuota, setDailyQuota] = useState("3");
+  // 通知策略（M2）
+  const [notifyEnabled, setNotifyEnabled] = useState(false);
+  const [notifyOnSuccess, setNotifyOnSuccess] = useState(true);
+  const [notifyOnFailed, setNotifyOnFailed] = useState(false);
+  const [notifyOnStopped, setNotifyOnStopped] = useState(false);
+  const [notifyWriterAgentId, setNotifyWriterAgentId] = useState("");
+  const [notifyTitle, setNotifyTitle] = useState("");
+  const [notifyPrompt, setNotifyPrompt] = useState("");
+  const [notifyRecipients, setNotifyRecipients] = useState<"correlation" | "owner">("correlation");
+  const [notifyInapp, setNotifyInapp] = useState(true);
+  const [notifyDingtalk, setNotifyDingtalk] = useState(false);
+  const [notifyWebhook, setNotifyWebhook] = useState(false);
+  const [notifyEmail, setNotifyEmail] = useState(false);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [refsError, setRefsError] = useState<string | null>(null);
@@ -191,6 +214,18 @@ export function WorkflowEditorPage() {
     maxFiles,
     maxChangedLines,
     dailyQuota,
+    notifyEnabled,
+    notifyOnSuccess,
+    notifyOnFailed,
+    notifyOnStopped,
+    notifyWriterAgentId,
+    notifyTitle,
+    notifyPrompt,
+    notifyRecipients,
+    notifyInapp,
+    notifyDingtalk,
+    notifyWebhook,
+    notifyEmail,
   });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
@@ -241,6 +276,21 @@ export function WorkflowEditorPage() {
       setMaxFiles(String(w.autoDev?.policy?.maxFiles ?? 15));
       setMaxChangedLines(String(w.autoDev?.policy?.maxChangedLines ?? 400));
       setDailyQuota(String(w.autoDev?.policy?.dailyAutoMergeQuota ?? 3));
+      const np = w.notifyPolicy;
+      setNotifyEnabled(np?.enabled ?? false);
+      setNotifyOnSuccess(!np?.on?.length || np.on.includes("success"));
+      setNotifyOnFailed(np?.on?.includes("failed") ?? false);
+      setNotifyOnStopped(np?.on?.includes("stopped") ?? false);
+      setNotifyWriterAgentId(np?.writerAgentId ?? "");
+      setNotifyTitle(np?.title ?? "");
+      setNotifyPrompt(np?.promptTemplate ?? "");
+      setNotifyRecipients(
+        np?.recipients === "owner" || Array.isArray(np?.recipients) ? "owner" : "correlation",
+      );
+      setNotifyInapp(!np?.channels?.length || np.channels.includes("inapp"));
+      setNotifyDingtalk(np?.channels?.includes("dingtalk") ?? false);
+      setNotifyWebhook(np?.channels?.includes("webhook") ?? false);
+      setNotifyEmail(np?.channels?.includes("email") ?? false);
       setLoaded(true);
       pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
     } catch (e) {
@@ -304,10 +354,29 @@ export function WorkflowEditorPage() {
       setError("请选择 Agent");
       return;
     }
+    if (notifyEnabled && !notifyOnSuccess && !notifyOnFailed && !notifyOnStopped) {
+      setError("通知策略至少勾选一种触发时机");
+      return;
+    }
+    if (
+      notifyEnabled &&
+      !notifyInapp &&
+      !notifyDingtalk &&
+      !notifyWebhook &&
+      !notifyEmail
+    ) {
+      setError("通知策略至少选择一个投递通道");
+      return;
+    }
     setSaving(true);
     try {
       const url = id ? `/api/workflows/${id}` : "/api/workflows";
       const method = id ? "PUT" : "POST";
+      const notifyOn = [
+        ...(notifyOnSuccess ? ["success"] : []),
+        ...(notifyOnFailed ? ["failed"] : []),
+        ...(notifyOnStopped ? ["stopped"] : []),
+      ];
       const r = await apiFetch(url, {
         method,
         body: JSON.stringify({
@@ -324,6 +393,20 @@ export function WorkflowEditorPage() {
               maxChangedLines: Number(maxChangedLines) || 400,
               dailyAutoMergeQuota: Number(dailyQuota) || 3,
             },
+          },
+          notifyPolicy: {
+            enabled: notifyEnabled,
+            on: notifyOn.length ? notifyOn : ["success"],
+            ...(notifyWriterAgentId ? { writerAgentId: notifyWriterAgentId } : {}),
+            ...(notifyTitle.trim() ? { title: notifyTitle.trim() } : {}),
+            ...(notifyPrompt.trim() ? { promptTemplate: notifyPrompt } : {}),
+            channels: [
+              ...(notifyInapp ? ["inapp"] : []),
+              ...(notifyDingtalk ? ["dingtalk"] : []),
+              ...(notifyWebhook ? ["webhook"] : []),
+              ...(notifyEmail ? ["email"] : []),
+            ],
+            recipients: notifyRecipients,
           },
         }),
       });
@@ -641,10 +724,137 @@ export function WorkflowEditorPage() {
         </p>
       </FormSection>
 
+      <FormSection
+        id="wf-sec-notify"
+        no="4"
+        title="结果通知"
+        description="执行结束后由平台派生一条通知轮：写手智能体把执行情况写成通知正文，经所选通道投递给收件人（不发完成事件、不参与级联）；关闭则静默"
+      >
+        <FormField label="启用结果通知">
+          <div className="flex items-center gap-2">
+            <Switch checked={notifyEnabled} onCheckedChange={setNotifyEnabled} />
+            <span className="text-xs text-muted-foreground">
+              {notifyEnabled ? "命中触发时机即投递通知" : "关闭（执行结果不主动通知任何人）"}
+            </span>
+          </div>
+        </FormField>
+        {notifyEnabled && (
+          <>
+            <FormField label="触发时机" required hint="至少选一种">
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                {(
+                  [
+                    ["success", "执行成功", notifyOnSuccess, setNotifyOnSuccess],
+                    ["failed", "执行失败", notifyOnFailed, setNotifyOnFailed],
+                    ["stopped", "被终止", notifyOnStopped, setNotifyOnStopped],
+                  ] as const
+                ).map(([key, label, checked, set]) => (
+                  <label key={key} className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => set(e.target.checked)}
+                      className="accent-primary"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </FormField>
+            <FormField
+              label="收件人"
+              hint="事件因果提交人=由触发事件载荷解析（如反馈提交人）；无因果键的触发（定时/手动）选此项将无法投递"
+            >
+              <Select
+                value={notifyRecipients}
+                onChange={(e) => setNotifyRecipients(e.target.value as "correlation" | "owner")}
+              >
+                <option value="correlation">事件因果提交人（如反馈提交人）</option>
+                <option value="owner">工作流属主（我自己）</option>
+              </Select>
+            </FormField>
+            <FormField label="通知通道" hint="站外通道还需收件人本人订阅启用（钉钉需绑定地址；邮件需管理员配置 SMTP）">
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                {(
+                  [
+                    ["inapp", "站内信", notifyInapp, setNotifyInapp],
+                    ["dingtalk", "钉钉", notifyDingtalk, setNotifyDingtalk],
+                    ["webhook", "Webhook", notifyWebhook, setNotifyWebhook],
+                    ["email", "邮件", notifyEmail, setNotifyEmail],
+                  ] as const
+                ).map(([key, label, checked, set]) => (
+                  <label key={key} className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => set(e.target.checked)}
+                      className="accent-primary"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </FormField>
+            <FormField
+              label="通知写手"
+              hint="把执行结论改写成通知正文的智能体；缺省=本工作流绑定的 Agent"
+            >
+              <Select
+                value={notifyWriterAgentId}
+                onChange={(e) => setNotifyWriterAgentId(e.target.value)}
+              >
+                <option value="">— 跟随工作流 Agent —</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {!a._mine ? "（共享）" : ""}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+            <FormField label="通知标题" hint="留空=「工作流「名称」结果通知」">
+              <Input
+                value={notifyTitle}
+                onChange={(e) => setNotifyTitle(e.target.value)}
+                placeholder="如：你的反馈已处理完毕"
+                maxLength={120}
+              />
+            </FormField>
+            <FormField
+              label="写手指令模板"
+              hint={
+                <>
+                  可用变量（点击插入）：
+                  {["workflowName", "statusWord", "outputSummary"].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      className="mx-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs hover:bg-primary-soft hover:text-primary"
+                      onClick={() => setNotifyPrompt((t) => `${t}{{${v}}}`)}
+                    >
+                      {`{{${v}}}`}
+                    </button>
+                  ))}
+                  ；留空=平台默认通知员模板
+                </>
+              }
+            >
+              <Textarea
+                mono
+                rows={3}
+                value={notifyPrompt}
+                onChange={(e) => setNotifyPrompt(e.target.value)}
+                placeholder="如：面向提交人写一段话，语气轻松，说明问题是否修复、如何验证"
+              />
+            </FormField>
+          </>
+        )}
+      </FormSection>
+
       {canShowRecords && (
         <FormSection
           id="wf-sec-runs"
-          no="4"
+          no="5"
           title="执行记录"
           description="每次执行一条记录（永久保留）；点开可看输入与完整对话"
           actions={
@@ -778,7 +988,7 @@ export function WorkflowEditorPage() {
       {canShowRecords && autoDevEnabled && (
         <FormSection
           id="wf-sec-release-runs"
-          no="5"
+          no="6"
           title="自动发布记录"
           description="策略评估与合并/发布状态（宿主管线回报后更新）"
         >

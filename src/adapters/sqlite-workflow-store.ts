@@ -1,6 +1,6 @@
 import type { Database } from "better-sqlite3";
-import type { AutoDevConfig, Workflow, WorkflowInput } from "../domain/workflow.js";
-import { AutoDevConfigSchema, WorkflowSchema } from "../domain/workflow.js";
+import type { AutoDevConfig, NotifyPolicy, Workflow, WorkflowInput } from "../domain/workflow.js";
+import { AutoDevConfigSchema, NotifyPolicySchema, WorkflowSchema } from "../domain/workflow.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import { NotFoundError } from "../util/errors.js";
 
@@ -15,6 +15,7 @@ interface WorkflowRow {
   promptTemplate: string;
   enabled: number;
   autoDev: string | null;
+  notifyPolicy: string | null;
   lastRunId: string | null;
   lastRunAt: string | null;
   lastError: string | null;
@@ -27,6 +28,17 @@ function parseAutoDev(raw: string | null): AutoDevConfig | undefined {
   if (!raw) return undefined;
   try {
     const parsed = AutoDevConfigSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** notifyPolicy JSON 列解析：同 autoDev 降级语义 */
+function parseNotifyPolicy(raw: string | null): NotifyPolicy | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = NotifyPolicySchema.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -60,6 +72,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         permissionMode TEXT NOT NULL DEFAULT 'full_access',
         enabled INTEGER NOT NULL DEFAULT 0,
         autoDev TEXT,
+        notifyPolicy TEXT,
         lastRunId TEXT, lastRunAt TEXT, lastError TEXT,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
       )
@@ -80,6 +93,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
     ).some((c) => c.name === "autoDev");
     if (!hasAutoDev) {
       this.db.exec("ALTER TABLE workflows ADD COLUMN autoDev TEXT");
+    }
+    // notifyPolicy 列（2026-10-20 反馈闭环 M2）：JSON 文本，幂等补列
+    const hasNotifyPolicy = (
+      this.db.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).some((c) => c.name === "notifyPolicy");
+    if (!hasNotifyPolicy) {
+      this.db.exec("ALTER TABLE workflows ADD COLUMN notifyPolicy TEXT");
     }
     if (isLegacy) {
       // 旧表补列（CREATE TABLE IF NOT EXISTS 不会改既有表结构）
@@ -140,6 +160,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       promptTemplate: row.promptTemplate,
       enabled: row.enabled === 1,
       autoDev: parseAutoDev(row.autoDev),
+      notifyPolicy: parseNotifyPolicy(row.notifyPolicy),
       lastRunId: row.lastRunId,
       lastRunAt: row.lastRunAt,
       lastError: row.lastError,
@@ -159,8 +180,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     this.db
       .prepare(
-        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, autoDev, createdAt, updatedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, autoDev, notifyPolicy, createdAt, updatedAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         w.id,
@@ -173,6 +194,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         w.promptTemplate,
         w.enabled ? 1 : 0,
         w.autoDev ? JSON.stringify(w.autoDev) : null,
+        w.notifyPolicy ? JSON.stringify(w.notifyPolicy) : null,
         w.createdAt,
         w.updatedAt,
       );
@@ -213,7 +235,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     this.db
       .prepare(
-        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, enabled=?, autoDev=?, updatedAt=? WHERE id=?`,
+        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, enabled=?, autoDev=?, notifyPolicy=?, updatedAt=? WHERE id=?`,
       )
       .run(
         next.name,
@@ -224,6 +246,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         next.promptTemplate,
         next.enabled ? 1 : 0,
         next.autoDev ? JSON.stringify(next.autoDev) : null,
+        next.notifyPolicy ? JSON.stringify(next.notifyPolicy) : null,
         next.updatedAt,
         next.id,
       );

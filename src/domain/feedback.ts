@@ -49,8 +49,12 @@ export interface FeedbackReply {
   id: string;
   feedbackId: string;
   userId: string;
-  /** 服务端按提交者 viewer.role 落库，不信任客户端入参 */
-  authorRole: "admin" | "user";
+  /**
+   * 服务端按提交者 viewer.role 落库，不信任客户端入参。
+   * system=无人值守处理链路的自动结论（2026-10-20 反馈闭环）：userId 仍为发起 run 的
+   * 工作流属主，展示层按 system 呈现「自动处理」。
+   */
+  authorRole: "admin" | "user" | "system";
   content: string;
   createdAt: string;
 }

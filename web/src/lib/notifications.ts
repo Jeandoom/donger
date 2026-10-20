@@ -12,7 +12,7 @@ export type NotificationEventGroup =
   | "feedback"
   | "deploy"
   | "share";
-export type NotificationChannel = "inapp" | "dingtalk" | "webhook";
+export type NotificationChannel = "inapp" | "dingtalk" | "webhook" | "email";
 
 export interface NotificationItem {
   id: string;
@@ -36,7 +36,7 @@ export interface NotificationPrefGroup {
   label: string;
   /** 账号安全组强制站内信：站内开关锁定为开（决策⑤），站外通道自由 */
   mandatory: boolean;
-  channels: { inapp: boolean; dingtalk: boolean; webhook: boolean };
+  channels: { inapp: boolean; dingtalk: boolean; webhook: boolean; email: boolean };
 }
 
 export interface DingTalkAddressView {
@@ -222,6 +222,7 @@ export interface NotificationChannelStatus {
   inapp: boolean;
   dingtalk: boolean;
   webhook: boolean;
+  email: boolean;
 }
 
 export async function fetchNotificationStatus(): Promise<NotificationChannelStatus> {

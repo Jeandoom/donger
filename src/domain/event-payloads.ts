@@ -100,6 +100,41 @@ export interface ExecutionCompletedFact {
     text: string;
     files: ExecutionFileRef[];
   };
+  /**
+   * 业务因果键（可选；spec 2026-10-20-feedback-notify-loop §M1）：白名单透传——
+   * 只认 feedback.created 触发载荷的 feedbackId/submitterId，薄信封不装自由 context。
+   * 下游级联（通知/回复闭环）据此定位提交人与反馈单，老 payload 无此字段照常解析。
+   */
+  correlation?: ExecutionCorrelation;
+}
+
+export interface ExecutionCorrelation {
+  feedbackId: string;
+  submitterId: string;
+}
+
+/**
+ * 从触发载荷提取业务因果键（白名单硬编码 feedback 域，2026-10-20 拍板②）。
+ * 非 feedback.created 载荷 / 形状缺失 → null。
+ */
+export function extractExecutionCorrelation(payload: string): ExecutionCorrelation | null {
+  try {
+    const raw = JSON.parse(payload) as { event?: unknown; feedback?: unknown } | null;
+    if (raw?.event !== "feedback.created") return null;
+    // FeedbackCreatedFact 序列化形状：feedback.id / feedback.submitterId
+    const fb = raw.feedback as { id?: unknown; submitterId?: unknown } | undefined;
+    if (
+      typeof fb?.id === "string" &&
+      fb.id &&
+      typeof fb.submitterId === "string" &&
+      fb.submitterId
+    ) {
+      return { feedbackId: fb.id, submitterId: fb.submitterId };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export const EXECUTION_RESULT_TEXT_MAX_CHARS = 2000;
@@ -125,7 +160,16 @@ export function parseExecutionCompletedPayload(payload: string): ExecutionComple
     if (typeof raw.ownerId !== "string" || !raw.ownerId) return null;
     if (typeof raw.trigger?.cascadeDepth !== "number") return null;
     if (typeof raw.result?.text !== "string" || !Array.isArray(raw.result.files)) return null;
-    return raw as ExecutionCompletedFact;
+    // correlation 可选；存在但形状残缺则剥除（信封尽力而为，不让坏键毒化下游）
+    const c = raw.correlation as Partial<ExecutionCorrelation> | undefined;
+    const correlation: ExecutionCorrelation | undefined =
+      typeof c?.feedbackId === "string" &&
+      c.feedbackId &&
+      typeof c.submitterId === "string" &&
+      c.submitterId
+        ? { feedbackId: c.feedbackId, submitterId: c.submitterId }
+        : undefined;
+    return { ...(raw as ExecutionCompletedFact), correlation };
   } catch {
     return null;
   }
@@ -202,3 +246,30 @@ export const WORKFLOW_COMPLETION_BRIEFING_TEMPLATE = `【上游完成通知】�
 {{filesManifest}}
 
 请基于上游执行结论继续任务。`;
+
+/**
+ * 通知写手默认模板（notifyPolicy.promptTemplate 空，2026-10-20 反馈闭环 M2）：
+ * 写手只产出通知正文，平台取最终回复作为通知 body 投递。
+ */
+export const NOTIFY_WRITER_TEMPLATE = `你是平台通知员：基于上游执行简报撰写一条通知正文。
+【工作流】{{workflowName}}（{{statusWord}}）
+【执行结论】
+{{outputSummary}}
+{{feedbackSection}}
+要求：直接输出通知正文（markdown），面向接收人；说清结论、影响与后续动作；不要客套，不要复述本指令。`;
+
+/** notify 轮 context（scheduleNotify 写入 / executeNotifyRun 消费） */
+export interface NotifyRunContext {
+  /** 收件人 userId（解析完成，写手失败不重解析） */
+  recipients: string[];
+  /** 通知标题（policy.title 渲染后；空则执行器兜底） */
+  title: string;
+  /** 主 run 状态 */
+  status: ExecutionCompletionStatus;
+  /** 主 run 的最终回复（result.text） */
+  outputSummary: string;
+  /** 主 run 错误（failed/stopped 时） */
+  error: string | null;
+  /** 业务因果键（来自主 run 触发载荷） */
+  correlation: { feedbackId: string; submitterId: string } | null;
+}

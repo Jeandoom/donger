@@ -328,7 +328,7 @@ function FeedbackDetailPanel({
   // 对话时间线：原始反馈排首（提交人侧），回复按角色分侧（user 右 / admin 左），双方视角一致
   const thread: Array<{
     key: string;
-    role: "user" | "admin";
+    role: "user" | "admin" | "system";
     name: string;
     content: string;
     createdAt: string;
@@ -442,6 +442,7 @@ function FeedbackDetailPanel({
               >
                 <div className="mb-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
                   {m.role === "admin" && <Badge tone="success">官方回复</Badge>}
+                  {m.role === "system" && <Badge tone="info">自动处理</Badge>}
                   <span>{m.name}</span>
                   <span>{formatRelative(m.createdAt)}</span>
                 </div>
