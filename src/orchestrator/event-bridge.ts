@@ -8,7 +8,7 @@ import { matchBuiltinToolCall } from "../util/provider-tool-text.js";
  *  text → 通过 SSE pushText 推送，同时持久化到 MessageStore。
  *  tool_use / tool_result 失败 → pushActivity 中间过程行（观测可视）。
  *  result success → 推送完成通知。
- *  result error → 推送失败通知。
+ *  result error → 失败消息持久化 + 推送失败通知。
  *  quietResult=true（多阶段任务的非末轮）→ 成功 result 不推送（回合不提前结束）；
  *  失败照常推送（回合必须能以错误结束）。
  *  silent=true（内部轮，如 dispatcher 路由）→ 全部只走审计不推送不持久化，仅返回末事件。 */
@@ -88,7 +88,15 @@ export async function bridgeEvents(
       }
     } else if (e.type === "result") {
       if (e.subtype === "error") {
-        const errorText = `❌ 失败：${e.error ?? "未知错误"}`;
+        const errorText = redactSecrets(`❌ 失败：${e.error ?? "未知错误"}`);
+        // 失败必须落库：pushText 只达当前打开的页面（SSE 实时），刷新/回看后轮失败在
+        // 会话里零痕迹，用户只见「内容说一半就没了」（2026-10-22 生产诊断）；持久化
+        // 语义与普通 text 分支对齐。钉钉等无 pushText 通道的 send 不落库，无双写。
+        if (messageStore && conversationId) {
+          await messageStore
+            .add(conversationId, "bot", errorText, "[]", e.taskId)
+            .catch((err) => console.error("[bridgeEvents] 保存失败消息出错", err));
+        }
         if (channel.pushText && conversationId) {
           channel.pushText(conversationId, errorText);
         } else {

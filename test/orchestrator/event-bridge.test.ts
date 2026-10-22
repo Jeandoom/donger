@@ -171,6 +171,45 @@ describe("bridgeEvents", () => {
     expect(ch.sent[0]?.text).toBe("❌ 失败：崩了");
   });
 
+  it("result error → 落库持久化（带 taskId、脱敏），推送仍不丢", async () => {
+    const added: Array<{ role: string; text: string; taskId?: string }> = [];
+    const store = {
+      add: async (
+        _conversationId: string,
+        role: "user" | "bot",
+        text: string,
+        _files?: string,
+        taskId?: string,
+      ) => {
+        added.push({ role, text, taskId });
+        return {} as import("../../src/domain/types.js").StoredMessage;
+      },
+      listByConversation: async () => [],
+    };
+    const ch = fakeStreamingChannel();
+    await bridgeEvents(
+      ch,
+      "c1",
+      of([
+        {
+          type: "result",
+          taskId: "task-7",
+          subtype: "error",
+          error: "模型响应中断 https://x/sse?Signature=qON/QSTF，本轮已终止",
+        },
+      ]),
+      store,
+    );
+    expect(added.length).toBe(1);
+    expect(added[0]?.role).toBe("bot");
+    expect(added[0]?.taskId).toBe("task-7");
+    expect(added[0]?.text).toContain("❌ 失败：模型响应中断");
+    expect(added[0]?.text).toContain("Signature=****");
+    expect(added[0]?.text).not.toContain("qON/QSTF");
+    expect(ch.texts[0]).toBe(added[0]?.text);
+    expect(ch.results[0]?.subtype).toBe("error");
+  });
+
   it("text 落库携带 taskId（回合归属）", async () => {
     const added: Array<{ role: string; text: string; taskId?: string }> = [];
     const store = {
