@@ -4,7 +4,7 @@
 # 机制口径：master=生产候选（watcher 是唯一部署触发者）；本脚本无 git 语义，纯机制。
 # 退出码：0=deployed；3=演练未过（生产未触碰）；4=切换后不健康已回滚；5=构建失败；6=回滚后仍不健康（人工介入）
 # 用法:
-#   scripts/host-release.sh --image donger:TAG [--sha <sha40>]
+#   scripts/host-release.sh --image donger:TAG --sha <sha40>（构建必需：内容按 sha 干净检出）
 #     [--stack /d/deploy/donger-docker] [--port 3330]
 #     [--rehearsal-stack /d/deploy/donger-rehearsal] [--rehearsal-port 3331]
 #     [--skip-build] [--skip-backup] [--skip-rehearse]
@@ -20,6 +20,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # NO_PATHCONV 生效期间 docker 参数不做 MSYS 转换：构建上下文与 -f 须传 Windows 风格路径
 WIN_REPO="D:/${REPO#/d/}"
 LOCK_DIR=""
+SRC_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,7 +43,11 @@ done
 log() { echo "[host-release $(date +%H:%M:%S)] $*"; }
 
 cleanup_lock() { [[ -n "$LOCK_DIR" ]] && rmdir "$LOCK_DIR" 2>/dev/null || true; }
-trap cleanup_lock EXIT
+cleanup_all() {
+  [[ -n "$SRC_DIR" ]] && rm -rf "$SRC_DIR"
+  cleanup_lock
+}
+trap cleanup_all EXIT
 # 锁由调用方（watcher）获取后传入；直接手动调用时不获取（互斥由 watcher 保证）
 if [[ -n "$LOCK_DIR" ]]; then mkdir -p "$LOCK_DIR" 2>/dev/null || true; fi
 
@@ -83,16 +88,35 @@ else
   log "== 步骤1 备份跳过"
 fi
 
-# 2) 构建（watcher 已确保镜像存在时自动跳过）
+# 2) 构建（watcher 已确保镜像存在时自动跳过）。内容强制按目标 sha 干净检出
+#    （git archive→临时目录），拒绝拿本仓工作树当构建上下文——主仓可能长驻功能
+#    分支，旧版直用工作树时镜像 tag 谎报内容（2026-10-26 生产实锤：auto-<master
+#    sha> 装的是功能分支树+未提交改动；切换后 .git-sha 内容断言兜底）。
 if [[ $SKIP_BUILD -eq 0 ]]; then
   if docker image inspect "$IMAGE" >/dev/null 2>&1; then
     log "== 步骤2 镜像已存在，跳过构建：$IMAGE"
   else
-    log "== 步骤2 构建 $IMAGE（可能数分钟）"
-    if ! docker build -f "$WIN_REPO/deploy/Dockerfile" -t "$IMAGE" "$WIN_REPO"; then
+    [[ -n "$SHA" ]] || { log "!! 构建缺 --sha：内容必须按目标 sha 干净检出（fail-closed，不拿工作树当构建源）"; exit 5; }
+    git -C "$REPO" rev-parse --verify "${SHA}^{commit}" >/dev/null 2>&1 \
+      || { log "!! 本仓不存在目标 sha ${SHA:0:8}（先 git fetch origin master）"; exit 5; }
+    log "== 步骤2 构建 $IMAGE（sha=${SHA:0:8}，git archive 干净检出，可能数分钟）"
+    SRC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/donger-release-src.XXXXXX")"
+    if ! git -C "$REPO" archive "$SHA" | tar -x -C "$SRC_DIR"; then
+      log "!! git archive 检出失败（生产未触碰）"
+      exit 5
+    fi
+    WIN_SRC="D:/${SRC_DIR#/d/}"
+    # 非 git 备料资产（zcode CLI / .superpowers，机器固定源 → 检出目录 deploy/assets）
+    if ! powershell -NoProfile -ExecutionPolicy Bypass \
+        -File "$WIN_SRC/deploy/stage.ps1" -AssetsDir "$WIN_SRC/deploy/assets"; then
+      log "!! 备料失败（生产未触碰）"
+      exit 5
+    fi
+    if ! docker build -f "$WIN_SRC/deploy/Dockerfile" --build-arg GIT_SHA="$SHA" -t "$IMAGE" "$WIN_SRC"; then
       log "!! 构建失败（生产未触碰）"
       exit 5
     fi
+    rm -rf "$SRC_DIR"; SRC_DIR=""
   fi
 else
   log "== 步骤2 构建跳过"
@@ -132,10 +156,21 @@ if ! (cd "$STACK_DIR" && docker compose up -d); then
   exit 4
 fi
 
-# 5) 健康观察（compose start_period 90s + 轮询至 180s）
+# 5) 健康观察（compose start_period 90s + 轮询至 180s）+ 内容断言
+sha_matches() {
+  [[ -z "$SHA" ]] && return 0
+  local cid deployed
+  cid="$(cd "$STACK_DIR" && docker compose ps -q app 2>/dev/null | head -1)"
+  [[ -n "$cid" ]] || return 1
+  deployed="$(docker exec "$cid" cat /app/.git-sha 2>/dev/null || echo unknown)"
+  [[ "$deployed" == "$SHA" ]]
+}
 if wait_health "$PORT" 180; then
-  log "== 发布成功：$IMAGE（回滚点 $PREV_TAG 保留在本机）"
-  exit 0
+  if sha_matches; then
+    log "== 发布成功：$IMAGE（回滚点 $PREV_TAG 保留在本机）"
+    exit 0
+  fi
+  log "!! 内容断言失败：容器 /app/.git-sha ≠ 目标 ${SHA:0:8}（tag 谎报内容防线命中），自动回滚"
 fi
 
 log "!! 切换后健康检查未通过，自动回滚到 $PREV_TAG"

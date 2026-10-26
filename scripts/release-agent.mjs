@@ -9,14 +9,19 @@
 // 例行化（管理员 PowerShell 一次）：D:\deploy\donger-docker\install-release-agent.ps1
 // 配置（环境变量均可缺省）：RELEASE_AGENT_REPO/STACK/WAKE_DIR/LOG/POLL_SECONDS/ONCE_TIMEOUT_MS/BASH
 import { spawn } from "node:child_process";
-import { closeSync, openSync, watch } from "node:fs";
+import { closeSync, existsSync, openSync, watch } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ONCE = process.argv.includes("--once");
 
-const REPO = process.env.RELEASE_AGENT_REPO ?? "D:\\code\\donger";
+// REPO 缺省自定位：被触发的 host-release*.sh 与本 agent 同仓演进，管线仓库必须指向
+// agent 所在 checkout（2026-10-26 发布断摆专项）——硬编码主仓时主仓可能长驻功能分支，
+// 旧版管线会拿工作树当构建内容（镜像 tag 谎报内容实锤，specs/2026-10-23 §部署轮）。
+const SELF_PATH = fileURLToPath(import.meta.url);
+const REPO = process.env.RELEASE_AGENT_REPO ?? path.resolve(path.dirname(SELF_PATH), "..");
+const WATCHER_SCRIPT = path.join(REPO, "scripts", "host-release-watcher.sh");
 const STACK = process.env.RELEASE_AGENT_STACK ?? "D:\\deploy\\donger-docker";
 const WAKE_DIR = process.env.RELEASE_AGENT_WAKE_DIR ?? path.join(STACK, "release-wake");
 const LOG_FILE = process.env.RELEASE_AGENT_LOG ?? path.join(REPO, "logs", "release-watcher.log");
@@ -26,9 +31,12 @@ const BASH = process.env.RELEASE_AGENT_BASH ?? "C:\\Program Files\\Git\\bin\\bas
 // 唤醒残留 TTL：agent 长期未运行时目录里会堆遗留唤醒文件，超期直接清（轮询早已对账过）
 const WAKE_TTL_MS = 24 * 60 * 60 * 1000;
 
-const SELF_PATH = fileURLToPath(import.meta.url);
 let selfMtimeMs = 0;
 let selfMtimeWarned = false;
+
+// 连续失败告警计数：故障要喊出来——本次自动发布自 10-22 静默断摆 4 天无人知晓（靠
+// 人工部署验证才发现）。3 次即首次告警，此后每 10 次重复提示。
+let consecutiveFailures = 0;
 
 async function log(line) {
   const stamped = `[release-agent ${new Date().toISOString()}] ${line}`;
@@ -50,8 +58,25 @@ function executeOnce(trigger) {
     } catch {
       fd = undefined;
     }
-    const child = spawn(BASH, ["scripts/host-release-watcher.sh", "--once"], {
+    // 受控子进程环境（2026-10-26 发布断摆专项）：S4U 会话继承的环境不可控，管线曾在
+    // 其中 5s 即静默失败（rc=1 零输出）而交互式会话同命令全绿——spawn 改显式白名单
+    // 环境 + 绝对脚本路径，把「会话环境」从等式里消掉。取证开关：栈目录放
+    // release-agent-xtrace 空文件即给 bash 加 -x（trace 随 stderr 进日志）。
+    const xtrace = existsSync(path.join(STACK, "release-agent-xtrace"));
+    if (xtrace && !executeOnce.xtraceLogged) {
+      executeOnce.xtraceLogged = true;
+      void log("xtrace 已开启（检测到 release-agent-xtrace 标记文件）");
+    }
+    const args = [
+      ...(xtrace ? ["-x"] : []),
+      WATCHER_SCRIPT,
+      "--once",
+      "--repo",
+      REPO,
+    ];
+    const child = spawn(BASH, args, {
       cwd: REPO,
+      env: childEnv(),
       windowsHide: true,
       stdio: ["ignore", fd ?? "ignore", fd ?? "ignore"],
     });
@@ -78,9 +103,52 @@ function executeOnce(trigger) {
       await log(
         `execute 完成 trigger=${trigger} rc=${code}${killed ? "（硬顶kill）" : ""} 耗时=${secs}s`,
       );
+      if (code === 0 || killed) {
+        consecutiveFailures = 0;
+      } else {
+        consecutiveFailures += 1;
+        if (consecutiveFailures === 3 || consecutiveFailures % 10 === 0) {
+          await log(
+            `!! 管线连续 ${consecutiveFailures} 次失败（rc=${code}）——自动发布已停摆，请人工介入；` +
+              `手动姿势：在含最新脚本的干净 master 检出内跑 bash scripts/host-release-watcher.sh --once`,
+          );
+        }
+      }
       resolve();
     });
   });
+}
+
+/** 受控环境白名单：git（凭证管理器需 APPDATA/USERPROFILE/SystemRoot）、MSYS 运行时
+ *  （SystemRoot/TEMP）、bash 与 HOME 兜底。故意不透传其余继承变量——嫌疑面整体隔离。 */
+function childEnv() {
+  const keep = [
+    "PATH",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "SystemDrive",
+    "SYSTEMDRIVE",
+    "windir",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramFiles",
+    "PROGRAMFILES",
+    "ProgramData",
+    "PROGRAMDATA",
+  ];
+  const env = {};
+  for (const key of keep) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+  env.GIT_TERMINAL_PROMPT = "0";
+  return env;
 }
 
 // 触发队列：同名单去重（轮询撞唤醒=只跑一次），严格串行（管线内锁再兜一层）

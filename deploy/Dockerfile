@@ -22,6 +22,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 # SHELL=/bin/bash：Claude CLI Bash 工具的 shell 发现依赖，缺失报 "No suitable shell found"（09-22 实证坑）
 ENV SHELL=/bin/bash TZ=Asia/Shanghai LANG=C.UTF-8 NODE_ENV=production
+# 发布内容指纹：host-release.sh 传 --build-arg GIT_SHA=<目标 sha>，切换后容器内断言
+# cat /app/.git-sha == 目标（防「tag 谎报内容」——管线曾把功能分支工作树打上 master tag）
+ARG GIT_SHA=unknown
+RUN printf '%s\n' "$GIT_SHA" > /app/.git-sha
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
