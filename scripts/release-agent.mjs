@@ -22,7 +22,9 @@ const ONCE = process.argv.includes("--once");
 // 旧版管线会拿工作树当构建内容（镜像 tag 谎报内容实锤，specs/2026-10-23 §部署轮）。
 const SELF_PATH = fileURLToPath(import.meta.url);
 const REPO = process.env.RELEASE_AGENT_REPO ?? path.resolve(path.dirname(SELF_PATH), "..");
-const WATCHER_SCRIPT = path.join(REPO, "scripts", "host-release-watcher.sh");
+// bash 脚本参数必须正斜杠：MSYS bash 对反斜杠 Windows 路径的参数解析不稳定
+// （S4U 实测反斜杠路径连 -x trace 都不产出，自检矩阵全绿反证 cwd/env 无辜）
+const WATCHER_SCRIPT = path.join(REPO, "scripts", "host-release-watcher.sh").replaceAll("\\", "/");
 const STACK = process.env.RELEASE_AGENT_STACK ?? "D:\\deploy\\donger-docker";
 const WAKE_DIR = process.env.RELEASE_AGENT_WAKE_DIR ?? path.join(STACK, "release-wake");
 const LOG_FILE = process.env.RELEASE_AGENT_LOG ?? path.join(REPO, "logs", "release-watcher.log");
