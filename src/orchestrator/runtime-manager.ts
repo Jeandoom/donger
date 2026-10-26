@@ -11,6 +11,7 @@ import {
 } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import { resolveInjectionEnv } from "../domain/credential-injection.js";
+import { buildForkHistoryAppend, planForkContinuation } from "../domain/fork.js";
 import { materializeFailureGuidance, SESSION_BRANCH_PREFIX } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import type { LlmSdkType } from "../domain/llm-platforms.js";
@@ -29,6 +30,7 @@ import type { ConversationStore } from "../ports/conversation-store.js";
 import type { CredentialSetStore } from "../ports/credential-set-store.js";
 import type { ExtensionDirectoryResolver } from "../ports/extension-directory-resolver.js";
 import type { LlmProviderStore } from "../ports/llm-provider-store.js";
+import type { MessageStore } from "../ports/message-store.js";
 import type {
   RepositoryMaterializeItem,
   RepositoryMaterializer,
@@ -102,6 +104,8 @@ interface RuntimeManagerDeps {
    * 消费点：mcp-servers/connectors 停用 → agent.mcpServers 不合并、连接器注入跳过。
    */
   isPluginEnabled?: (pluginId: string) => boolean;
+  /** 消息存储（分叉会话注入继承历史用，specs/2026-10-23-conversation-fork-design.md §5.3） */
+  messageStore?: MessageStore;
 }
 
 /**
@@ -339,7 +343,15 @@ export class RuntimeManager {
     const sessionScope =
       this.deps.sessionWorktree === false
         ? undefined
-        : { conversationId: conversation.id, worktreeRoot };
+        : {
+            conversationId: conversation.id,
+            worktreeRoot,
+            // 分叉会话：新工作树从源会话分支/零扰动快照起树，文件初始状态=源会话分叉时刻
+            // 的已提交状态（spec §6；GC 回收源树不受影响——分叉树是独立 checkout）
+            ...(conversation.forkedFromConversationId
+              ? { forkSource: { conversationId: conversation.forkedFromConversationId } }
+              : {}),
+          };
     const reposRoot = sessionScope
       ? sessionWorktreeReposRoot(worktreeRoot, conversation.id)
       : join(runtimeDir, "repos");
@@ -380,7 +392,7 @@ export class RuntimeManager {
         ),
         ...(sessionScope
           ? [
-              `以上仓库为本会话专属 git worktree（会话分支 ${SESSION_BRANCH_PREFIX}${conversation.id}，基于最新主分支），与其他会话物理隔离：可自由建分支、提交；同步主分支用 git_pull。不要改动其他会话路径或主克隆基座。`,
+              `以上仓库为本会话专属 git worktree（会话分支 ${SESSION_BRANCH_PREFIX}${conversation.id}，${sessionScope.forkSource ? "基于源会话分叉时刻的文件状态" : "基于最新主分支"}），与其他会话物理隔离：可自由建分支、提交；同步主分支用 git_pull。不要改动其他会话路径或主克隆基座。`,
             ]
           : []),
       ].join("\n");
@@ -439,6 +451,31 @@ export class RuntimeManager {
       if (recovered) resumeSessionId = recovered.sessionId;
     }
 
+    // 会话分叉续接（specs/2026-10-23-conversation-fork-design.md §5）：分叉会话的「首个
+    // 引擎会话」（无 resume 指针：sdkSessionId 空 + 转录反查不到）在此单点决策——D1 原生
+    // 优先：claude 会话级分叉 → forkFrom（runner 原生 forkSession 克隆源转录，保真全量）；
+    // 其余（消息级切点待 M2 uuid 映射 / zcode / codex / 引擎异型）→ 降级注入，把分叉前
+    // 历史挂进 systemPromptAppend。首轮之后 resumeSessionId 已物化，条件不再成立——历史
+    // 改由引擎会话自身承载，注入恰好一次；首轮失败未产生会话指针时重发会再次尝试。
+    let forkFrom: RunOptions["forkFrom"];
+    let forkHistoryAppend: string | undefined;
+    if (conversation.forkedFromConversationId && !resumeSessionId && !idlePastRoll) {
+      const source = await this.deps.conversationStore.get(conversation.forkedFromConversationId);
+      const plan = planForkContinuation({
+        conversation,
+        source,
+        turnSdkType: llm.sdkType ?? "anthropic",
+      });
+      if (plan.kind === "native") {
+        forkFrom = plan.forkFrom;
+      } else {
+        const messages = this.deps.messageStore
+          ? await this.deps.messageStore.listByConversation(conversation.id)
+          : [];
+        forkHistoryAppend = buildForkHistoryAppend(messages, conversation.id) || undefined;
+      }
+    }
+
     // 引擎状态隔离根（spec 2026-10-10-agent-security-kernel-design 引擎隔离层）：
     // <workspaceDir>/engine-state/<userId>——落在 confine 读边界之外（user.homeDir 外），
     // agent 不可读引擎状态（claude 凭证文件/转录 JSONL、zcode provider 配置）。
@@ -463,9 +500,12 @@ export class RuntimeManager {
       skills,
       pluginPaths,
       llm,
-      systemPromptAppend: this.combineSystemPromptAppend(extraPrompt),
+      systemPromptAppend: this.combineSystemPromptAppend(
+        [forkHistoryAppend, extraPrompt].filter(Boolean).join("\n\n") || undefined,
+      ),
       abortSignal: opts.abortSignal,
       resume: idleTooLong || sdkTypeMismatch ? undefined : resumeSessionId,
+      ...(forkFrom ? { forkFrom } : {}),
       workspaceRoot: user.homeDir,
       engineStateRoot,
       egressAllowDomains,

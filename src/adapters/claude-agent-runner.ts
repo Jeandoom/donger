@@ -5,7 +5,7 @@ import type {
   McpServerConfig as SdkMcpServerConfig,
   Settings,
 } from "@anthropic-ai/claude-agent-sdk";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "../domain/agent.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import { classifyShellCommand } from "../domain/read-only-shell-command.js";
@@ -134,9 +134,7 @@ export class ClaudeAgentRunner implements AgentRunner {
       apiKeyFile && configDir
         ? {
             apiKeyHelper:
-              process.platform === "win32"
-                ? `cmd /c type "${apiKeyFile}"`
-                : `cat "${apiKeyFile}"`,
+              process.platform === "win32" ? `cmd /c type "${apiKeyFile}"` : `cat "${apiKeyFile}"`,
           }
         : undefined;
 
@@ -170,6 +168,25 @@ export class ClaudeAgentRunner implements AgentRunner {
       }
       return { continue: true };
     };
+
+    // 会话分叉续接（specs/2026-10-23-conversation-fork-design.md §5.2）：SDK 原生
+    // forkSession 把源转录克隆到新 session id（重映射 uuid 保留 parentUuid 链；副本经
+    // sessionStore 落 SQLite），源会话零扰动，随后以新 id resume。失败即抛错（本轮失败、
+    // sdkSessionId 不回写）：重发时 prepare 的分叉条件（无 resume 指针）仍成立，天然重试。
+    let resumeSessionId = opts.resume;
+    if (opts.forkFrom) {
+      try {
+        const forked = await forkSession(opts.forkFrom.sessionId, {
+          ...(opts.sessionStore ? { sessionStore: opts.sessionStore } : {}),
+          ...(opts.forkFrom.upToMessageId ? { upToMessageId: opts.forkFrom.upToMessageId } : {}),
+        });
+        resumeSessionId = forked.sessionId;
+      } catch (error) {
+        throw new Error(
+          `会话分叉失败：源会话转录克隆未成功（${error instanceof Error ? error.message : String(error)}）`,
+        );
+      }
+    }
 
     const stream = query({
       prompt: task.prompt,
@@ -344,7 +361,7 @@ export class ClaudeAgentRunner implements AgentRunner {
               };
         },
         abortController: ac,
-        resume: opts.resume,
+        resume: resumeSessionId,
         sessionStore: opts.sessionStore,
         env: runnerEnv,
       },
@@ -379,7 +396,7 @@ export class ClaudeAgentRunner implements AgentRunner {
           permissionMode: "default",
           // donger 会话权限模式（审计口径；取轮启动时的值）
           agentPermissionMode: opts.permissionMode?.(),
-          resume: opts.resume,
+          resume: resumeSessionId,
           workspaceRoot: opts.workspaceRoot,
           allowedWriteRoots: opts.allowedWriteRoots,
           readOnlyRoots: opts.readOnlyRoots,
@@ -395,156 +412,156 @@ export class ClaudeAgentRunner implements AgentRunner {
     const blockPrefixBuffers = new Map<number, string>();
     const suppressedBlocks = new Set<number>();
     try {
-    for await (const m of stream) {
-      if (m.type === "system" && "subtype" in m && m.subtype === "init") {
-        yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
-      } else if (m.type === "stream_event") {
-        if (m.event.type === "message_start") {
-          streamingMessageId = m.event.message.id;
-          blockPrefixBuffers.clear();
-          suppressedBlocks.clear();
-        } else if (
-          m.event.type === "content_block_delta" &&
-          m.event.delta.type === "text_delta" &&
-          streamingMessageId
-        ) {
-          const blockIndex = typeof m.event.index === "number" ? m.event.index : 0;
-          if (suppressedBlocks.has(blockIndex)) continue;
-          const buffered = (blockPrefixBuffers.get(blockIndex) ?? "") + m.event.delta.text;
-          blockPrefixBuffers.delete(blockIndex);
-          if (
-            BUILTIN_TOOL_TEXT_PREFIX.startsWith(buffered) &&
-            buffered.length < BUILTIN_TOOL_TEXT_PREFIX.length
+      for await (const m of stream) {
+        if (m.type === "system" && "subtype" in m && m.subtype === "init") {
+          yield { type: "session_init", taskId: task.id, sessionId: m.session_id };
+        } else if (m.type === "stream_event") {
+          if (m.event.type === "message_start") {
+            streamingMessageId = m.event.message.id;
+            blockPrefixBuffers.clear();
+            suppressedBlocks.clear();
+          } else if (
+            m.event.type === "content_block_delta" &&
+            m.event.delta.type === "text_delta" &&
+            streamingMessageId
           ) {
-            // 仍可能是协议头前缀（"*"、"**"…）：继续缓冲下一个增量
-            blockPrefixBuffers.set(blockIndex, buffered);
-            continue;
-          }
-          if (buffered.startsWith(BUILTIN_TOOL_TEXT_PREFIX)) {
-            suppressedBlocks.add(blockIndex);
-            continue;
-          }
-          yield {
-            type: "text_delta",
-            taskId: task.id,
-            messageId: streamingMessageId,
-            text: buffered,
-          };
-        } else if (m.event.type === "content_block_stop" && streamingMessageId) {
-          // 块结束：冲刷仍在前缀缓冲里的短文本（不足判定长度即结束的普通文本块）
-          const stopIndex = typeof m.event.index === "number" ? m.event.index : -1;
-          const pending = stopIndex >= 0 ? blockPrefixBuffers.get(stopIndex) : undefined;
-          if (pending !== undefined) {
-            blockPrefixBuffers.delete(stopIndex);
+            const blockIndex = typeof m.event.index === "number" ? m.event.index : 0;
+            if (suppressedBlocks.has(blockIndex)) continue;
+            const buffered = (blockPrefixBuffers.get(blockIndex) ?? "") + m.event.delta.text;
+            blockPrefixBuffers.delete(blockIndex);
+            if (
+              BUILTIN_TOOL_TEXT_PREFIX.startsWith(buffered) &&
+              buffered.length < BUILTIN_TOOL_TEXT_PREFIX.length
+            ) {
+              // 仍可能是协议头前缀（"*"、"**"…）：继续缓冲下一个增量
+              blockPrefixBuffers.set(blockIndex, buffered);
+              continue;
+            }
+            if (buffered.startsWith(BUILTIN_TOOL_TEXT_PREFIX)) {
+              suppressedBlocks.add(blockIndex);
+              continue;
+            }
             yield {
               type: "text_delta",
               taskId: task.id,
               messageId: streamingMessageId,
-              text: pending,
+              text: buffered,
             };
-          }
-        } else if (m.event.type === "content_block_delta" && streamingMessageId) {
-          // GLM/Claude 思考流：thinking_delta（signature_delta 等其余变体忽略）
-          const delta = m.event.delta as { type?: string; thinking?: string };
-          if (delta.type === "thinking_delta" && delta.thinking) {
-            yield {
-              type: "thinking_delta",
-              taskId: task.id,
-              messageId: streamingMessageId,
-              text: delta.thinking,
-            };
-          }
-        } else if (m.event.type === "message_stop") {
-          streamingMessageId = null;
-        }
-      } else if (m.type === "assistant") {
-        yield { type: "llm_output", taskId: task.id, output: serializeJson(m) };
-        for (const block of m.message.content) {
-          if (block.type === "text") {
-            yield { type: "text", taskId: task.id, text: block.text };
-          } else if (block.type === "tool_use") {
-            yield {
-              type: "tool_use",
-              taskId: task.id,
-              tool: block.name,
-              input: block.input as Record<string, unknown>,
-              toolUseId: block.id,
-            };
-          }
-        }
-      } else if (m.type === "user") {
-        yield { type: "llm_input", taskId: task.id, input: serializeJson(m) };
-        const content =
-          (
-            m as {
-              message?: {
-                content?: Array<{
-                  type: string;
-                  tool_use_id?: string;
-                  content?: unknown;
-                  is_error?: boolean;
-                }>;
+          } else if (m.event.type === "content_block_stop" && streamingMessageId) {
+            // 块结束：冲刷仍在前缀缓冲里的短文本（不足判定长度即结束的普通文本块）
+            const stopIndex = typeof m.event.index === "number" ? m.event.index : -1;
+            const pending = stopIndex >= 0 ? blockPrefixBuffers.get(stopIndex) : undefined;
+            if (pending !== undefined) {
+              blockPrefixBuffers.delete(stopIndex);
+              yield {
+                type: "text_delta",
+                taskId: task.id,
+                messageId: streamingMessageId,
+                text: pending,
               };
             }
-          ).message?.content ?? [];
-        for (const block of content) {
-          if (block.type === "tool_result") {
-            const raw = block.content;
-            const text = typeof raw === "string" ? raw : JSON.stringify(raw);
-            yield {
-              type: "tool_result",
-              taskId: task.id,
-              toolUseId: block.tool_use_id ?? "",
-              content: text,
-              isError: block.is_error === true,
-            };
-          }
-        }
-      } else if (m.type === "result") {
-        const raw = (
-          m as {
-            usage?: {
-              input_tokens?: number;
-              output_tokens?: number;
-              cache_creation_input_tokens?: number;
-              cache_read_input_tokens?: number;
-            };
-            errors?: string[];
-          }
-        ).usage;
-        const usage: TokenUsage | undefined = raw
-          ? {
-              inputTokens: raw.input_tokens ?? 0,
-              outputTokens: raw.output_tokens ?? 0,
-              cacheCreationInputTokens: raw.cache_creation_input_tokens ?? 0,
-              cacheReadInputTokens: raw.cache_read_input_tokens ?? 0,
+          } else if (m.event.type === "content_block_delta" && streamingMessageId) {
+            // GLM/Claude 思考流：thinking_delta（signature_delta 等其余变体忽略）
+            const delta = m.event.delta as { type?: string; thinking?: string };
+            if (delta.type === "thinking_delta" && delta.thinking) {
+              yield {
+                type: "thinking_delta",
+                taskId: task.id,
+                messageId: streamingMessageId,
+                text: delta.thinking,
+              };
             }
-          : undefined;
-        if (m.subtype === "success") {
-          yield {
-            type: "result",
-            taskId: task.id,
-            subtype: "success",
-            result: typeof m.result === "string" ? m.result : undefined,
-            usage,
-          };
-        } else {
-          // 透传 SDK 原始错误（errors[]，如 "No conversation found with session ID"）：
-          // 上层 session 过期重试靠该文本匹配触发；包装文案会让自愈机制失效且不可诊断
-          const sdkMsg = (m as { errors?: string[] }).errors;
-          const detail = Array.isArray(sdkMsg)
-            ? sdkMsg.filter((e) => typeof e === "string" && e).join("; ")
-            : "";
-          yield {
-            type: "result",
-            taskId: task.id,
-            subtype: "error",
-            error: detail || "agent 执行出错",
-            usage,
-          };
+          } else if (m.event.type === "message_stop") {
+            streamingMessageId = null;
+          }
+        } else if (m.type === "assistant") {
+          yield { type: "llm_output", taskId: task.id, output: serializeJson(m) };
+          for (const block of m.message.content) {
+            if (block.type === "text") {
+              yield { type: "text", taskId: task.id, text: block.text };
+            } else if (block.type === "tool_use") {
+              yield {
+                type: "tool_use",
+                taskId: task.id,
+                tool: block.name,
+                input: block.input as Record<string, unknown>,
+                toolUseId: block.id,
+              };
+            }
+          }
+        } else if (m.type === "user") {
+          yield { type: "llm_input", taskId: task.id, input: serializeJson(m) };
+          const content =
+            (
+              m as {
+                message?: {
+                  content?: Array<{
+                    type: string;
+                    tool_use_id?: string;
+                    content?: unknown;
+                    is_error?: boolean;
+                  }>;
+                };
+              }
+            ).message?.content ?? [];
+          for (const block of content) {
+            if (block.type === "tool_result") {
+              const raw = block.content;
+              const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+              yield {
+                type: "tool_result",
+                taskId: task.id,
+                toolUseId: block.tool_use_id ?? "",
+                content: text,
+                isError: block.is_error === true,
+              };
+            }
+          }
+        } else if (m.type === "result") {
+          const raw = (
+            m as {
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+              };
+              errors?: string[];
+            }
+          ).usage;
+          const usage: TokenUsage | undefined = raw
+            ? {
+                inputTokens: raw.input_tokens ?? 0,
+                outputTokens: raw.output_tokens ?? 0,
+                cacheCreationInputTokens: raw.cache_creation_input_tokens ?? 0,
+                cacheReadInputTokens: raw.cache_read_input_tokens ?? 0,
+              }
+            : undefined;
+          if (m.subtype === "success") {
+            yield {
+              type: "result",
+              taskId: task.id,
+              subtype: "success",
+              result: typeof m.result === "string" ? m.result : undefined,
+              usage,
+            };
+          } else {
+            // 透传 SDK 原始错误（errors[]，如 "No conversation found with session ID"）：
+            // 上层 session 过期重试靠该文本匹配触发；包装文案会让自愈机制失效且不可诊断
+            const sdkMsg = (m as { errors?: string[] }).errors;
+            const detail = Array.isArray(sdkMsg)
+              ? sdkMsg.filter((e) => typeof e === "string" && e).join("; ")
+              : "";
+            yield {
+              type: "result",
+              taskId: task.id,
+              subtype: "error",
+              error: detail || "agent 执行出错",
+              usage,
+            };
+          }
         }
       }
-    }
     } finally {
       // 凭证文件轮末即焚（INV-3b）：token 只存在于 engine-state 隔离根的瞬间文件，
       // helper 每次鉴权现取；异常/中止路径同样清理

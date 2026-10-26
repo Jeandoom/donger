@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { BookOpen, Check, Copy, Megaphone } from "lucide-react";
+import { BookOpen, Check, Copy, GitFork, Megaphone } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
 import { isBuiltinAgentId } from "../../lib/builtinAgents";
@@ -60,6 +60,9 @@ export interface ChatWorkspaceProps {
   onModelRefChange?: (ref: string) => void;
   /** 输入区上方插槽（assist 草稿横幅等） */
   aboveComposer?: React.ReactNode;
+  /** 会话分叉（specs/2026-10-23-conversation-fork-design.md §8）：缺省=整会话；消息级入口传分叉点消息 id。
+   *  undefined=不支持，隐藏顶栏按钮与消息级入口 */
+  onForkConversation?: (messageId?: string) => Promise<boolean>;
   /** 顶栏右侧扩展（「文件」按钮旁，技能问题上报入口等） */
   headerExtra?: React.ReactNode;
   errors: ChatErrors;
@@ -76,6 +79,11 @@ interface DrawerState {
 }
 
 const INITIAL_DRAWER: DrawerState = { open: false, tab: "files", focusPath: null };
+
+/** 血缘徽标源标题截断（徽标窄，全名在 title 提示里） */
+function truncateTitle(title: string): string {
+  return title.length > 14 ? `${title.slice(0, 14)}…` : title;
+}
 
 export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [drawer, setDrawer] = useState<DrawerState>(INITIAL_DRAWER);
@@ -127,6 +135,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     activeConversation?.effectivePermissionMode ??
     activeConversation?.permissionMode ??
     "ask_before_change";
+  // 分叉血缘（徽标 + 逐级回溯入口）：源会话在列表内即可点击切换（D4：数据一级，逐个回溯成链）
+  const forkSource = activeConversation?.forkedFrom;
+  const forkSourceVisible = forkSource
+    ? props.conversations.some((c) => c.id === forkSource.id)
+    : false;
   // Agent SDK 标识：优先取当前选中模型的引擎（随下拉切换即时反映，下一条消息生效），
   // 未显式选过则退回会话上次运行的引擎；草稿/未运行过两者皆空 → 不显示
   const activeSdk =
@@ -245,6 +258,26 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
                 {kbName ?? "知识库"}
               </Badge>
             ) : null}
+            {forkSource ? (
+              forkSourceVisible ? (
+                <button
+                  type="button"
+                  className="shrink-0"
+                  title={`切换到源会话「${forkSource.title}」（血缘逐级回溯，specs/2026-10-23-conversation-fork-design.md §8.3）`}
+                  onClick={() => props.onSelectConversation(forkSource.id)}
+                >
+                  <Badge tone="neutral">
+                    <GitFork size={11} className="mr-1" aria-hidden="true" />
+                    分叉自 {truncateTitle(forkSource.title)}
+                  </Badge>
+                </button>
+              ) : (
+                <Badge tone="neutral" title="源会话已归档或不可见">
+                  <GitFork size={11} className="mr-1" aria-hidden="true" />
+                  分叉自 {truncateTitle(forkSource.title)}
+                </Badge>
+              )
+            ) : null}
             {props.activeConversationIsDraft ? (
               <Badge tone="warning">
                 <span
@@ -273,6 +306,19 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {props.headerExtra}
+            {props.onForkConversation &&
+            props.activeConversationId &&
+            !props.activeConversationIsDraft ? (
+              <button
+                type="button"
+                aria-label="创建分叉"
+                title="以此会话当前全部消息创建分叉（新会话独立演进，原会话不受影响）"
+                onClick={() => void props.onForkConversation?.()}
+                className="shrink-0 rounded-lg border border-border bg-card p-2 text-muted-foreground hover:bg-muted"
+              >
+                <GitFork size={13} />
+              </button>
+            ) : null}
             {props.activeConversationId ? (
               <button
                 type="button"
@@ -391,6 +437,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               conversationId={activeConversation?.id}
               onMentionInserted={collectMention}
               onOpenFileChange={openFileChange}
+              onForkFromMessage={
+                props.onForkConversation && !props.isGenerating
+                  ? (messageId) => void props.onForkConversation?.(messageId)
+                  : undefined
+              }
               aboveComposer={
                 <>
                   {props.aboveComposer}

@@ -23,6 +23,14 @@ export interface RunOptions {
   abortSignal?: AbortSignal;
   /** Claude Agent SDK session ID，续接历史对话 */
   resume?: string;
+  /**
+   * 会话分叉续接（specs/2026-10-23-conversation-fork-design.md §5.2）：平台统一契约，
+   * 引擎差异收敛在 runner 层——claude 走 SDK 原生 forkSession 克隆源转录到新 session id
+   * （重映射 uuid 保留 parentUuid 链），其余引擎忽略本字段（由 prepare 把分叉前历史注入
+   * systemPromptAppend 模拟，对上层透明）。仅分叉会话首轮传入（此时 resume 恒空）；
+   * upToMessageId 为中间切点精确截断，依赖 message→transcriptUuid 映射（M2 启用）。
+   */
+  forkFrom?: { sessionId: string; upToMessageId?: string };
   /** 写入边界：写入路径必须落在此目录内（该用户工作区） */
   workspaceRoot?: string;
   /**

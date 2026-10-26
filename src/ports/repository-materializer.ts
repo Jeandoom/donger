@@ -19,6 +19,11 @@ export interface RepositorySessionScope {
   conversationId: string;
   /** 会话 worktree 根（<runtimeDir>/worktrees） */
   worktreeRoot: string;
+  /**
+   * 分叉会话（specs/2026-10-23-conversation-fork-design.md §6）：基点改指源会话——优先
+   * 源工作树零扰动快照（携带未提交变更，D3 拍板），回退源会话分支，再回退标准基点。
+   */
+  forkSource?: { conversationId: string };
 }
 
 export interface RepositoryMaterializeRequest {

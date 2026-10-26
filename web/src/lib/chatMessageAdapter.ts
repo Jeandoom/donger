@@ -57,6 +57,7 @@ export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
   const custom = {
     delivery: message.delivery ?? "accepted",
     files: message.files ?? [],
+    ...(message.forkPointMessageId ? { forkPointMessageId: message.forkPointMessageId } : {}),
   };
   // 顶层 createdAt（Date）：assistant-ui 对 assistant 消息只在该字段落元信息
   const createdAt = message.createdAt ? new Date(message.createdAt) : undefined;

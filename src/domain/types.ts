@@ -154,7 +154,10 @@ export interface AuditEvent {
     /** 审批决议落痕（热发布 M3，spec 2026-10-16-hot-deploy-design §6.2；seq=-1 执行外事件；
      *  text=决议摘要，toolInput=JSON {gateId,approved,reason?,responderId?}。
      *  此前批/拒动作完全无痕，M3 补全合规留痕） */
-    | "approval_decision";
+    | "approval_decision"
+    /** 会话分叉（specs/2026-10-23-conversation-fork-design.md §7；seq=-1 执行外事件；
+     *  text=派生摘要，toolInput=JSON {sourceConversationId,forkPointMessageId,copiedMessages}） */
+    | "conversation_forked";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;

@@ -84,8 +84,8 @@ import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { createWakeFileWriter } from "./domain/release-webhook.js";
 import { ReleaseService } from "./orchestrator/release-service.js";
-import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
+import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import { SystemEventDispatcher } from "./orchestrator/system-event-dispatcher.js";
@@ -399,6 +399,8 @@ async function main(): Promise<void> {
       sessionWorktree: cfg.gitSessionWorktree,
       extensionDirectoryResolver,
       isPluginEnabled: pluginGate,
+      // 分叉会话注入继承历史的消息源（specs/2026-10-23-conversation-fork-design.md §5.3）
+      messageStore,
     });
     const orch = new Orchestrator({
       store,
@@ -742,6 +744,8 @@ async function main(): Promise<void> {
     logger: log,
     maxQueuePending: cfg.triggerQueueMaxPending,
     notifications: notificationService,
+    // 反馈通知回复兜底（2026-10-26 反馈通知回复断链修复）：写手未回复时平台落反馈回复
+    feedbackStore,
     // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5）：
     // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
     agentStore,
