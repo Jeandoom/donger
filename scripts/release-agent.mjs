@@ -9,7 +9,7 @@
 // 例行化（管理员 PowerShell 一次）：D:\deploy\donger-docker\install-release-agent.ps1
 // 配置（环境变量均可缺省）：RELEASE_AGENT_REPO/STACK/WAKE_DIR/LOG/POLL_SECONDS/ONCE_TIMEOUT_MS/BASH
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, watch } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, watch } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,34 +120,59 @@ function executeOnce(trigger) {
 }
 
 /** 受控环境白名单：git（凭证管理器需 APPDATA/USERPROFILE/SystemRoot）、MSYS 运行时
- *  （SystemRoot/TEMP）、bash 与 HOME 兜底。故意不透传其余继承变量——嫌疑面整体隔离。 */
-function childEnv() {
-  const keep = [
-    "PATH",
-    "SystemRoot",
-    "SYSTEMROOT",
-    "SystemDrive",
-    "SYSTEMDRIVE",
-    "windir",
-    "WINDIR",
-    "TEMP",
-    "TMP",
-    "HOME",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "ProgramFiles",
-    "PROGRAMFILES",
-    "ProgramData",
-    "PROGRAMDATA",
-  ];
-  const env = {};
-  for (const key of keep) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
+ *  （SystemRoot/TEMP）、bash 与 HOME 兜底。故意不透传其余继承变量——嫌疑面整体隔离。
+ *  运维配置：栈目录 release-agent.env（KEY=VALUE，逐轮现读热生效，仿 host-release.env）——
+ *  RELEASE_AGENT_ENV_MODE=whitelist（缺省）| inherit（全量继承继承环境，诊断用）；
+ *  其余 KEY=VALUE 直接合入子进程环境（内部指令键不透传）。 */
+function loadStackEnvFile() {
+  const out = {};
+  try {
+    for (const line of readFileSync(path.join(STACK, "release-agent.env"), "utf8").split(/\r?\n/)) {
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (m) out[m[1]] = m[2];
+    }
+  } catch {
+    // 无配置文件 = 缺省行为
   }
-  if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+  return out;
+}
+
+function childEnv() {
+  const fileVars = loadStackEnvFile();
+  let env;
+  if ((fileVars.RELEASE_AGENT_ENV_MODE ?? "whitelist") === "inherit") {
+    env = { ...process.env };
+  } else {
+    env = {};
+    const keep = [
+      "PATH",
+      "SystemRoot",
+      "SYSTEMROOT",
+      "SystemDrive",
+      "SYSTEMDRIVE",
+      "windir",
+      "WINDIR",
+      "TEMP",
+      "TMP",
+      "HOME",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "ProgramFiles",
+      "PROGRAMFILES",
+      "ProgramData",
+      "PROGRAMDATA",
+    ];
+    for (const key of keep) {
+      const value = process.env[key];
+      if (value !== undefined) env[key] = value;
+    }
+    if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+  }
   env.GIT_TERMINAL_PROMPT = "0";
+  for (const [key, value] of Object.entries(fileVars)) {
+    if (key !== "RELEASE_AGENT_ENV_MODE") env[key] = value;
+  }
   return env;
 }
 
