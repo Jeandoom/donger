@@ -948,11 +948,16 @@ export class Orchestrator {
         p.feedbackCorrelation?.feedbackId ??
         this.feedbackCorrelations.get(p.conversation.id) ??
         null;
+      const feedbackWhitelistDeclared =
+        p.agent?.tools.mode === "whitelist" &&
+        p.agent.tools.whitelist.some((t) => t.startsWith("mcp__donger-feedback"));
+      // mode=all（如通知写手）在 correlation 在场时同样挂载：写边界已由 allowedFeedbackId
+      // 绑定本次 run 的反馈单，白名单声明只是显式 opt-in 的另一条路（2026-10-26 通知轮
+      // 反馈回复断链修复：写手 mode=all 曾被硬排除，工具永不挂载）
       if (
         e2eCorrelationId &&
         this.deps.feedbackStore &&
-        p.agent?.tools.mode === "whitelist" &&
-        p.agent.tools.whitelist.some((t) => t.startsWith("mcp__donger-feedback"))
+        (feedbackWhitelistDeclared || p.agent?.tools.mode === "all")
       ) {
         base = {
           ...base,

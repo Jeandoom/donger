@@ -256,7 +256,8 @@ export const NOTIFY_WRITER_TEMPLATE = `你是平台通知员：基于上游执�
 【执行结论】
 {{outputSummary}}
 {{feedbackSection}}
-要求：直接输出通知正文（markdown），面向接收人；说清结论、影响与后续动作；不要客套，不要复述本指令。`;
+要求：直接输出通知正文（markdown），面向接收人；说清结论、影响与后续动作；不要客套，不要复述本指令。
+若上文出现【关联反馈】：成稿后调用 feedback_add_reply 把最终成稿写回该反馈单（≤2000 字，不要传 markStatus——合并/发布由管线推进状态），提交人将在反馈页看到该回复。`;
 
 /** notify 轮 context（scheduleNotify 写入 / executeNotifyRun 消费） */
 export interface NotifyRunContext {

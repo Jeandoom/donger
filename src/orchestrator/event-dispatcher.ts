@@ -18,16 +18,19 @@ import {
 } from "../domain/event-payloads.js";
 import type { IncomingMessage } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
+import type { FeedbackReply } from "../domain/feedback.js";
 import type { Workflow } from "../domain/workflow.js";
 import type { WorkflowRun } from "../domain/workflow-run.js";
 import type { EventFiringStore } from "../ports/event-firing-store.js";
 import type { EventStore } from "../ports/event-store.js";
+import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { MessageStore } from "../ports/message-store.js";
 import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import { NotFoundError, ValidationError } from "../util/errors.js";
 import type { Logger } from "../util/logger.js";
 import type { NotificationService } from "./notification-service.js";
+import { REPLY_MAX_CHARS } from "./feedback-tools.js";
 
 export interface EventDispatcherDeps {
   eventStore: EventStore;
@@ -48,6 +51,8 @@ export interface EventDispatcherDeps {
   canceller?: { cancelPendingApprovals(conversationId: string): void };
   /** 通知内核（缺省=不发站内信） */
   notifications?: NotificationService;
+  /** 反馈存储（缺省=通知轮不做反馈回复兜底；反馈工作流通知落反馈回复用） */
+  feedbackStore?: FeedbackStore;
   logger: Logger;
   /** 全局事件队列容量（D6 拍板=10）：超出时该次执行直接失败，原因进执行记录 */
   maxQueuePending?: number;
@@ -622,6 +627,9 @@ export class EventDispatcher {
         channelId: "web",
         threadId: conv?.id ?? run.id,
         ...(conv ? { conversationId: conv.id } : {}),
+        // correlation 结构化透传：写手轮据此挂载 donger-feedback 工具（反馈回复断链
+        // 修复之一——此前 correlation 只渲染进 prompt 文本，工具挂载条件永远不成立）
+        ...(ctx.correlation ? { feedbackCorrelation: { feedbackId: ctx.correlation.feedbackId } } : {}),
         requesterId: wf.ownerId,
         text: prompt,
         unattended: true,
@@ -635,6 +643,50 @@ export class EventDispatcher {
         conversationId: finalConvId,
       });
       const body = await this.lastReplyText(finalConvId);
+      // 反馈回复兜底（2026-10-26 反馈通知回复断链修复）：correlation 在场且写手未用
+      // donger-feedback 工具写回复时，平台把通知成稿直接落为反馈回复——提交人在反馈页
+      // 能看到处理结论，不依赖写手指令遵从与工具白名单。写手已回复（工具路径）则跳过；
+      // 站内信沿用 feedback-tools 的 self-skip 语义（属主=提交人时不双打扰）。
+      if (ctx.correlation?.feedbackId && this.deps.feedbackStore && body.trim()) {
+        try {
+          const fb = await this.deps.feedbackStore.get(ctx.correlation.feedbackId);
+          if (fb) {
+            const replies = await this.deps.feedbackStore.listReplies(fb.id);
+            const writerReplied = replies.some((r) => r.createdAt >= startedAt);
+            if (!writerReplied) {
+              const reply: FeedbackReply = {
+                id: crypto.randomUUID(),
+                feedbackId: fb.id,
+                userId: wf.ownerId,
+                authorRole: "system",
+                content: body.slice(0, REPLY_MAX_CHARS),
+                createdAt: new Date().toISOString(),
+              };
+              await this.deps.feedbackStore.addReply(reply);
+              if (fb.userId !== wf.ownerId && this.deps.notifications) {
+                await this.deps.notifications
+                  .notify({
+                    event: "feedback.replied",
+                    recipients: [{ kind: "user", userId: fb.userId }],
+                    title: "你的反馈有自动处理结果",
+                    body: reply.content.slice(0, 200),
+                    link: `/feedback?focus=${fb.id}`,
+                    dedupeKey: `fb:${fb.id}:${reply.id}`,
+                  })
+                  .catch((e: unknown) =>
+                    logger.error({ runId: run.id, err: String(e) }, "反馈回复通知失败"),
+                  );
+              }
+              logger.info(
+                { runId: run.id, feedbackId: fb.id },
+                "notify run: 通知成稿已兜底落为反馈回复",
+              );
+            }
+          }
+        } catch (e) {
+          logger.error({ runId: run.id, err: String(e) }, "notify run: 反馈回复兜底失败（不阻塞通知）");
+        }
+      }
       await this.deps.notifications
         ?.notify({
           event: "workflow.result_notified",

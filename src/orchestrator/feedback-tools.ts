@@ -38,7 +38,8 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: bo
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
-const REPLY_MAX_CHARS = 2000;
+/** 反馈回复正文字符上限（写回工具与通知轮兜底共用） */
+export const REPLY_MAX_CHARS = 2000;
 
 /**
  * 反馈状态机单向递增校验（工具侧收紧；admin 手工 PATCH 端点维持现状不收）。

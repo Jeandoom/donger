@@ -43,6 +43,7 @@ interface Setup {
   dispatcher: EventDispatcher;
   handleMessage: ReturnType<typeof vi.fn>;
   notify: ReturnType<typeof vi.fn>;
+  feedbackStore: { get: ReturnType<typeof vi.fn>; listReplies: ReturnType<typeof vi.fn>; addReply: ReturnType<typeof vi.fn> };
 }
 
 function setup(over: { handleMessageError?: Error } = {}): Setup {
@@ -59,6 +60,11 @@ function setup(over: { handleMessageError?: Error } = {}): Setup {
     ? vi.fn().mockRejectedValue(over.handleMessageError)
     : vi.fn().mockResolvedValue("conv-x");
   const notify = vi.fn().mockResolvedValue({});
+  const feedbackStore = {
+    get: vi.fn().mockResolvedValue({ id: "fb-7", userId: "submitter-7", status: "accepted" }),
+    listReplies: vi.fn().mockResolvedValue([]),
+    addReply: vi.fn().mockResolvedValue(undefined),
+  };
   const dispatcher = new EventDispatcher({
     eventStore,
     workflowStore,
@@ -72,10 +78,11 @@ function setup(over: { handleMessageError?: Error } = {}): Setup {
       listByConversation: vi.fn().mockResolvedValue([{ role: "bot", text: "通知正文" }]),
     },
     notifications: { notify } as never,
+    feedbackStore: feedbackStore as never,
   });
   const systemEvents = new SystemEventDispatcher({ eventStore, dispatcher, logger });
   dispatcher.setSystemEventSink(systemEvents);
-  return { workflowStore, runStore, dispatcher, handleMessage, notify };
+  return { workflowStore, runStore, dispatcher, handleMessage, notify, feedbackStore };
 }
 
 function baseInput(over: Partial<WorkflowInput> = {}): WorkflowInput {
@@ -120,11 +127,14 @@ describe("notifyPolicy 通知执行器（M2，manualRun 全链路）", () => {
       text: string;
       unattended: boolean;
       permissionMode: string;
+      feedbackCorrelation?: { feedbackId: string };
     };
     expect(writerMsg.unattended).toBe(true);
     // 上游结论=主 run 最终 bot 回复（messageStore mock 文本）
     expect(writerMsg.text).toContain("通知正文");
     expect(writerMsg.text).toContain("fb-7");
+    // correlation 结构化透传（2026-10-26 反馈回复断链修复）：写手轮挂 donger-feedback 的依据
+    expect(writerMsg.feedbackCorrelation).toEqual({ feedbackId: "fb-7" });
 
     // 投递：站内信给因果提交人（calls 另含主 run 自身的 loop.run_succeeded）
     const intent = s.notify.mock.calls
@@ -135,6 +145,25 @@ describe("notifyPolicy 通知执行器（M2，manualRun 全链路）", () => {
     expect(intent.recipients).toEqual([{ kind: "user", userId: "submitter-7" }]);
     expect(intent.title).toBe("你的反馈已处理");
     expect(intent.dedupeKey).toBe(`notify:${nRun!.id}`);
+
+    // 反馈回复兜底：写手未用工具回复 → 平台把通知成稿落为反馈回复（authorRole=system，
+    // userId=工作流属主）；提交人≠属主时随发 feedback.replied 站内信
+    await waitFor(() => s.feedbackStore.addReply.mock.calls.length > 0);
+    const reply = s.feedbackStore.addReply.mock.calls[0]?.[0] as {
+      feedbackId: string;
+      authorRole: string;
+      userId: string;
+      content: string;
+    };
+    expect(reply.feedbackId).toBe("fb-7");
+    expect(reply.authorRole).toBe("system");
+    expect(reply.userId).toBe("admin-1");
+    expect(reply.content).toContain("通知正文");
+    const replied = s.notify.mock.calls
+      .map((c) => c[0] as NotificationIntent)
+      .find((i) => i.event === "feedback.replied");
+    expect(replied?.recipients).toEqual([{ kind: "user", userId: "submitter-7" }]);
+    expect(replied?.dedupeKey).toContain("fb-7");
 
     // lastRun 停在业务轮；notify 轮不发完成事件（库中仅两行，无第三轮）
     const wfAfter = await s.workflowStore.get(wf.id);
@@ -195,6 +224,70 @@ describe("notifyPolicy 通知执行器（M2，manualRun 全链路）", () => {
     await new Promise((r) => setTimeout(r, 150));
     expect(await notifyRunOf(s, off.id)).toBeUndefined();
     expect(await notifyRunOf(s, skipped.id)).toBeUndefined();
+  });
+
+  it("写手已用工具写反馈回复：兜底不重复落库，结果通知照发", async () => {
+    const s = setup();
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["success"],
+          title: "已处理",
+          recipients: "correlation",
+          channels: ["inapp"],
+        },
+      }) as never,
+    );
+    // 写手在通知轮运行期间已用 donger-feedback 工具写回复（createdAt ≥ notify startedAt）
+    s.feedbackStore.listReplies.mockResolvedValue([
+      {
+        id: "r-tool",
+        feedbackId: "fb-7",
+        userId: "admin-1",
+        authorRole: "system",
+        content: "工具路径写的回复",
+        createdAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    ]);
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: FEEDBACK_CTX });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "success");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+    await new Promise((r) => setTimeout(r, 120));
+    expect(s.feedbackStore.addReply).not.toHaveBeenCalled();
+    expect(
+      s.notify.mock.calls.some(
+        (c) => (c[0] as NotificationIntent).event === "workflow.result_notified",
+      ),
+    ).toBe(true);
+  });
+
+  it("未装配 feedbackStore：通知照发，兜底跳过", async () => {
+    const s = setup();
+    (s.dispatcher as unknown as { deps: { feedbackStore?: unknown } }).deps.feedbackStore = undefined;
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["success"],
+          title: "已处理",
+          recipients: "correlation",
+          channels: ["inapp"],
+        },
+      }) as never,
+    );
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: FEEDBACK_CTX });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "success");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+    await new Promise((r) => setTimeout(r, 120));
+    expect(s.feedbackStore.addReply).not.toHaveBeenCalled();
+    expect(
+      s.notify.mock.calls.some(
+        (c) => (c[0] as NotificationIntent).event === "workflow.result_notified",
+      ),
+    ).toBe(true);
   });
 
   it("failed 命中：业务轮失败后派生 notify 轮，简报携带错误信息", async () => {

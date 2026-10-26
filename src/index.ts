@@ -744,6 +744,8 @@ async function main(): Promise<void> {
     logger: log,
     maxQueuePending: cfg.triggerQueueMaxPending,
     notifications: notificationService,
+    // 反馈通知回复兜底（2026-10-26 反馈通知回复断链修复）：写手未回复时平台落反馈回复
+    feedbackStore,
     // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5）：
     // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
     agentStore,
