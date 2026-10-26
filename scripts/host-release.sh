@@ -97,11 +97,13 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     log "== 步骤2 镜像已存在，跳过构建：$IMAGE"
   else
     [[ -n "$SHA" ]] || { log "!! 构建缺 --sha：内容必须按目标 sha 干净检出（fail-closed，不拿工作树当构建源）"; exit 5; }
-    git -C "$REPO" rev-parse --verify "${SHA}^{commit}" \
+    # git -C 必须用 WIN_REPO（盘符形式）：本脚本导出 MSYS_NO_PATHCONV=1，POSIX 形式的
+    # /d/... 不再被转换，native git chdir('/d/...') 直接 fatal（2026-10-26 实锤）
+    git -C "$WIN_REPO" rev-parse --verify "${SHA}^{commit}" \
       || { log "!! 本仓不存在目标 sha ${SHA:0:8}（REPO=$REPO pwd=$(pwd)；上一行即 rev-parse 真实报错，先 git fetch origin master）"; exit 5; }
     log "== 步骤2 构建 $IMAGE（sha=${SHA:0:8}，git archive 干净检出，可能数分钟）"
     SRC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/donger-release-src.XXXXXX")"
-    if ! git -C "$REPO" archive "$SHA" | tar -x -C "$SRC_DIR"; then
+    if ! git -C "$WIN_REPO" archive "$SHA" | tar -x -C "$SRC_DIR"; then
       log "!! git archive 检出失败（生产未触碰）"
       exit 5
     fi
