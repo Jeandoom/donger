@@ -107,7 +107,7 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
       log "!! git archive 检出失败（生产未触碰）"
       exit 5
     fi
-    WIN_SRC="D:/${SRC_DIR#/d/}"
+    WIN_SRC="$(cygpath -w "$SRC_DIR")"
     # 非 git 备料资产（zcode CLI / .superpowers，机器固定源 → 检出目录 deploy/assets）
     if ! powershell -NoProfile -ExecutionPolicy Bypass \
         -File "$WIN_SRC/deploy/stage.ps1" -AssetsDir "$WIN_SRC/deploy/assets"; then
