@@ -48,6 +48,33 @@ async function log(line) {
   }
 }
 
+/** bash 启动自检：与管线完全相同的 spawn 形态（cwd/env/stdio 重定向）跑 `bash -c echo`，
+ *  把「bash 在本会话能否跑+输出能否落日志」与「脚本本身的问题」两分（2026-10-26 S4U 取证） */
+function bashSelfTest() {
+  return new Promise((resolve) => {
+    let fd;
+    try {
+      fd = openSync(LOG_FILE, "a");
+    } catch {
+      fd = undefined;
+    }
+    const child = spawn(BASH, ["-c", "echo selftest-ok"], {
+      cwd: REPO,
+      env: childEnv(),
+      windowsHide: true,
+      stdio: ["ignore", fd ?? "ignore", fd ?? "ignore"],
+    });
+    child.on("error", (err) => {
+      if (fd !== undefined) closeSync(fd);
+      resolve(`spawn-error: ${err.message}`);
+    });
+    child.on("exit", (code) => {
+      if (fd !== undefined) closeSync(fd);
+      resolve(`rc=${code}（应伴随 selftest-ok 行；rc≠0 或无输出行=bash 在本会话起不来）`);
+    });
+  });
+}
+
 function executeOnce(trigger) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -74,6 +101,10 @@ function executeOnce(trigger) {
       "--repo",
       REPO,
     ];
+    if (!executeOnce.argvLogged) {
+      executeOnce.argvLogged = true;
+      void log(`spawn 形态：${BASH} ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}（cwd=${REPO}）`);
+    }
     const child = spawn(BASH, args, {
       cwd: REPO,
       env: childEnv(),
@@ -281,6 +312,7 @@ async function main() {
   await log(
     `agent 启动 mode=${ONCE ? "once" : "daemon"} repo=${REPO} wakeDir=${WAKE_DIR} poll=${POLL_SECONDS}s timeout=${ONCE_TIMEOUT_MS}ms`,
   );
+  await log(`bash 自检：${await bashSelfTest()}`);
   await scanWakeDir();
   if (ONCE) {
     enqueue("poll-once");
