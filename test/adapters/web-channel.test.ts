@@ -2908,6 +2908,114 @@ describe("WebChannel /api/agents 独立知识库（kbWriteTargetId）", () => {
     expect(stored?.knowledgeBaseIds).toEqual(["keep-me"]);
     expect(stored?.kbWriteTargetId ?? null).toBeNull();
   });
+
+  it("他智能体专有库（sourceAgentId 指向他人 agent）绑定/设独立库均 400", async () => {
+    const { port, token, userId, kbLibraryStore, agentStore } = await startWebWithAgents();
+    const other = await agentStore.create({
+      ownerId: userId,
+      name: "别家",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const lib = await kbLibraryStore.create({
+      ownerId: userId,
+      name: "别家专有库",
+      sourceAgentId: other.id,
+    });
+    const bind = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...baseBody, knowledgeBaseIds: [lib.id] }),
+    });
+    expect(bind.status).toBe(400);
+    const target = await fetch(`http://127.0.0.1:${port}/api/agents`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...baseBody, kbWriteTargetId: lib.id }),
+    });
+    expect(target.status).toBe(400);
+  });
+
+  it("本人专有库（sourceAgentId=自己）PATCH 可绑定可设独立库；GET /api/kb 下发 sourceAgentId", async () => {
+    const { port, token, userId, agentStore, kbLibraryStore } = await startWebWithAgents();
+    const a = await agentStore.create({
+      ownerId: userId,
+      name: "自家人",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const lib = await kbLibraryStore.create({
+      ownerId: userId,
+      name: "自家专有库",
+      sourceAgentId: a.id,
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${a.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ kbWriteTargetId: lib.id, knowledgeBaseIds: [lib.id] }),
+    });
+    expect(r.status).toBe(200);
+    const kbList = (await (
+      await fetch(`http://127.0.0.1:${port}/api/kb`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json()) as Array<{ id: string; sourceAgentId?: string }>;
+    expect(kbList.find((l) => l.id === lib.id)?.sourceAgentId).toBe(a.id);
+  });
+
+  it("PATCH /api/kb/:id 改名与既有库重名 → 409", async () => {
+    const { port, token, userId, kbLibraryStore } = await startWebWithAgents();
+    const lib1 = await kbLibraryStore.create({ ownerId: userId, name: "甲" });
+    const lib2 = await kbLibraryStore.create({ ownerId: userId, name: "乙" });
+    const r = await fetch(`http://127.0.0.1:${port}/api/kb/${lib2.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: lib1.name }),
+    });
+    expect(r.status).toBe(409);
+  });
+
+  it("duplicate：自有 agent 的他智能体专有库脏绑定随复制剔除", async () => {
+    const { port, token, userId, agentStore, kbLibraryStore } = await startWebWithAgents();
+    const other = await agentStore.create({
+      ownerId: userId,
+      name: "别家",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+    });
+    const lib = await kbLibraryStore.create({
+      ownerId: userId,
+      name: "别家专有库",
+      sourceAgentId: other.id,
+    });
+    const keep = await kbLibraryStore.create({ ownerId: userId, name: "普通库" });
+    const src = await agentStore.create({
+      ownerId: userId,
+      name: "脏绑定源",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      knowledgeBaseIds: [lib.id, keep.id],
+      kbWriteTargetId: lib.id,
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/api/agents/${src.id}/duplicate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      id: string;
+      kbWriteTargetId?: string | null;
+      knowledgeBaseIds?: string[];
+    };
+    expect(body.kbWriteTargetId ?? null).toBeNull();
+    expect(body.knowledgeBaseIds).toEqual([keep.id]);
+    const stored = await agentStore.get(body.id);
+    expect(stored?.knowledgeBaseIds).toEqual([keep.id]);
+  });
 });
 
 describe("WebChannel 审批实例生命周期（approval_closed 撤卡事件）", () => {

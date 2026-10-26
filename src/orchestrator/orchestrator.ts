@@ -613,10 +613,12 @@ export class Orchestrator {
       await push(lib);
       defaultKbId = lib.id;
     }
-    // agent 绑定库（弱引用；knowledgeBaseIds 为 M3 接线字段，schema 缺省空数组）
+    // agent 绑定库（弱引用；knowledgeBaseIds 为 M3 接线字段，schema 缺省空数组）。
+    // 他智能体专有库（sourceAgentId 指向其他 agent）不挂载——存量脏绑定兜底，与保存端校验同口径
     for (const kbId of agent?.knowledgeBaseIds ?? []) {
       const lib = await libs.get(kbId);
       if (!lib) continue;
+      if (lib.sourceAgentId && lib.sourceAgentId !== agent?.id) continue;
       if (!canReadKb(lib, actor, await isGranted(lib.id))) continue;
       await push(lib);
     }
@@ -1521,6 +1523,7 @@ export class Orchestrator {
       const targetId = p.agent.kbWriteTargetId ?? undefined;
       const boundIds = p.agent.knowledgeBaseIds ?? [];
       const kbIds = targetId && !boundIds.includes(targetId) ? [targetId, ...boundIds] : boundIds;
+      const selfAgentId = p.agent.id;
       // 候选库=调用者可管理的绑定库（异步取，避免阻塞返回）
       void (async () => {
         try {
@@ -1528,7 +1531,9 @@ export class Orchestrator {
           const candidates: KbLibrary[] = [];
           for (const kbId of kbIds) {
             const lib = await libs.get(kbId);
-            if (lib && canManageKb(lib, actor)) candidates.push(lib);
+            // 他智能体专有库不参与沉淀候选（与挂载清单同口径）
+            if (!lib || (lib.sourceAgentId && lib.sourceAgentId !== selfAgentId)) continue;
+            if (canManageKb(lib, actor)) candidates.push(lib);
           }
           const narrowed = narrowAutoLearnTargets(targetId, candidates);
           // 记忆落点：个人库 memory/ 子目录（curated 路由写这里）

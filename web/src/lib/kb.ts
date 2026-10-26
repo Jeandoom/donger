@@ -17,6 +17,8 @@ export interface KbLibraryDTO {
   createdAt?: string;
   _mine: boolean;
   _role: "manage" | "use";
+  /** 智能体专有库溯源（仅本人库下发）：agent 编辑器据此把专有库从「用户知识库」中剔除 */
+  sourceAgentId?: string;
 }
 
 export interface KbTreeEntryDTO {

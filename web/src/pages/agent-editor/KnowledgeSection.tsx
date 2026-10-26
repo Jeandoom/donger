@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
+import { DialogShell } from "../../components/ui/dialog-shell";
 import { FormField, FormSection } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { Switch } from "../../components/ui/switch";
@@ -9,38 +11,64 @@ import {
   type AgentFeedbackScopeDTO,
   fetchAgents,
 } from "../../lib/agents";
-import { fetchKnowledgeBases } from "../../lib/kb";
+import { fetchKnowledgeBases, updateKb } from "../../lib/kb";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm } from "./model";
 
 /**
  * 知识库与上下文分区（specs/2026-09-29-agent-editor-ui-redesign.md §4）：三类对话中
- * 可引用的资料源收拢一区——知识库（kb_* 工具：绑定/独立库/自动学习）、历史会话
+ * 可引用的资料源收拢一区——知识库（kb_* 工具：专有库/用户库/自动学习）、历史会话
  * （% 引用）、反馈记录（# 引用）。后两者自「资源」区并入（同为引用面，语义同族）。
  *
- * 独立知识库 = 可写目标单选勾选（specs/2026-10-01-agent-own-kb-picker-design.md §2.1）：
- * 候选限本人可管理库（个人库除外）；「＋ 新建」伪行保留懒建库，名称留空由保存兜底默认名。
+ * 独立知识库 = 本智能体专有库单选项（2026-10-26 修订）：勾选即绑定并作为自动学习唯一
+ * 可写目标；无专有库时保存时自动创建（默认名「{agent名}-知识库」，重名自动加序号，
+ * 无需手填）；已有专有库经「改名」弹窗变更名称（确认时前后端双重唯一性校验，
+ * 取消/关闭不生效）。其他智能体的专有库不进任何候选（sourceAgentId 归属过滤，
+ * 保存端同口径硬拒、运行时不挂载）。
  */
 export function KnowledgeSection(props: {
   form: AgentEditorForm;
   patch: (p: Partial<AgentEditorForm>) => void;
-  /** 「＋ 新建独立知识库」伪行状态（保存时先建库回填 kbWriteTargetId；不入 agent 字段） */
-  kbNew: { enabled: boolean; name: string };
-  onKbNewChange: (next: { enabled: boolean; name: string }) => void;
+  /** 本智能体 id（新建态缺省）：专有库归属判定（sourceAgentId === agentId） */
+  agentId?: string;
+  /** 独立知识库待建伪状态（保存时先建库回填 kbWriteTargetId；不入 agent 字段） */
+  kbNew: { enabled: boolean };
+  onKbNewChange: (next: { enabled: boolean }) => void;
+  /** 变化时重拉候选（保存新建专有库后回填名称展示） */
+  refreshKey?: number;
 }) {
   const { form, patch } = props;
   const [candidates, setCandidates] = useState<
-    Array<{ id: string; name: string; role: string; personal: boolean }>
+    Array<{
+      id: string;
+      name: string;
+      role: string;
+      personal: boolean;
+      mine: boolean;
+      sourceAgentId?: string;
+    }>
   >([]);
   const [kbLoaded, setKbLoaded] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey 仅用于保存建库后触发重拉
   useEffect(() => {
     fetchKnowledgeBases()
       .then((libs) => {
         setCandidates(
           libs
             .filter((l) => !l.builtin)
-            .map((l) => ({ id: l.id, name: l.name, role: l._role, personal: l.personal })),
+            .map((l) => ({
+              id: l.id,
+              name: l.name,
+              role: l._role,
+              personal: l.personal,
+              mine: l._mine,
+              ...(l.sourceAgentId ? { sourceAgentId: l.sourceAgentId } : {}),
+            })),
         );
         setKbLoaded(true);
       })
@@ -48,14 +76,7 @@ export function KnowledgeSection(props: {
         setCandidates([]);
         setKbLoaded(true);
       });
-  }, []);
-
-  // 独立库候选：本人可管理、非个人库（个人库是跨智能体的记忆面，不作为 agent 专属可写目标）
-  const writeCandidates = candidates.filter((kb) => kb.role === "manage" && !kb.personal);
-  const danglingTarget =
-    kbLoaded &&
-    form.kbWriteTargetId != null &&
-    !writeCandidates.some((k) => k.id === form.kbWriteTargetId);
+  }, [props.refreshKey]);
 
   const toggleKb = (id: string, checked: boolean): void => {
     const current = form.knowledgeBaseIds ?? [];
@@ -63,19 +84,97 @@ export function KnowledgeSection(props: {
     patch({ knowledgeBaseIds: next });
   };
 
-  // 独立蕴含绑定：选中目标由保存端幂等并入 knowledgeBaseIds，这里同步勾上让两处 UI 即时一致
-  const selectTarget = (id: string, checked: boolean): void => {
-    patch({ kbWriteTargetId: checked ? id : null });
+  // 独立知识库 = 专有库单选项：已有专有库直接复用（幂等并入绑定），否则走保存建库
+  const ownKb = props.agentId
+    ? candidates.find((c) => c.sourceAgentId === props.agentId)
+    : undefined;
+  const targetId = form.kbWriteTargetId ?? null;
+  const targetKb = targetId ? candidates.find((c) => c.id === targetId) : undefined;
+  const standaloneChecked = targetId != null || props.kbNew.enabled;
+  const canRenameTarget =
+    targetKb != null && props.agentId != null && targetKb.sourceAgentId === props.agentId;
+  // 待建专有库默认名：与本人既有库重名时加序号（保存端另有 409 重试兜底）
+  const takenNames = new Set(candidates.filter((c) => c.mine).map((c) => c.name));
+  const pendingKbName = dedupeKbName(`${form.name || "本智能体"}-知识库`, takenNames);
+
+  const toggleStandalone = (checked: boolean): void => {
     if (checked) {
-      toggleKb(id, true);
-      if (props.kbNew.enabled) props.onKbNewChange({ enabled: false, name: "" });
+      if (ownKb) {
+        const current = form.knowledgeBaseIds ?? [];
+        patch({
+          kbWriteTargetId: ownKb.id,
+          knowledgeBaseIds: current.includes(ownKb.id) ? current : [...current, ownKb.id],
+        });
+      } else {
+        props.onKbNewChange({ enabled: true });
+      }
+      return;
+    }
+    // 取消：清可写目标；专有库随勾选态从绑定一并摘除（它的唯一绑定入口就是本选项）。
+    // 旧版独立库（指向普通库）保持既有语义：仅清目标，绑定保留
+    props.onKbNewChange({ enabled: false });
+    const wasOwn = targetId != null && targetId === ownKb?.id;
+    patch({
+      kbWriteTargetId: null,
+      ...(wasOwn
+        ? { knowledgeBaseIds: (form.knowledgeBaseIds ?? []).filter((x) => x !== targetId) }
+        : {}),
+    });
+  };
+
+  const openRename = (): void => {
+    if (!targetKb) return;
+    setRenameDraft(targetKb.name);
+    setRenameError(null);
+    setRenameOpen(true);
+  };
+
+  /** 改名确认：先本地查重（本人库内唯一），后端 PATCH 再兜 UNIQUE 409；取消/关闭不发起请求 */
+  const submitRename = async (): Promise<void> => {
+    if (!targetKb) return;
+    const next = renameDraft.trim();
+    if (!next) {
+      setRenameError("名称不能为空");
+      return;
+    }
+    if (
+      next !== targetKb.name &&
+      candidates.some((c) => c.mine && c.id !== targetKb.id && c.name === next)
+    ) {
+      setRenameError("已存在同名知识库，请换一个名称");
+      return;
+    }
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      const updated = await updateKb(targetKb.id, { name: next });
+      setCandidates((list) =>
+        list.map((c) => (c.id === updated.id ? { ...c, name: updated.name } : c)),
+      );
+      setRenameOpen(false);
+    } catch (e) {
+      setRenameError(String(e));
+    } finally {
+      setRenaming(false);
     }
   };
 
-  const toggleNew = (checked: boolean): void => {
-    props.onKbNewChange({ enabled: checked, name: props.kbNew.name });
-    if (checked) patch({ kbWriteTargetId: null });
-  };
+  const standaloneTitle = props.kbNew.enabled
+    ? pendingKbName
+    : (targetKb?.name ?? ownKb?.name ?? pendingKbName);
+  const standaloneSub = props.kbNew.enabled
+    ? "保存时自动创建为本智能体专有知识库"
+    : targetKb
+      ? targetKb.sourceAgentId === props.agentId
+        ? "本智能体专有知识库；自动学习沉淀仅写入该库"
+        : "其他智能体的专有知识库（不可用，请取消勾选）"
+      : ownKb
+        ? "勾选恢复为本智能体专有知识库"
+        : "勾选后保存时自动创建本智能体专有知识库";
+  const danglingTarget = kbLoaded && targetId != null && !targetKb;
+  // 用户知识库候选：本人可见全量剔除智能体专有库（本智能体的由上方独立知识库选项
+  // 单一承载，其他智能体的不可见——与保存端校验、运行时挂载同口径）
+  const userKbCandidates = candidates.filter((kb) => !kb.sourceAgentId);
 
   return (
     <FormSection
@@ -84,14 +183,49 @@ export function KnowledgeSection(props: {
       title="知识库与上下文"
       description="对话中可引用的三类资料源：知识库（kb_* 工具）、历史会话（% 引用）、反馈记录（# 引用）"
     >
-      <FormField label="绑定的知识库" hint="可多选；被分享的库为只读挂载">
-        {candidates.length === 0 ? (
+      <FormField
+        label="独立知识库"
+        hint="本智能体专有库（可写目标，单选）：勾选即绑定，自动学习沉淀仅写入该库；不勾选则写入全部可写的绑定库。名称可经「改名」弹窗变更（需唯一）"
+      >
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-muted/60">
+            <Checkbox
+              id="kb-target-own"
+              checked={standaloneChecked}
+              onChange={(e) => toggleStandalone(e.target.checked)}
+              label={
+                <span className="min-w-0">
+                  <span className="block min-w-0 truncate">{standaloneTitle}</span>
+                  <span className="block text-[11px] leading-snug text-muted-foreground">
+                    {standaloneSub}
+                  </span>
+                </span>
+              }
+            />
+            {canRenameTarget ? (
+              <Button variant="secondary" size="sm" className="ml-auto" onClick={openRename}>
+                改名
+              </Button>
+            ) : null}
+          </div>
+          {danglingTarget ? (
+            <p className="text-xs text-destructive">
+              原独立知识库已删除或不可写，保存前请重新勾选或取消
+            </p>
+          ) : null}
+        </div>
+      </FormField>
+      <FormField
+        label="用户知识库"
+        hint="可多选，对话中可读取；被分享的库为只读挂载。其他智能体的专有知识库不在此列"
+      >
+        {userKbCandidates.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            暂无可用知识库；可先到「知识库」页创建，或在下方勾选「新建独立知识库」
+            暂无可用知识库；可先到「知识库」页创建，或勾选上方「独立知识库」自动创建专有库
           </p>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {candidates.map((kb) => (
+            {userKbCandidates.map((kb) => (
               <div
                 key={kb.id}
                 className="flex items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-muted/60"
@@ -111,47 +245,44 @@ export function KnowledgeSection(props: {
           </div>
         )}
       </FormField>
-      <FormField
-        label="独立知识库"
-        hint="可写目标（单选）：自动学习沉淀写入该库；不勾选则写入全部可写的绑定库"
-      >
-        <div className="flex flex-col gap-1.5">
-          {writeCandidates.map((kb) => (
-            <div
-              key={kb.id}
-              className="flex items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-muted/60"
-            >
-              <Checkbox
-                id={`kb-target-${kb.id}`}
-                label={<span className="min-w-0 truncate">{kb.name}</span>}
-                checked={form.kbWriteTargetId === kb.id}
-                onChange={(e) => selectTarget(kb.id, e.target.checked)}
-              />
-            </div>
-          ))}
-          <div className="flex items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-muted/60">
-            <Checkbox
-              id="kb-target-new"
-              label={<span>新建独立知识库</span>}
-              checked={props.kbNew.enabled}
-              onChange={(e) => toggleNew(e.target.checked)}
-            />
-          </div>
-          {props.kbNew.enabled ? (
+      {renameOpen && targetKb ? (
+        <DialogShell
+          title="重命名独立知识库"
+          subtitle={`变更智能体专有知识库「${targetKb.name}」的名称`}
+          onClose={() => {
+            if (!renaming) setRenameOpen(false);
+          }}
+          footer={
+            <>
+              <span className="flex-1" />
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={renaming}
+                onClick={() => setRenameOpen(false)}
+              >
+                取消
+              </Button>
+              <Button size="sm" disabled={renaming} onClick={() => void submitRename()}>
+                {renaming ? "保存中…" : "确认"}
+              </Button>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-1">
             <Input
-              value={props.kbNew.name}
-              onChange={(e) => props.onKbNewChange({ ...props.kbNew, name: e.target.value })}
-              placeholder={`${form.name || "本智能体"}-知识库`}
-              aria-label="新建独立知识库名称"
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              aria-label="知识库名称"
+              placeholder="知识库名称"
             />
-          ) : null}
-          {danglingTarget ? (
-            <p className="text-xs text-destructive">
-              原独立知识库已删除或不可写，保存前请重新勾选或取消
+            {renameError ? <p className="text-xs text-destructive">{renameError}</p> : null}
+            <p className="text-xs text-muted-foreground">
+              名称在本人知识库内需唯一；点击确认后立即生效
             </p>
-          ) : null}
-        </div>
-      </FormField>
+          </div>
+        </DialogShell>
+      ) : null}
       <FormField
         label="对话收尾自动萃取沉淀"
         hint="开启后对话结束自动萃取知识并按路由落位：记忆条目→个人库精选层；知识库记录→绑定的可写库；技能修订建议→审计留痕待采纳；平台约束→管理员候选池（默认关闭）"
@@ -206,6 +337,14 @@ export function KnowledgeSection(props: {
       />
     </FormSection>
   );
+}
+
+/** 默认专有库名去重：与本人既有库重名时追加序号 -2/-3…（保存端 409 重试同语义） */
+function dedupeKbName(base: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
 }
 
 /** 输入的窗口数字归一：空串=不限（undefined），非法/越界收敛到 1-99 */

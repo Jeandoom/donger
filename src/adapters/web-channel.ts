@@ -46,6 +46,11 @@ import { substituteCredentialRefs } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
 import { DEFAULT_CONVERSATION_TITLE } from "../domain/conversation-title.js";
 import {
+  type ReleaseWebhookSecrets,
+  type ReleaseWakeWriter,
+  verifyReleaseWebhook,
+} from "../domain/release-webhook.js";
+import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
   CredentialValueInputSchema,
@@ -634,6 +639,16 @@ export interface WebChannelDeps {
   };
   /** L2 回报端点 Bearer 令牌（DONGER_RELEASE_HOOK_TOKEN）；空=端点关闭（404 不暴露存在性） */
   releaseHookToken?: string;
+  /**
+   * 发布 webhook 三平台 push 唤醒（POST /api/webhooks/release/:provider；
+   * spec 2026-10-20-release-webhook-design §5.1）；缺省=端点 404 关闭。
+   * 验签/限流在 handler 内；payload 只承载唤醒不做部署决策（agent 醒来自行 fetch）。
+   */
+  releaseWebhook?: {
+    disabled: boolean;
+    secrets: ReleaseWebhookSecrets;
+    wake: ReleaseWakeWriter;
+  };
   /** L2 自动发布执行记录（workflow 详情查询面）；缺省=release-runs 端点空列表 */
   releaseRunStore?: ReleaseRunStore;
   /** 事件源探测参数（/test 端点；SSRF/工作区收口参数） */
@@ -1393,6 +1408,14 @@ export class WebChannel implements Channel {
       // Bearer token 鉴权，不进 viewer/route-guard 面；token 未配置=端点关闭（404 不暴露存在性）
       if (req.method === "POST" && pathname === "/api/internal/release-result") {
         await this.handleReleaseResultHook(req, res);
+        return;
+      }
+
+      // 发布 webhook（三平台 push 唤醒通道，机器通道同上；验签在 handler 内，spec §5.1）
+      const releaseWhMatch =
+        req.method === "POST" ? pathname.match(/^\/api\/webhooks\/release\/([\w-]+)$/) : null;
+      if (releaseWhMatch) {
+        await this.handleReleaseWebhook(req, res, releaseWhMatch[1] ?? "");
         return;
       }
 
@@ -5260,9 +5283,9 @@ export class WebChannel implements Channel {
         if (bindingError) return this.json(res, { error: bindingError }, 400);
         const connectorError = await this.validateAgentConnectorRefs(me, validated);
         if (connectorError) return this.json(res, { error: connectorError }, 400);
-        const kbTargetError = await this.validateKbWriteTarget(me, validated);
+        const kbTargetError = await this.validateKbWriteTarget(me, validated, id);
         if (kbTargetError) return this.json(res, { error: kbTargetError }, 400);
-        const kbError = await this.validateKbBindings(me, validated.knowledgeBaseIds);
+        const kbError = await this.validateKbBindings(me, validated.knowledgeBaseIds, id);
         if (kbError) return this.json(res, { error: kbError }, 400);
         const updated = await this.agentStore?.update(id, validated);
         if (!updated) return this.json(res, { error: "agent store unavailable" }, 500);
@@ -5411,6 +5434,21 @@ export class WebChannel implements Channel {
       if (relativeDirs.length < src.extensionDirectories.length) {
         warnings.push("扩展目录中的绝对路径条目未随复制，请在副本中改写为相对路径");
       }
+      // 他智能体专有库不随复制（sourceAgentId 指向他人 agent 的库，与保存端校验同口径；
+      // 存量脏绑定兜底——复制不应把不可见库继续扩散）
+      let dupKbIds: string[] = isMine ? (src.knowledgeBaseIds ?? []) : [];
+      let dupKbTarget = isMine ? (src.kbWriteTargetId ?? null) : null;
+      if (isMine && this.kbLibraryStore) {
+        const foreign = async (kbId: string): Promise<boolean> => {
+          const lib = await this.kbLibraryStore?.get(kbId);
+          return !!lib?.sourceAgentId && lib.sourceAgentId !== src.id;
+        };
+        dupKbIds = [];
+        for (const kbId of src.knowledgeBaseIds ?? []) {
+          if (!(await foreign(kbId))) dupKbIds.push(kbId);
+        }
+        if (dupKbTarget && (await foreign(dupKbTarget))) dupKbTarget = null;
+      }
       const duplicated = await this.agentStore?.create({
         ...src,
         ownerId: me,
@@ -5433,10 +5471,10 @@ export class WebChannel implements Channel {
           src.conversationScope && !isMine
             ? { ...src.conversationScope, agentIds: [] }
             : src.conversationScope,
-        // 知识库绑定弱引用：他人的清空（复制者无权），自有保留（spec §10.2）
-        knowledgeBaseIds: isMine ? src.knowledgeBaseIds : [],
+        // 知识库绑定弱引用：他人的清空（复制者无权），自有保留（他智能体专有库剔除，见上）
+        knowledgeBaseIds: dupKbIds,
         // 独立知识库（可写目标）同口径：他人的清空，自有保留
-        kbWriteTargetId: isMine ? (src.kbWriteTargetId ?? null) : null,
+        kbWriteTargetId: dupKbTarget,
       });
       if (!duplicated) return this.json(res, { error: "agent store unavailable" }, 500);
       return this.json(res, { ...this.agentToDTO(duplicated, true), warnings });
@@ -6751,6 +6789,60 @@ export class WebChannel implements Channel {
       "Content-Type": "application/json; charset=utf-8",
     });
     res.end(JSON.stringify(result.body));
+  }
+
+  /**
+   * POST /api/webhooks/release/:provider —— git 平台 push 唤醒（spec 2026-10-20-release-webhook-design §5.1）。
+   * 验签/限流/唤醒投递全在此；payload 只承载唤醒信号不做部署决策（agent 醒来自行 fetch）。
+   * provider 未知或未配置密钥=404 不暴露；总闸=503；验签失败=403；非 master push=202 静默；
+   * 唤醒投递失败仅记日志仍 202（轮询兜底）。 */
+  private async handleReleaseWebhook(
+    req: HttpRequest,
+    res: ServerResponse,
+    provider: string,
+  ): Promise<void> {
+    const respond = (status: number, body: Record<string, unknown>): void => {
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(body));
+    };
+    const cfg = this.deps.releaseWebhook;
+    if (!cfg) return respond(404, { error: "not found" });
+    if (cfg.disabled) return respond(503, { error: "release webhook disabled" });
+    if (!cfg.secrets[provider as keyof ReleaseWebhookSecrets]) {
+      return respond(404, { error: "not found" });
+    }
+    // 每 provider+IP 限流：秘钥泄露场景下防 fetch 风暴的唯一闸门（spec §7）
+    if (
+      !this.rateLimiter.hit(`release-webhook:${provider}:${this.clientIp(req)}`, 60_000, 30)
+    ) {
+      return respond(429, { error: "rate limited" });
+    }
+    let raw = "";
+    try {
+      raw = await this.readBody(req);
+    } catch (e) {
+      const status = e instanceof PayloadTooLargeError ? 413 : 400;
+      return respond(status, {
+        error: status === 413 ? "payload too large" : "invalid body",
+      });
+    }
+    const verdict = verifyReleaseWebhook({
+      provider,
+      secrets: cfg.secrets,
+      headers: req.headers,
+      rawBody: raw,
+    });
+    if (!verdict.ok) return respond(verdict.status, { error: verdict.error ?? "rejected" });
+    if (!verdict.shouldWake || !verdict.wake) return respond(202, { woke: false });
+    try {
+      await cfg.wake.write(verdict.wake);
+    } catch (e) {
+      console.warn(
+        `[release-webhook] 唤醒投递失败（轮询兜底）: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return respond(202, { woke: false, error: "wake delivery failed" });
+    }
+    return respond(202, { woke: true });
   }
 
   /** GET|POST /hooks/<随机路径> —— 调用事件入口，免认证（外部系统回调；D2/D3）。 */
@@ -8339,15 +8431,23 @@ export class WebChannel implements Channel {
   }
 
   /** agent 绑定知识库校验（spec §10.2）：库须存在且调用者可读（canRead）；返回错误消息或 undefined */
+  /**
+   * 绑定校验：库存在 + 可读 + 非他智能体专有库（sourceAgentId 指向其他 agent 的库
+   * 对本 agent 不可见——编辑器不渲染、保存端硬拒、运行时不挂载三面同口径）。
+   */
   private async validateKbBindings(
     userId: string,
     kbIds: readonly string[] | undefined,
+    selfAgentId?: string,
   ): Promise<string | undefined> {
     if (!this.kbLibraryStore || !kbIds || kbIds.length === 0) return undefined;
     const actor = await this.kbActor(userId);
     for (const id of kbIds) {
       const lib = await this.kbLibraryStore.get(id);
       if (!lib) return `知识库不存在: ${id.slice(0, 8)}`;
+      if (lib.sourceAgentId && lib.sourceAgentId !== selfAgentId) {
+        return `知识库「${lib.name}」是其他智能体的专有知识库，不可绑定`;
+      }
       const granted = this.kbShareStore ? await this.kbShareStore.isGranted(id, userId) : false;
       if (!canReadKb(lib, actor, granted)) return `无权绑定知识库「${lib.name}」`;
     }
@@ -8355,19 +8455,23 @@ export class WebChannel implements Channel {
   }
 
   /**
-   * 独立知识库（可写目标）校验：须存在且本人可管理（canManageKb）；通过则幂等并入
-   * knowledgeBaseIds——独立蕴含绑定（specs/2026-10-01-agent-own-kb-picker-design.md §2.2）。
+   * 独立知识库（可写目标）校验：须存在、本人可管理（canManageKb）且非他智能体专有库；
+   * 通过则幂等并入 knowledgeBaseIds——独立蕴含绑定（specs/2026-10-01-agent-own-kb-picker-design.md §2.2）。
    * 直接改写入参，须先于 validateKbBindings 调用。
    */
   private async validateKbWriteTarget(
     userId: string,
     input: { kbWriteTargetId?: string | null; knowledgeBaseIds?: string[] },
+    selfAgentId?: string,
   ): Promise<string | undefined> {
     const targetId = input.kbWriteTargetId;
     if (!targetId) return undefined;
     if (!this.kbLibraryStore) return "知识库模块不可用";
     const lib = await this.kbLibraryStore.get(targetId);
     if (!lib) return `知识库不存在: ${targetId.slice(0, 8)}`;
+    if (lib.sourceAgentId && lib.sourceAgentId !== selfAgentId) {
+      return `知识库「${lib.name}」是其他智能体的专有知识库，不可设为独立库`;
+    }
     const actor = await this.kbActor(userId);
     if (!canManageKb(lib, actor)) return `独立知识库须为本人可管理的知识库「${lib.name}」`;
     if (!(input.knowledgeBaseIds ?? []).includes(targetId)) {
@@ -8397,7 +8501,9 @@ export class WebChannel implements Channel {
     return true;
   }
 
-  /** KB DTO：列表形态不含 systemPrompt（瘦身）；detailed 供详情/编辑回填 */
+  /** KB DTO：列表形态不含 systemPrompt（瘦身）；detailed 供详情/编辑回填。
+   *  sourceAgentId 仅对本人库下发（智能体专有库归属，编辑器据此过滤/识别；
+   *  他人库不下发，防 agent id 泄漏给被分享视图） */
   private kbToDTO(
     kb: KbLibrary,
     actor: { id: string; role: "admin" | "user" },
@@ -8412,6 +8518,7 @@ export class WebChannel implements Channel {
       updatedAt: kb.updatedAt,
       _mine: kb.ownerId === actor.id,
       _role: canManageKb(kb, actor) ? "manage" : "use",
+      ...(kb.ownerId === actor.id && kb.sourceAgentId ? { sourceAgentId: kb.sourceAgentId } : {}),
       ...(detailed ? { systemPrompt: kb.systemPrompt, createdAt: kb.createdAt } : {}),
     };
   }

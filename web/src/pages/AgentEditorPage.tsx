@@ -53,11 +53,10 @@ export function AgentEditorPage() {
     llmPresets: [],
   });
   const [form, setForm] = useState<AgentEditorForm>(emptyAgent);
-  /** 「＋ 新建独立知识库」伪行状态（保存时先建库回填 kbWriteTargetId；不入 baseline，见 handleSave） */
-  const [kbNew, setKbNew] = useState<{ enabled: boolean; name: string }>({
-    enabled: false,
-    name: "",
-  });
+  /** 「独立知识库」待建伪状态（保存时先自动命名建库回填 kbWriteTargetId；不入 baseline） */
+  const [kbNew, setKbNew] = useState<{ enabled: boolean }>({ enabled: false });
+  /** 保存建库后触发 KnowledgeSection 重拉候选（回填专有库真实名称展示） */
+  const [kbRefreshTick, setKbRefreshTick] = useState(0);
   const [baseline, setBaseline] = useState<string>(JSON.stringify(emptyAgent));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -228,24 +227,36 @@ export function AgentEditorPage() {
     setSaving(true);
     setWarnings(undefined);
     try {
-      // 「＋ 新建独立知识库」：保存前先建库，回填 kbWriteTargetId 并并入绑定（spec §10.2；
-      // 编辑态带 sourceAgentId 溯源）；名称留空用默认名兜底
+      // 「独立知识库」待建：保存前先自动命名建库（默认「{agent名}-知识库」，重名自动加
+      // 序号重试），回填 kbWriteTargetId 并并入绑定（spec §10.2；编辑态带 sourceAgentId 溯源）
       let formToSave = form;
       if (kbNew.enabled) {
-        const newKb = await createKb({
-          name: kbNew.name.trim() || `${form.name || "本智能体"}-知识库`,
-          description: `智能体「${form.name || "未命名"}」的独立知识库`,
-          ...(!isNew && id ? { sourceAgentId: id } : {}),
-        });
+        const baseName = `${form.name || "本智能体"}-知识库`;
+        let kbName = baseName;
+        let newKb: Awaited<ReturnType<typeof createKb>> | undefined;
+        for (let i = 0; i < 9 && !newKb; i += 1) {
+          try {
+            newKb = await createKb({
+              name: kbName,
+              description: `智能体「${form.name || "未命名"}」的独立知识库`,
+              ...(!isNew && id ? { sourceAgentId: id } : {}),
+            });
+          } catch (e) {
+            if (!String(e).includes("已存在同名知识库")) throw e;
+            kbName = `${baseName}-${i + 2}`;
+          }
+        }
+        if (!newKb) throw new Error("独立知识库创建失败：重名次数过多，请调整后重试");
         formToSave = {
           ...form,
           kbWriteTargetId: newKb.id,
           knowledgeBaseIds: [...(form.knowledgeBaseIds ?? []), newKb.id],
         };
         setForm(formToSave);
-        setKbNew({ enabled: false, name: "" });
+        setKbNew({ enabled: false });
       }
       const saved = isNew ? await createAgent(formToSave) : await updateAgent(id ?? "", formToSave);
+      setKbRefreshTick((t) => t + 1);
       if (saved.warnings && saved.warnings.length > 0) {
         // 装备告警不阻断：后端已保存成功，更新基线消除未保存标记（用 formToSave，含新建 KB 合并）
         setWarnings(saved.warnings);
@@ -502,7 +513,13 @@ export function AgentEditorPage() {
             disabledPlugins={disabledPlugins}
           />
           <ResourcesSection {...sectionProps} gitCredentialOptions={gitCredentialOptions} />
-          <KnowledgeSection {...sectionProps} kbNew={kbNew} onKbNewChange={setKbNew} />
+          <KnowledgeSection
+            {...sectionProps}
+            agentId={isNew ? undefined : id}
+            kbNew={kbNew}
+            onKbNewChange={setKbNew}
+            refreshKey={kbRefreshTick}
+          />
           {!isNew && id ? <RuntimeSection agentId={id} /> : null}
         </main>
       </div>
