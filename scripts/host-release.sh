@@ -97,8 +97,8 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     log "== 步骤2 镜像已存在，跳过构建：$IMAGE"
   else
     [[ -n "$SHA" ]] || { log "!! 构建缺 --sha：内容必须按目标 sha 干净检出（fail-closed，不拿工作树当构建源）"; exit 5; }
-    git -C "$REPO" rev-parse --verify "${SHA}^{commit}" >/dev/null 2>&1 \
-      || { log "!! 本仓不存在目标 sha ${SHA:0:8}（先 git fetch origin master）"; exit 5; }
+    git -C "$REPO" rev-parse --verify "${SHA}^{commit}" \
+      || { log "!! 本仓不存在目标 sha ${SHA:0:8}（REPO=$REPO pwd=$(pwd)；上一行即 rev-parse 真实报错，先 git fetch origin master）"; exit 5; }
     log "== 步骤2 构建 $IMAGE（sha=${SHA:0:8}，git archive 干净检出，可能数分钟）"
     SRC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/donger-release-src.XXXXXX")"
     if ! git -C "$REPO" archive "$SHA" | tar -x -C "$SRC_DIR"; then
