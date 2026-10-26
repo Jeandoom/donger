@@ -127,6 +127,17 @@ const EnvSchema = z.object({
     .transform((v) => v === "true"),
   // L2 宿主管线结果回报令牌（/api/internal/release-result Bearer）；空=端点关闭
   DONGER_RELEASE_HOOK_TOKEN: z.string().optional(),
+  // 发布 webhook 三平台验签密钥（spec 2026-10-20-release-webhook-design §5.1）；空=该平台端点 404
+  DONGER_RELEASE_WEBHOOK_SECRET_GITEE: z.string().optional(),
+  DONGER_RELEASE_WEBHOOK_SECRET_GITHUB: z.string().optional(),
+  DONGER_RELEASE_WEBHOOK_SECRET_JIHULAB: z.string().optional(),
+  // 发布 webhook 总闸（kill-switch）：true=路由 503；agent 轮询兜底不受影响
+  DONGER_RELEASE_WEBHOOK_DISABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  // 唤醒文件投递目录（容器内 bind mount 落点）；空=整个 webhook 通道关闭（404）
+  DONGER_RELEASE_WAKE_DIR: z.string().optional(),
   // .env 不承载任何代理凭证（凭证走用户凭证集 + type=http 连接器；历史 app-proxy 已随应用模块移除）。
 });
 
@@ -242,6 +253,14 @@ export interface AppConfig {
   autodevDisabled: boolean;
   /** L2 宿主管线回报令牌（DONGER_RELEASE_HOOK_TOKEN）；空=回报端点关闭 */
   releaseHookToken: string;
+  /** 发布 webhook 三平台验签密钥（spec 2026-10-20-release-webhook-design §5.1）；空=该平台端点 404 */
+  releaseWebhookSecretGitee: string;
+  releaseWebhookSecretGithub: string;
+  releaseWebhookSecretJihulab: string;
+  /** 发布 webhook 总闸（kill-switch）：true=路由 503，agent 轮询兜底不受影响 */
+  releaseWebhookDisabled: boolean;
+  /** 唤醒文件投递目录（容器内 bind mount 落点）；空=webhook 通道整体关闭（404） */
+  releaseWakeDir: string;
 }
 
 /**
@@ -308,6 +327,11 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       .filter(Boolean),
     autodevDisabled: e.DONGER_AUTODEV_DISABLED,
     releaseHookToken: e.DONGER_RELEASE_HOOK_TOKEN ?? "",
+    releaseWebhookSecretGitee: e.DONGER_RELEASE_WEBHOOK_SECRET_GITEE ?? "",
+    releaseWebhookSecretGithub: e.DONGER_RELEASE_WEBHOOK_SECRET_GITHUB ?? "",
+    releaseWebhookSecretJihulab: e.DONGER_RELEASE_WEBHOOK_SECRET_JIHULAB ?? "",
+    releaseWebhookDisabled: e.DONGER_RELEASE_WEBHOOK_DISABLED,
+    releaseWakeDir: e.DONGER_RELEASE_WAKE_DIR ?? "",
   };
   if (e.DINGTALK_APP_KEY && e.DINGTALK_APP_SECRET && e.DINGTALK_ROBOT_CODE) {
     cfg.dingtalk = {
