@@ -9,8 +9,9 @@
 // 例行化（管理员 PowerShell 一次）：D:\deploy\donger-docker\install-release-agent.ps1
 // 配置（环境变量均可缺省）：RELEASE_AGENT_REPO/STACK/WAKE_DIR/LOG/POLL_SECONDS/ONCE_TIMEOUT_MS/BASH
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, watch } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, watch } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,31 +49,35 @@ async function log(line) {
   }
 }
 
-/** bash 启动自检：与管线完全相同的 spawn 形态（cwd/env/stdio 重定向）跑 `bash -c echo`，
- *  把「bash 在本会话能否跑+输出能否落日志」与「脚本本身的问题」两分（2026-10-26 S4U 取证） */
-function bashSelfTest() {
+/** bash 启动自检矩阵：cwd×env 四组合各自跑 `bash -c "echo ok > 标记文件"`，读标记文件
+ *  判「bash 是否真的执行了」——S4U 会话实测 bash -c echo 静默 rc=1（2026-10-26），
+ *  矩阵一次重启定位可用组合（2026-10-26 S4U 取证） */
+function bashSelfTest(label, cwd, useEnv) {
   return new Promise((resolve) => {
-    let fd;
+    const marker = path.join(STACK, `selftest-${label}.txt`);
     try {
-      fd = openSync(LOG_FILE, "a");
+      rmSync(marker, { force: true });
     } catch {
-      fd = undefined;
+      // 清理失败不影响探测
     }
-    const child = spawn(BASH, ["-c", "echo selftest-ok"], {
-      cwd: REPO,
-      env: childEnv(),
-      windowsHide: true,
-      stdio: ["ignore", fd ?? "ignore", fd ?? "ignore"],
-    });
-    child.on("error", (err) => {
-      if (fd !== undefined) closeSync(fd);
-      resolve(`spawn-error: ${err.message}`);
-    });
+    const opts = { cwd, windowsHide: true, stdio: "ignore" };
+    if (useEnv) opts.env = childEnv();
+    const child = spawn(BASH, ["-c", `echo ok > "${marker.replaceAll("\\", "/")}"`], opts);
+    child.on("error", (err) => resolve(`${label}: spawn-error ${err.message}`));
     child.on("exit", (code) => {
-      if (fd !== undefined) closeSync(fd);
-      resolve(`rc=${code}（应伴随 selftest-ok 行；rc≠0 或无输出行=bash 在本会话起不来）`);
+      const ran = existsSync(marker);
+      resolve(`${label}: rc=${code} 执行=${ran ? "是" : "否"}`);
     });
   });
+}
+
+async function bashSelfTestMatrix() {
+  const results = [];
+  results.push(await bashSelfTest("A-repo+controlled", REPO, true));
+  results.push(await bashSelfTest("B-repo+inherit", REPO, false));
+  results.push(await bashSelfTest("C-tmp+controlled", tmpdir(), true));
+  results.push(await bashSelfTest("D-inherit-cwd+inherit", undefined, false));
+  return results.join("；");
 }
 
 function executeOnce(trigger) {
@@ -312,7 +317,7 @@ async function main() {
   await log(
     `agent 启动 mode=${ONCE ? "once" : "daemon"} repo=${REPO} wakeDir=${WAKE_DIR} poll=${POLL_SECONDS}s timeout=${ONCE_TIMEOUT_MS}ms`,
   );
-  await log(`bash 自检：${await bashSelfTest()}`);
+  await log(`bash 自检矩阵：${await bashSelfTestMatrix()}`);
   await scanWakeDir();
   if (ONCE) {
     enqueue("poll-once");
