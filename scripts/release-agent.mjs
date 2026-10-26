@@ -9,7 +9,7 @@
 // 例行化（管理员 PowerShell 一次）：D:\deploy\donger-docker\install-release-agent.ps1
 // 配置（环境变量均可缺省）：RELEASE_AGENT_REPO/STACK/WAKE_DIR/LOG/POLL_SECONDS/ONCE_TIMEOUT_MS/BASH
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, rmSync, watch } from "node:fs";
+import { existsSync, readFileSync, rmSync, watch } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -85,38 +85,27 @@ async function bashSelfTestMatrix() {
 function executeOnce(trigger) {
   return new Promise((resolve) => {
     const started = Date.now();
-    let fd;
-    try {
-      // 管线 stdout/stderr 落同一份 release-watcher.log（旧 cmd 包装的重定向由这里接管）
-      fd = openSync(LOG_FILE, "a");
-    } catch {
-      fd = undefined;
-    }
-    // 受控子进程环境（2026-10-26 发布断摆专项）：S4U 会话继承的环境不可控，管线曾在
-    // 其中 5s 即静默失败（rc=1 零输出）而交互式会话同命令全绿——spawn 改显式白名单
-    // 环境 + 绝对脚本路径，把「会话环境」从等式里消掉。取证开关：栈目录放
-    // release-agent-xtrace 空文件即给 bash 加 -x（trace 随 stderr 进日志）。
+    // 受控子进程环境（2026-10-26 发布断摆专项）：S4U 会话里管线 spawn 静默 rc=1。
+    // 自检矩阵证明 bash/env/cwd 全无责后，嫌疑收敛到 stdio 的 fd 继承——改 shell 层
+    // 文件重定向（-c 包一层 >>log 2>&1，stdio 全 ignore），输出落栈目录独立文件。
+    // 取证开关：栈目录 release-agent-xtrace 空文件即给 bash 加 -x。
     const xtrace = existsSync(path.join(STACK, "release-agent-xtrace"));
     if (xtrace && !executeOnce.xtraceLogged) {
       executeOnce.xtraceLogged = true;
       void log("xtrace 已开启（检测到 release-agent-xtrace 标记文件）");
     }
-    const args = [
-      ...(xtrace ? ["-x"] : []),
-      WATCHER_SCRIPT,
-      "--once",
-      "--repo",
-      REPO,
-    ];
+    const spawnLog = path.join(STACK, "release-agent-spawn.log").replaceAll("\\", "/");
+    const inner = `"${WATCHER_SCRIPT}" --once --repo "${REPO}" >> "${spawnLog}" 2>&1`;
+    const args = [ "-c", (xtrace ? "set -x; " : "") + inner ];
     if (!executeOnce.argvLogged) {
       executeOnce.argvLogged = true;
-      void log(`spawn 形态：${BASH} ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}（cwd=${REPO}）`);
+      void log(`spawn 形态：${BASH} -c <管线>>${spawnLog}>（cwd=${REPO}，stdio=ignore）`);
     }
     const child = spawn(BASH, args, {
       cwd: REPO,
       env: childEnv(),
       windowsHide: true,
-      stdio: ["ignore", fd ?? "ignore", fd ?? "ignore"],
+      stdio: "ignore",
     });
     let killed = false;
     const timer = setTimeout(() => {
@@ -130,13 +119,11 @@ function executeOnce(trigger) {
     }, ONCE_TIMEOUT_MS);
     child.on("error", async (err) => {
       clearTimeout(timer);
-      if (fd !== undefined) closeSync(fd);
       await log(`!! execute spawn 失败 trigger=${trigger}: ${err.message}`);
       resolve();
     });
     child.on("exit", async (code) => {
       clearTimeout(timer);
-      if (fd !== undefined) closeSync(fd);
       const secs = Math.round((Date.now() - started) / 1000);
       await log(
         `execute 完成 trigger=${trigger} rc=${code}${killed ? "（硬顶kill）" : ""} 耗时=${secs}s`,
