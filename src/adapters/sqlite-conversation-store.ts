@@ -26,6 +26,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureLastModelRefColumn();
     this.ensureKbIdColumn();
     this.ensureLlmSdkTypeColumn();
+    this.ensureForkLineageColumns();
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(userId, archived, updatedAt DESC)",
     );
@@ -68,6 +69,17 @@ export class SqliteConversationStore implements ConversationStore {
     const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "llmSdkType")) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN llmSdkType TEXT");
+    }
+  }
+
+  /** 会话分叉血缘两列（specs/2026-10-23-conversation-fork-design.md §4.1）；NULL = 非分叉 */
+  private ensureForkLineageColumns(): void {
+    const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "forkedFromConversationId")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN forkedFromConversationId TEXT");
+    }
+    if (!cols.some((c) => c.name === "forkedFromMessageId")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN forkedFromMessageId TEXT");
     }
   }
 
@@ -154,7 +166,7 @@ export class SqliteConversationStore implements ConversationStore {
     const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
     this.db
       .prepare(
-        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, llmSdkType = ?, archived = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, llmSdkType = ?, forkedFromConversationId = ?, forkedFromMessageId = ?, archived = ?, updatedAt = ? WHERE id = ?",
       )
       .run(
         updated.sdkSessionId,
@@ -164,6 +176,8 @@ export class SqliteConversationStore implements ConversationStore {
         updated.permissionMode ?? null,
         updated.lastModelRef ?? null,
         updated.llmSdkType ?? null,
+        updated.forkedFromConversationId ?? null,
+        updated.forkedFromMessageId ?? null,
         updated.archived ? 1 : 0,
         updated.updatedAt,
         id,
@@ -188,6 +202,12 @@ export class SqliteConversationStore implements ConversationStore {
       llmSdkType: LLM_SDK_TYPES.includes(row.llmSdkType as LlmSdkType)
         ? (row.llmSdkType as LlmSdkType)
         : undefined,
+      ...(typeof row.forkedFromConversationId === "string" && row.forkedFromConversationId !== ""
+        ? { forkedFromConversationId: row.forkedFromConversationId }
+        : {}),
+      ...(typeof row.forkedFromMessageId === "string" && row.forkedFromMessageId !== ""
+        ? { forkedFromMessageId: row.forkedFromMessageId }
+        : {}),
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,
       archived: row.archived === 1,

@@ -287,6 +287,11 @@ export function ChatPage() {
           const access = await checkGitAccess();
           if (access?.ready) await wc.send(text, files, mentions);
         }}
+        onForkConversation={(messageId) =>
+          wc.activeConversationId
+            ? wc.forkConversation(wc.activeConversationId, messageId)
+            : Promise.resolve(false)
+        }
         blockingContent={
           wc.activeConversationId &&
           !activeIsDraft &&

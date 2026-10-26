@@ -107,6 +107,8 @@ export interface ChatMessage {
   state?: "running" | "done" | "error";
   /** 归属任务 id（历史消息带，装饰/调试用） */
   taskId?: string;
+  /** 回合内最后一条 bot 消息的服务端 id（消息级「从此分叉」的分叉点；流式回合不带） */
+  forkPointMessageId?: string;
 }
 
 export interface PendingApproval {
@@ -180,6 +182,8 @@ export interface ConversationSummary {
   effectivePermissionMode?: AgentPermissionMode;
   /** 最近一次运行所用执行引擎（agent sdk 标识）；空=未运行过 */
   llmSdkType?: LlmSdkType;
+  /** 分叉血缘：源会话 id+标题（specs/2026-10-23-conversation-fork-design.md §8.3） */
+  forkedFrom?: { id: string; title: string };
   createdAt: string;
   updatedAt: string;
   archived: boolean;

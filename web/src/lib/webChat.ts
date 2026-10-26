@@ -146,210 +146,212 @@ export function useWebChat() {
   /** 连接 SSE 流 */
   const connectSSE = useCallback(
     (conversationId: string) => {
-    // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
-    const token = getToken();
-    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-    const eventSource = new EventSource(`/api/conversations/${conversationId}/stream${qs}`);
+      // EventSource 无法设置 Authorization 头，改用 ?token= 查询参数鉴权
+      const token = getToken();
+      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+      const eventSource = new EventSource(`/api/conversations/${conversationId}/stream${qs}`);
 
-    sseRef.current = {
-      close: () => eventSource.close(),
-    };
+      sseRef.current = {
+        close: () => eventSource.close(),
+      };
 
-    eventSource.addEventListener("text", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "text") {
-          dispatch({ type: "ws", msg: data });
+      eventSource.addEventListener("text", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "text") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("text_delta", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "text_delta") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("thinking_delta", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "thinking_delta") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("tool_use", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "tool_use") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("tool_result", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "tool_result") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("activity", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "activity") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("approval_card", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "approval_card") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("approval_closed", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "approval_closed") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("credential_missing_card", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "credential_missing_card") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("ask_user_question", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "ask_user_question") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("eviction_notice", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "eviction_notice") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    // 首条用户消息后后端异步自动改名：侧栏/头部标题实时刷新
-    eventSource.addEventListener("conversation_title", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "conversation_title") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    // 排水广播（热发布优雅停机）：服务更新中，横幅提示；新实例接管后 onopen 会清除
-    eventSource.addEventListener("server_draining", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "server_draining") {
-          const minutes = data.deadline
-            ? Math.max(1, Math.round((data.deadline - Date.now()) / 60_000))
-            : 10;
-          dispatch({
-            type: "set_error",
-            key: "stream",
-            message: `🚧 服务正在更新发布：进行中的对话将继续完成（约 ${minutes} 分钟内）后切换，新消息请稍候重发`,
-          });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("result", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "result") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    eventSource.addEventListener("error", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as SSEEvent;
-        if (data.type === "error") {
-          dispatch({ type: "ws", msg: data });
-        }
-      } catch {
-        // ignore
-      }
-      // EventSource 会自动重连，无需手动处理
-    });
-
-    eventSource.onopen = () => {
-      dispatch({ type: "connection", state: "open" });
-      dispatch({ type: "clear_error", key: "stream" });
-      // 重连/重开即重查挂起审批：服务重启清扫后残卡随握手撤下，活审批重新锚定
-      void refreshPendingApproval(conversationId);
-    };
-
-    eventSource.onerror = (event) => {
-      if (event instanceof MessageEvent && event.data) return;
-      dispatch({ type: "connection", state: "closed" });
-      dispatch({ type: "generation", running: false });
-      dispatch({
-        type: "set_error",
-        key: "stream",
-        message: "连接中断，浏览器正在自动重连",
       });
-    };
 
-    return eventSource;
-  }, [refreshPendingApproval]);
+      eventSource.addEventListener("text_delta", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "text_delta") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("thinking_delta", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "thinking_delta") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("tool_use", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "tool_use") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("tool_result", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "tool_result") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("activity", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "activity") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("approval_card", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "approval_card") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("approval_closed", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "approval_closed") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("credential_missing_card", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "credential_missing_card") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("ask_user_question", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "ask_user_question") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("eviction_notice", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "eviction_notice") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      // 首条用户消息后后端异步自动改名：侧栏/头部标题实时刷新
+      eventSource.addEventListener("conversation_title", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "conversation_title") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      // 排水广播（热发布优雅停机）：服务更新中，横幅提示；新实例接管后 onopen 会清除
+      eventSource.addEventListener("server_draining", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "server_draining") {
+            const minutes = data.deadline
+              ? Math.max(1, Math.round((data.deadline - Date.now()) / 60_000))
+              : 10;
+            dispatch({
+              type: "set_error",
+              key: "stream",
+              message: `🚧 服务正在更新发布：进行中的对话将继续完成（约 ${minutes} 分钟内）后切换，新消息请稍候重发`,
+            });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("result", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "result") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      eventSource.addEventListener("error", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as SSEEvent;
+          if (data.type === "error") {
+            dispatch({ type: "ws", msg: data });
+          }
+        } catch {
+          // ignore
+        }
+        // EventSource 会自动重连，无需手动处理
+      });
+
+      eventSource.onopen = () => {
+        dispatch({ type: "connection", state: "open" });
+        dispatch({ type: "clear_error", key: "stream" });
+        // 重连/重开即重查挂起审批：服务重启清扫后残卡随握手撤下，活审批重新锚定
+        void refreshPendingApproval(conversationId);
+      };
+
+      eventSource.onerror = (event) => {
+        if (event instanceof MessageEvent && event.data) return;
+        dispatch({ type: "connection", state: "closed" });
+        dispatch({ type: "generation", running: false });
+        dispatch({
+          type: "set_error",
+          key: "stream",
+          message: "连接中断，浏览器正在自动重连",
+        });
+      };
+
+      return eventSource;
+    },
+    [refreshPendingApproval],
+  );
 
   // 初始连接
   useEffect(() => {
@@ -733,6 +735,47 @@ export function useWebChat() {
     [state.conversations],
   );
 
+  /** 会话分叉（specs/2026-10-23-conversation-fork-design.md §7/§8）：messageId 缺省=整会话，
+   *  给出时恒为「含此条」；成功后新会话插入列表并切换（fork_created）。失败落 errors.conversations */
+  const forkConversation = useCallback(
+    async (conversationId: string, messageId?: string): Promise<boolean> => {
+      dispatch({ type: "clear_error", key: "conversations" });
+      try {
+        const token = getToken();
+        const res = await apiFetch(`/api/conversations/${conversationId}/fork`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(messageId ? { messageId } : {}),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          conversation?: ConversationSummary;
+          error?: string;
+        };
+        if (!res.ok || !data.conversation) {
+          dispatch({
+            type: "set_error",
+            key: "conversations",
+            message: data.error ?? `分叉失败（HTTP ${res.status}）`,
+          });
+          return false;
+        }
+        dispatch({ type: "fork_created", conversation: data.conversation });
+        return true;
+      } catch (error: unknown) {
+        dispatch({
+          type: "set_error",
+          key: "conversations",
+          message: errorText(error, "分叉失败"),
+        });
+        return false;
+      }
+    },
+    [],
+  );
+
   /** 切换会话权限模式：草稿先落库转正 → PATCH 落库 + 本地乐观更新（失败回滚并提示） */
   const setPermissionMode = useCallback(
     async (mode: AgentPermissionMode) => {
@@ -782,6 +825,7 @@ export function useWebChat() {
     ensureConversation,
     loadConversations,
     deleteConversation,
+    forkConversation,
     setPermissionMode,
     llmOptions,
     modelRef,

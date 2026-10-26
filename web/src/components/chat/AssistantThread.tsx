@@ -14,6 +14,7 @@ import {
   File as FileIcon,
   FileSpreadsheet,
   FileText,
+  GitFork,
   Square,
   UserRound,
   X,
@@ -57,6 +58,37 @@ const THREAD_CONTENT_WIDTH = "mx-auto w-full max-w-3xl px-3 sm:px-5";
 
 /** 助手消息「变更文件」链接 → 打开右侧文件抽屉的变更 tab（ChatWorkspace 提供） */
 const OpenFileChangeContext = createContext<(path: string) => void>(() => {});
+
+/** 消息级「从此分叉」（specs/2026-10-23-conversation-fork-design.md §8.1）：ChatWorkspace 提供 */
+const ForkMessageContext = createContext<((messageId: string) => void) | null>(null);
+
+const FORK_ACTION_CLASS =
+  "shrink-0 rounded p-0.5 text-muted-foreground opacity-100 transition-opacity hover:bg-muted hover:text-foreground lg:opacity-0 lg:group-hover:opacity-100";
+
+/**
+ * 消息级分叉入口：D5 单档「含此条」——分叉点=用户消息自身 / bot 回合的末条消息 id。
+ * 触屏恒显（lg 起改 hover 显现，绕开纯 hover 触屏不可达的既有缺陷）。
+ */
+function ForkMessageAction() {
+  const onFork = useContext(ForkMessageContext);
+  const messageId = useAuiState(({ message }) => {
+    if (message.role === "user") return message.id || undefined;
+    const custom = message.metadata as { custom?: { forkPointMessageId?: string } } | undefined;
+    return custom?.custom?.forkPointMessageId;
+  });
+  if (!onFork || !messageId) return null;
+  return (
+    <button
+      type="button"
+      aria-label="从此分叉"
+      title="从此处创建分叉（复制起始到本条的全部内容到新会话，原会话不受影响）"
+      onClick={() => onFork(messageId)}
+      className={FORK_ACTION_CLASS}
+    >
+      <GitFork aria-hidden="true" size={12} />
+    </button>
+  );
+}
 
 function ThreadWelcome({ hidden }: { hidden: boolean }) {
   if (hidden) return null;
@@ -207,14 +239,15 @@ function UserMessage() {
   return (
     <MessagePrimitive.Root
       aria-label="用户消息"
-      className={cn(THREAD_CONTENT_WIDTH, "flex items-start justify-end gap-3 py-4")}
+      className={cn(THREAD_CONTENT_WIDTH, "group flex items-start justify-end gap-3 py-4")}
     >
       {/* 气泡与附件缩略记录纵向排布（附件在气泡外部，右对齐随气泡），超宽自动换行 */}
       <div className="flex min-w-0 max-w-[85%] flex-col items-end">
         <div className="max-w-full min-w-0 rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm text-primary-foreground shadow-sm">
-          <div className="mb-1 text-xs font-medium opacity-75">
+          <div className="mb-1 flex items-center gap-1.5 text-xs font-medium opacity-75">
             你
             <MessageTime />
+            <ForkMessageAction />
           </div>
           <div className="whitespace-pre-wrap break-words">
             <MessagePrimitive.Parts components={{ Text: UserText }} />
@@ -317,15 +350,16 @@ function AssistantMessage() {
   return (
     <MessagePrimitive.Root
       aria-label="助手消息"
-      className={cn(THREAD_CONTENT_WIDTH, "flex items-start gap-3 py-5")}
+      className={cn(THREAD_CONTENT_WIDTH, "group flex items-start gap-3 py-5")}
     >
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
         <Bot aria-hidden="true" size={16} />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">
-        <div className="mb-2 text-xs font-medium text-muted-foreground">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           donger
           <MessageTime />
+          <ForkMessageAction />
         </div>
         <div
           className={cn(
@@ -412,6 +446,8 @@ export interface AssistantThreadProps {
   composerLeading?: React.ReactNode;
   /** 点击助手消息的「变更文件」链接：打开右侧文件抽屉的变更 tab 并定位该文件 */
   onOpenFileChange?: (path: string) => void;
+  /** 消息级「从此分叉」（specs/2026-10-23-conversation-fork-design.md §8.1）；生成中不提供 */
+  onForkFromMessage?: (messageId: string) => void;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -460,103 +496,105 @@ export function AssistantThread(props: AssistantThreadProps) {
   const openFileChange = props.onOpenFileChange;
   return (
     <OpenFileChangeContext.Provider value={openFileChange ?? (() => {})}>
-      <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
-        <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
-          <ThreadWelcome hidden={hasPendingInteraction} />
-          <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-          <div className={THREAD_CONTENT_WIDTH}>
-            <PendingInteraction
-              approval={props.pendingApproval}
-              credential={props.pendingCredential}
-              approvalError={props.approvalError}
-              credentialError={props.credentialError}
-              onResolveApproval={props.onResolveApproval}
-              onDecideCredentialMissing={props.onDecideCredentialMissing}
-            />
-          </div>
-        </ThreadPrimitive.Viewport>
-        <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
-          {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
-          {props.pendingQuestion ? (
-            <QuestionCard
-              key={props.pendingQuestion.reqId}
-              question={props.pendingQuestion}
-              error={props.questionError}
-              onAnswer={props.onAnswerQuestion}
-            />
-          ) : null}
-          {props.aboveComposer}
-          <ComposerPrimitive.Root
-            aria-label="消息输入"
-            className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
-          >
-            <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-              <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
-                <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
-              </div>
-              <div ref={inputWrapRef} className="relative">
-                {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
-                {hasAgent ? (
-                  <MentionBackdrop text={composerText} backdropRef={backdropRef} />
-                ) : null}
-                <ComposerPrimitive.Input
-                  className={cn(
-                    "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground",
-                    hasAgent && "text-transparent caret-primary selection:bg-primary/30",
-                  )}
-                  onScroll={syncBackdropScroll}
-                  placeholder={props.placeholder}
-                />
-                {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
-                {hasAgent ? (
-                  <ComposerMentionTriggers
-                    candidates={candidates}
-                    loading={loading}
-                    error={error}
-                    onMentionInserted={props.onMentionInserted}
-                    getTextarea={getTextarea}
-                  />
-                ) : null}
-              </div>
-              {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-1">
-                  <ComposerPlusMenu
-                    hasAgent={hasAgent}
-                    onInsertTrigger={insertTrigger}
-                    onOpen={refresh}
-                  />
-                  {props.composerLeading}
+      <ForkMessageContext.Provider value={props.onForkFromMessage ?? null}>
+        <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
+          <ThreadPrimitive.Viewport className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
+            <ThreadWelcome hidden={hasPendingInteraction} />
+            <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+            <div className={THREAD_CONTENT_WIDTH}>
+              <PendingInteraction
+                approval={props.pendingApproval}
+                credential={props.pendingCredential}
+                approvalError={props.approvalError}
+                credentialError={props.credentialError}
+                onResolveApproval={props.onResolveApproval}
+                onDecideCredentialMissing={props.onDecideCredentialMissing}
+              />
+            </div>
+          </ThreadPrimitive.Viewport>
+          <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
+            {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
+            {props.pendingQuestion ? (
+              <QuestionCard
+                key={props.pendingQuestion.reqId}
+                question={props.pendingQuestion}
+                error={props.questionError}
+                onAnswer={props.onAnswerQuestion}
+              />
+            ) : null}
+            {props.aboveComposer}
+            <ComposerPrimitive.Root
+              aria-label="消息输入"
+              className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
+            >
+              <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+                <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
+                  <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
                 </div>
-                <ThreadPrimitive.If running={false}>
-                  <ComposerPrimitive.Send asChild>
-                    <Button
-                      type="submit"
-                      size="icon"
-                      aria-label="发送消息"
-                      className="min-h-11 min-w-11 shrink-0 rounded-full"
-                    >
-                      <ArrowUp aria-hidden="true" size={18} />
-                    </Button>
-                  </ComposerPrimitive.Send>
-                </ThreadPrimitive.If>
-                <ThreadPrimitive.If running>
-                  <ComposerPrimitive.Cancel asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      aria-label="停止输出"
-                      className="min-h-11 min-w-11 rounded-full"
-                    >
-                      <Square aria-hidden="true" size={16} fill="currentColor" />
-                    </Button>
-                  </ComposerPrimitive.Cancel>
-                </ThreadPrimitive.If>
-              </div>
-            </ComposerPrimitive.Unstable_TriggerPopoverRoot>
-          </ComposerPrimitive.Root>
-        </div>
-      </ThreadPrimitive.Root>
+                <div ref={inputWrapRef} className="relative">
+                  {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
+                  {hasAgent ? (
+                    <MentionBackdrop text={composerText} backdropRef={backdropRef} />
+                  ) : null}
+                  <ComposerPrimitive.Input
+                    className={cn(
+                      "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground",
+                      hasAgent && "text-transparent caret-primary selection:bg-primary/30",
+                    )}
+                    onScroll={syncBackdropScroll}
+                    placeholder={props.placeholder}
+                  />
+                  {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
+                  {hasAgent ? (
+                    <ComposerMentionTriggers
+                      candidates={candidates}
+                      loading={loading}
+                      error={error}
+                      onMentionInserted={props.onMentionInserted}
+                      getTextarea={getTextarea}
+                    />
+                  ) : null}
+                </div>
+                {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-1">
+                    <ComposerPlusMenu
+                      hasAgent={hasAgent}
+                      onInsertTrigger={insertTrigger}
+                      onOpen={refresh}
+                    />
+                    {props.composerLeading}
+                  </div>
+                  <ThreadPrimitive.If running={false}>
+                    <ComposerPrimitive.Send asChild>
+                      <Button
+                        type="submit"
+                        size="icon"
+                        aria-label="发送消息"
+                        className="min-h-11 min-w-11 shrink-0 rounded-full"
+                      >
+                        <ArrowUp aria-hidden="true" size={18} />
+                      </Button>
+                    </ComposerPrimitive.Send>
+                  </ThreadPrimitive.If>
+                  <ThreadPrimitive.If running>
+                    <ComposerPrimitive.Cancel asChild>
+                      <Button
+                        type="button"
+                        size="icon"
+                        aria-label="停止输出"
+                        className="min-h-11 min-w-11 rounded-full"
+                      >
+                        <Square aria-hidden="true" size={16} fill="currentColor" />
+                      </Button>
+                    </ComposerPrimitive.Cancel>
+                  </ThreadPrimitive.If>
+                </div>
+              </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+            </ComposerPrimitive.Root>
+          </div>
+        </ThreadPrimitive.Root>
+      </ForkMessageContext.Provider>
     </OpenFileChangeContext.Provider>
   );
 }

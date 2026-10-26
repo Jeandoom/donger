@@ -3,8 +3,14 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
+const { queryMock, forkSessionMock } = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+  forkSessionMock: vi.fn(),
+}));
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  query: queryMock,
+  forkSession: forkSessionMock,
+}));
 
 import { ClaudeAgentRunner } from "../../src/adapters/claude-agent-runner.js";
 import { GateRouter } from "../../src/domain/gate-router.js";
@@ -60,7 +66,85 @@ async function collect(g: AsyncIterable<RunnerEvent>): Promise<RunnerEvent[]> {
 
 beforeEach(() => {
   queryMock.mockReset();
+  forkSessionMock.mockReset();
   captured = null;
+});
+
+describe("ClaudeAgentRunner 会话分叉（specs/2026-10-23-conversation-fork-design.md §5.2）", () => {
+  it("forkFrom → SDK 原生 forkSession 克隆并以新 id resume（sessionStore 随行落 SQLite）", async () => {
+    forkSessionMock.mockResolvedValue({ sessionId: "forked-1" });
+    mockStream([{ type: "system", subtype: "init", session_id: "forked-1" }]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(
+      runner.run(
+        task,
+        { ...opts, sessionStore: { store: true } as never, forkFrom: { sessionId: "src-1" } },
+        async () => ({ approved: true }),
+      ),
+    );
+
+    expect(forkSessionMock).toHaveBeenCalledWith(
+      "src-1",
+      expect.objectContaining({ sessionStore: { store: true } }),
+    );
+    const options = (queryMock.mock.calls.at(-1)?.[0] as { options?: { resume?: string } }).options;
+    expect(options?.resume).toBe("forked-1");
+    // session_init 上抛克隆出的新 id → orchestrator 照常 commit 写回分叉会话
+    expect(
+      events.some(
+        (e) => e.type === "session_init" && (e as { sessionId: string }).sessionId === "forked-1",
+      ),
+    ).toBe(true);
+  });
+
+  it("upToMessageId 透传（M2 中间切点精确截断）", async () => {
+    forkSessionMock.mockResolvedValue({ sessionId: "forked-2" });
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(
+        task,
+        { ...opts, forkFrom: { sessionId: "src-1", upToMessageId: "uuid-9" } },
+        async () => ({ approved: true }),
+      ),
+    );
+
+    expect(forkSessionMock).toHaveBeenCalledWith(
+      "src-1",
+      expect.objectContaining({ upToMessageId: "uuid-9" }),
+    );
+  });
+
+  it("forkSession 失败 → 抛错终止本轮（sdkSessionId 不回写，重发天然重试）", async () => {
+    forkSessionMock.mockRejectedValue(new Error("source missing"));
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await expect(
+      collect(
+        runner.run(task, { ...opts, forkFrom: { sessionId: "src-1" } }, async () => ({
+          approved: true,
+        })),
+      ),
+    ).rejects.toThrow("会话分叉失败");
+    // query 未被触达：克隆失败不得以无历史的裸会话静默执行
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("无 forkFrom → resume 原样透传（非分叉轮行为不变）", async () => {
+    mockStream([{ type: "result", subtype: "success", result: "x" }]);
+
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    await collect(
+      runner.run(task, { ...opts, resume: "keep-1" }, async () => ({ approved: true })),
+    );
+
+    expect(forkSessionMock).not.toHaveBeenCalled();
+    const options = (queryMock.mock.calls.at(-1)?.[0] as { options?: { resume?: string } }).options;
+    expect(options?.resume).toBe("keep-1");
+  });
 });
 
 describe("ClaudeAgentRunner", () => {

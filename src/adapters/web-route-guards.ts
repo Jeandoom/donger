@@ -146,6 +146,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "owner", resource: "conversation" },
       ...ownerConversation,
     },
+    // 会话分叉（specs/2026-10-23-conversation-fork-design.md §7）：分杈权=属主权
+    {
+      method: "POST",
+      pattern: "/api/conversations/:id/fork",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
     {
       method: "GET",
       pattern: "/api/conversations/:id/activity",

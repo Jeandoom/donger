@@ -32,6 +32,7 @@ export type ChatAction =
   | { type: "set_conversations"; conversations: ConversationSummary[] }
   | { type: "switch_conversation"; conversationId: string | null }
   | { type: "new_conversation"; conversation: ConversationSummary }
+  | { type: "fork_created"; conversation: ConversationSummary }
   | { type: "persist_conversation"; draftId: string; conversation: ConversationSummary }
   | { type: "set_messages"; messages: ChatMessage[] }
   | { type: "loading_messages"; loading: boolean }
@@ -261,6 +262,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         loadingMessages: false,
       };
     }
+    case "fork_created":
+      // 分叉新会话（服务端已落库）：插入列表头部并切换过去（无草稿语义，不参与去重）
+      return {
+        ...state,
+        conversations: sortByRecentFirst([action.conversation, ...state.conversations]),
+        activeConversationId: action.conversation.id,
+        messages: [],
+        isGenerating: false,
+        stage: null,
+        loadingConversations: false,
+        loadingMessages: false,
+      };
     case "persist_conversation":
       return {
         ...state,

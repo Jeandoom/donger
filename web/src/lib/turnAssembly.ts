@@ -149,6 +149,8 @@ export function assembleTurnMessages(
     // 排空回合内各任务在本条消息落库前发生的工具事件（保持与文本的时间线顺序）
     for (const id of turn.taskIds) drainUntil(id, message.createdAt);
     turn.msg.parts?.push({ kind: "text", messageId: message.id, text: message.text });
+    // 回合末条消息 id 即消息级「从此分叉」的分叉点（specs/2026-10-23-conversation-fork-design.md §8.1）
+    turn.msg.forkPointMessageId = message.id;
   }
   closeTurn();
   return out;

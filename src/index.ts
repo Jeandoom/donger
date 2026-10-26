@@ -398,6 +398,8 @@ async function main(): Promise<void> {
       sessionWorktree: cfg.gitSessionWorktree,
       extensionDirectoryResolver,
       isPluginEnabled: pluginGate,
+      // 分叉会话注入继承历史的消息源（specs/2026-10-23-conversation-fork-design.md §5.3）
+      messageStore,
     });
     const orch = new Orchestrator({
       store,

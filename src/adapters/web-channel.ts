@@ -79,6 +79,7 @@ import {
   relativeUnderRoot,
 } from "../domain/file-changes.js";
 import { mimeForExt } from "../domain/file-mime.js";
+import { forkTitleOf } from "../domain/fork.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
 import {
@@ -4360,6 +4361,13 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // POST /api/conversations/:id/fork —— 会话分叉（specs/2026-10-23-conversation-fork-design.md §7）
+    const forkConvMatch = url.match(/^\/api\/conversations\/([\w.-]+)\/fork$/);
+    if (forkConvMatch && req.method === "POST") {
+      await this.handleConversationFork(req, res, forkConvMatch[1] ?? "");
+      return;
+    }
+
     // GET /api/audit/conversations —— admin 全量；member 仅本人会话（store 层 L2 visible 过滤）
     if (url === "/api/audit/conversations" && req.method === "GET") {
       const viewer = this.currentViewer(req);
@@ -8457,18 +8465,139 @@ export class WebChannel implements Channel {
     };
   }
 
-  /** 会话 DTO 附生效权限模式（存储覆盖 ?? 绑定智能体默认 ?? 系统缺省） */
-  private async conversationWithMode(
-    conv: Conversation,
-  ): Promise<Conversation & { effectivePermissionMode: AgentPermissionMode }> {
+  /** 会话 DTO 附生效权限模式（存储覆盖 ?? 绑定智能体默认 ?? 系统缺省）与分叉血缘（源标题） */
+  private async conversationWithMode(conv: Conversation): Promise<
+    Conversation & {
+      effectivePermissionMode: AgentPermissionMode;
+      forkedFrom?: { id: string; title: string };
+    }
+  > {
     const agent = conv.agentId ? await this.deps.agentStore?.get(conv.agentId) : undefined;
+    const source = conv.forkedFromConversationId
+      ? await this.deps.conversationStore?.get(conv.forkedFromConversationId)
+      : undefined;
     return {
       ...conv,
       effectivePermissionMode: resolvePermissionMode(
         conv.permissionMode,
         agent?.defaultPermissionMode,
       ),
+      ...(source ? { forkedFrom: { id: source.id, title: source.title } } : {}),
     };
+  }
+
+  /**
+   * 会话分叉（specs/2026-10-23-conversation-fork-design.md §7）：消息快照复制到新会话
+   * （新 id / 原 createdAt 保序 / taskId 置空防运行关联错配），血缘两列落库，源会话零扰动。
+   * 守卫：归档 404、进行中轮 409、空会话/切点不属于源会话 409。引擎与沙箱续接在
+   * runtime-manager/materializer 的分叉分支内完成（见 domain/fork.ts 与 §5/§6）。
+   */
+  private async handleConversationFork(
+    req: HttpRequest,
+    res: ServerResponse,
+    conversationId: string,
+  ): Promise<void> {
+    const viewer = this.currentViewer(req);
+    const conv =
+      viewer.role === "admin"
+        ? await this.deps.conversationStore?.get(conversationId)
+        : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
+    if (!conv || conv.archived) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: "conversation not found" }));
+      return;
+    }
+    let forkPointMessageId: string | undefined;
+    try {
+      const body = JSON.parse((await this.readBody(req)) || "{}") as { messageId?: unknown };
+      if (body.messageId !== undefined && body.messageId !== null && body.messageId !== "") {
+        if (typeof body.messageId !== "string") throw new Error("messageId 须为字符串");
+        forkPointMessageId = body.messageId;
+      }
+    } catch (error) {
+      res.writeHead(400);
+      res.end(
+        JSON.stringify({
+          error: `请求体无效：${error instanceof Error ? error.message : String(error)}`,
+        }),
+      );
+      return;
+    }
+    if (this.deps.conversationBusyGetter?.(conv.id)) {
+      res.writeHead(409);
+      res.end(JSON.stringify({ error: "源会话有进行中的轮次，完成后再试" }));
+      return;
+    }
+    const messages = (await this.messageStore?.listByConversation(conv.id)) ?? [];
+    if (messages.length === 0) {
+      res.writeHead(409);
+      res.end(JSON.stringify({ error: "空会话无需分叉" }));
+      return;
+    }
+    let copyTo = messages.length - 1;
+    if (forkPointMessageId) {
+      const index = messages.findIndex((m) => m.id === forkPointMessageId);
+      if (index < 0) {
+        res.writeHead(409);
+        res.end(JSON.stringify({ error: "分叉点消息不属于该会话" }));
+        return;
+      }
+      copyTo = index;
+    }
+    const picked = messages.slice(0, copyTo + 1);
+    const store = this.deps.conversationStore;
+    if (!store) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: "conversation store 未装配" }));
+      return;
+    }
+    const created = conv.agentId
+      ? await store.createWithAgent(conv.userId, "web", forkTitleOf(conv.title), conv.agentId)
+      : await store.create(conv.userId, "web", forkTitleOf(conv.title));
+    for (const message of picked) {
+      // taskId 置空：旧 taskId 指向源会话的运行/事件，保留会把分叉会话的消息错误关联
+      await this.messageStore?.add(
+        created.id,
+        message.role,
+        message.text,
+        message.files,
+        undefined,
+        { createdAt: message.createdAt },
+      );
+    }
+    const lastPicked = picked[picked.length - 1];
+    await store.update(created.id, {
+      forkedFromConversationId: conv.id,
+      ...(lastPicked ? { forkedFromMessageId: lastPicked.id } : {}),
+      ...(conv.kbId ? { kbId: conv.kbId } : {}),
+      ...(conv.permissionMode ? { permissionMode: conv.permissionMode } : {}),
+      ...(conv.lastModelRef ? { lastModelRef: conv.lastModelRef } : {}),
+      ...(conv.llmSdkType ? { llmSdkType: conv.llmSdkType } : {}),
+    });
+    try {
+      await this.deps.auditStore?.record({
+        conversationId: created.id,
+        taskId: "",
+        userId: viewer.id,
+        seq: -1,
+        type: "conversation_forked",
+        text: `会话分叉：自「${conv.title}」（${conv.id}）派生，复制 ${picked.length} 条消息`,
+        toolInput: JSON.stringify({
+          sourceConversationId: conv.id,
+          forkPointMessageId: forkPointMessageId ?? null,
+          copiedMessages: picked.length,
+        }),
+        recordedAt: new Date().toISOString(),
+      });
+    } catch {
+      // 审计失败不阻断分叉
+    }
+    const stored = (await this.deps.conversationStore?.get(created.id)) ?? created;
+    this.json(
+      res,
+      { conversation: await this.conversationWithMode(stored), copiedMessages: picked.length },
+      201,
+    );
   }
 
   private maskRecord(rec: Record<string, string>): Record<string, string> {

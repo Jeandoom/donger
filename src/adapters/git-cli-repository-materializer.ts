@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   type AgentGitRepository,
@@ -16,7 +17,7 @@ import type {
   RepositorySessionScope,
 } from "../ports/repository-materializer.js";
 import type { GitProcessResult } from "../util/git-process.js";
-import { runGit, sanitizeGitError } from "../util/git-process.js";
+import { runGit, runGitProcess, sanitizeGitError } from "../util/git-process.js";
 
 /** 会话 worktree 的 repos 区根：<worktreeRoot>/<conversationId>/repos */
 export function sessionWorktreeReposRoot(worktreeRoot: string, conversationId: string): string {
@@ -96,10 +97,11 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
           : resultFor(item.repository, target, "ready");
       }
       // warning（如 ff 失败/脏基座跳过合并）不阻断会话 worktree：基座已就绪即可供 worktree
-      const wtPath = await this.ensureSessionWorktree(target, item, session, signal);
-      return warning
-        ? resultFor(item.repository, wtPath, "warning", warning)
-        : resultFor(item.repository, wtPath, "ready");
+      const wt = await this.ensureSessionWorktree(target, item, session, signal);
+      const mergedWarning = [warning, wt.warning].filter(Boolean).join("；") || undefined;
+      return mergedWarning
+        ? resultFor(item.repository, wt.path, "warning", mergedWarning)
+        : resultFor(item.repository, wt.path, "ready");
     } catch (error) {
       return resultFor(
         item.repository,
@@ -186,7 +188,7 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
     item: RepositoryMaterializeItem,
     session: RepositorySessionScope,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<{ path: string; warning?: string }> {
     const wtReposRoot = sessionWorktreeReposRoot(session.worktreeRoot, session.conversationId);
     mkdirSync(wtReposRoot, { recursive: true });
     const wtPath = join(wtReposRoot, item.repository.name);
@@ -199,10 +201,17 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
       );
       const expectedCommon = resolve(join(mainClone, ".git"));
       const actualCommon = commonDir.code === 0 ? resolve(wtPath, commonDir.stdout.trim()) : "";
-      if (actualCommon === expectedCommon) return wtPath;
+      if (actualCommon === expectedCommon) return { path: wtPath };
       await this.backupDirAside(wtPath);
     }
-    const base = await this.resolveBaseRef(mainClone, item, signal);
+    const base: { ref: string; upstream?: string; warning?: string } = session.forkSource
+      ? await this.resolveForkBaseRef(
+          mainClone,
+          item,
+          { ...session, forkSource: session.forkSource },
+          signal,
+        )
+      : await this.resolveBaseRef(mainClone, item, signal);
     let added = await this.runGitWithCredential(
       ["-C", mainClone, "worktree", "add", "-b", branch, wtPath, base.ref],
       undefined,
@@ -229,7 +238,106 @@ export class GitCliRepositoryMaterializer implements RepositoryMaterializer {
         signal,
       );
     }
-    return wtPath;
+    return { path: wtPath, ...(base.warning ? { warning: base.warning } : {}) };
+  }
+
+  /**
+   * 分叉会话的 worktree 基点（specs/2026-10-23-conversation-fork-design.md §6，D3 拍板）：
+   * 优先源会话工作树的零扰动快照 commit（携带未提交与未跟踪变更）——临时索引
+   * read-tree HEAD → add -A → write-tree → commit-tree，全程只创建 git 对象，不触碰源
+   * 工作区/索引/分支/提交历史；源树缺失（无 git agent / 已被 GC）或快照失败 → 回退源会话
+   * 分支（已提交状态）；再不行回退标准基点并出 warning（随物化结果提示给 agent）。
+   */
+  private async resolveForkBaseRef(
+    mainClone: string,
+    item: RepositoryMaterializeItem,
+    session: RepositorySessionScope & { forkSource: { conversationId: string } },
+    signal?: AbortSignal,
+  ): Promise<{ ref: string; upstream?: string; warning?: string }> {
+    // upstream 仅作 git_pull 的「落后/领先」基准：照常指向主分支远端引用（快照 commit 的
+    // 历史包含源分支 HEAD，语义成立）；取不到则不带
+    const standard = await this.resolveBaseRef(mainClone, item, signal);
+    const sourceWorktree = join(
+      sessionWorktreeReposRoot(session.worktreeRoot, session.forkSource.conversationId),
+      item.repository.name,
+    );
+    if (existsSync(sourceWorktree)) {
+      const snapshotRef = await this.snapshotSourceWorktree(sourceWorktree, session, signal);
+      if (snapshotRef) return { ref: snapshotRef, upstream: standard.upstream };
+    }
+    const sourceBranch = sessionBranchFor(session.forkSource.conversationId);
+    const branchExists = await this.runGitWithCredential(
+      ["-C", mainClone, "rev-parse", "--verify", `${sourceBranch}^{commit}`],
+      undefined,
+      signal,
+    );
+    if (branchExists.code === 0) {
+      return { ref: sourceBranch, upstream: standard.upstream };
+    }
+    return { ...standard, warning: "源会话工作树/分支不可用，分叉基点已回退默认主分支" };
+  }
+
+  /** 源工作树零扰动快照：返回快照 commit sha；任一步失败返回 undefined（调用方回退分支基点） */
+  private async snapshotSourceWorktree(
+    sourceWorktree: string,
+    session: RepositorySessionScope & { forkSource: { conversationId: string } },
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    // GIT_INDEX_FILE 必须显式指向临时文件：不设会把 add -A 写进源会话真实索引（污染源工作区）
+    const tempIndex = join(tmpdir(), `donger-fork-index-${crypto.randomUUID()}`);
+    const env = { GIT_INDEX_FILE: tempIndex };
+    try {
+      const head = await runGitProcess(
+        ["-C", sourceWorktree, "rev-parse", "HEAD"],
+        env,
+        this.timeoutMs,
+        signal,
+      );
+      if (head.code !== 0) return undefined;
+      const headSha = head.stdout.trim();
+      const read = await runGitProcess(
+        ["-C", sourceWorktree, "read-tree", "HEAD"],
+        env,
+        this.timeoutMs,
+        signal,
+      );
+      if (read.code !== 0) return undefined;
+      const add = await runGitProcess(
+        ["-C", sourceWorktree, "add", "-A"],
+        env,
+        this.timeoutMs,
+        signal,
+      );
+      if (add.code !== 0) return undefined;
+      const write = await runGitProcess(
+        ["-C", sourceWorktree, "write-tree"],
+        env,
+        this.timeoutMs,
+        signal,
+      );
+      if (write.code !== 0) return undefined;
+      const commit = await runGitProcess(
+        [
+          "-C",
+          sourceWorktree,
+          "commit-tree",
+          write.stdout.trim(),
+          "-p",
+          headSha,
+          "-m",
+          `donger: 会话分叉快照（源 ${session.forkSource.conversationId}，${new Date().toISOString()}）`,
+        ],
+        env,
+        this.timeoutMs,
+        signal,
+      );
+      if (commit.code !== 0) return undefined;
+      return commit.stdout.trim();
+    } catch {
+      return undefined;
+    } finally {
+      rmSync(tempIndex, { force: true });
+    }
   }
 
   /** worktree 基点：repository.ref → origin/HEAD → 主克隆当前分支的远端引用；全部缺失回退 HEAD */

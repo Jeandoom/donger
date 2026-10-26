@@ -373,3 +373,104 @@ describe("buildCloneArgs", () => {
     ]);
   });
 });
+
+/**
+ * 分叉会话的 worktree 基点（specs/2026-10-23-conversation-fork-design.md §6，D3 拍板）：
+ * 优先源会话工作树零扰动快照（携带未提交/未跟踪变更），源树缺失回退源会话分支，再回退标准基点。
+ */
+describe("GitCliRepositoryMaterializer 会话分叉基点", () => {
+  it("forkSource → 源工作树零扰动快照起树：脏文件与未跟踪文件随行，源工作区/索引/分支零扰动", {
+    timeout: 30_000,
+  }, async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-fork-main-"));
+    const worktreeRoot = mkdtempSync(join(tmpdir(), "donger-git-fork-wt-"));
+    roots.push(destination, worktreeRoot);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+
+    // 源会话工作树
+    const sourceSession = { conversationId: "conv-a", worktreeRoot };
+    await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: sourceSession,
+    });
+    const sourceWt = join(worktreeRoot, "conv-a", "repos", "sample");
+    // 源会话改已跟踪文件（不 commit）+ 新增未跟踪文件
+    writeFileSync(join(sourceWt, "README.md"), "dirty-change");
+    writeFileSync(join(sourceWt, "untracked.txt"), "new-file");
+
+    // 分叉会话：从源快照起树
+    const results = await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: {
+        conversationId: "conv-b",
+        worktreeRoot,
+        forkSource: { conversationId: "conv-a" },
+      },
+    });
+    expect(results[0]?.status).toBe("ready");
+    const forkWt = join(worktreeRoot, "conv-b", "repos", "sample");
+    expect(readFileSync(join(forkWt, "README.md"), "utf8")).toBe("dirty-change");
+    expect(readFileSync(join(forkWt, "untracked.txt"), "utf8")).toBe("new-file");
+
+    // 源工作树零扰动：脏区仍在、无 stash、分支不动（快照只创建 git 对象）
+    const status = execFileSync("git", ["-C", sourceWt, "status", "--porcelain"], {
+      encoding: "utf8",
+    });
+    expect(status).toContain(" M README.md");
+    expect(status).toContain("?? untracked.txt");
+    const stashList = execFileSync("git", ["-C", sourceWt, "stash", "list"], {
+      encoding: "utf8",
+    }).trim();
+    expect(stashList).toBe("");
+    const sourceBranchHead = execFileSync("git", ["-C", sourceWt, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    // 会话分支与 worktree 同注册在主克隆（destination），远端源仓 root 里没有
+    const mainClone = join(destination, "sample");
+    const sourceBranchTip = execFileSync(
+      "git",
+      ["-C", mainClone, "rev-parse", "refs/heads/donger-session/conv-a"],
+      { encoding: "utf8" },
+    ).trim();
+    expect(sourceBranchHead).toBe(sourceBranchTip);
+
+    // 分叉分支独立存在，且其提交历史包含源分支 HEAD（快照 commit 的 parent 链；
+    // is-ancestor 非零即 execFileSync 抛错，测试同样失败）
+    execFileSync("git", [
+      "-C",
+      mainClone,
+      "merge-base",
+      "--is-ancestor",
+      "donger-session/conv-a",
+      "donger-session/conv-b",
+    ]);
+  });
+
+  it("forkSource 源树/分支皆缺 → 回退标准基点并在结果中出 warning", {
+    timeout: 30_000,
+  }, async () => {
+    const { repository } = sourceRepository();
+    const destination = mkdtempSync(join(tmpdir(), "donger-git-fork-fb-"));
+    const worktreeRoot = mkdtempSync(join(tmpdir(), "donger-git-fork-wt2-"));
+    roots.push(destination, worktreeRoot);
+    const materializer = new GitCliRepositoryMaterializer(10_000);
+
+    const results = await materializer.materialize({
+      destination,
+      items: [{ repository }],
+      session: {
+        conversationId: "conv-x",
+        worktreeRoot,
+        forkSource: { conversationId: "conv-missing" },
+      },
+    });
+    expect(results[0]?.status).toBe("warning");
+    expect(results[0]?.message ?? "").toContain("回退");
+    expect(readFileSync(join(worktreeRoot, "conv-x", "repos", "sample", "README.md"), "utf8")).toBe(
+      "hello",
+    );
+  });
+});

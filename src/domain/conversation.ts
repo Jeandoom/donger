@@ -19,6 +19,10 @@ export const ConversationSchema = z.object({
   /** 最近一次运行所用引擎（sdkType）；空=未运行过。与本次解析结果不同→弃 resume 开新线程
    *  （claude sessionId 与 codex threadId 不同命名空间，specs/2026-09-21-codex-openai-runner-design.md §7.4） */
   llmSdkType: z.enum(LLM_SDK_TYPES).optional(),
+  /** 血缘：分叉来源会话 id；空 = 非分叉（specs/2026-10-23-conversation-fork-design.md §4.1） */
+  forkedFromConversationId: z.string().optional(),
+  /** 血缘：分叉点消息 id（D5 单档「含此条」语义下 = 最后一条被复制的消息）；会话级整史分叉 = 源会话末条 */
+  forkedFromMessageId: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   archived: z.boolean(),
