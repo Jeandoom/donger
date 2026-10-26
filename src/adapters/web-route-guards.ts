@@ -72,6 +72,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       pattern: "/api/internal/release-result",
       access: { kind: "public" },
     },
+    // 发布 webhook（三平台 push 唤醒；机器通道）：验签/限流在 handler 内（provider 未配置=404），
+    // public 登记仅为路由覆盖契约建档（同 release-result 口径；分发在守卫之前字面命中）
+    {
+      method: "POST",
+      pattern: "/api/webhooks/release/:provider",
+      access: { kind: "public" },
+    },
     { method: "POST", pattern: "/api/auth/exchange", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/register", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },

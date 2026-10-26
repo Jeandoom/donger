@@ -143,6 +143,31 @@ export function useWebChat() {
     }
   }, []);
 
+  /**
+   * 断流重连补拉（热发布 M4 P2a，spec 2026-10-16-hot-deploy-design §7.1）：
+   * SSE 重连后断线窗口内的增量事件以 history 为准全量重建（messages+events），
+   * 消除「重连成功但中间输出永久丢失」。尽力而为：失败保持现状不断流。
+   */
+  const refetchHistory = useCallback(async (conversationId: string): Promise<void> => {
+    const token = getToken();
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    try {
+      const [messagesRes, events] = await Promise.all([
+        apiFetch(`/api/conversations/${conversationId}/messages`, { headers: authHeaders }),
+        apiFetch(`/api/conversations/${conversationId}/events?light=1`, { headers: authHeaders })
+          .then((response) =>
+            response.ok ? (response.json() as Promise<{ events: HistoryEvent[] }>) : { events: [] },
+          )
+          .catch(() => ({ events: [] as HistoryEvent[] })),
+      ]);
+      if (!messagesRes.ok) return;
+      const messages = (await messagesRes.json()) as HistoryMessage[];
+      dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events.events) });
+    } catch {
+      // 尽力而为：补拉失败保持当前状态（下条事件仍会增量到达）
+    }
+  }, []);
+
   /** 连接 SSE 流 */
   const connectSSE = useCallback(
     (conversationId: string) => {
@@ -307,6 +332,11 @@ export function useWebChat() {
       }
     });
 
+    // 断流重连缺口超出服务端缓冲（热发布 M4）：放弃增量、全量补拉重建
+    eventSource.addEventListener("stream_resync", () => {
+      void refetchHistory(conversationId);
+    });
+
     eventSource.addEventListener("result", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as SSEEvent;
@@ -335,6 +365,10 @@ export function useWebChat() {
       dispatch({ type: "clear_error", key: "stream" });
       // 重连/重开即重查挂起审批：服务重启清扫后残卡随握手撤下，活审批重新锚定
       void refreshPendingApproval(conversationId);
+      // 断流补拉（热发布 M4 P2a）：断线窗口增量以 history 重建
+      void refetchHistory(conversationId);
+      // 通知 PWA 流已恢复（发布切换后借此自动刷新到新 bundle，不再要求手点）
+      window.dispatchEvent(new Event("donger:stream-reconnected"));
     };
 
     eventSource.onerror = (event) => {
@@ -349,7 +383,7 @@ export function useWebChat() {
     };
 
     return eventSource;
-  }, [refreshPendingApproval]);
+  }, [refreshPendingApproval, refetchHistory]);
 
   // 初始连接
   useEffect(() => {
