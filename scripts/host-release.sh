@@ -108,9 +108,13 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
       exit 5
     fi
     WIN_SRC="$(cygpath -w "$SRC_DIR")"
-    # 非 git 备料资产（zcode CLI / .superpowers，机器固定源 → 检出目录 deploy/assets）
+    # 非 git 备料资产（zcode CLI / .superpowers，机器固定源 → 检出目录 deploy/assets）。
+    # stage.ps1 是无 BOM UTF-8（含中文注释），Windows PowerShell 5.1 -File 按 ANSI 读会
+    # 炸解析（「字符串缺少终止符」实锤）——运行时给副本补 UTF-8 BOM 再执行，仓库文件不动。
+    printf '\xEF\xBB\xBF' > "$SRC_DIR/deploy/stage-bom.ps1"
+    cat "$SRC_DIR/deploy/stage.ps1" >> "$SRC_DIR/deploy/stage-bom.ps1"
     if ! powershell -NoProfile -ExecutionPolicy Bypass \
-        -File "$WIN_SRC/deploy/stage.ps1" -AssetsDir "$WIN_SRC/deploy/assets"; then
+        -File "$WIN_SRC/deploy/stage-bom.ps1" -AssetsDir "$WIN_SRC/deploy/assets"; then
       log "!! 备料失败（生产未触碰）"
       exit 5
     fi
