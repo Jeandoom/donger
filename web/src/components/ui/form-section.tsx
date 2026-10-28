@@ -1,9 +1,12 @@
+import { ChevronDown } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
 /**
  * 配置分区卡片：锚点 id + 序号徽标 + 标题/描述 + 右侧补充动作。
  * 供 AgentEditor 左侧锚点导航 scrollIntoView 定位。
+ * collapsible 时标题行右侧出现展开/收起箭头，收起态隐藏描述与内容（头部动作仍可操作，
+ * 如工作流编辑页「启动开关打开即展开分区」）。
  */
 export function FormSection({
   id,
@@ -13,6 +16,9 @@ export function FormSection({
   actions,
   children,
   className,
+  collapsible,
+  collapsed,
+  onCollapsedChange,
 }: {
   id: string;
   no: string;
@@ -21,7 +27,11 @@ export function FormSection({
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
+  const expanded = !collapsible || !collapsed;
   return (
     <section
       id={id}
@@ -31,7 +41,7 @@ export function FormSection({
         className,
       )}
     >
-      <header className="mb-4 flex items-center gap-2.5">
+      <header className={cn("flex items-center gap-2.5", expanded && "mb-4")}>
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-primary-soft text-xs font-bold text-primary">
           {no}
         </span>
@@ -39,11 +49,28 @@ export function FormSection({
           <h2 id={`${id}-title`} className="text-base font-semibold leading-6">
             {title}
           </h2>
-          {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+          {description && expanded ? (
+            <p className="text-xs text-muted-foreground">{description}</p>
+          ) : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+        {collapsible ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={expanded ? "收起" : "展开"}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={() => onCollapsedChange?.(!collapsed)}
+          >
+            <ChevronDown
+              aria-hidden="true"
+              size={16}
+              className={cn("transition-transform", !expanded && "-rotate-90")}
+            />
+          </button>
+        ) : null}
       </header>
-      <div className="flex flex-col gap-3.5">{children}</div>
+      {expanded ? <div className="flex flex-col gap-3.5">{children}</div> : null}
     </section>
   );
 }

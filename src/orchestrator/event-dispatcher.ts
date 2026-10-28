@@ -565,9 +565,10 @@ export class EventDispatcher {
   }
 
   /**
-   * 通知投递轮执行：写手 agent 跑一轮产出文案 → 站内信投递（M2 仅 inapp；站外通道由
-   * NotificationService 按用户偏好附带）。与业务 run 的差异：不发完成事件（杜绝「通知
-   * 写手再被订阅」级联环）、不回写工作流 lastRun、自身失败不再派生通知（防递归）。
+   * 通知投递轮执行：mode=writer（缺省）跑写手 agent 一轮产出文案；mode=direct 直接以
+   * 主 run 执行结果为正文。随后统一投递（站内信 + 站外通道按用户偏好附带 + source 回源）。
+   * 与业务 run 的差异：不发完成事件（杜绝「通知写手再被订阅」级联环）、不回写工作流
+   * lastRun、自身失败不再派生通知（防递归）。
    */
   private async executeNotifyRun(run: WorkflowRun): Promise<void> {
     const { workflowStore, runStore, orchestrator, logger } = this.deps;
@@ -593,65 +594,77 @@ export class EventDispatcher {
     try {
       const startedAt = new Date().toISOString();
       const policy = wf.notifyPolicy;
-      const writerAgentId = policy.writerAgentId ?? wf.agentId;
-      const conv = this.deps.conversationStore
-        ? await this.deps.conversationStore.createWithAgent(
-            wf.ownerId,
-            "web",
-            `🔔 ${wf.name} · 结果通知 · ${startedAt.slice(5, 16).replace("T", " ")}`,
-            writerAgentId,
-          )
-        : undefined;
-      const statusWord = executionStatusWord(ctx.status);
-      const prompt = renderPromptTemplate(
-        policy.promptTemplate?.trim() ? policy.promptTemplate : NOTIFY_WRITER_TEMPLATE,
-        {
-          workflowName: wf.name,
-          statusWord,
-          outputSummary: wrapUntrusted(
-            ctx.outputSummary || ctx.error || "（无结论）",
-            "event:notify",
-          ).wrapped,
-          feedbackSection: ctx.correlation
-            ? `【关联反馈】${ctx.correlation.feedbackId}（提交人 ${ctx.correlation.submitterId}）`
-            : "",
-        },
-      );
-      await runStore.updateRun(run.id, {
-        status: "running",
-        startedAt,
-        conversationId: conv?.id ?? run.conversationId ?? null,
-        renderedPrompt: prompt,
-      });
-      if (conv && this.deps.messageStore) {
-        await this.deps.messageStore
-          .add(conv.id, "user", prompt)
-          .catch((e: Error) =>
-            logger.error({ runId: run.id, err: e.message }, "notify run: persist prompt failed"),
-          );
+      let body: string;
+      if (policy.mode === "direct") {
+        // 直接回复模式（2026-10-28）：主 run 执行结果原样投递，不派生写手轮不烧 token；
+        // renderedPrompt 存投递正文（执行记录展开可见送达内容）
+        body = (ctx.outputSummary || ctx.error || "").trim() || "（无结论）";
+        await runStore.updateRun(run.id, {
+          status: "success",
+          finishedAt: new Date().toISOString(),
+          renderedPrompt: body.slice(0, 2000),
+        });
+      } else {
+        const writerAgentId = policy.writerAgentId ?? wf.agentId;
+        const conv = this.deps.conversationStore
+          ? await this.deps.conversationStore.createWithAgent(
+              wf.ownerId,
+              "web",
+              `🔔 ${wf.name} · 结果通知 · ${startedAt.slice(5, 16).replace("T", " ")}`,
+              writerAgentId,
+            )
+          : undefined;
+        const statusWord = executionStatusWord(ctx.status);
+        const prompt = renderPromptTemplate(
+          policy.promptTemplate?.trim() ? policy.promptTemplate : NOTIFY_WRITER_TEMPLATE,
+          {
+            workflowName: wf.name,
+            statusWord,
+            outputSummary: wrapUntrusted(
+              ctx.outputSummary || ctx.error || "（无结论）",
+              "event:notify",
+            ).wrapped,
+            feedbackSection: ctx.correlation
+              ? `【关联反馈】${ctx.correlation.feedbackId}（提交人 ${ctx.correlation.submitterId}）`
+              : "",
+          },
+        );
+        await runStore.updateRun(run.id, {
+          status: "running",
+          startedAt,
+          conversationId: conv?.id ?? run.conversationId ?? null,
+          renderedPrompt: prompt,
+        });
+        if (conv && this.deps.messageStore) {
+          await this.deps.messageStore
+            .add(conv.id, "user", prompt)
+            .catch((e: Error) =>
+              logger.error({ runId: run.id, err: e.message }, "notify run: persist prompt failed"),
+            );
+        }
+        const agentConversationId = await orchestrator.handleMessage({
+          channelId: "web",
+          threadId: conv?.id ?? run.id,
+          ...(conv ? { conversationId: conv.id } : {}),
+          // correlation 结构化透传：写手轮据此挂载 donger-feedback 工具（反馈回复断链
+          // 修复之一——此前 correlation 只渲染进 prompt 文本，工具挂载条件永远不成立）
+          ...(ctx.correlation
+            ? { feedbackCorrelation: { feedbackId: ctx.correlation.feedbackId } }
+            : {}),
+          requesterId: wf.ownerId,
+          text: prompt,
+          unattended: true,
+          permissionMode: wf.permissionMode,
+        });
+        const finishedAt = new Date().toISOString();
+        const finalConvId = agentConversationId ?? conv?.id ?? null;
+        await runStore.updateRun(run.id, {
+          status: "success",
+          finishedAt,
+          conversationId: finalConvId,
+        });
+        body = await this.lastReplyText(finalConvId);
       }
-      const agentConversationId = await orchestrator.handleMessage({
-        channelId: "web",
-        threadId: conv?.id ?? run.id,
-        ...(conv ? { conversationId: conv.id } : {}),
-        // correlation 结构化透传：写手轮据此挂载 donger-feedback 工具（反馈回复断链
-        // 修复之一——此前 correlation 只渲染进 prompt 文本，工具挂载条件永远不成立）
-        ...(ctx.correlation
-          ? { feedbackCorrelation: { feedbackId: ctx.correlation.feedbackId } }
-          : {}),
-        requesterId: wf.ownerId,
-        text: prompt,
-        unattended: true,
-        permissionMode: wf.permissionMode,
-      });
-      const finishedAt = new Date().toISOString();
-      const finalConvId = agentConversationId ?? conv?.id ?? null;
-      await runStore.updateRun(run.id, {
-        status: "success",
-        finishedAt,
-        conversationId: finalConvId,
-      });
-      const body = await this.lastReplyText(finalConvId);
       // 反馈回复兜底（2026-10-26 反馈通知回复断链修复）：correlation 在场且写手未用
       // donger-feedback 工具写回复时，平台把通知成稿直接落为反馈回复——提交人在反馈页
       // 能看到处理结论，不依赖写手指令遵从与工具白名单。写手已回复（工具路径）则跳过；

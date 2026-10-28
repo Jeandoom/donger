@@ -382,3 +382,102 @@ describe("notifyPolicy source 回源通道（spec 2026-10-27 §4.4 D3）", () =>
     expect(notifyIntent.channels).toContain("inapp");
   });
 });
+
+describe("notifyPolicy direct 模式（2026-10-28 直接回复执行结果）", () => {
+  const GROUP_MSG_PAYLOAD = JSON.stringify({
+    platform: "dingtalk",
+    topic: "robot.group",
+    eventId: "msg-10",
+    occurredAt: "2026-10-28T00:00:00.000Z",
+    sender: { id: "staff-1", name: "张三" },
+    source: { openConversationId: "cid-group-2", conversationType: "2" },
+    text: "@机器人 处理",
+    replyAnchor: { platform: "dingtalk", kind: "group", threadId: "cid-group-2" },
+  });
+
+  it("success + correlation 收件人：不派生写手轮，主 run 执行结果原样投递并兜底落反馈回复", async () => {
+    const s = setup();
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["success"],
+          mode: "direct",
+          title: "你的反馈已处理",
+          recipients: "correlation",
+          channels: ["inapp"],
+        },
+      }) as never,
+    );
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: FEEDBACK_CTX });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "success");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+
+    // 仅主 run 一轮 LLM 调用：写手轮整体跳过
+    expect(s.handleMessage).toHaveBeenCalledTimes(1);
+    // 站内信正文=主 run 最终回复（messageStore mock 的 bot 文本），收件人=因果提交人
+    const intent = s.notify.mock.calls
+      .map((c) => c[0] as NotificationIntent)
+      .find((i) => i.event === "workflow.result_notified");
+    expect(intent?.body).toContain("通知正文");
+    expect(intent?.recipients).toEqual([{ kind: "user", userId: "submitter-7" }]);
+    // 反馈回复兜底照常：正文=执行结果
+    await waitFor(() => s.feedbackStore.addReply.mock.calls.length > 0);
+    const reply = s.feedbackStore.addReply.mock.calls[0]?.[0] as { content: string };
+    expect(reply.content).toContain("通知正文");
+  });
+
+  it("success + source 锚点：执行结果原样回源投递，投递正文存 renderedPrompt", async () => {
+    const s = setup();
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["success"],
+          mode: "direct",
+          recipients: "owner",
+          channels: ["source"],
+        },
+      }) as never,
+    );
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: GROUP_MSG_PAYLOAD });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "success");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+
+    expect(s.handleMessage).toHaveBeenCalledTimes(1);
+    expect(s.sourceDeliver).toHaveBeenCalledOnce();
+    const [anchor, text] = s.sourceDeliver.mock.calls[0] as [
+      { platform: string; threadId: string },
+      string,
+    ];
+    expect(anchor).toEqual({ platform: "dingtalk", kind: "group", threadId: "cid-group-2" });
+    expect(text).toContain("通知正文");
+    expect((await s.runStore.getRun(nRun!.id))?.renderedPrompt).toContain("通知正文");
+  });
+
+  it("failed：无执行结果时正文降级为错误信息，notify 轮仍成功收口", async () => {
+    const s = setup({ handleMessageError: new Error("上游执行炸了") });
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["failed"],
+          mode: "direct",
+          recipients: "owner",
+          channels: ["inapp"],
+        },
+      }) as never,
+    );
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: "x" });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "failed");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+    expect(s.handleMessage).toHaveBeenCalledTimes(1);
+    const intent = s.notify.mock.calls
+      .map((c) => c[0] as NotificationIntent)
+      .find((i) => i.event === "workflow.result_notified");
+    expect(intent?.body).toContain("上游执行炸了");
+  });
+});

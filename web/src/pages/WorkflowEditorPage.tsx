@@ -58,6 +58,8 @@ interface WorkflowDTO {
   /** 通知策略（2026-10-20 反馈闭环 M2）：run 终态后由平台派生通知轮投递结果 */
   notifyPolicy?: {
     enabled: boolean;
+    /** 正文来源：writer=写手智能体撰写（缺省）；direct=直接投递主 run 执行结果 */
+    mode?: "writer" | "direct";
     on?: Array<"success" | "failed" | "stopped">;
     writerAgentId?: string;
     promptTemplate?: string;
@@ -166,13 +168,16 @@ export function WorkflowEditorPage() {
   const [permissionMode, setPermissionMode] = useState("full_access");
   const [promptTemplate, setPromptTemplate] = useState("{{triggerOutput}}");
   const [enabled, setEnabled] = useState(false);
-  // L2 自动发布
+  // L2 自动发布（分区默认收起，头部开关打开即展开）
   const [autoDevEnabled, setAutoDevEnabled] = useState(false);
+  const [autoDevOpen, setAutoDevOpen] = useState(false);
   const [maxFiles, setMaxFiles] = useState("15");
   const [maxChangedLines, setMaxChangedLines] = useState("400");
   const [dailyQuota, setDailyQuota] = useState("3");
-  // 通知策略（M2）
+  // 通知策略（M2；分区默认收起，头部开关打开即展开）
   const [notifyEnabled, setNotifyEnabled] = useState(false);
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [notifyMode, setNotifyMode] = useState<"writer" | "direct">("writer");
   const [notifyOnSuccess, setNotifyOnSuccess] = useState(true);
   const [notifyOnFailed, setNotifyOnFailed] = useState(false);
   const [notifyOnStopped, setNotifyOnStopped] = useState(false);
@@ -216,6 +221,7 @@ export function WorkflowEditorPage() {
     maxChangedLines,
     dailyQuota,
     notifyEnabled,
+    notifyMode,
     notifyOnSuccess,
     notifyOnFailed,
     notifyOnStopped,
@@ -227,6 +233,7 @@ export function WorkflowEditorPage() {
     notifyDingtalk,
     notifyWebhook,
     notifyEmail,
+    notifySource,
   });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
@@ -279,6 +286,10 @@ export function WorkflowEditorPage() {
       setDailyQuota(String(w.autoDev?.policy?.dailyAutoMergeQuota ?? 3));
       const np = w.notifyPolicy;
       setNotifyEnabled(np?.enabled ?? false);
+      setNotifyMode(np?.mode === "direct" ? "direct" : "writer");
+      // 已配置开启的分区展开（默认收起针对新建/未启用形态）
+      setAutoDevOpen(w.autoDev?.enabled ?? false);
+      setNotifyOpen(np?.enabled ?? false);
       setNotifyOnSuccess(!np?.on?.length || np.on.includes("success"));
       setNotifyOnFailed(np?.on?.includes("failed") ?? false);
       setNotifyOnStopped(np?.on?.includes("stopped") ?? false);
@@ -393,9 +404,15 @@ export function WorkflowEditorPage() {
           notifyPolicy: {
             enabled: notifyEnabled,
             on: notifyOn.length ? notifyOn : ["success"],
-            ...(notifyWriterAgentId ? { writerAgentId: notifyWriterAgentId } : {}),
+            mode: notifyMode,
+            // direct 模式不投递写手配置（执行器不消费，落库保持语义干净）
+            ...(notifyMode === "writer" && notifyWriterAgentId
+              ? { writerAgentId: notifyWriterAgentId }
+              : {}),
             ...(notifyTitle.trim() ? { title: notifyTitle.trim() } : {}),
-            ...(notifyPrompt.trim() ? { promptTemplate: notifyPrompt } : {}),
+            ...(notifyMode === "writer" && notifyPrompt.trim()
+              ? { promptTemplate: notifyPrompt }
+              : {}),
             channels: [
               ...(notifyInapp ? ["inapp"] : []),
               ...(notifyDingtalk ? ["dingtalk"] : []),
@@ -686,15 +703,24 @@ export function WorkflowEditorPage() {
         no="3"
         title="自动发布（L2）"
         description="启用后平台轮询该 Agent 首个绑定仓库的 [autofix] MR：策略命中即自动合并，宿主管线构建发布、失败自动回滚；未命中转人工。合并与部署不经 LLM"
-      >
-        <FormField label="启用自动发布">
-          <div className="flex items-center gap-2">
-            <Switch checked={autoDevEnabled} onCheckedChange={setAutoDevEnabled} />
+        collapsible
+        collapsed={!autoDevOpen}
+        onCollapsedChange={(c) => setAutoDevOpen(!c)}
+        actions={
+          <>
             <span className="text-xs text-muted-foreground">
-              {autoDevEnabled ? "策略命中即自动合并（全链无人值守）" : "关闭（仅提示，不自动合并）"}
+              {autoDevEnabled ? "已开启" : "已关闭"}
             </span>
-          </div>
-        </FormField>
+            <Switch
+              checked={autoDevEnabled}
+              onCheckedChange={(v) => {
+                setAutoDevEnabled(v);
+                if (v) setAutoDevOpen(true);
+              }}
+            />
+          </>
+        }
+      >
         <div className="grid grid-cols-3 gap-3">
           <FormField label="文件数上限" hint="超过转人工">
             <Input
@@ -731,17 +757,28 @@ export function WorkflowEditorPage() {
         id="wf-sec-notify"
         no="4"
         title="结果通知"
-        description="执行结束后由平台派生一条通知轮：写手智能体把执行情况写成通知正文，经所选通道投递给收件人（不发完成事件、不参与级联）；关闭则静默"
-      >
-        <FormField label="启用结果通知">
-          <div className="flex items-center gap-2">
-            <Switch checked={notifyEnabled} onCheckedChange={setNotifyEnabled} />
+        description="执行结束后由平台投递结果通知（不发完成事件、不参与级联）：正文可直接使用执行结果，或由写手智能体改写；关闭则静默"
+        collapsible
+        collapsed={!notifyOpen}
+        onCollapsedChange={(c) => setNotifyOpen(!c)}
+        actions={
+          <>
             <span className="text-xs text-muted-foreground">
-              {notifyEnabled ? "命中触发时机即投递通知" : "关闭（执行结果不主动通知任何人）"}
+              {notifyEnabled ? "已开启" : "已关闭"}
             </span>
-          </div>
-        </FormField>
-        {notifyEnabled && (
+            <Switch
+              checked={notifyEnabled}
+              onCheckedChange={(v) => {
+                setNotifyEnabled(v);
+                if (v) setNotifyOpen(true);
+              }}
+            />
+          </>
+        }
+      >
+        {!notifyEnabled ? (
+          <p className="text-xs text-muted-foreground">开启开关后配置触发时机、收件人、通道与正文来源</p>
+        ) : (
           <>
             <FormField label="触发时机" required hint="至少选一种">
               <div className="flex flex-wrap items-center gap-4 text-sm">
@@ -803,55 +840,75 @@ export function WorkflowEditorPage() {
               </div>
             </FormField>
             <FormField
-              label="通知写手"
-              hint="把执行结论改写成通知正文的智能体；缺省=本工作流绑定的 Agent"
+              label="通知内容"
+              hint={
+                notifyMode === "direct"
+                  ? "直接把本轮 Agent 的最终回复作为通知正文投递，不派生写手轮（零额外 token）"
+                  : "由写手智能体基于执行简报改写成通知正文"
+              }
             >
               <Select
-                value={notifyWriterAgentId}
-                onChange={(e) => setNotifyWriterAgentId(e.target.value)}
+                value={notifyMode}
+                onChange={(e) => setNotifyMode(e.target.value as "writer" | "direct")}
               >
-                <option value="">— 跟随工作流 Agent —</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                    {!a._mine ? "（共享）" : ""}
-                  </option>
-                ))}
+                <option value="writer">写手智能体撰写</option>
+                <option value="direct">直接回复执行结果</option>
               </Select>
             </FormField>
+            {notifyMode === "writer" && (
+              <>
+                <FormField
+                  label="通知写手"
+                  hint="把执行结论改写成通知正文的智能体；缺省=本工作流绑定的 Agent"
+                >
+                  <Select
+                    value={notifyWriterAgentId}
+                    onChange={(e) => setNotifyWriterAgentId(e.target.value)}
+                  >
+                    <option value="">— 跟随工作流 Agent —</option>
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                        {!a._mine ? "（共享）" : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField
+                  label="写手指令模板"
+                  hint={
+                    <>
+                      可用变量（点击插入）：
+                      {["workflowName", "statusWord", "outputSummary"].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          className="mx-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs hover:bg-primary-soft hover:text-primary"
+                          onClick={() => setNotifyPrompt((t) => `${t}{{${v}}}`)}
+                        >
+                          {`{{${v}}}`}
+                        </button>
+                      ))}
+                      ；留空=平台默认通知员模板
+                    </>
+                  }
+                >
+                  <Textarea
+                    mono
+                    rows={3}
+                    value={notifyPrompt}
+                    onChange={(e) => setNotifyPrompt(e.target.value)}
+                    placeholder="如：面向提交人写一段话，语气轻松，说明问题是否修复、如何验证"
+                  />
+                </FormField>
+              </>
+            )}
             <FormField label="通知标题" hint="留空=「工作流「名称」结果通知」">
               <Input
                 value={notifyTitle}
                 onChange={(e) => setNotifyTitle(e.target.value)}
                 placeholder="如：你的反馈已处理完毕"
                 maxLength={120}
-              />
-            </FormField>
-            <FormField
-              label="写手指令模板"
-              hint={
-                <>
-                  可用变量（点击插入）：
-                  {["workflowName", "statusWord", "outputSummary"].map((v) => (
-                    <button
-                      key={v}
-                      type="button"
-                      className="mx-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs hover:bg-primary-soft hover:text-primary"
-                      onClick={() => setNotifyPrompt((t) => `${t}{{${v}}}`)}
-                    >
-                      {`{{${v}}}`}
-                    </button>
-                  ))}
-                  ；留空=平台默认通知员模板
-                </>
-              }
-            >
-              <Textarea
-                mono
-                rows={3}
-                value={notifyPrompt}
-                onChange={(e) => setNotifyPrompt(e.target.value)}
-                placeholder="如：面向提交人写一段话，语气轻松，说明问题是否修复、如何验证"
               />
             </FormField>
           </>

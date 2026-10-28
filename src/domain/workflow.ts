@@ -23,9 +23,12 @@ export const NotifyPolicySchema = z.object({
     .array(z.enum(["success", "failed", "stopped"]))
     .min(1)
     .default(["success"]),
-  /** 通知文案写手智能体；缺省=工作流绑定的 agent */
+  /** 通知正文来源（2026-10-28）：writer=写手 agent 撰写（缺省，存量兼容）；
+   * direct=主 run 执行结果原样投递，不派生写手轮（writerAgentId/promptTemplate 不生效） */
+  mode: z.enum(["writer", "direct"]).default("writer"),
+  /** 通知文案写手智能体；缺省=工作流绑定的 agent（仅 writer 模式） */
   writerAgentId: z.string().min(1).optional(),
-  /** 写手指令模板（{{statusWord}}/{{outputSummary}}/{{feedbackId}} 等简报变量可用）；空=平台默认模板 */
+  /** 写手指令模板（{{statusWord}}/{{outputSummary}}/{{feedbackId}} 等简报变量可用）；空=平台默认模板（仅 writer 模式） */
   promptTemplate: z.string().max(4000).optional(),
   /** 通知标题；空=「工作流「{name}」结果通知」 */
   title: z.string().max(120).optional(),
