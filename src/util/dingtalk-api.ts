@@ -249,7 +249,7 @@ export function parseDingTalkError(text: string): string {
   return text.slice(0, 200);
 }
 
-/** singleSend 请求体（纯函数）。 */
+/** singleSend 请求体（纯函数）。markdown 键=sampleMarkdown（2026-10-28 生产实测：batchSend 已拒收旧 sampleMarkdownMsg，群发 groupMessages/send 同样只认 sampleMarkdown；通知通道 notif-dingtalk 一直在用此键） */
 export function buildSingleSendBody(
   robotCode: string,
   userId: string,
@@ -259,7 +259,7 @@ export function buildSingleSendBody(
     return {
       robotCode,
       userIds: [userId],
-      msgKey: "sampleMarkdownMsg",
+      msgKey: "sampleMarkdown",
       msgParam: JSON.stringify({
         title: msg.text.split("\n")[0]?.trim().slice(0, 50) || "donger",
         text: msg.text,
@@ -303,7 +303,7 @@ export function buildGroupSendBody(
     return {
       robotCode,
       openConversationId,
-      msgKey: "sampleMarkdownMsg",
+      msgKey: "sampleMarkdown",
       msgParam: JSON.stringify({
         title: msg.text.split("\n")[0]?.trim().slice(0, 50) || "donger",
         text: msg.text,

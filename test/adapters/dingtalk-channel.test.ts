@@ -26,7 +26,7 @@ vi.mock("../../src/util/dingtalk-api.js", () => ({
   buildSingleSendBody: vi.fn((robotCode: string, userId: string, msg: { markdown?: boolean }) => ({
     robotCode,
     userIds: [userId],
-    msgKey: msg?.markdown ? "sampleMarkdownMsg" : "sampleText",
+    msgKey: msg?.markdown ? "sampleMarkdown" : "sampleText",
     msgParam: "{}",
   })),
   sendSingleMessage: vi.fn(async () => undefined),
@@ -34,7 +34,7 @@ vi.mock("../../src/util/dingtalk-api.js", () => ({
     (robotCode: string, openConversationId: string, msg: { markdown?: boolean }) => ({
       robotCode,
       openConversationId,
-      msgKey: msg?.markdown ? "sampleMarkdownMsg" : "sampleText",
+      msgKey: msg?.markdown ? "sampleMarkdown" : "sampleText",
       msgParam: "{}",
     }),
   ),
@@ -150,7 +150,7 @@ describe("DingTalkChannel 审批交互", () => {
     await tick();
     expect(sendSingleMessage).toHaveBeenCalledWith(
       "tok",
-      expect.objectContaining({ msgKey: "sampleMarkdownMsg" }),
+      expect.objectContaining({ msgKey: "sampleMarkdown" }),
     );
   });
 

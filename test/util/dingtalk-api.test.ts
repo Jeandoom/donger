@@ -31,7 +31,7 @@ describe("buildSingleSendBody", () => {
 
   it("markdown → SampleMarkdownMsg + title/text", () => {
     const b = buildSingleSendBody("rc", "u1", { text: "# 标题\n正文", markdown: true });
-    expect(b.msgKey).toBe("sampleMarkdownMsg");
+    expect(b.msgKey).toBe("sampleMarkdown");
     expect(JSON.parse(b.msgParam)).toEqual({ title: "# 标题", text: "# 标题\n正文" });
   });
 });
