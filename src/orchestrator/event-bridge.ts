@@ -11,7 +11,10 @@ import { matchBuiltinToolCall } from "../util/provider-tool-text.js";
  *  result error → 失败消息持久化 + 推送失败通知。
  *  quietResult=true（多阶段任务的非末轮）→ 成功 result 不推送（回合不提前结束）；
  *  失败照常推送（回合必须能以错误结束）。
- *  silent=true（内部轮，如 dispatcher 路由）→ 全部只走审计不推送不持久化，仅返回末事件。 */
+ *  silent=true（内部轮，如 dispatcher 路由）→ 全部只走审计不推送不持久化，仅返回末事件。
+ *  sendThreadId=渠道投递线程 id：无 pushText 通道（钉钉）降级 send 的目标。
+ *  必须传渠道 threadId 而非平台 conversationId——钉钉 recipients 以渠道会话 id 为键，
+ *  传平台 id 恒抛 NO_RECIPIENT（2026-10-27 群消息回复事故根因）。 */
 export async function bridgeEvents(
   channel: Channel,
   conversationId: string,
@@ -19,6 +22,7 @@ export async function bridgeEvents(
   messageStore?: MessageStore,
   quietResult = false,
   silent = false,
+  sendThreadId?: string,
 ): Promise<RunnerEvent | undefined> {
   let last: RunnerEvent | undefined;
   let streamedMessageId: string | null = null;
@@ -78,13 +82,13 @@ export async function bridgeEvents(
           .add(conversationId, "bot", text, "[]", e.taskId)
           .catch((err) => console.error("[bridgeEvents] 保存 bot 消息失败", err));
       }
-      // 通过 SSE 推送（优先 pushText，降级到 send）
+      // 通过 SSE 推送（优先 pushText，降级到 send——目标=渠道 threadId，见签名注释）
       if (channel.pushTextDelta && streamedMessageId) {
         streamedMessageId = null;
       } else if (channel.pushText && conversationId) {
         channel.pushText(conversationId, text);
       } else {
-        await channel.send(conversationId, { text });
+        await channel.send(sendThreadId ?? conversationId, { text });
       }
     } else if (e.type === "result") {
       if (e.subtype === "error") {
@@ -100,7 +104,7 @@ export async function bridgeEvents(
         if (channel.pushText && conversationId) {
           channel.pushText(conversationId, errorText);
         } else {
-          await channel.send(conversationId, { text: errorText });
+          await channel.send(sendThreadId ?? conversationId, { text: errorText });
         }
         channel.pushResult?.(conversationId, "error", errorText);
       } else if (quietResult) {

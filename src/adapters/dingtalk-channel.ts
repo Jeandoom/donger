@@ -1,13 +1,26 @@
 import { DWClient, type RobotTextMessage, TOPIC_ROBOT } from "dingtalk-stream";
 import type { ApprovalCard, IncomingMessage, OutgoingMessage } from "../domain/types.js";
 import type { Channel } from "../ports/channel.js";
-import { buildSingleSendBody, getAccessToken, sendSingleMessage } from "../util/dingtalk-api.js";
+import {
+  buildGroupSendBody,
+  buildSingleSendBody,
+  getAccessToken,
+  sendGroupMessage,
+  sendSingleMessage,
+} from "../util/dingtalk-api.js";
 import { ChannelError } from "../util/errors.js";
 
 export interface DingTalkConfig {
   appKey: string;
   appSecret: string;
   robotCode: string;
+}
+
+/** 会话 → 回复目标。conversationType=2（群）时 send 走 groupMessages/send 回源到群 */
+interface DingTalkRecipient {
+  userId: string;
+  conversationType?: string;
+  senderNick?: string;
 }
 
 /** 钉钉机器人消息 → IncomingMessage 归一 */
@@ -29,7 +42,7 @@ export class DingTalkChannel implements Channel {
   readonly id = "dingtalk";
   handler?: (msg: IncomingMessage) => void;
   private client?: DWClient;
-  readonly recipients = new Map<string, string>();
+  readonly recipients = new Map<string, DingTalkRecipient>();
   private readonly pendingApprovals = new Map<
     string,
     (d: { approved: boolean; reason?: string }) => void
@@ -55,7 +68,11 @@ export class DingTalkChannel implements Channel {
           client.socketCallBackResponse(msg.headers.messageId, {});
           return;
         }
-        this.recipients.set(robot.conversationId, robot.senderStaffId);
+        this.recipients.set(robot.conversationId, {
+          userId: robot.senderStaffId,
+          conversationType: robot.conversationType,
+          senderNick: robot.senderNick,
+        });
         this.routeIncoming(normalizeDingTalkMessage(robot));
       } catch (e) {
         console.error("[dingtalk] 消息解析失败", e);
@@ -82,10 +99,21 @@ export class DingTalkChannel implements Channel {
   }
 
   async send(threadId: string, msg: OutgoingMessage): Promise<void> {
-    const userId = this.recipients.get(threadId);
-    if (!userId) throw new ChannelError("NO_RECIPIENT", `钉钉无 ${threadId} 的 recipient`);
+    const recipient = this.recipients.get(threadId);
+    if (!recipient) throw new ChannelError("NO_RECIPIENT", `钉钉无 ${threadId} 的 recipient`);
     const token = await getAccessToken(this.cfg.appKey, this.cfg.appSecret);
-    await sendSingleMessage(token, buildSingleSendBody(this.cfg.robotCode, userId, msg));
+    // 群消息回源：来源是群（conversationType=2）→ groupMessages/send 回到群里。
+    // conversationId 作 openConversationId 属社区惯例（SDK 类型未声明该字段），
+    // 失败（如 invalid.openConversationId）回退单聊，保证送达。
+    if (recipient.conversationType === "2") {
+      try {
+        await sendGroupMessage(token, buildGroupSendBody(this.cfg.robotCode, threadId, msg));
+        return;
+      } catch (e) {
+        console.warn(`[dingtalk] 群回复失败，回退单聊: ${(e as Error).message}`);
+      }
+    }
+    await sendSingleMessage(token, buildSingleSendBody(this.cfg.robotCode, recipient.userId, msg));
   }
 
   requestApproval(

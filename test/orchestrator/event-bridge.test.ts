@@ -1,19 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { RunnerEvent } from "../../src/domain/types.js";
+import type { OutgoingMessage, RunnerEvent } from "../../src/domain/types.js";
 import { bridgeEvents } from "../../src/orchestrator/event-bridge.js";
-import type { Channel, OutgoingMessage } from "../../src/ports/channel.js";
+import type { Channel } from "../../src/ports/channel.js";
 
 async function* of(events: RunnerEvent[]): AsyncIterable<RunnerEvent> {
   for (const e of events) yield e;
 }
 
-function fakeChannel(): Channel & { sent: OutgoingMessage[] } {
+function fakeChannel(): Channel & { sent: OutgoingMessage[]; sentTo: string[] } {
   const sent: OutgoingMessage[] = [];
+  const sentTo: string[] = [];
   return {
     id: "test",
     sent,
+    sentTo,
     onMessage: () => {},
-    send: async (_t, m) => {
+    send: async (threadId, m) => {
+      sentTo.push(threadId);
       sent.push(m);
     },
     requestApproval: async () => ({ approved: true }),
@@ -149,6 +152,40 @@ describe("bridgeEvents", () => {
     const ch = fakeChannel();
     await bridgeEvents(ch, "th", of([{ type: "text", taskId: "t", text: "hi" }]));
     expect(ch.sent.map((m) => m.text)).toEqual(["hi"]);
+  });
+
+  it("无 pushText 通道传 sendThreadId → 降级 send 投渠道线程（钉钉 recipients 以渠道会话 id 为键）", async () => {
+    const ch = fakeChannel();
+    await bridgeEvents(
+      ch,
+      "conv-uuid",
+      of([{ type: "text", taskId: "t", text: "hi" }]),
+      undefined,
+      false,
+      false,
+      "cid-group",
+    );
+    expect(ch.sentTo).toEqual(["cid-group"]);
+    expect(ch.sent.map((m) => m.text)).toEqual(["hi"]);
+  });
+
+  it("result error 同样投渠道线程；不传 sendThreadId 回落 conversationId（存量兼容）", async () => {
+    const chA = fakeChannel();
+    await bridgeEvents(
+      chA,
+      "conv-uuid",
+      of([{ type: "result", taskId: "t", subtype: "error", error: "崩了" }]),
+      undefined,
+      false,
+      false,
+      "cid-group",
+    );
+    expect(chA.sentTo).toEqual(["cid-group"]);
+    expect(chA.sent[0]?.text).toBe("❌ 失败：崩了");
+
+    const chB = fakeChannel();
+    await bridgeEvents(chB, "conv-uuid", of([{ type: "text", taskId: "t", text: "hi" }]));
+    expect(chB.sentTo).toEqual(["conv-uuid"]);
   });
 
   it("result success → 不发消息（agent 文本已是回复）", async () => {

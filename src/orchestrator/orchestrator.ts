@@ -1367,6 +1367,8 @@ export class Orchestrator {
       p.silent ? undefined : this.deps.messageStore,
       p.quietResult === true,
       p.silent === true,
+      // 无 pushText 通道（钉钉）的降级 send 必须回渠道线程（群/单聊回源），见 bridgeEvents 注释
+      p.threadId,
     );
 
     const ok = last?.type === "result" && last.subtype === "success";

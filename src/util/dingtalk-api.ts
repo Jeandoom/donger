@@ -2,6 +2,7 @@ import type { OutgoingMessage } from "../domain/types.js";
 
 const GETTOKEN_URL = "https://oapi.dingtalk.com/gettoken";
 const SINGLE_SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
+const GROUP_SEND_URL = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
 const CARD_CREATE_DELIVER_URL = "https://api.dingtalk.com/v1.0/card/instances/createAndDeliver";
 const CARD_UPDATE_URL = "https://api.dingtalk.com/v1.0/card/instances";
 
@@ -289,6 +290,54 @@ export async function sendSingleMessage(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`钉钉 singleSend 失败 (${res.status}): ${parseDingTalkError(text)}`);
+  }
+}
+
+/** groupSend 请求体（纯函数）：机器人回复群聊（来源群消息的回源回复） */
+export function buildGroupSendBody(
+  robotCode: string,
+  openConversationId: string,
+  msg: OutgoingMessage,
+): { robotCode: string; openConversationId: string; msgKey: string; msgParam: string } {
+  if (msg.markdown) {
+    return {
+      robotCode,
+      openConversationId,
+      msgKey: "sampleMarkdownMsg",
+      msgParam: JSON.stringify({
+        title: msg.text.split("\n")[0]?.trim().slice(0, 50) || "donger",
+        text: msg.text,
+      }),
+    };
+  }
+  return {
+    robotCode,
+    openConversationId,
+    msgKey: "sampleText",
+    msgParam: JSON.stringify({ content: msg.text }),
+  };
+}
+
+/**
+ * 调用 groupMessages/send 回复群聊。
+ * openConversationId 取群消息回调的 conversationId（SDK 类型未声明该字段，社区惯例即同值；
+ * 调用方须对 invalid.openConversationId 回退单聊，见 DingTalkChannel.send）。
+ */
+export async function sendGroupMessage(
+  token: string,
+  body: { robotCode: string; openConversationId: string; msgKey: string; msgParam: string },
+): Promise<void> {
+  const res = await fetch(GROUP_SEND_URL, {
+    method: "POST",
+    headers: {
+      "x-acs-dingtalk-access-token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`钉钉 groupSend 失败 (${res.status}): ${parseDingTalkError(text)}`);
   }
 }
 
