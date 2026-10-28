@@ -14,7 +14,7 @@ import { fetchAgents } from "../lib/agents";
 import { validateCron } from "../lib/cronBuilder";
 import { runStatusLabel, runStatusTone } from "../lib/runStatus";
 
-type EventType = "system" | "schedule" | "call";
+type EventType = "system" | "schedule" | "call" | "message";
 
 type MatcherKind =
   | "always"
@@ -55,7 +55,24 @@ interface EventDTO {
     source?: { type: "http"; url: string; method: string } | { type: "file"; path: string };
     matcher?: MatcherDTO;
   };
-  call?: { path: string; methods: string[]; responseStatus: number; responseBody: string; matcher: MatcherDTO };
+  call?: {
+    path: string;
+    methods: string[];
+    responseStatus: number;
+    responseBody: string;
+    matcher: MatcherDTO;
+  };
+  message?: {
+    platform: "dingtalk" | "teambition";
+    topic: string;
+    filter?: {
+      openConversationId?: string;
+      orgId?: string;
+      projectId?: string;
+      allowFrom?: string[];
+    };
+    matcher?: MatcherDTO;
+  };
 }
 
 interface FiringDTO {
@@ -108,6 +125,7 @@ const SOURCE_LABEL: Record<string, string> = {
   schedule: "定时",
   call: "调用",
   system: "系统",
+  message: "平台消息",
 };
 
 function toMatcherFields(m?: MatcherDTO): { kind: MatcherKind; fields: MatcherFields } {
@@ -176,12 +194,17 @@ export function EventEditorPage() {
   const [type, setType] = useState<EventType>("schedule");
   // schedule
   const [cron, setCron] = useState("0 9 * * *");
-  const [scheduleMode, setScheduleMode] = useState<"unconditional" | "conditional">("unconditional");
+  const [scheduleMode, setScheduleMode] = useState<"unconditional" | "conditional">(
+    "unconditional",
+  );
   const [sourceType, setSourceType] = useState<"http" | "file">("http");
   const [httpUrl, setHttpUrl] = useState("");
   const [httpMethod, setHttpMethod] = useState("GET");
   const [filePath, setFilePath] = useState("");
-  const [scheduleMatcher, setScheduleMatcher] = useState<{ kind: MatcherKind; fields: MatcherFields }>({
+  const [scheduleMatcher, setScheduleMatcher] = useState<{
+    kind: MatcherKind;
+    fields: MatcherFields;
+  }>({
     kind: "always",
     fields: {},
   });
@@ -195,6 +218,18 @@ export function EventEditorPage() {
   // system
   const [systemName, setSystemName] = useState("feedback.created");
   const [systemMatcher, setSystemMatcher] = useState<{ kind: MatcherKind; fields: MatcherFields }>({
+    kind: "always",
+    fields: {},
+  });
+  // message（spec 2026-10-27-platform-message-subscription-design §4.2 D1；M1 平台=钉钉）
+  const [messagePlatform, setMessagePlatform] = useState<"dingtalk" | "teambition">("dingtalk");
+  const [messageTopic, setMessageTopic] = useState("robot.group");
+  const [msgConvId, setMsgConvId] = useState("");
+  const [msgAllowFrom, setMsgAllowFrom] = useState("");
+  const [messageMatcher, setMessageMatcher] = useState<{
+    kind: MatcherKind;
+    fields: MatcherFields;
+  }>({
     kind: "always",
     fields: {},
   });
@@ -233,6 +268,11 @@ export function EventEditorPage() {
     systemMatcher,
     subjects,
     timing,
+    messagePlatform,
+    messageTopic,
+    msgConvId,
+    msgAllowFrom,
+    messageMatcher,
   });
   const pristineRef = useRef<string | null>(null);
   useEffect(() => {
@@ -274,6 +314,13 @@ export function EventEditorPage() {
         setSubjects(e.system.subjects ?? []);
         setTiming(e.system.timing ?? "all");
         setSystemMatcher(toMatcherFields(e.system.matcher));
+      }
+      if (e.message) {
+        setMessagePlatform(e.message.platform);
+        setMessageTopic(e.message.topic);
+        setMsgConvId(e.message.filter?.openConversationId ?? "");
+        setMsgAllowFrom((e.message.filter?.allowFrom ?? []).join("\n"));
+        setMessageMatcher(toMatcherFields(e.message.matcher));
       }
       setLoaded(true);
       pristineRef.current = null;
@@ -360,6 +407,25 @@ export function EventEditorPage() {
         },
       };
     }
+    if (type === "message") {
+      const allowFrom = msgAllowFrom
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return {
+        name,
+        type,
+        message: {
+          platform: messagePlatform,
+          topic: messageTopic,
+          filter: {
+            ...(msgConvId.trim() ? { openConversationId: msgConvId.trim() } : {}),
+            ...(allowFrom.length ? { allowFrom } : {}),
+          },
+          matcher: buildMatcherPayload(messageMatcher.kind, messageMatcher.fields),
+        },
+      };
+    }
     return {
       name,
       type,
@@ -406,6 +472,12 @@ export function EventEditorPage() {
         return null;
       }
       const mErr = matcherIssue(systemMatcher.kind, systemMatcher.fields);
+      if (mErr) return mErr;
+    }
+    if (type === "message") {
+      if (!messagePlatform) return "请选择平台";
+      if (!messageTopic.trim()) return "请填写消息主题";
+      const mErr = matcherIssue(messageMatcher.kind, messageMatcher.fields);
       if (mErr) return mErr;
     }
     return null;
@@ -512,10 +584,17 @@ export function EventEditorPage() {
   }
 
   const matcherOf =
-    type === "schedule" ? scheduleMatcher : type === "call" ? callMatcher : systemMatcher;
+    type === "schedule"
+      ? scheduleMatcher
+      : type === "call"
+        ? callMatcher
+        : type === "message"
+          ? messageMatcher
+          : systemMatcher;
   const setMatcherOf = (v: { kind: MatcherKind; fields: MatcherFields }) => {
     if (type === "schedule") setScheduleMatcher(v);
     else if (type === "call") setCallMatcher(v);
+    else if (type === "message") setMessageMatcher(v);
     else setSystemMatcher(v);
   };
 
@@ -539,7 +618,14 @@ export function EventEditorPage() {
               取消
             </Button>
             {id && (
-              <Button variant="secondary" onClick={() => void test()} disabled={testing || saving}>
+              <Button
+                variant="secondary"
+                onClick={() => void test()}
+                disabled={testing || saving || type === "message"}
+                title={
+                  type === "message" ? "平台消息事件无固定数据源，真实触发见触发记录" : undefined
+                }
+              >
                 {testing ? "测试中…" : "立即测试"}
               </Button>
             )}
@@ -568,6 +654,7 @@ export function EventEditorPage() {
             <option value="schedule">定时事件</option>
             <option value="call">调用事件</option>
             <option value="system">系统默认</option>
+            <option value="message">平台消息</option>
           </Select>
         </FormField>
       </FormSection>
@@ -581,16 +668,15 @@ export function EventEditorPage() {
             ? "定时表达式；有条件定时再配数据源与匹配条件"
             : type === "call"
               ? "回调地址由平台生成（每事件独立随机路径），支持 GET 与 POST"
-              : "选择要订阅的平台事件"
+              : type === "message"
+                ? "订阅钉钉群 @ 机器人等平台推送，命中后交给绑定的智能体处理（Teambition 即将支持）"
+                : "选择要订阅的平台事件"
         }
       >
         {type === "schedule" ? (
           <>
             <FormField label="定时规则" required>
-              <CronBuilder
-                value={cron}
-                onChange={(expr) => setCron(expr)}
-              />
+              <CronBuilder value={cron} onChange={(expr) => setCron(expr)} />
             </FormField>
             <FormField
               label="触发方式"
@@ -598,9 +684,7 @@ export function EventEditorPage() {
             >
               <Select
                 value={scheduleMode}
-                onChange={(e) =>
-                  setScheduleMode(e.target.value as "unconditional" | "conditional")
-                }
+                onChange={(e) => setScheduleMode(e.target.value as "unconditional" | "conditional")}
               >
                 <option value="unconditional">纯定时（无条件，到点触发）</option>
                 <option value="conditional">有条件定时（抓取数据源 + 条件判定）</option>
@@ -668,6 +752,55 @@ export function EventEditorPage() {
               <Input value={callResponse} onChange={(e) => setCallResponse(e.target.value)} />
             </FormField>
           </>
+        ) : type === "message" ? (
+          <>
+            <FormField label="平台" hint="Teambition 随下一期开放">
+              <Select
+                value={messagePlatform}
+                onChange={(e) => {
+                  const p = e.target.value as "dingtalk" | "teambition";
+                  setMessagePlatform(p);
+                  setMessageTopic(p === "dingtalk" ? "robot.group" : "task.update");
+                }}
+              >
+                <option value="dingtalk">钉钉（群 @ 机器人）</option>
+                <option value="teambition" disabled>
+                  Teambition（即将支持）
+                </option>
+              </Select>
+            </FormField>
+            <FormField label="消息主题" hint="钉钉群 @ 机器人固定为 robot.group">
+              <Input mono readOnly value={messageTopic} />
+            </FormField>
+            <FormField
+              label="限定群 ID（openConversationId）"
+              hint="留空=所有群生效；群 ID 可在钉钉群设置或由触发记录里查看"
+            >
+              <Input
+                mono
+                value={msgConvId}
+                onChange={(e) => setMsgConvId(e.target.value)}
+                placeholder="留空=不限定"
+              />
+            </FormField>
+            <FormField
+              label="发起人白名单（staffId，每行一个）"
+              hint="留空=群内所有成员 @ 机器人都可触发"
+            >
+              <textarea
+                className="min-h-20 w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-sm"
+                value={msgAllowFrom}
+                onChange={(e) => setMsgAllowFrom(e.target.value)}
+                placeholder={"staffId1\nstaffId2"}
+              />
+            </FormField>
+            {!msgAllowFrom.trim() && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                ⚠️ 未配置白名单：该群内<strong>任何成员</strong> @ 机器人都将触发本工作流
+                {type === "message" ? "（以工作流配置的身份与权限执行，请确认风险）" : ""}。
+              </div>
+            )}
+          </>
         ) : (
           <>
             <FormField
@@ -698,7 +831,11 @@ export function EventEditorPage() {
             {isCompletion && (
               <>
                 <FormField
-                  label={systemName === "agent.execution.completed" ? "智能体（可多选）" : "工作流（可多选）"}
+                  label={
+                    systemName === "agent.execution.completed"
+                      ? "智能体（可多选）"
+                      : "工作流（可多选）"
+                  }
                   required
                   hint="候选 = 我可使用（自有或被分享）；只有我名下的执行会触发本事件"
                 >
@@ -714,9 +851,7 @@ export function EventEditorPage() {
                             checked={subjects.includes(o.id)}
                             onChange={(e) =>
                               setSubjects((s) =>
-                                e.target.checked
-                                  ? [...s, o.id]
-                                  : s.filter((x) => x !== o.id),
+                                e.target.checked ? [...s, o.id] : s.filter((x) => x !== o.id),
                               )
                             }
                           />
@@ -846,7 +981,9 @@ export function EventEditorPage() {
                             </pre>
                             <div className="mt-2 space-y-1">
                               {(firingRuns[f.id] ?? []).length === 0 ? (
-                                <p className="text-xs text-muted-foreground">本次触发没有执行轮次</p>
+                                <p className="text-xs text-muted-foreground">
+                                  本次触发没有执行轮次
+                                </p>
                               ) : (
                                 (firingRuns[f.id] ?? []).map((run) => (
                                   <div
@@ -854,7 +991,8 @@ export function EventEditorPage() {
                                     className="flex items-center justify-between gap-2 text-xs"
                                   >
                                     <span className="text-muted-foreground">
-                                      {workflowNames.get(run.workflowId) ?? run.workflowId.slice(0, 8)}
+                                      {workflowNames.get(run.workflowId) ??
+                                        run.workflowId.slice(0, 8)}
                                     </span>
                                     <span className="flex items-center gap-2">
                                       <Badge tone={runStatusTone(run.status)}>

@@ -31,7 +31,7 @@ export const NotifyPolicySchema = z.object({
   title: z.string().max(120).optional(),
   /** 投递通道白名单；站外仍受用户偏好订阅与地址绑定约束（M3 值域全量） */
   channels: z
-    .array(z.enum(["inapp", "dingtalk", "webhook", "email"]))
+    .array(z.enum(["inapp", "dingtalk", "webhook", "email", "source"]))
     .min(1)
     .default(["inapp"]),
   /** 收件人：correlation=事件因果提交人；owner=工作流属主；显式 userId 列表 */

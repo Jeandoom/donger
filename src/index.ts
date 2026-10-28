@@ -79,6 +79,7 @@ import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { DrainManager } from "./orchestrator/drain-manager.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
+import { MessageEventRouter } from "./orchestrator/message-event-router.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
@@ -618,6 +619,8 @@ async function main(): Promise<void> {
       // recipients 移交：换通道后旧会话回信不因记忆表丢失而 NO_RECIPIENT
       if (old) for (const [k, v] of old.recipients) next.recipients.set(k, v);
       next.onMessage((m) => void orch.handleMessage(m));
+      // 群 @ 消息 → 平台消息事件路由（spec §4.2 M1）：命中订阅=消费；无订阅回落对话语义
+      next.onGroupMessage((envelope) => messageEventRouter.route(envelope).then((r) => r.consumed));
       orchestrators.set("dingtalk", orch);
       log.info({ channel: "dingtalk" }, "机器人通道已应用");
     } else if (old) {
@@ -749,6 +752,24 @@ async function main(): Promise<void> {
     // 完成事件 emit（spec 2026-10-19-execution-completion-events-design §5）：
     // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
     agentStore,
+    // source 回源出站（spec 2026-10-27-platform-message-subscription-design §4.4 D3）：
+    // 钉钉群回复复用 dtChannel（群感知 send，见 DingTalkChannel）；TB 任务评论随 M2
+    sourceDeliver: async (anchor, text) => {
+      if (anchor.platform === "dingtalk") {
+        const ch = dtChannel;
+        if (!ch) throw new Error("钉钉通道未启用，无法回源投递");
+        await ch.send(anchor.threadId, { text, markdown: true });
+        return;
+      }
+      throw new Error(`source 回源暂不支持平台 ${anchor.platform}（随 M2）`);
+    },
+  });
+  // 平台消息事件路由（spec §4.2 M1）：钉钉群 @ 归一信封 → 订阅匹配 → fire 统一管线；
+  // 无订阅回落对话语义（applyDingTalkChannel 内 onGroupMessage 接线）
+  const messageEventRouter = new MessageEventRouter({
+    eventStore,
+    dispatcher: eventDispatcher,
+    logger: log,
   });
   const scheduler = new SchedulerService({
     eventStore,

@@ -273,4 +273,58 @@ export interface NotifyRunContext {
   error: string | null;
   /** 业务因果键（来自主 run 触发载荷） */
   correlation: { feedbackId: string; submitterId: string } | null;
+  /** 回源锚点（spec 2026-10-27-platform-message-subscription-design §4.4 D3）：
+   * 从主 run 触发载荷提取；null=手动运行/非消息事件，source 通道降级站内信 */
+  replyAnchor: import("./event.js").ReplyAnchor | null;
+}
+
+/** 平台消息统一信封（spec §4.3 D2）：通道层归一产出，router 序列化为 fire payload */
+export interface PlatformMessageEnvelope {
+  platform: import("./event.js").MessagePlatform;
+  /** 钉钉 M1 固定 "robot.group"；TB=webhook 事件类型 */
+  topic: string;
+  /** 去重键（钉钉 msgId / TB eventId） */
+  eventId: string;
+  occurredAt: string;
+  sender: { id: string; name: string };
+  source: {
+    openConversationId?: string;
+    conversationType?: string;
+    orgId?: string;
+    projectId?: string;
+    taskId?: string;
+  };
+  text: string;
+  /** 平台原始裁剪（排障面；敏感字段由通道层脱敏） */
+  raw?: Record<string, unknown>;
+  /** 回复锚点：随 payload 持久化（通知轮 source 通道消费） */
+  replyAnchor: import("./event.js").ReplyAnchor;
+}
+
+/** 信封 → fire payload（{{triggerOutput}} 原文；对象形态进 {{data}} 由 router 传） */
+export function buildPlatformMessagePayload(envelope: PlatformMessageEnvelope): string {
+  return JSON.stringify(envelope);
+}
+
+/** 从触发载荷提取回复锚点（通知轮 source 通道用；非消息事件/非 JSON → null） */
+export function extractReplyAnchor(
+  payload: string | null | undefined,
+): import("./event.js").ReplyAnchor | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as { replyAnchor?: import("./event.js").ReplyAnchor };
+    const a = parsed.replyAnchor;
+    if (
+      a &&
+      typeof a === "object" &&
+      typeof a.platform === "string" &&
+      (typeof (a as { threadId?: unknown }).threadId === "string" ||
+        typeof (a as { taskId?: unknown }).taskId === "string")
+    ) {
+      return a;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

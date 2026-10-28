@@ -8,7 +8,7 @@ import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { PageHeader } from "../components/ui/page-header";
 import { apiFetch } from "../lib/auth";
 
-type EventType = "system" | "schedule" | "call";
+type EventType = "system" | "schedule" | "call" | "message";
 
 interface EventDTO {
   id: string;
@@ -22,12 +22,14 @@ const TYPE_LABEL: Record<EventType, string> = {
   system: "系统默认",
   schedule: "定时",
   call: "调用",
+  message: "平台消息",
 };
 
 const TYPE_TONE: Record<EventType, "primary" | "info" | "success"> = {
   system: "info",
   schedule: "primary",
   call: "success",
+  message: "primary",
 };
 
 export function EventsPage() {

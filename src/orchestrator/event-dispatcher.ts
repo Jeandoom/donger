@@ -1,4 +1,4 @@
-import type { Event, FireContext } from "../domain/event.js";
+import type { Event, FireContext, ReplyAnchor } from "../domain/event.js";
 import { buildPromptVars, renderPromptTemplate } from "../domain/event.js";
 import { FIRING_CONTEXT_MAX_BYTES } from "../domain/event-firing.js";
 import {
@@ -10,15 +10,16 @@ import {
   type ExecutionCompletionStatus,
   executionStatusWord,
   extractExecutionCorrelation,
+  extractReplyAnchor,
   formatExecutionDuration,
   NOTIFY_WRITER_TEMPLATE,
   type NotifyRunContext,
   parseExecutionCompletedPayload,
   truncateExecutionResultText,
 } from "../domain/event-payloads.js";
+import type { FeedbackReply } from "../domain/feedback.js";
 import type { IncomingMessage } from "../domain/types.js";
 import { wrapUntrusted } from "../domain/untrusted-content.js";
-import type { FeedbackReply } from "../domain/feedback.js";
 import type { Workflow } from "../domain/workflow.js";
 import type { WorkflowRun } from "../domain/workflow-run.js";
 import type { EventFiringStore } from "../ports/event-firing-store.js";
@@ -29,8 +30,8 @@ import type { WorkflowRunStore } from "../ports/workflow-run-store.js";
 import type { WorkflowStore } from "../ports/workflow-store.js";
 import { NotFoundError, ValidationError } from "../util/errors.js";
 import type { Logger } from "../util/logger.js";
-import type { NotificationService } from "./notification-service.js";
 import { REPLY_MAX_CHARS } from "./feedback-tools.js";
+import type { NotificationService } from "./notification-service.js";
 
 export interface EventDispatcherDeps {
   eventStore: EventStore;
@@ -67,6 +68,9 @@ export interface EventDispatcherDeps {
   messageStore?: MessageStore;
   /** 智能体档案：payload 的 agentName（缺省降级 agentId） */
   agentStore?: { get(id: string): Promise<{ name?: string } | undefined> };
+  /** source 通道出站（spec 2026-10-27-platform-message-subscription-design §4.4 D3）：
+   * 通知轮按回源锚点投递（钉钉群 groupMessages/send / TB 任务评论）；缺省=无锚点仅日志降级 */
+  sourceDeliver?: (anchor: ReplyAnchor, text: string) => Promise<void>;
 }
 
 /** 全局事件队列容量（D6）：事件触发的执行共用一个队列 */
@@ -504,6 +508,8 @@ export class EventDispatcher {
     if (!policy?.enabled || !policy.on.includes(status)) return;
     let recipients: string[];
     let correlation: NotifyRunContext["correlation"] = null;
+    // 回源锚点（spec §4.4 D3）：消息事件载荷携带，通知轮 source 通道据此回触发来源
+    const replyAnchor = info.sourceContext ? extractReplyAnchor(info.sourceContext) : null;
     if (policy.recipients === "owner") {
       recipients = [wf.ownerId];
     } else if (Array.isArray(policy.recipients)) {
@@ -541,6 +547,7 @@ export class EventDispatcher {
       outputSummary: truncateExecutionResultText(info.outputSummary),
       error: info.error,
       correlation,
+      replyAnchor,
     };
     await this.deps.runStore.insert({
       id: crypto.randomUUID(),
@@ -629,7 +636,9 @@ export class EventDispatcher {
         ...(conv ? { conversationId: conv.id } : {}),
         // correlation 结构化透传：写手轮据此挂载 donger-feedback 工具（反馈回复断链
         // 修复之一——此前 correlation 只渲染进 prompt 文本，工具挂载条件永远不成立）
-        ...(ctx.correlation ? { feedbackCorrelation: { feedbackId: ctx.correlation.feedbackId } } : {}),
+        ...(ctx.correlation
+          ? { feedbackCorrelation: { feedbackId: ctx.correlation.feedbackId } }
+          : {}),
         requesterId: wf.ownerId,
         text: prompt,
         unattended: true,
@@ -684,8 +693,19 @@ export class EventDispatcher {
             }
           }
         } catch (e) {
-          logger.error({ runId: run.id, err: String(e) }, "notify run: 反馈回复兜底失败（不阻塞通知）");
+          logger.error(
+            { runId: run.id, err: String(e) },
+            "notify run: 反馈回复兜底失败（不阻塞通知）",
+          );
         }
+      }
+      // source 不属通知服务通道枚举（回源由 sourceDeliver 承担）；请求 source 时强制补
+      // inapp——降级语义（无锚点时站内信是唯一送达面），不能被通道白名单跳过
+      const notifyChannels = policy.channels.filter(
+        (c): c is "inapp" | "dingtalk" | "webhook" | "email" => c !== "source",
+      );
+      if (policy.channels.includes("source") && !notifyChannels.includes("inapp")) {
+        notifyChannels.unshift("inapp");
       }
       await this.deps.notifications
         ?.notify({
@@ -693,7 +713,7 @@ export class EventDispatcher {
           recipients: ctx.recipients.map((userId) => ({ kind: "user" as const, userId })),
           title: ctx.title || `「${wf.name}」结果通知`,
           // 通道白名单（M3）：policy.channels ∩ 用户偏好
-          channels: [...policy.channels],
+          channels: notifyChannels,
           body: body.slice(0, 400),
           link: `/workflows/${wf.id}`,
           dedupeKey: `notify:${run.id}`,
@@ -701,6 +721,32 @@ export class EventDispatcher {
         .catch((e: unknown) =>
           logger.error({ runId: run.id, err: String(e) }, "notify run: 投递失败"),
         );
+      // source 回源通道（spec §4.4 D3，确定性兜底）：锚点在场 → 按平台出站适配回触发来源；
+      // 无锚点（手动运行/非消息事件）→ 降级站内信（上方 notify 恒发）并留痕
+      if (policy.channels.includes("source")) {
+        if (ctx.replyAnchor && this.deps.sourceDeliver) {
+          await this.deps
+            .sourceDeliver(ctx.replyAnchor, body)
+            .then(() =>
+              logger.info(
+                { runId: run.id, anchor: ctx.replyAnchor },
+                "notify run: source 通道回源投递完成",
+              ),
+            )
+            .catch((e: unknown) =>
+              logger.error({ runId: run.id, err: String(e) }, "notify run: source 回源投递失败"),
+            );
+        } else {
+          logger.warn(
+            {
+              runId: run.id,
+              hasAnchor: Boolean(ctx.replyAnchor),
+              hasDeliver: Boolean(this.deps.sourceDeliver),
+            },
+            "notify run: source 通道无回源锚点/出站通道，降级站内信",
+          );
+        }
+      }
       logger.info({ runId: run.id, workflowId: wf.id }, "notify run delivered");
     } catch (e) {
       const finishedAt = new Date().toISOString();

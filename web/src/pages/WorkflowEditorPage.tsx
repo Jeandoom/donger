@@ -62,7 +62,7 @@ interface WorkflowDTO {
     writerAgentId?: string;
     promptTemplate?: string;
     title?: string;
-    channels?: Array<"inapp" | "dingtalk" | "webhook" | "email">;
+    channels?: Array<"inapp" | "dingtalk" | "webhook" | "email" | "source">;
     recipients?: "correlation" | "owner" | string[];
   };
 }
@@ -184,6 +184,7 @@ export function WorkflowEditorPage() {
   const [notifyDingtalk, setNotifyDingtalk] = useState(false);
   const [notifyWebhook, setNotifyWebhook] = useState(false);
   const [notifyEmail, setNotifyEmail] = useState(false);
+  const [notifySource, setNotifySource] = useState(false);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [refsError, setRefsError] = useState<string | null>(null);
@@ -291,6 +292,7 @@ export function WorkflowEditorPage() {
       setNotifyDingtalk(np?.channels?.includes("dingtalk") ?? false);
       setNotifyWebhook(np?.channels?.includes("webhook") ?? false);
       setNotifyEmail(np?.channels?.includes("email") ?? false);
+      setNotifySource(np?.channels?.includes("source") ?? false);
       setLoaded(true);
       pristineRef.current = null; // 下一个 effect 以加载后的快照钉基线
     } catch (e) {
@@ -358,13 +360,7 @@ export function WorkflowEditorPage() {
       setError("通知策略至少勾选一种触发时机");
       return;
     }
-    if (
-      notifyEnabled &&
-      !notifyInapp &&
-      !notifyDingtalk &&
-      !notifyWebhook &&
-      !notifyEmail
-    ) {
+    if (notifyEnabled && !notifyInapp && !notifyDingtalk && !notifyWebhook && !notifyEmail) {
       setError("通知策略至少选择一个投递通道");
       return;
     }
@@ -405,6 +401,7 @@ export function WorkflowEditorPage() {
               ...(notifyDingtalk ? ["dingtalk"] : []),
               ...(notifyWebhook ? ["webhook"] : []),
               ...(notifyEmail ? ["email"] : []),
+              ...(notifySource ? ["source"] : []),
             ],
             recipients: notifyRecipients,
           },
@@ -773,7 +770,10 @@ export function WorkflowEditorPage() {
                 <option value="owner">工作流属主（我自己）</option>
               </Select>
             </FormField>
-            <FormField label="通知通道" hint="站外通道还需收件人本人订阅启用（钉钉需绑定地址；邮件需管理员配置 SMTP）">
+            <FormField
+              label="通知通道"
+              hint="站外通道还需收件人本人订阅启用（钉钉需绑定地址；邮件需管理员配置 SMTP）"
+            >
               <div className="flex flex-wrap items-center gap-4 text-sm">
                 {(
                   [
@@ -781,6 +781,7 @@ export function WorkflowEditorPage() {
                     ["dingtalk", "钉钉", notifyDingtalk, setNotifyDingtalk],
                     ["webhook", "Webhook", notifyWebhook, setNotifyWebhook],
                     ["email", "邮件", notifyEmail, setNotifyEmail],
+                    ["source", "回复来源（消息事件回群/回任务）", notifySource, setNotifySource],
                   ] as const
                 ).map(([key, label, checked, set]) => (
                   <label key={key} className="flex cursor-pointer items-center gap-1.5">

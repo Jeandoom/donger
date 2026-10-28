@@ -2,6 +2,25 @@ import type { RobotTextMessage } from "dingtalk-stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncomingMessage } from "../../src/domain/types.js";
 
+// DWClient 假件：捕获 TOPIC_ROBOT 回调，供 onMessage 群路由分支测试
+let robotCallback: ((msg: { data: string; headers: { messageId: string } }) => Promise<void>) | null =
+  null;
+vi.mock("dingtalk-stream", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("dingtalk-stream")>();
+  return {
+    ...orig,
+    DWClient: class {
+      registerCallbackListener(_topic: string, cb: never) {
+        robotCallback = cb as never;
+        return this;
+      }
+      socketCallBackResponse = vi.fn();
+      async connect(): Promise<void> {}
+      disconnect(): void {}
+    },
+  };
+});
+
 vi.mock("../../src/util/dingtalk-api.js", () => ({
   getAccessToken: vi.fn(async () => "tok"),
   buildSingleSendBody: vi.fn((robotCode: string, userId: string, msg: { markdown?: boolean }) => ({
@@ -163,5 +182,64 @@ describe("DingTalkChannel 审批交互", () => {
     await p;
     ch.routeIncoming(mkMsg("下一个任务", "cid"));
     expect(got).toEqual(["下一个任务"]);
+  });
+});
+
+describe("群消息事件路由（spec 2026-10-27 §4.2 M1）", () => {
+  const groupRobot: RobotTextMessage = {
+    ...baseRobot,
+    conversationId: "cid-group-1",
+    conversationType: "2",
+    msgId: "msg-77",
+    text: { content: "@机器人 帮我查下库存" },
+  };
+
+  beforeEach(() => {
+    robotCallback = null;
+  });
+
+  it("buildDingTalkGroupEnvelope：信封含去重键/发送人/回源锚点，text 剥 @ 前缀", async () => {
+    const { buildDingTalkGroupEnvelope } = await import("../../src/adapters/dingtalk-channel.js");
+    const env = buildDingTalkGroupEnvelope(groupRobot);
+    expect(env.platform).toBe("dingtalk");
+    expect(env.topic).toBe("robot.group");
+    expect(env.eventId).toBe("msg-77");
+    expect(env.sender).toEqual({ id: "staff-1", name: "张三" });
+    expect(env.source).toEqual({ openConversationId: "cid-group-1", conversationType: "2" });
+    expect(env.text).toBe("帮我查下库存");
+    expect(env.replyAnchor).toEqual({
+      platform: "dingtalk",
+      kind: "group",
+      threadId: "cid-group-1",
+    });
+  });
+
+  it("群消息命中订阅（handler 返回 true）→ 消费，不进聊天 handler", async () => {
+    const ch = new DingTalkChannel({ appKey: "k", appSecret: "s", robotCode: "rc" });
+    const got: string[] = [];
+    ch.onMessage((m) => got.push(m.text));
+    ch.onGroupMessage(async () => true);
+    await robotCallback?.({ data: JSON.stringify(groupRobot), headers: { messageId: "m-1" } });
+    expect(got).toEqual([]);
+  });
+
+  it("无订阅/未消费（handler 返回 false）→ 回落对话语义", async () => {
+    const ch = new DingTalkChannel({ appKey: "k", appSecret: "s", robotCode: "rc" });
+    const got: string[] = [];
+    ch.onMessage((m) => got.push(m.text));
+    ch.onGroupMessage(async () => false);
+    await robotCallback?.({ data: JSON.stringify(groupRobot), headers: { messageId: "m-2" } });
+    expect(got).toEqual(["帮我查下库存"]);
+  });
+
+  it("路由器抛错 → 回落对话（不吞消息）", async () => {
+    const ch = new DingTalkChannel({ appKey: "k", appSecret: "s", robotCode: "rc" });
+    const got: string[] = [];
+    ch.onMessage((m) => got.push(m.text));
+    ch.onGroupMessage(async () => {
+      throw new Error("路由炸了");
+    });
+    await robotCallback?.({ data: JSON.stringify(groupRobot), headers: { messageId: "m-3" } });
+    expect(got).toEqual(["帮我查下库存"]);
   });
 });

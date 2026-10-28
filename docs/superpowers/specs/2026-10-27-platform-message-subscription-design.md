@@ -201,7 +201,7 @@ export interface FireContext {
 | 快速 ACK | TB 5 秒 200 硬约束 ↔ `fire()` 本身就是「落记录→入队→立刻返回」——**架构天然契合**，端点只做验签+归一+fire；钉钉 Stream 回调同样先 ACK 再异步（SDK 回调返回 success 即 ACK） |
 | 去重 | TB 重试语义=at-least-once：按 `platform+eventId` 在 firing 表做窗口查重（如 10 分钟），重复丢弃 |
 | 噪音控制 | **订阅预判前置**：message 事件 fire 前先查 `listEnabledByPlatform(platform, topic)`，无订阅者直接短路（TB 全企业推送必须，否则 firing 表与队列被噪音灌满）；`filter`/`matcher` 命中后才入队 |
-| 队列容量 | `EVENT_QUEUE_CAPACITY=10` 全局共享（`event-dispatcher.ts:73`）维持不变，但参数化为 `DONGER_EVENT_QUEUE_CAPACITY` 环境变量（缺省 10）；高频 TB 场景由部署方调大。工作流同 workflow 串行认领已有（`claimNextRunnable`），单订阅风暴不会并发挤兑 LLM |
+| 队列容量 | 全局共享队列已参数化为 `DONGER_TRIGGER_QUEUE_MAX_PENDING`（config.ts:122，缺省 10，index 装配 maxQueuePending）——E-B 拍板项已在既有配置面落地，M1 零代码；高频场景由部署方调大。工作流同 workflow 串行认领已有（`claimNextRunnable`），单订阅风暴不会并发挤兑 LLM |
 | 断线恢复 | 钉钉 Stream SDK 自带重连；TB 重试兜底；`restore()` 启动恢复既有 |
 
 ### 4.8 D7：凭证分层（对齐既有架构）
@@ -226,7 +226,7 @@ export interface FireContext {
 
 | 期 | 内容 | 规模感 |
 |---|---|---|
-| **M1 钉钉群消息闭环** | 事件 `message` 类型（schema+store+API+事件页 UI）；DingTalkChannel 群消息分路由+MessageEventRouter（预判/去重/白名单）；`sendGroupMessage` 出站；notifyPolicy `"source"` 通道+通知轮接线；e2e（fire→run→回复群+inapp 降级） | 单通道最小闭环，事件系统管线零改动 |
+| **M1 钉钉群消息闭环 ✅ 已落地（2026-10-28）** | 事件 `message` 类型（schema+store+API+事件页 UI）；DingTalkChannel 群消息分路由+MessageEventRouter（预判/去重/白名单/matcher）；`sendGroupMessage` 出站（随群回复 P0 修复先行上线）；notifyPolicy `"source"` 通道+通知轮接线（锚点随 payload 持久化，无锚点降级 inapp 留痕）；测试=router/notify/source 降级/信封/群路由回落/schema 共 12 新用例 | 单通道最小闭环，事件系统管线零改动 |
 | **M2 Teambition 闭环** | `module_configs.teambition`+授权页区块+运行时换血；验签端点（对齐 release-webhook 模式）；TB payload 归一+评论出站 util；`X-Trigger-From-Me` 防环；e2e（验签→fire→run→评论回任务） | 新平台接入主体 |
 | **M3 增强（按需拍板）** | 钉钉 `TOPIC_EVENT` 事件订阅类扩展（审批/通讯录，同 `message` 类型加 topic）；TB MCP 连接器模板技能（含「分析任务→评论回复」recipe）；受理 ack 快速回执；队列容量 env 参数化；平台 `platform_reply` 工具 | 均为独立可后置项 |
 

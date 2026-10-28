@@ -1,22 +1,24 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { validateCronExpr } from "./cron.js";
+import { TriggerMatcherSchema } from "./event-matcher.js";
 import {
   AGENT_EXECUTION_COMPLETED_EVENT,
-  WORKFLOW_EXECUTION_COMPLETED_EVENT,
   isExecutionCompletedEventName,
+  WORKFLOW_EXECUTION_COMPLETED_EVENT,
 } from "./event-payloads.js";
-import { TriggerMatcherSchema } from "./event-matcher.js";
 
 export type { TriggerMatcher } from "./event-matcher.js";
 export { TriggerMatcherSchema } from "./event-matcher.js";
 
 /**
- * 事件（原触发器）三分法（spec 2026-10-09-events-workflows-refactor-design §3.1）：
+ * 事件四分法（spec 2026-10-27-platform-message-subscription-design §4.2）：
  * - system：系统默认事件（注册表内进程内事件，如 feedback.created；创建/编辑 admin-only）
  * - schedule：定时事件；unconditional=纯定时到点即触发，conditional=抓取源+matcher 判定（原 scheduler 形态）
  * - call：调用事件（外部系统回调，原 hook）；path 服务端生成随机、不可自定义（D2）
- * git 类型已随本轮退役（GitWatcher 移除）。
+ * - message：平台消息事件（钉钉群 @/TB webhook 推送）：平台级单端点多订阅扇出，携带
+ *   平台收窄字段与去重语义（区别于 call 的「per-event 定向 hook」）
+ * git 类型已随轮退役（GitWatcher 移除）。
  */
 
 /** 进程内系统事件名注册表；新事件源（KB 变更/会话完结等）在此追加即可复用整条投递管线。
@@ -40,6 +42,30 @@ export const CALL_EVENT_METHODS = ["GET", "POST"] as const;
 export function generateCallPath(): string {
   return `/hooks/${randomBytes(8).toString("hex")}`;
 }
+
+/** 平台消息事件支持的平台（M1=钉钉；TB 随 M2） */
+export const MESSAGE_PLATFORMS = ["dingtalk", "teambition"] as const;
+export type MessagePlatform = (typeof MESSAGE_PLATFORMS)[number];
+
+/**
+ * 平台消息事件配置（spec §4.2 D1）：platform+topic 定位推送面，filter 消费端收窄
+ * （TB 全企业推送必配），matcher 兜底细粒度 JSON 判定。
+ * 钉钉 M1 topic 固定 "robot.group"（群 @ 机器人）；TB topic=webhook 事件类型（task.update 等）。
+ */
+export const EventMessageConfigSchema = z.object({
+  platform: z.enum(MESSAGE_PLATFORMS),
+  topic: z.string().min(1).max(128),
+  filter: z
+    .object({
+      openConversationId: z.string().min(1).optional(),
+      orgId: z.string().min(1).optional(),
+      projectId: z.string().min(1).optional(),
+      allowFrom: z.array(z.string().min(1)).optional(),
+    })
+    .optional(),
+  matcher: TriggerMatcherSchema.optional(),
+});
+export type EventMessageConfig = z.infer<typeof EventMessageConfigSchema>;
 
 export const EventSourceSchema = z.discriminatedUnion("type", [
   z.object({
@@ -99,10 +125,11 @@ const EventBaseSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
   name: z.string().min(1).max(64),
-  type: z.enum(["system", "schedule", "call"]),
+  type: z.enum(["system", "schedule", "call", "message"]),
   system: EventSystemConfigSchema.optional(),
   schedule: EventScheduleConfigSchema.optional(),
   call: EventCallConfigSchema.optional(),
+  message: EventMessageConfigSchema.optional(),
   /** 运行态（展示用）：最近一次触发 / 定时事件下次触发 */
   lastFiredAt: z.string().nullable().optional(),
   nextRunAt: z.string().nullable().optional(),
@@ -112,7 +139,7 @@ const EventBaseSchema = z.object({
 
 // ponytail: DRY——schema 和 input schema 用同一 refine，避免维护双写
 function eventTypeRefine(
-  t: { type: string; system?: unknown; schedule?: unknown; call?: unknown },
+  t: { type: string; system?: unknown; schedule?: unknown; call?: unknown; message?: unknown },
   ctx: z.RefinementCtx,
 ) {
   if (t.type === "system" && !t.system) {
@@ -123,6 +150,9 @@ function eventTypeRefine(
   }
   if (t.type === "call" && !t.call) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "call 类型必须提供 call 配置" });
+  }
+  if (t.type === "message" && !t.message) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "message 类型必须提供 message 配置" });
   }
   const sys = t.system as EventSystemConfig | undefined;
   if (t.type === "system" && sys) {
@@ -172,7 +202,12 @@ export function parseEventInput(raw: unknown): EventInput {
 }
 
 /** 触发来源（EventFiring.source / WorkflowRun.eventName 前缀语义） */
-export type EventFireSource = "manual" | "schedule" | "call" | "system";
+export type EventFireSource = "manual" | "schedule" | "call" | "system" | "message";
+
+/** 回复锚点（spec §4.4 D3）：消息事件触发时随 payload 持久化，通知轮 source 通道据此回源 */
+export type ReplyAnchor =
+  | { platform: "dingtalk"; kind: "group"; threadId: string }
+  | { platform: "teambition"; kind: "task"; taskId: string; orgId?: string };
 
 /** 事件一次触发的上下文：payload=matcher 判定对象+{{triggerOutput}} 变量原文 */
 export interface FireContext {
@@ -181,6 +216,8 @@ export interface FireContext {
   query?: string;
   /** 调用事件归一后的结构化字段（{{data}}，对象） */
   data?: Record<string, unknown>;
+  /** 平台消息事件专用（spec §4.3 D2）：去重键与平台标识 */
+  messageMeta?: { eventId: string; platform: string };
 }
 
 /**

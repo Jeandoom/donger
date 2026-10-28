@@ -120,7 +120,9 @@ export class SqliteEventStore implements EventStore {
         ? { system: t.system }
         : t.type === "schedule"
           ? { schedule: t.schedule }
-          : { call: t.call };
+          : t.type === "message"
+            ? { message: t.message }
+            : { call: t.call };
     return { type: t.type, config: JSON.stringify(cfg) };
   }
 
@@ -134,6 +136,7 @@ export class SqliteEventStore implements EventStore {
       system: cfg.system,
       schedule: cfg.schedule,
       call: cfg.call,
+      message: cfg.message,
       lastFiredAt: row.lastFiredAt,
       nextRunAt: row.nextRunAt,
       createdAt: row.createdAt,

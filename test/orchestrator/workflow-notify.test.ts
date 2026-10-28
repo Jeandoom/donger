@@ -44,6 +44,7 @@ interface Setup {
   handleMessage: ReturnType<typeof vi.fn>;
   notify: ReturnType<typeof vi.fn>;
   feedbackStore: { get: ReturnType<typeof vi.fn>; listReplies: ReturnType<typeof vi.fn>; addReply: ReturnType<typeof vi.fn> };
+  sourceDeliver: ReturnType<typeof vi.fn>;
 }
 
 function setup(over: { handleMessageError?: Error } = {}): Setup {
@@ -65,6 +66,7 @@ function setup(over: { handleMessageError?: Error } = {}): Setup {
     listReplies: vi.fn().mockResolvedValue([]),
     addReply: vi.fn().mockResolvedValue(undefined),
   };
+  const sourceDeliver = vi.fn().mockResolvedValue(undefined);
   const dispatcher = new EventDispatcher({
     eventStore,
     workflowStore,
@@ -79,10 +81,12 @@ function setup(over: { handleMessageError?: Error } = {}): Setup {
     },
     notifications: { notify } as never,
     feedbackStore: feedbackStore as never,
+    // source 回源通道（spec 2026-10-27-platform-message-subscription-design §4.4）
+    sourceDeliver,
   });
   const systemEvents = new SystemEventDispatcher({ eventStore, dispatcher, logger });
   dispatcher.setSystemEventSink(systemEvents);
-  return { workflowStore, runStore, dispatcher, handleMessage, notify, feedbackStore };
+  return { workflowStore, runStore, dispatcher, handleMessage, notify, feedbackStore, sourceDeliver };
 }
 
 function baseInput(over: Partial<WorkflowInput> = {}): WorkflowInput {
@@ -308,5 +312,73 @@ describe("notifyPolicy 通知执行器（M2，manualRun 全链路）", () => {
     const writerMsg = s.handleMessage.mock.calls[1]?.[0] as { text: string };
     expect(writerMsg.text).toContain("上游执行炸了");
     expect((await s.runStore.getRun(nRun!.id))?.renderedPrompt).toContain("上游执行炸了");
+  });
+});
+
+describe("notifyPolicy source 回源通道（spec 2026-10-27 §4.4 D3）", () => {
+  const GROUP_MSG_PAYLOAD = JSON.stringify({
+    platform: "dingtalk",
+    topic: "robot.group",
+    eventId: "msg-9",
+    occurredAt: "2026-10-28T00:00:00.000Z",
+    sender: { id: "staff-1", name: "张三" },
+    source: { openConversationId: "cid-group-1", conversationType: "2" },
+    text: "@机器人 处理",
+    replyAnchor: { platform: "dingtalk", kind: "group", threadId: "cid-group-1" },
+  });
+
+  it("锚点在场 + channels 含 source → sourceDeliver 回群投递；站内信仍落（含强制补 inapp）", async () => {
+    const s = setup();
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["success"],
+          recipients: "owner",
+          channels: ["source"],
+        },
+      }) as never,
+    );
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: GROUP_MSG_PAYLOAD });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "success");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+
+    expect(s.sourceDeliver).toHaveBeenCalledOnce();
+    const [anchor, text] = s.sourceDeliver.mock.calls[0] as [
+      { platform: string; threadId: string },
+      string,
+    ];
+    expect(anchor).toEqual({ platform: "dingtalk", kind: "group", threadId: "cid-group-1" });
+    expect(text).toContain("通知正文");
+    // source 请求强制补 inapp：站内信白名单不被跳过
+    const notifyIntent = s.notify.mock.calls.find(
+      (c) => (c[0] as { event: string }).event === "workflow.result_notified",
+    )?.[0] as { channels?: string[] };
+    expect(notifyIntent.channels).toContain("inapp");
+    expect(notifyIntent.channels).not.toContain("source");
+  });
+
+  it("无锚点（手动运行普通载荷）→ source 降级：sourceDeliver 不调用，站内信照发", async () => {
+    const s = setup();
+    const wf = await s.workflowStore.create(
+      baseInput({
+        notifyPolicy: {
+          enabled: true,
+          on: ["success"],
+          recipients: "owner",
+          channels: ["source"],
+        },
+      }) as never,
+    );
+    const mainRun = await s.dispatcher.manualRun(wf.id, { payload: "普通文本载荷" });
+    await waitFor(async () => (await s.runStore.getRun(mainRun.id))?.status === "success");
+    const nRun = await waitFor(() => notifyRunOf(s, wf.id));
+    await waitFor(async () => (await s.runStore.getRun(nRun!.id))?.status === "success");
+    expect(s.sourceDeliver).not.toHaveBeenCalled();
+    const notifyIntent = s.notify.mock.calls.find(
+      (c) => (c[0] as { event: string }).event === "workflow.result_notified",
+    )?.[0] as { channels?: string[] };
+    expect(notifyIntent.channels).toContain("inapp");
   });
 });

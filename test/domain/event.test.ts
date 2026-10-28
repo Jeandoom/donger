@@ -53,3 +53,49 @@ describe("EventInputSchema cron 语法门", () => {
     ).toBe(false);
   });
 });
+
+describe("EventInputSchema message 类型（spec 2026-10-27 §4.2 D1）", () => {
+  const messageBase = { name: "群消息订阅", type: "message" };
+
+  it("合法 message 配置放行（filter/matcher 可省）", () => {
+    expect(
+      EventInputSchema.safeParse({
+        ...messageBase,
+        message: { platform: "dingtalk", topic: "robot.group" },
+      }).success,
+    ).toBe(true);
+    expect(
+      EventInputSchema.safeParse({
+        ...messageBase,
+        message: {
+          platform: "dingtalk",
+          topic: "robot.group",
+          filter: { openConversationId: "cid-1", allowFrom: ["staff-1"] },
+          matcher: { kind: "bodyContains", keyword: "库存" },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("缺 message 配置拒；非法 platform 拒；topic 超长拒", () => {
+    expect(EventInputSchema.safeParse({ ...messageBase }).success).toBe(false);
+    expect(
+      EventInputSchema.safeParse({
+        ...messageBase,
+        message: { platform: "wechat", topic: "robot.group" },
+      }).success,
+    ).toBe(false);
+    expect(
+      EventInputSchema.safeParse({
+        ...messageBase,
+        message: { platform: "dingtalk", topic: "x".repeat(129) },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("type=message 但提供的是其他类型配置 → refine 拒", () => {
+    expect(EventInputSchema.safeParse({ ...messageBase, call: { path: "/hooks/x" } }).success).toBe(
+      false,
+    );
+  });
+});
