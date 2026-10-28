@@ -15,7 +15,7 @@ import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { apiFetch } from "../lib/auth";
 import { eventNameLabel, runStatusLabel, runStatusTone } from "../lib/runStatus";
 
-type EventType = "system" | "schedule" | "call";
+type EventType = "system" | "schedule" | "call" | "message";
 
 interface EventOption {
   id: string;
@@ -599,11 +599,17 @@ export function WorkflowEditorPage() {
                 }}
               >
                 <option value="">— 选择 —</option>
-                {(["schedule", "call", "system"] as const).map((group) => {
+                {(["schedule", "call", "system", "message"] as const).map((group) => {
                   const items = events.filter((e) => e.type === group);
                   if (!items.length) return null;
                   const label =
-                    group === "schedule" ? "定时事件" : group === "call" ? "调用事件" : "系统默认";
+                    group === "schedule"
+                      ? "定时事件"
+                      : group === "call"
+                        ? "调用事件"
+                        : group === "message"
+                          ? "平台消息"
+                          : "系统默认";
                   return (
                     <optgroup key={group} label={label}>
                       {items.map((e) => (
