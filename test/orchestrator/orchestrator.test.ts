@@ -236,6 +236,31 @@ describe("Orchestrator", () => {
     expect((await store.listByStatus("failed")).length).toBe(1);
   });
 
+  it("引擎 error 收尾 → failed 且会话补发失败消息（收尾必达，非仅 UI 标记）", async () => {
+    const { orch, store, channel } = setup(false, {
+      intro: "设计",
+      gate: { gateId: "design", summary: "方案" },
+    });
+    await orch.handleMessage(msg);
+    expect((await store.listByStatus("failed")).length).toBe(1);
+    expect(
+      channel.sent.some((m) => m.text.includes("处理出错") && m.text.includes("审批未通过")),
+    ).toBe(true);
+  });
+
+  it("引擎流静默结束（无 result 事件）→ failed 且会话补发失败消息", async () => {
+    const silentRunner: AgentRunner = {
+      async *run(task) {
+        yield { type: "text", taskId: task.id, text: "半句话：" };
+        // 流到此结束：子进程死亡形态（正常应由 runner 合成 error 收尾，此处验证编排层兜底）
+      },
+    };
+    const { orch, store, channel } = setup(true, {}, silentRunner);
+    await orch.handleMessage(msg);
+    expect((await store.listByStatus("failed")).length).toBe(1);
+    expect(channel.sent.some((m) => m.text.includes("处理出错"))).toBe(true);
+  });
+
   it("非编码消息也走 agent", async () => {
     const { orch, store } = setup(true, { intro: "你好！", result: "ok" });
     await orch.handleMessage({ ...msg, text: "你好" });

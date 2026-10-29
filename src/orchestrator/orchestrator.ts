@@ -1813,8 +1813,12 @@ export class Orchestrator {
     if (r.aborted) return await this.finishCanceled(p.task, p.conversation);
     if (!r.ok) {
       await store.updateStatus(p.task.id, nextStatus("running", "fail"), { error: r.error });
-      // 展示文案走友好映射，库存原始错误供诊断
-      channel.pushResult?.(p.conversation.id, "error", friendlyRunnerError(r.error) || "任务失败");
+      // 收尾必达（2026-10-29 回复无声中断诊断）：pushResult 只打 UI 结果标记不落消息，
+      // 钉钉等非流式渠道是 no-op——引擎流提前结束/SDK error 收尾时任务标 failed 但
+      // 会话零反馈，用户只能靠手动重发试探。展示文案走友好映射，库存原始错误供诊断
+      const reason = friendlyRunnerError(r.error) || "任务失败";
+      await channel.send(p.threadId, { text: `❌ 处理出错：${reason}` }).catch(() => {});
+      channel.pushResult?.(p.conversation.id, "error", reason);
       return p.conversation.id;
     }
 
@@ -2632,6 +2636,13 @@ export class Orchestrator {
           }),
         },
       );
+
+      // 收尾必达（同 runPhases）：失败轮落一条会话消息，用户可感知可重发
+      if (!r.ok) {
+        const reason = friendlyRunnerError(r.error) || "任务失败";
+        await channel.send(msg.threadId, { text: `❌ 处理出错：${reason}` }).catch(() => {});
+        channel.pushResult?.(conversation.id, "error", reason);
+      }
 
       // 非流式渠道：成功后回复完成标记
       if (!channel.streaming && r.ok) {

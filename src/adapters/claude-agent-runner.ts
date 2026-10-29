@@ -411,6 +411,10 @@ export class ClaudeAgentRunner implements AgentRunner {
     // 该块全部增量（完整 text 事件仍会产出，由事件桥折叠），避免协议噪声/预签名 URL 直出前端
     const blockPrefixBuffers = new Map<number, string>();
     const suppressedBlocks = new Set<number>();
+    // 流完整性闸（2026-10-29 回复无声中断诊断）：SDK 子进程中途死亡（崩溃/OOM/上游断流退出）
+    // 时迭代器静默结束，若无兜底会被上层当正常收尾（任务标 failed 但会话零反馈，看门狗
+    // 只治挂死不治提前结束）。对齐 zcode runner 防御性：未见 result 即显性合成错误收尾。
+    let sawResult = false;
     try {
       for await (const m of stream) {
         if (m.type === "system" && "subtype" in m && m.subtype === "init") {
@@ -518,6 +522,7 @@ export class ClaudeAgentRunner implements AgentRunner {
             }
           }
         } else if (m.type === "result") {
+          sawResult = true;
           const raw = (
             m as {
               usage?: {
@@ -561,6 +566,14 @@ export class ClaudeAgentRunner implements AgentRunner {
             };
           }
         }
+      }
+      if (!sawResult) {
+        yield {
+          type: "result",
+          taskId: task.id,
+          subtype: "error",
+          error: "引擎流提前结束（未收到 result 收尾事件，疑似子进程异常退出），本轮已中止；请重发任务重试",
+        };
       }
     } finally {
       // 凭证文件轮末即焚（INV-3b）：token 只存在于 engine-state 隔离根的瞬间文件，

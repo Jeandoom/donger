@@ -792,6 +792,23 @@ describe("ClaudeAgentRunner", () => {
     if (last?.type === "result") expect(last.error).toBe("agent 执行出错");
   });
 
+  it("流提前结束（无 result 消息）→ 合成错误收尾（子进程死亡不再被当正常收尾）", async () => {
+    // 2026-10-29 回复无声中断诊断：CLI 子进程中途死亡时 SDK 迭代器静默结束，
+    // 旧实现无声返回 → orchestrator 把任务标 failed 但会话零反馈
+    mockStream([
+      { type: "system", subtype: "init", session_id: "s1" },
+      { type: "assistant", message: { content: [{ type: "text", text: "半句话：" }] } },
+    ]);
+    const runner = new ClaudeAgentRunner(new GateRouter());
+    const events = await collect(runner.run(task, opts, async () => ({ approved: true })));
+    const last = events[events.length - 1];
+    expect(last?.type).toBe("result");
+    if (last?.type === "result") {
+      expect(last.subtype).toBe("error");
+      expect(last.error).toContain("引擎流提前结束");
+    }
+  });
+
   it("canUseTool：写入越界 workspaceRoot → deny", async () => {
     const ws = mkdtempSync(join(tmpdir(), "wsroot-"));
     mockStream([{ type: "result", subtype: "success", result: "x" }]);

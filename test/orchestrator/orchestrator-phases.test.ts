@@ -336,6 +336,27 @@ describe("agent 任务单执行轮生命周期", () => {
     expect(runner.prompts).toHaveLength(1);
   });
 
+  it("执行轮引擎 error 收尾 → failed 且会话补发失败消息（收尾必达）", async () => {
+    // 2026-10-29 回复无声中断诊断：runPhases 失败分支原先只 pushResult（UI 标记，
+    // 钉钉 no-op 不落消息），用户零感知只能手动重发试探
+    const runner: AgentRunner = {
+      async *run(task): AsyncIterable<RunnerEvent> {
+        yield { type: "session_init", taskId: task.id, sessionId: "sdk-1" };
+        yield { type: "text", taskId: task.id, text: "半句话：" };
+        yield { type: "result", taskId: task.id, subtype: "error", error: "引擎流提前结束" };
+      },
+    };
+    const channel = seqChannel();
+    const { orch, store } = build(runner, channel, statefulConvStore("a1"));
+
+    await orch.handleMessage(MSG);
+
+    expect(await store.listByStatus("failed")).toHaveLength(1);
+    expect(
+      channel.texts.some((t) => t.includes("处理出错") && t.includes("引擎流提前结束")),
+    ).toBe(true);
+  });
+
   it("builtin-assist 会话：短路解析内置智能体，单轮执行且系统提示注入", async () => {
     const runner = new ScriptedRunner([{ result: "已创建 agent" }]);
     const channel = seqChannel();
