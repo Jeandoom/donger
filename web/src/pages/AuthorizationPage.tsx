@@ -41,6 +41,12 @@ interface AuthConfigsView {
     callbackUrl: string;
   };
   github: { clientId: string; clientSecretSet: boolean; callbackUrl: string };
+  teambition: {
+    appKey: string;
+    appSecretSet: boolean;
+    orgId: string;
+    webhookUrl: string;
+  };
   email: {
     signupAllowedDomains: string[];
     loginEnabled: boolean;
@@ -67,6 +73,7 @@ interface EmailVerification {
 type SectionId =
   | "dingtalk"
   | "github"
+  | "teambition"
   | "email"
   | "verifications"
   | "users"
@@ -78,6 +85,7 @@ type SectionId =
 const ADMIN_SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "dingtalk", label: "钉钉登录" },
   { id: "github", label: "GitHub 登录" },
+  { id: "teambition", label: "Teambition" },
   { id: "email", label: "邮箱注册" },
   { id: "verifications", label: "待验证账号" },
   { id: "users", label: "用户管理" },
@@ -281,9 +289,110 @@ function DingtalkSection({
   );
 }
 
+/** Teambition 企业自建应用配置（admin；spec 2026-10-27-platform-message-subscription-design §4.8 D7） */
+function TeambitionSection({
+  view,
+  onReload,
+}: {
+  view: AuthConfigsView | null;
+  onReload: () => void;
+}) {
+  const [appKey, setAppKey] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+  const [orgId, setOrgId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const loaded = view !== null;
+
+  useEffect(() => {
+    if (!view) return;
+    setAppKey(view.teambition.appKey);
+    setAppSecret("");
+    setOrgId(view.teambition.orgId);
+  }, [view]);
+
+  const apply = () => {
+    if (!loaded) return;
+    setBusy(true);
+    setMsg(null);
+    void apiFetch("/api/admin/auth-configs/teambition", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appKey, appSecret, orgId }),
+    })
+      .then(async (r) => {
+        const data = (await r.json().catch(() => ({}))) as { error?: string; active?: boolean };
+        if (!r.ok) throw new Error(data.error ?? `保存失败（HTTP ${r.status}）`);
+        setMsg({
+          ok: true,
+          text: data.active
+            ? "已应用：webhook 验签与任务评论即时生效（webhook 地址见下方，须与 Teambition 后台登记一致）"
+            : "配置已停用：webhook 端点不再受理",
+        });
+        setAppSecret("");
+        onReload();
+      })
+      .catch((reason: unknown) =>
+        setMsg({ ok: false, text: reason instanceof Error ? reason.message : String(reason) }),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Card className="space-y-3 p-5">
+      <SectionHead
+        title="Teambition 企业自建应用"
+        description="Webhook 事件订阅（任务更新→工作流）与任务评论回写；凭证仅存本服务，应用即生效无需重启"
+        status={
+          view?.teambition.appKey
+            ? { label: "已启用", tone: "success" }
+            : { label: "未配置", tone: "neutral" }
+        }
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">App ID</span>
+          <Input
+            type="text"
+            value={appKey}
+            onChange={(e) => setAppKey(e.target.value)}
+            placeholder="留空 = 停用 Teambition 接入"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">
+            App Secret{view?.teambition.appSecretSet ? "（已设置，留空保留）" : ""}
+          </span>
+          <Input
+            type="password"
+            value={appSecret}
+            onChange={(e) => setAppSecret(e.target.value)}
+            placeholder={view?.teambition.appSecretSet ? "••••••••" : "未设置"}
+            autoComplete="new-password"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span className="text-[13px] font-semibold">Org ID（租户 ID）</span>
+          <Input type="text" value={orgId} onChange={(e) => setOrgId(e.target.value)} />
+        </label>
+      </div>
+      {view ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>Webhook 接收地址（须与 Teambition 开放平台后台登记一致）：</span>
+          <code className="rounded bg-muted px-1.5 py-0.5">{view.teambition.webhookUrl}</code>
+          <CopyButton text={view.teambition.webhookUrl} />
+        </div>
+      ) : null}
+      <ApplyMsg msg={msg} />
+      <Button onClick={apply} disabled={busy || !loaded}>
+        {busy ? "应用中…" : "应用"}
+      </Button>
+    </Card>
+  );
+}
+
 /** GitHub 登录配置（admin） */
-function GithubSection({ view, onReload }: { view: AuthConfigsView | null; onReload: () => void }) {
-  const [clientId, setClientId] = useState("");
+function GithubSection({ view, onReload }: { view: AuthConfigsView | null; onReload: () => void }) {  const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -1162,6 +1271,9 @@ export function AuthorizationPage() {
 
               {active === "dingtalk" ? <DingtalkSection view={view} onReload={load} /> : null}
               {active === "github" ? <GithubSection view={view} onReload={load} /> : null}
+              {active === "teambition" ? (
+                <TeambitionSection view={view} onReload={load} />
+              ) : null}
               {active === "email" ? <EmailSection view={view} onReload={load} /> : null}
               {active === "verifications" ? <VerificationsSection /> : null}
               {active === "users" ? <UserManagementSection /> : null}

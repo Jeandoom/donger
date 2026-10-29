@@ -225,6 +225,7 @@ export function EventEditorPage() {
   const [messagePlatform, setMessagePlatform] = useState<"dingtalk" | "teambition">("dingtalk");
   const [messageTopic, setMessageTopic] = useState("robot.group");
   const [msgConvId, setMsgConvId] = useState("");
+  const [msgProjectId, setMsgProjectId] = useState("");
   const [msgAllowFrom, setMsgAllowFrom] = useState("");
   const [messageMatcher, setMessageMatcher] = useState<{
     kind: MatcherKind;
@@ -271,6 +272,7 @@ export function EventEditorPage() {
     messagePlatform,
     messageTopic,
     msgConvId,
+    msgProjectId,
     msgAllowFrom,
     messageMatcher,
   });
@@ -319,6 +321,7 @@ export function EventEditorPage() {
         setMessagePlatform(e.message.platform);
         setMessageTopic(e.message.topic);
         setMsgConvId(e.message.filter?.openConversationId ?? "");
+        setMsgProjectId(e.message.filter?.projectId ?? "");
         setMsgAllowFrom((e.message.filter?.allowFrom ?? []).join("\n"));
         setMessageMatcher(toMatcherFields(e.message.matcher));
       }
@@ -420,6 +423,7 @@ export function EventEditorPage() {
           topic: messageTopic,
           filter: {
             ...(msgConvId.trim() ? { openConversationId: msgConvId.trim() } : {}),
+            ...(msgProjectId.trim() ? { projectId: msgProjectId.trim() } : {}),
             ...(allowFrom.length ? { allowFrom } : {}),
           },
           matcher: buildMatcherPayload(messageMatcher.kind, messageMatcher.fields),
@@ -754,7 +758,10 @@ export function EventEditorPage() {
           </>
         ) : type === "message" ? (
           <>
-            <FormField label="平台" hint="Teambition 随下一期开放">
+            <FormField
+              label="平台"
+              hint={messagePlatform === "dingtalk" ? "钉钉群 @ 机器人" : "Teambition 任务事件（授权页配置企业自建应用）"}
+            >
               <Select
                 value={messagePlatform}
                 onChange={(e) => {
@@ -764,28 +771,54 @@ export function EventEditorPage() {
                 }}
               >
                 <option value="dingtalk">钉钉（群 @ 机器人）</option>
-                <option value="teambition" disabled>
-                  Teambition（即将支持）
-                </option>
+                <option value="teambition">Teambition（任务事件）</option>
               </Select>
             </FormField>
-            <FormField label="消息主题" hint="钉钉群 @ 机器人固定为 robot.group">
-              <Input mono readOnly value={messageTopic} />
-            </FormField>
+            {messagePlatform === "dingtalk" ? (
+              <FormField label="消息主题" hint="钉钉群 @ 机器人固定为 robot.group">
+                <Input mono readOnly value={messageTopic} />
+              </FormField>
+            ) : (
+              <FormField label="事件类型" hint="与 Teambition 后台 webhook 勾选的事件权限对应；全企业推送由下方过滤条件收窄">
+                <Select
+                  value={messageTopic}
+                  onChange={(e) => setMessageTopic(e.target.value)}
+                >
+                  <option value="task.update">任务更新（task.update）</option>
+                  <option value="task.create">任务创建（task.create）</option>
+                  <option value="task.delete">任务删除（task.delete）</option>
+                  <option value="task.comment.create">任务评论（task.comment.create）</option>
+                </Select>
+              </FormField>
+            )}
+            {messagePlatform === "dingtalk" ? (
+              <FormField
+                label="限定群 ID（openConversationId）"
+                hint="留空=所有群生效；群 ID 可在钉钉群设置或由触发记录里查看"
+              >
+                <Input
+                  mono
+                  value={msgConvId}
+                  onChange={(e) => setMsgConvId(e.target.value)}
+                  placeholder="留空=不限定"
+                />
+              </FormField>
+            ) : (
+              <FormField
+                label="限定项目 ID（projectId）"
+                hint="留空=全企业生效（TB 为全企业推送，务必用项目/成员过滤降噪）"
+              >
+                <Input
+                  mono
+                  value={msgProjectId}
+                  onChange={(e) => setMsgProjectId(e.target.value)}
+                  placeholder="留空=不限定"
+                />
+              </FormField>
+            )}
             <FormField
-              label="限定群 ID（openConversationId）"
-              hint="留空=所有群生效；群 ID 可在钉钉群设置或由触发记录里查看"
-            >
-              <Input
-                mono
-                value={msgConvId}
-                onChange={(e) => setMsgConvId(e.target.value)}
-                placeholder="留空=不限定"
-              />
-            </FormField>
-            <FormField
-              label="发起人白名单（staffId，每行一个）"
-              hint="留空=群内所有成员 @ 机器人都可触发"
+              label={messagePlatform === "dingtalk" ? "发起人白名单（staffId，每行一个）" : "发起人白名单（TB 成员 ID，每行一个）"}
+              hint={messagePlatform === "dingtalk" ? "留空=群内所有成员 @ 机器人都可触发" : "留空=企业内所有成员的事件都可触发"}
             >
               <textarea
                 className="min-h-20 w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-sm"

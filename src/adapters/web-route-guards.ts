@@ -79,6 +79,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       pattern: "/api/webhooks/release/:provider",
       access: { kind: "public" },
     },
+    // Teambition 企业自建应用 webhook（spec 2026-10-27-platform-message-subscription-design）：
+    // 机器通道同上——验签 fail-closed/防环/归一入消息事件路由全在 handler 内
+    {
+      method: "POST",
+      pattern: "/api/webhooks/teambition",
+      access: { kind: "public" },
+    },
     { method: "POST", pattern: "/api/auth/exchange", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/register", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },
@@ -346,6 +353,7 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/admin/auth-configs", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/dingtalk", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/github", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/admin/auth-configs/teambition", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/email", access: { kind: "admin" } },
     { method: "GET", pattern: "/api/admin/proxy", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/proxy", access: { kind: "admin" } },
@@ -459,7 +467,11 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "GET", pattern: "/api/kb/:id/tree", access: { kind: "authenticated" } },
     // 个人库记忆分区（知识体系轮 P2）：读=可管理者，迁移=可管理者
     { method: "GET", pattern: "/api/kb/:id/memory", access: { kind: "authenticated" } },
-    { method: "POST", pattern: "/api/kb/:id/memory/migrate-legacy", access: { kind: "authenticated" } },
+    {
+      method: "POST",
+      pattern: "/api/kb/:id/memory/migrate-legacy",
+      access: { kind: "authenticated" },
+    },
     { method: "GET", pattern: "/api/kb/:id/entry", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/kb/:id/search", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/kb/:id/entries", access: { kind: "authenticated" } },
@@ -508,7 +520,11 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/workflows/:id/enable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/workflows/:id/disable", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/workflows/:id/run", access: { kind: "authenticated" } },
-    { method: "GET", pattern: "/api/workflows/:id/release-runs", access: { kind: "authenticated" } },
+    {
+      method: "GET",
+      pattern: "/api/workflows/:id/release-runs",
+      access: { kind: "authenticated" },
+    },
     { method: "GET", pattern: "/api/workflows/:id/runs", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/workflows/:id/runs/stats", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/workflows/:id/runs/:rid", access: { kind: "authenticated" } },

@@ -1,10 +1,10 @@
 /**
  * 模块化配置（授权/代理模块，spec 2026-09-21-auth-module-design）：
- * 钉钉 / GitHub / 邮箱 / 代理 四类配置持久化于 module_configs 表（密钥加密落库），
+ * 钉钉 / GitHub / 邮箱 / 代理 / Teambition 配置持久化于 module_configs 表（密钥加密落库），
  * 运行时一律读 DB；.env 仅作为首启一次性自动迁移的输入（见 SqliteModuleConfigStore.migrateFromEnv）。
  */
 
-export type ModuleKey = "dingtalk" | "github" | "email" | "proxy";
+export type ModuleKey = "dingtalk" | "github" | "email" | "proxy" | "teambition";
 
 /** 钉钉配置：登录仅需 appKey+appSecret；机器人消息通道另需 robotCode */
 export interface DingTalkModuleConfig {
@@ -49,6 +49,18 @@ export interface ProxyModuleConfig {
   githubOauthProxyUrl?: string;
 }
 
+/**
+ * Teambition 企业自建应用配置（spec 2026-10-27-platform-message-subscription-design §4.8 D7 平台级层）：
+ * webhook 验签（appSecret）+ 任务评论回写出站（appAccessToken 本地 JWT 自签）。
+ * orgId 作 X-Tenant-Id（评论接口必带）；Webhook 接收地址=本服务
+ * POST /api/webhooks/teambition（TB 后台登记）。
+ */
+export interface TeambitionModuleConfig {
+  appKey: string;
+  appSecret: string;
+  orgId: string;
+}
+
 /** 首启一次性迁移的输入快照（仅非默认值；由 index.ts 从 cfg 组装） */
 export interface EnvAuthSnapshot {
   dingtalk?: DingTalkModuleConfig;
@@ -71,6 +83,11 @@ export function dingTalkLoginReady(cfg: DingTalkModuleConfig | undefined): boole
 /** 钉钉机器人通道可用（登录两项 + robotCode） */
 export function dingTalkRobotReady(cfg: DingTalkModuleConfig | undefined): boolean {
   return dingTalkLoginReady(cfg) && !!cfg?.robotCode?.trim();
+}
+
+/** Teambition 接入可用（三项齐全：验签+评论+租户头） */
+export function teambitionReady(cfg: TeambitionModuleConfig | undefined): boolean {
+  return !!cfg?.appKey?.trim() && !!cfg?.appSecret?.trim() && !!cfg?.orgId?.trim();
 }
 
 /** 掩码判定用：秘密是否已设置（API 视图只回 appSecretSet，不回明文） */

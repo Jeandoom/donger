@@ -22,8 +22,8 @@ describe("内置插件 manifest 契约", () => {
     }),
   );
 
-  it("内置清单共 24 份且 id 与目录名一致", () => {
-    expect(dirs).toHaveLength(24);
+  it("内置清单共 25 份且 id 与目录名一致", () => {
+    expect(dirs).toHaveLength(25);
     for (const [dir, m] of parsed) expect(m.id).toBe(dir);
   });
 

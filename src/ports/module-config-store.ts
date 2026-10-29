@@ -5,6 +5,7 @@ import type {
   GithubModuleConfig,
   ModuleKey,
   ProxyModuleConfig,
+  TeambitionModuleConfig,
 } from "../domain/module-config.js";
 
 /**
@@ -21,6 +22,8 @@ export interface ModuleConfigStore {
   putEmail(cfg: EmailModuleConfig): void;
   getProxy(): ProxyModuleConfig | undefined;
   putProxy(cfg: ProxyModuleConfig): void;
+  getTeambition(): TeambitionModuleConfig | undefined;
+  putTeambition(cfg: TeambitionModuleConfig): void;
   /** 删除模块配置（授权页「清空保存=停用」语义） */
   deleteModule(module: ModuleKey): void;
   /** app_config 标记位读取（setup_completed / auth_env_migrated 等） */

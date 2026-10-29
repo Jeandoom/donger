@@ -1,0 +1,13 @@
+{
+  "id": "platform.teambition",
+  "kind": "capability",
+  "version": "1.0.0",
+  "core": false,
+  "stoppable": true,
+  "scope": "platform",
+  "title": "Teambition 接入",
+  "description": "Teambition 企业自建应用：webhook 验签、消息事件订阅、任务评论回写（授权页配置，应用即生效）",
+  "requires": [
+    "workflows"
+  ]
+}

@@ -51,6 +51,11 @@ import {
   verifyReleaseWebhook,
 } from "../domain/release-webhook.js";
 import {
+  buildTeambitionEnvelope,
+  type TeambitionWebhookPayload,
+} from "../domain/teambition.js";
+import { verifyWebhookSignature } from "../util/teambition-api.js";
+import {
   CredentialRenameInputSchema,
   CredentialTemplateInputSchema,
   CredentialValueInputSchema,
@@ -650,6 +655,16 @@ export interface WebChannelDeps {
     secrets: ReleaseWebhookSecrets;
     wake: ReleaseWakeWriter;
   };
+  /** Teambition webhook 路由（spec 2026-10-27-platform-message-subscription-design §4.2）：
+   * 验签通过后归一信封入消息事件管线；缺省=端点空应答不 fire */
+  teambitionRouter?: {
+    route(envelope: import("../domain/event-payloads.js").PlatformMessageEnvelope): Promise<{
+      consumed: boolean;
+      fired: number;
+    }>;
+  };
+  /** platform.teambition 插件门（缺省=视为启用；停用=端点 404） */
+  teambitionEnabled?: () => boolean;
   /** L2 自动发布执行记录（workflow 详情查询面）；缺省=release-runs 端点空列表 */
   releaseRunStore?: ReleaseRunStore;
   /** 事件源探测参数（/test 端点；SSRF/工作区收口参数） */
@@ -1417,6 +1432,14 @@ export class WebChannel implements Channel {
         req.method === "POST" ? pathname.match(/^\/api\/webhooks\/release\/([\w-]+)$/) : null;
       if (releaseWhMatch) {
         await this.handleReleaseWebhook(req, res, releaseWhMatch[1] ?? "");
+        return;
+      }
+
+      // Teambition 企业自建应用 webhook（spec 2026-10-27-platform-message-subscription-design
+      // §4.4/§4.6）：验签 fail-closed + X-Trigger-From-Me 防环 + 归一入消息事件路由；
+      // 未配置/插件停用=404 不暴露；TB 5 秒 200 硬约束 ↔ route 同步快返回
+      if (req.method === "POST" && pathname === "/api/webhooks/teambition") {
+        await this.handleTeambitionWebhook(req, res);
         return;
       }
 
@@ -3309,6 +3332,12 @@ export class WebChannel implements Channel {
               }
             : null,
         },
+        teambition: {
+          appKey: store.getTeambition()?.appKey ?? "",
+          appSecretSet: !!store.getTeambition() || !!store.rawModule("teambition")?.appSecret,
+          orgId: store.getTeambition()?.orgId ?? "",
+          webhookUrl: `${this.oauthBaseUrl()}/api/webhooks/teambition`,
+        },
       });
     }
 
@@ -3393,6 +3422,38 @@ export class WebChannel implements Channel {
       if (!clientSecret) return this.json(res, { error: "请填写 Client Secret" }, 400);
       store.putGithub({ clientId, clientSecret });
       return this.json(res, { ok: true });
+    }
+
+    // PUT /api/admin/auth-configs/teambition —— 企业自建应用（spec 2026-10-27 §4.8 D7）。
+    // 应用即生效：webhook 验签/评论出站每请求读库；清空 AppKey=停用（端点回 404）
+    if (url.split("?")[0] === "/api/admin/auth-configs/teambition" && req.method === "PUT") {
+      if (!this.deps.moduleConfigStore) return this.json(res, { error: "服务未启用" }, 503);
+      let body: { appKey?: unknown; appSecret?: unknown; orgId?: unknown };
+      try {
+        body = JSON.parse(await this.readBody(req));
+      } catch {
+        return this.json(res, { error: "请求格式无效" }, 400);
+      }
+      const store = this.deps.moduleConfigStore;
+      const prev = store.getTeambition();
+      const rawPrev = store.rawModule("teambition");
+      const appKey = typeof body.appKey === "string" ? body.appKey.trim() : "";
+      const appSecret =
+        typeof body.appSecret === "string" && body.appSecret
+          ? body.appSecret
+          : (prev?.appSecret ?? "");
+      const orgId = typeof body.orgId === "string" ? body.orgId.trim() : "";
+      if (!appKey) {
+        if (prev || rawPrev?.appSecret) {
+          store.deleteModule("teambition");
+          return this.json(res, { ok: true, active: false });
+        }
+        return this.json(res, { error: "请填写 App ID、App Secret 与 Org ID" }, 400);
+      }
+      if (!appSecret) return this.json(res, { error: "请填写 App Secret" }, 400);
+      if (!orgId) return this.json(res, { error: "请填写 Org ID（租户 ID）" }, 400);
+      store.putTeambition({ appKey, appSecret, orgId });
+      return this.json(res, { ok: true, active: true });
     }
 
     // PUT /api/admin/auth-configs/email —— 域名白名单 + 登录开关 + SMTP 出站（M3）。
@@ -6851,6 +6912,51 @@ export class WebChannel implements Channel {
       return respond(202, { woke: false, error: "wake delivery failed" });
     }
     return respond(202, { woke: true });
+  }
+
+  /**
+   * POST /api/webhooks/teambition —— TB 企业自建应用推送（spec 2026-10-27-platform-message-subscription-design
+   * §4.4 D4 / §4.6 D5 / §4.7 D6）。未配置 secret=404 不暴露；插件停用=404；签名不符=401 fail-closed；
+   * X-Trigger-From-Me=200 防环丢弃；验签通过→归一信封→消息事件路由（无订阅=200 空应答不 fire）。
+   * TB 5 秒 200 硬约束：route 为本地同步路径（listAll+fire 入队即返回），满足时限。
+   */
+  private async handleTeambitionWebhook(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const respond = (status: number, body: Record<string, unknown>): void => {
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(body));
+    };
+    const cfg = this.deps.moduleConfigStore?.getTeambition();
+    if (!cfg || this.deps.teambitionEnabled?.() === false) {
+      return respond(404, { error: "not found" });
+    }
+    if (!this.rateLimiter.hit(`tb-webhook:${this.clientIp(req)}`, 60_000, 120)) {
+      return respond(429, { error: "rate limited" });
+    }
+    let raw = "";
+    try {
+      raw = await this.readBody(req);
+    } catch (e) {
+      const status = e instanceof PayloadTooLargeError ? 413 : 400;
+      return respond(status, { error: status === 413 ? "payload too large" : "invalid body" });
+    }
+    if (!verifyWebhookSignature(raw, cfg.appSecret, req.headers["x-signature"] as string | undefined)) {
+      return respond(401, { error: "invalid signature" });
+    }
+    if (req.headers["x-trigger-from-me"]) {
+      // 防环（D5）：平台出站动作（任务评论）触发的回推事件，直接丢弃
+      return respond(200, { ok: true, skipped: "self-triggered" });
+    }
+    let payload: TeambitionWebhookPayload;
+    try {
+      payload = JSON.parse(raw) as TeambitionWebhookPayload;
+    } catch {
+      return respond(400, { error: "invalid json" });
+    }
+    const envelope = buildTeambitionEnvelope(payload);
+    if (!envelope) return respond(200, { ok: true, skipped: "unshaped" });
+    if (!this.deps.teambitionRouter) return respond(200, { ok: true, skipped: "router-missing" });
+    const outcome = await this.deps.teambitionRouter.route(envelope);
+    return respond(200, { ok: true, consumed: outcome.consumed, fired: outcome.fired });
   }
 
   /** GET|POST /hooks/<随机路径> —— 调用事件入口，免认证（外部系统回调；D2/D3）。 */

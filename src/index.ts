@@ -74,19 +74,19 @@ import type { AgentGitRepository } from "./domain/git.js";
 import { SSH_EGRESS_MODE_FLAG } from "./domain/host-exec-policy.js";
 import { dingTalkRobotReady, type EnvAuthSnapshot } from "./domain/module-config.js";
 import { ENGINE_PLUGIN_BY_SDK, isPluginEnabled } from "./domain/plugin.js";
+import { createWakeFileWriter } from "./domain/release-webhook.js";
 import { CallEndpoint } from "./orchestrator/call-endpoint.js";
 import { createDefaultGates } from "./orchestrator/default-gates.js";
 import { DrainManager } from "./orchestrator/drain-manager.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
-import { MessageEventRouter } from "./orchestrator/message-event-router.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
+import { MessageEventRouter } from "./orchestrator/message-event-router.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
-import { createWakeFileWriter } from "./domain/release-webhook.js";
 import { ReleaseService } from "./orchestrator/release-service.js";
-import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
 import { sweepInterruptedTasks } from "./orchestrator/restart-sweep.js";
+import { autoResumeInterruptedTasks } from "./orchestrator/resume-service.js";
 import { RuntimeManager } from "./orchestrator/runtime-manager.js";
 import { SchedulerService } from "./orchestrator/scheduler.js";
 import { SystemEventDispatcher } from "./orchestrator/system-event-dispatcher.js";
@@ -102,6 +102,7 @@ import { createLogger } from "./util/logger.js";
 import { createSecretCipher } from "./util/secret-cipher.js";
 import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
+import { createTaskComment } from "./util/teambition-api.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -753,7 +754,7 @@ async function main(): Promise<void> {
     // 终态抽取最终回复 + 智能体名；systemEvents 构造后 setSystemEventSink 回填
     agentStore,
     // source 回源出站（spec 2026-10-27-platform-message-subscription-design §4.4 D3）：
-    // 钉钉群回复复用 dtChannel（群感知 send，见 DingTalkChannel）；TB 任务评论随 M2
+    // 钉钉=dtChannel 群感知 send 回群；TB=平台级应用评论回源任务（插件门+配置即用）
     sourceDeliver: async (anchor, text) => {
       if (anchor.platform === "dingtalk") {
         const ch = dtChannel;
@@ -761,7 +762,16 @@ async function main(): Promise<void> {
         await ch.send(anchor.threadId, { text, markdown: true });
         return;
       }
-      throw new Error(`source 回源暂不支持平台 ${anchor.platform}（随 M2）`);
+      if (anchor.platform === "teambition") {
+        if (!isPluginEnabled(pluginHost.snapshot(), "platform.teambition")) {
+          throw new Error("platform.teambition 插件已停用");
+        }
+        const tb = moduleConfigStore.getTeambition();
+        if (!tb) throw new Error("Teambition 未配置（授权页）");
+        await createTaskComment(tb, anchor.taskId, text);
+        return;
+      }
+      throw new Error("source 回源不支持的平台锚点");
     },
   });
   // 平台消息事件路由（spec §4.2 M1）：钉钉群 @ 归一信封 → 订阅匹配 → fire 统一管线；
@@ -771,6 +781,10 @@ async function main(): Promise<void> {
     dispatcher: eventDispatcher,
     logger: log,
   });
+  // TB webhook 端点晚绑定路由（webChannelDeps 字面量构造在先，同 setSystemEventSink 时序）
+  webChannelDeps.teambitionRouter = messageEventRouter;
+  webChannelDeps.teambitionEnabled = () =>
+    isPluginEnabled(pluginHost.snapshot(), "platform.teambition");
   const scheduler = new SchedulerService({
     eventStore,
     workflowStore,

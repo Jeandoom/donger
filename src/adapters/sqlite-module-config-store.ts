@@ -6,6 +6,7 @@ import type {
   GithubModuleConfig,
   ModuleKey,
   ProxyModuleConfig,
+  TeambitionModuleConfig,
 } from "../domain/module-config.js";
 import type { ModuleConfigStore } from "../ports/module-config-store.js";
 import { decryptValue, encryptValue } from "../util/skill-crypto.js";
@@ -127,6 +128,24 @@ export class SqliteModuleConfigStore implements ModuleConfigStore {
           ? raw.redirectUriOverride
           : undefined,
     };
+  }
+
+  getTeambition(): TeambitionModuleConfig | undefined {
+    const raw = this.read("teambition");
+    if (!raw) return undefined;
+    const appKey = typeof raw.appKey === "string" ? raw.appKey : "";
+    const appSecret = this.decryptSecret(raw.appSecret);
+    const orgId = typeof raw.orgId === "string" ? raw.orgId : "";
+    if (!appKey || !appSecret || !orgId) return undefined;
+    return { appKey, appSecret, orgId };
+  }
+
+  putTeambition(cfg: TeambitionModuleConfig): void {
+    this.write("teambition", {
+      appKey: cfg.appKey,
+      appSecret: encryptValue(this.keyHex, cfg.appSecret),
+      orgId: cfg.orgId,
+    });
   }
 
   putGithub(cfg: GithubModuleConfig): void {
