@@ -276,6 +276,13 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     return this.countTemplateReferences(code);
   }
 
+  async listUserIdsWithValue(code: string): Promise<string[]> {
+    const rows = this.db
+      .prepare("SELECT userId FROM user_credential_values WHERE code = ? ORDER BY createdAt")
+      .all(code) as Array<{ userId: string }>;
+    return rows.map((r) => r.userId);
+  }
+
   private rowToTemplate(r: TemplateRow): CredentialTemplate {
     return {
       code: r.code,

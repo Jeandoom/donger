@@ -43,4 +43,6 @@ export interface CredentialSetStore {
   deleteValue(userId: string, code: string): Promise<void>;
   /** 某模板下已填值的用户数（模板删除保护提示用） */
   countUsersByTemplate(code: string): Promise<number>;
+  /** 已填写某 code 凭证值的用户 id 列表（轮询式续期服务用，如 TB MCP token） */
+  listUserIdsWithValue(code: string): Promise<string[]>;
 }

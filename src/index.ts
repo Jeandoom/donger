@@ -103,6 +103,7 @@ import { createSecretCipher } from "./util/secret-cipher.js";
 import { backfillSetupCompletedFlag } from "./util/setup-completed-backfill.js";
 import { acquireSingleInstanceLock } from "./util/single-instance.js";
 import { createTaskComment } from "./util/teambition-api.js";
+import { TeambitionTokenRefresher } from "./orchestrator/teambition-token-refresher.js";
 import { migrateWorkspace } from "./util/workspace-migrate.js";
 
 async function main(): Promise<void> {
@@ -783,8 +784,12 @@ async function main(): Promise<void> {
   });
   // TB webhook 端点晚绑定路由（webChannelDeps 字面量构造在先，同 setSystemEventSink 时序）
   webChannelDeps.teambitionRouter = messageEventRouter;
-  webChannelDeps.teambitionEnabled = () =>
+  const teambitionEnabled = () =>
     isPluginEnabled(pluginHost.snapshot(), "platform.teambition");
+  webChannelDeps.teambitionEnabled = teambitionEnabled;
+  // TB MCP token 常驻续期（access 1h 效期；凭证 tb-mcp 三件套 TOKEN/REFRESH_TOKEN/CLIENT_ID）：
+  // 插件停用=不启动。过期症状=SDK 会话启动握手 401→MCP 服务被剔除；续期后新会话自动重挂
+  new TeambitionTokenRefresher({ credentialSets, logger: log }).start();
   const scheduler = new SchedulerService({
     eventStore,
     workflowStore,
