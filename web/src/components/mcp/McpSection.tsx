@@ -34,6 +34,22 @@ const TOOL_SUMMARY = [
 
 type ClientKind = "claude-code" | "zcode" | "codex";
 
+function isPublicHostUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return !["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+/** 端点统一解析：服务端 PUBLIC_BASE_URL 配置了公开地址则优先（外部 agent 恒可直达），
+ * 服务端还是回退 HOST（0.0.0.0/localhost 等本机地址）时按浏览器 origin 推导（见 oauthBaseUrl）。 */
+export function resolveEndpoint(serverEndpoint: string | null, origin: string): string {
+  if (serverEndpoint && isPublicHostUrl(serverEndpoint)) return serverEndpoint;
+  return `${origin.replace(/\/+$/, "")}/mcp`;
+}
+
 function buildConfig(kind: ClientKind, endpoint: string, token: string): string {
   if (kind === "codex") {
     return `[mcp_servers.donger]\nurl = "${endpoint}"\nhttp_headers = { "Authorization" = "Bearer ${token}" }`;
@@ -117,9 +133,14 @@ export function McpSection() {
     load();
   }, [load]);
 
+  const endpoint = useMemo(
+    () => resolveEndpoint(config?.endpoint ?? null, window.location.origin),
+    [config],
+  );
+
   const configText = useMemo(
-    () => (created ? buildConfig(clientKind, created.endpoint, created.token) : ""),
-    [clientKind, created],
+    () => (created && endpoint ? buildConfig(clientKind, endpoint, created.token) : ""),
+    [clientKind, created, endpoint],
   );
 
   const doCreate = () => {
@@ -149,8 +170,6 @@ export function McpSection() {
   };
 
   const tokens = config?.tokens ?? [];
-  // 端点按浏览器 origin 推导（反代/自定义域名部署下服务端 HOST 推导不可用，见 oauthBaseUrl）
-  const endpoint = config?.endpoint ? `${window.location.origin}/mcp` : null;
 
   return (
     <div className="space-y-5">
