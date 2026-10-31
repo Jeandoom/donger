@@ -292,6 +292,8 @@ export class EventDispatcher {
         // 反馈闭环 M1：feedback.created 因果键透传（orchestrator 据此装配
         // donger-feedback 工具并绑定写边界）
         ...(feedbackCorrelation ? { feedbackCorrelation } : {}),
+        // 处理登记（幂等键）：dedup.enabled 工作流派发轮挂载 workflow-dedup 工具
+        ...(wf.dedup?.enabled ? { dedupWorkflowId: wf.id } : {}),
       });
       const finishedAt = new Date().toISOString();
       const finalConvId = agentConversationId ?? conv?.id ?? null;
