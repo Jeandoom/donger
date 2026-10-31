@@ -16,6 +16,7 @@ interface WorkflowRow {
   enabled: number;
   autoDev: string | null;
   notifyPolicy: string | null;
+  dedup: string | null;
   lastRunId: string | null;
   lastRunAt: string | null;
   lastError: string | null;
@@ -40,6 +41,17 @@ function parseNotifyPolicy(raw: string | null): NotifyPolicy | undefined {
   try {
     const parsed = NotifyPolicySchema.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** dedup JSON 列解析：同 autoDev 降级语义 */
+function parseDedup(raw: string | null): { enabled: boolean } | undefined {
+  if (!raw) return undefined;
+  try {
+    const j = JSON.parse(raw) as { enabled?: boolean };
+    return typeof j.enabled === "boolean" ? { enabled: j.enabled } : undefined;
   } catch {
     return undefined;
   }
@@ -73,6 +85,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         enabled INTEGER NOT NULL DEFAULT 0,
         autoDev TEXT,
         notifyPolicy TEXT,
+        dedup TEXT,
         lastRunId TEXT, lastRunAt TEXT, lastError TEXT,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
       )
@@ -100,6 +113,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
     ).some((c) => c.name === "notifyPolicy");
     if (!hasNotifyPolicy) {
       this.db.exec("ALTER TABLE workflows ADD COLUMN notifyPolicy TEXT");
+    }
+    // dedup 列（2026-10-30-workflow-dedup-design）：JSON 文本，幂等补列
+    const hasDedup = (
+      this.db.prepare("PRAGMA table_info(workflows)").all() as Array<{ name: string }>
+    ).some((c) => c.name === "dedup");
+    if (!hasDedup) {
+      this.db.exec("ALTER TABLE workflows ADD COLUMN dedup TEXT");
     }
     if (isLegacy) {
       // 旧表补列（CREATE TABLE IF NOT EXISTS 不会改既有表结构）
@@ -161,6 +181,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       enabled: row.enabled === 1,
       autoDev: parseAutoDev(row.autoDev),
       notifyPolicy: parseNotifyPolicy(row.notifyPolicy),
+      dedup: parseDedup(row.dedup),
       lastRunId: row.lastRunId,
       lastRunAt: row.lastRunAt,
       lastError: row.lastError,
@@ -180,8 +201,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     this.db
       .prepare(
-        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, autoDev, notifyPolicy, createdAt, updatedAt)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO workflows (id, ownerId, name, description, eventId, agentId, permissionMode, promptTemplate, enabled, autoDev, notifyPolicy, dedup, createdAt, updatedAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         w.id,
@@ -195,6 +216,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         w.enabled ? 1 : 0,
         w.autoDev ? JSON.stringify(w.autoDev) : null,
         w.notifyPolicy ? JSON.stringify(w.notifyPolicy) : null,
+        w.dedup ? JSON.stringify(w.dedup) : null,
         w.createdAt,
         w.updatedAt,
       );
@@ -235,7 +257,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     this.db
       .prepare(
-        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, enabled=?, autoDev=?, notifyPolicy=?, updatedAt=? WHERE id=?`,
+        `UPDATE workflows SET name=?, description=?, eventId=?, agentId=?, permissionMode=?, promptTemplate=?, enabled=?, autoDev=?, notifyPolicy=?, dedup=?, updatedAt=? WHERE id=?`,
       )
       .run(
         next.name,
@@ -247,6 +269,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         next.enabled ? 1 : 0,
         next.autoDev ? JSON.stringify(next.autoDev) : null,
         next.notifyPolicy ? JSON.stringify(next.notifyPolicy) : null,
+        next.dedup ? JSON.stringify(next.dedup) : null,
         next.updatedAt,
         next.id,
       );
