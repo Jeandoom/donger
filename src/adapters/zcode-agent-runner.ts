@@ -730,6 +730,7 @@ export class ZcodeAgentRunner implements AgentRunner {
       opts.kbTools,
       opts.auditTools,
       opts.feedbackTools,
+      opts.dedupTools,
     ]) {
       if (!sdkTools) continue;
       const url = await this.bridge.mountMcp(

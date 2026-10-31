@@ -219,6 +219,9 @@ export const IncomingMessageSchema = z.object({
    * 工具只可操作此 feedbackId，普通聊天轮不携带、不挂载。
    */
   feedbackCorrelation: z.object({ feedbackId: z.string().min(1) }).optional(),
+  /** 处理登记（幂等键）工作流 id（工作流派发注入，2026-10-30-workflow-dedup-design）：
+   * orchestrator 据此挂载 workflow-dedup 工具并绑定写边界——普通聊天轮不携带不挂载 */
+  dedupWorkflowId: z.string().min(1).optional(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;
 

@@ -119,6 +119,9 @@ export interface RunOptions {
    * 存在）+ agent 白名单声明时挂载；写边界（allowedFeedbackId）构造时闭包绑定。
    */
   feedbackTools?: McpSdkServerConfigWithInstance;
+  /** in-process 处理登记 MCP server（workflow-dedup）：dedup.enabled 工作流派发轮挂载；
+   *  写边界（workflowId）构造时闭包绑定（spec 2026-10-30-workflow-dedup-design） */
+  dedupTools?: McpSdkServerConfigWithInstance;
   /**
    * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
    * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按

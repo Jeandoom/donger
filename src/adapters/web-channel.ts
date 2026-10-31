@@ -616,6 +616,8 @@ export interface WebChannelDeps {
   /** 自动化模块（事件/工作流，spec 2026-10-09-events-workflows-refactor-design）—— 缺省=不支持 */
   eventStore?: EventStore;
   workflowStore?: WorkflowStore;
+  /** 处理登记（幂等键）存储（2026-10-30-workflow-dedup-design）：缺省=登记端点 503 */
+  workflowDedupStore?: import("../ports/workflow-dedup-store.js").WorkflowDedupStore;
   workflowRunStore?: WorkflowRunStore;
   eventFiringStore?: EventFiringStore;
   scheduler?: SchedulerService;
@@ -7243,6 +7245,27 @@ export class WebChannel implements Channel {
     if (m && req.method === "GET") {
       const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
       this.json(res, (await rs?.stats(wf.id)) ?? null);
+      return true;
+    }
+    // 处理登记（幂等键）管理面（2026-10-30-workflow-dedup-design §4.5）：属主查列表/释放
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/dedup-keys$/);
+    if (m && req.method === "GET") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      if (!this.deps.workflowDedupStore) return this.json(res, { error: "服务未启用" }, 503);
+      this.json(res, { entries: await this.deps.workflowDedupStore.list(wf.id, { limit: 200 }) });
+      return true;
+    }
+    m = pathname.match(/^\/api\/workflows\/([\w-]+)\/dedup-keys\/([\w.-]+)\/release$/);
+    if (m && req.method === "POST") {
+      const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
+      if (!this.deps.workflowDedupStore) return this.json(res, { error: "服务未启用" }, 503);
+      const ok = await this.deps.workflowDedupStore.release(
+        wf.id,
+        decodeURIComponent(m[2] ?? ""),
+        "人工释放",
+      );
+      if (!ok) return this.json(res, { error: "无 claimed 行可释放" }, 404);
+      this.json(res, { ok: true });
       return true;
     }
     m = pathname.match(/^\/api\/workflows\/([\w-]+)\/runs\/([\w-]+)$/);

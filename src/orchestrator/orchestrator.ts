@@ -86,6 +86,7 @@ import { buildDispatcherAgent } from "./dispatch-flow.js";
 import type { DrainGate } from "./drain-manager.js";
 import { bridgeEvents } from "./event-bridge.js";
 import { createFeedbackToolsServer } from "./feedback-tools.js";
+import { createWorkflowDedupToolsServer } from "./workflow-dedup-tools.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
@@ -202,6 +203,8 @@ export interface OrchestratorDeps {
    * 未装配时反馈处理链路的 run 仍可执行，但 agent 无沉淀工具可用。
    */
   feedbackStore?: FeedbackStore;
+  /** 处理登记（幂等键）存储（2026-10-30-workflow-dedup-design）：缺省=dedup 工具不挂载 */
+  workflowDedupStore?: import("../ports/workflow-dedup-store.js").WorkflowDedupStore;
   /**
    * 进程内事件发射（→ 触发器管线）。
    * index 侧晚绑定 EventTriggerDispatcher（它依赖本 orchestrator 构造出的 loopRunner）；
@@ -239,6 +242,9 @@ export class Orchestrator {
   // 与 permissionModes 同款旁路——dispatcher 轮经 runPhases 进 runTurn，参数直传会断链，
   // 会话级 Map 在 handleMessage 入口登记、runTurn 装配钩子现取。
   private readonly feedbackCorrelations = new Map<string, string>();
+  /** conversationId → 处理登记工作流 id（2026-10-30-workflow-dedup-design）：workflow-dedup
+   *  工具写边界依据；runPhases 分支与 permissionModes/feedbackCorrelations 同款旁路 */
+  private readonly dedupWorkflowIds = new Map<string, string>();
   // 会话实时执行状态（SDK 事件流推导；观测态，不落库）
   private readonly activityTracker = new ActivityTracker();
 
@@ -692,6 +698,8 @@ export class Orchestrator {
     modelRef?: string;
     /** 反馈因果键（工作流派发注入，2026-10-20 反馈闭环 M1）：donger-feedback 工具写边界 */
     feedbackCorrelation?: { feedbackId: string };
+    /** 处理登记（幂等键）工作流 id（2026-10-30-workflow-dedup-design）：workflow-dedup 工具写边界 */
+    dedupWorkflowId?: string;
   }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
     const { channel, gates } = this.deps;
     // 主机执行策略（2026-10-12 拍板，specs/2026-10-12-host-exec-policy-design.md）：
@@ -968,6 +976,20 @@ export class Orchestrator {
             feedbackStore: this.deps.feedbackStore,
             notifications: this.deps.notificationService,
             allowedFeedbackId: e2eCorrelationId,
+          }),
+        };
+      }
+      // 处理登记工具（workflow-dedup，2026-10-30-workflow-dedup-design）：仅 dedup.enabled
+      // 工作流派发轮（携带 dedupWorkflowId）+ 存储已装配；写边界（workflowId）闭包绑定。
+      // 会话旁路（runPhases 分支）与直传双路取值，同 feedbackCorrelation 模式。
+      const dedupWorkflowId =
+        p.dedupWorkflowId ?? this.dedupWorkflowIds.get(p.conversation.id) ?? null;
+      if (dedupWorkflowId && this.deps.workflowDedupStore) {
+        base = {
+          ...base,
+          dedupTools: createWorkflowDedupToolsServer({
+            workflowId: dedupWorkflowId,
+            store: this.deps.workflowDedupStore,
           }),
         };
       }
@@ -2504,6 +2526,10 @@ export class Orchestrator {
       if (msg.feedbackCorrelation) {
         this.feedbackCorrelations.set(conversation.id, msg.feedbackCorrelation.feedbackId);
       }
+      // 处理登记工作流 id 旁路（runPhases 分支不断链，与反馈因果键同款）
+      if (msg.dedupWorkflowId) {
+        this.dedupWorkflowIds.set(conversation.id, msg.dedupWorkflowId);
+      }
       // L2 autoDev：登记本会话的放行白名单依据（绑定 agent 首仓库名；runTurn 组装钩子用）
       if (msg.autoDev === true) {
         const autoDevRepoName = agent?.gitRepositories?.[0]?.name;
@@ -2621,6 +2647,7 @@ export class Orchestrator {
         modelRef: msg.modelRef,
         unattended: msg.unattended === true,
         ...(msg.feedbackCorrelation ? { feedbackCorrelation: msg.feedbackCorrelation } : {}),
+        ...(msg.dedupWorkflowId ? { dedupWorkflowId: msg.dedupWorkflowId } : {}),
       });
 
       if (r.aborted) return await this.finishCanceled(task, conversation);

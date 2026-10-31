@@ -64,6 +64,7 @@ import { SqliteUsageStore } from "./adapters/sqlite-usage-store.js";
 import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-store.js";
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { SqliteWorkflowRunStore } from "./adapters/sqlite-workflow-run-store.js";
+import { SqliteWorkflowDedupStore } from "./adapters/sqlite-workflow-dedup-store.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { createSsh2CommandRunner } from "./adapters/ssh2-command-runner.js";
 import { resolveSystemKeySeed, SystemKeyService } from "./adapters/system-key-service.js";
@@ -410,6 +411,7 @@ async function main(): Promise<void> {
       userStore,
       conversationStore,
       messageStore,
+      workflowDedupStore,
       usageStore,
       auditStore,
       commentStore,
@@ -548,6 +550,8 @@ async function main(): Promise<void> {
   workflowStore.migrate();
   const workflowRunStore = new SqliteWorkflowRunStore(db);
   workflowRunStore.migrate();
+  const workflowDedupStore = new SqliteWorkflowDedupStore(db);
+  workflowDedupStore.migrate();
   const eventFiringStore = new SqliteEventFiringStore(db);
   eventFiringStore.migrate();
   // L2 自动发布执行记录（spec 2026-10-16-feedback-auto-dev-deploy-l2-design §4.5）
@@ -640,6 +644,7 @@ async function main(): Promise<void> {
     https: cfg.https,
     workspaceDir: cfg.workspaceDir,
     taskStore: store,
+    workflowDedupStore,
     userStore,
     systemEventStore,
     conversationStore,

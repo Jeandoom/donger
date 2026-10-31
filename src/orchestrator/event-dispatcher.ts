@@ -651,6 +651,7 @@ export class EventDispatcher {
           ...(ctx.correlation
             ? { feedbackCorrelation: { feedbackId: ctx.correlation.feedbackId } }
             : {}),
+          ...(wf.dedup?.enabled ? { dedupWorkflowId: wf.id } : {}),
           requesterId: wf.ownerId,
           text: prompt,
           unattended: true,

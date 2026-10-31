@@ -61,6 +61,9 @@ export const WorkflowSchema = z.object({
   autoDev: AutoDevConfigSchema.optional(),
   /** 通知策略（2026-10-20 反馈闭环 M2）：缺省不通知 */
   notifyPolicy: NotifyPolicySchema.optional(),
+  /** 处理登记（幂等键，2026-10-30-workflow-dedup-design）：开启后工作流轮内挂载
+   *  workflow-dedup 工具（claim/query/release），业务键原子认领实现「一次只处理一次」 */
+  dedup: z.object({ enabled: z.boolean() }).optional(),
   // —— 运行态（原 Loop 运行字段收编）——
   lastRunId: z.string().nullable().optional(),
   lastRunAt: z.string().nullable().optional(),

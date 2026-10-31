@@ -350,6 +350,9 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "POST", pattern: "/api/admin/secret-key/history", access: { kind: "admin" } },
     { method: "POST", pattern: "/api/admin/secret-key/repair", access: { kind: "admin" } },
     // 授权/代理模块配置（spec 2026-09-21-auth-module-design §3.3/§3.6）
+    // 处理登记（幂等键）管理面：属主查列表/释放（2026-10-30-workflow-dedup-design）
+    { method: "GET", pattern: "/api/workflows/:id/dedup-keys", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/workflows/:id/dedup-keys/:key/release", access: { kind: "authenticated" } },
     { method: "GET", pattern: "/api/admin/auth-configs", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/dingtalk", access: { kind: "admin" } },
     { method: "PUT", pattern: "/api/admin/auth-configs/github", access: { kind: "admin" } },

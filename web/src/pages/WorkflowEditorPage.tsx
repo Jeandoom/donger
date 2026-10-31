@@ -46,6 +46,7 @@ interface WorkflowDTO {
   agentId: string;
   /** 无人值守轮权限模式（ask_before_change | risk_guard | full_access）；旧数据缺省 full_access */
   permissionMode?: string;
+  dedup?: { enabled: boolean };
   promptTemplate?: string;
   enabled: boolean;
   lastRunAt?: string | null;
@@ -91,6 +92,14 @@ interface RunStats {
   failed: number;
   stopped: number;
   avgDurationMs: number | null;
+}
+
+interface DedupEntryDTO {
+  dedupKey: string;
+  runId: string;
+  status: "claimed" | "released";
+  note: string | null;
+  createdAt: string;
 }
 
 interface RunDTO {
@@ -166,6 +175,7 @@ export function WorkflowEditorPage() {
   const [eventId, setEventId] = useState("");
   const [agentId, setAgentId] = useState("");
   const [permissionMode, setPermissionMode] = useState("full_access");
+  const [dedupEnabled, setDedupEnabled] = useState(false);
   const [promptTemplate, setPromptTemplate] = useState("{{triggerOutput}}");
   const [enabled, setEnabled] = useState(false);
   // L2 自动发布（分区默认收起，头部开关打开即展开）
@@ -204,6 +214,7 @@ export function WorkflowEditorPage() {
   // 执行记录
   const [stats, setStats] = useState<RunStats | null>(null);
   const [runs, setRuns] = useState<RunDTO[]>([]);
+  const [dedupKeys, setDedupKeys] = useState<DedupEntryDTO[]>([]);
   const [releaseRuns, setReleaseRuns] = useState<ReleaseRunDTO[]>([]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [runningNow, setRunningNow] = useState(false);
@@ -215,6 +226,7 @@ export function WorkflowEditorPage() {
     eventId,
     agentId,
     permissionMode,
+    dedupEnabled,
     promptTemplate,
     autoDevEnabled,
     maxFiles,
@@ -278,6 +290,7 @@ export function WorkflowEditorPage() {
       setEventId(w.eventId);
       setAgentId(w.agentId);
       setPermissionMode(w.permissionMode ?? "full_access");
+      setDedupEnabled(w.dedup?.enabled ?? false);
       if (w.promptTemplate) setPromptTemplate(w.promptTemplate);
       setEnabled(w.enabled);
       setAutoDevEnabled(w.autoDev?.enabled ?? false);
@@ -320,10 +333,11 @@ export function WorkflowEditorPage() {
   const refreshRuns = useCallback(async () => {
     if (!id) return;
     try {
-      const [sr, rr, dr] = await Promise.all([
+      const [sr, rr, dr, dk] = await Promise.all([
         apiFetch(`/api/workflows/${id}/runs/stats`),
         apiFetch(`/api/workflows/${id}/runs?limit=50`),
         apiFetch(`/api/workflows/${id}/release-runs`),
+        apiFetch(`/api/workflows/${id}/dedup-keys`),
       ]);
       if (sr.ok) setStats((await sr.json()) as RunStats);
       if (rr.ok) {
@@ -333,6 +347,10 @@ export function WorkflowEditorPage() {
       if (dr.ok) {
         const d = (await dr.json()) as { releaseRuns?: ReleaseRunDTO[] };
         setReleaseRuns(d.releaseRuns ?? []);
+      }
+      if (dk.ok) {
+        const d = (await dk.json()) as { entries?: DedupEntryDTO[] };
+        setDedupKeys(d.entries ?? []);
       }
     } catch {
       // 记录面刷新失败不打断编辑
@@ -392,6 +410,7 @@ export function WorkflowEditorPage() {
           eventId,
           agentId,
           permissionMode,
+          dedup: { enabled: dedupEnabled },
           promptTemplate,
           autoDev: {
             enabled: autoDevEnabled,
@@ -661,6 +680,20 @@ export function WorkflowEditorPage() {
             <option value="risk_guard">风险拦截——仅风险不变量弹卡</option>
             <option value="ask_before_change">变更前问询——命中审批门即弹卡</option>
           </Select>
+        </FormField>
+        <FormField
+          label="处理登记（幂等）"
+          hint="开启后轮内挂载 workflow-dedup 工具（claim/query/release）：对业务键（如 TB 任务 id）原子认领，同键多条件/多轮命中只有首次处理。配合提示词先 claim 再处理"
+        >
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={dedupEnabled}
+              onChange={(e) => setDedupEnabled(e.target.checked)}
+              className="accent-primary"
+            />
+            启用处理登记（同键只处理一次）
+          </label>
         </FormField>
         <FormField
           label="Prompt 模板"
@@ -1111,6 +1144,64 @@ export function WorkflowEditorPage() {
           </div>
         </FormSection>
       )}
+      {canShowRecords && dedupEnabled ? (
+        <FormSection
+          id="wf-sec-dedup"
+          no="7"
+          title="处理登记（幂等键）"
+          description="已认领的业务键（同键只处理一次）；处理失败可释放后重试"
+        >
+          <div className="overflow-hidden rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/60 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">业务键</th>
+                  <th className="px-3 py-2 font-medium">状态</th>
+                  <th className="px-3 py-2 font-medium">认领时间</th>
+                  <th className="px-3 py-2 font-medium">备注</th>
+                  <th className="px-3 py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {dedupKeys.map((d) => (
+                  <tr key={d.dedupKey} className="border-t border-border">
+                    <td className="px-3 py-2 font-mono text-xs">{d.dedupKey}</td>
+                    <td className="px-3 py-2">
+                      <Badge tone={d.status === "claimed" ? "info" : "neutral"}>
+                        {d.status === "claimed" ? "已认领" : "已释放"}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {new Date(d.createdAt).toLocaleString()}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">{d.note ?? "—"}</td>
+                    <td className="px-3 py-2 text-right">
+                      {d.status === "claimed" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const url =
+                              "/api/workflows/" + id + "/dedup-keys/" + encodeURIComponent(d.dedupKey) + "/release";
+                            void apiFetch(url, { method: "POST" }).then(() => void refreshRuns());
+                          }}
+                        >
+                          释放
+                        </Button>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!dedupKeys.length ? (
+              <div className="p-8 text-center text-sm text-muted-foreground">
+                暂无登记（agent 调用 dedup_claim 后出现）
+              </div>
+            ) : null}
+          </div>
+        </FormSection>
+      ) : null}
       {dialog}
     </div>
   );
