@@ -7251,20 +7251,29 @@ export class WebChannel implements Channel {
     m = pathname.match(/^\/api\/workflows\/([\w-]+)\/dedup-keys$/);
     if (m && req.method === "GET") {
       const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
-      if (!this.deps.workflowDedupStore) return this.json(res, { error: "服务未启用" }, 503);
+      if (!this.deps.workflowDedupStore) {
+        this.json(res, { error: "服务未启用" }, 503);
+        return true;
+      }
       this.json(res, { entries: await this.deps.workflowDedupStore.list(wf.id, { limit: 200 }) });
       return true;
     }
     m = pathname.match(/^\/api\/workflows\/([\w-]+)\/dedup-keys\/([\w.-]+)\/release$/);
     if (m && req.method === "POST") {
       const wf = await this.requireOwnedWorkflow(m[1] ?? "", uid);
-      if (!this.deps.workflowDedupStore) return this.json(res, { error: "服务未启用" }, 503);
+      if (!this.deps.workflowDedupStore) {
+        this.json(res, { error: "服务未启用" }, 503);
+        return true;
+      }
       const ok = await this.deps.workflowDedupStore.release(
         wf.id,
         decodeURIComponent(m[2] ?? ""),
         "人工释放",
       );
-      if (!ok) return this.json(res, { error: "无 claimed 行可释放" }, 404);
+      if (!ok) {
+        this.json(res, { error: "无 claimed 行可释放" }, 404);
+        return true;
+      }
       this.json(res, { ok: true });
       return true;
     }
