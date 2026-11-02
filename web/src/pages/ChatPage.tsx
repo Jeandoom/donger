@@ -44,6 +44,7 @@ export function ChatPage() {
   const wc = useWebChat();
   const [params] = useSearchParams();
   const deepLinkAgent = params.get("agent");
+  const deepLinkConv = params.get("conv");
 
   const [agents, setAgents] = useState<AgentListDTO[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -175,6 +176,19 @@ export function ChatPage() {
     if (bootstrappedRef.current) return;
     if (!agentsLoaded || !prefsLoaded || wc.loadingConversations) return;
     bootstrappedRef.current = true;
+    // ?conv= 深链（工作流执行记录「查看对话」等产出）：按 id 精确定位。
+    // 列表为属主全量未归档会话（无分页），命中即切并清参防刷新回跳；未命中落回缺省定位
+    if (deepLinkConv) {
+      const target = wc.conversations.find((conversation) => conversation.id === deepLinkConv);
+      if (target) {
+        wc.switchConversation(target.id);
+        const next = new URLSearchParams(window.location.search);
+        next.delete("conv");
+        const qs = next.toString();
+        window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+        return;
+      }
+    }
     const deepLinkValid = deepLinkAgent !== null && agents.some((a) => a.id === deepLinkAgent);
     if (deepLinkValid && deepLinkAgent) {
       const latestOfAgent = wc.conversations.find(
@@ -195,6 +209,7 @@ export function ChatPage() {
     agents,
     agentsLoaded,
     deepLinkAgent,
+    deepLinkConv,
     prefsLoaded,
     wc.conversations,
     wc.loadingConversations,
