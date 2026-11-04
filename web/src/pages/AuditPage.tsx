@@ -777,6 +777,15 @@ function EventRow({
       </div>
     );
   }
+  if (e.type === "session_init") {
+    // 凭证注入回执（runtime-manager 组装落 text；无回执=未勾选凭证的会话不渲染行）
+    return e.text ? (
+      <div className="px-3 text-[12px] leading-5 text-muted-foreground">
+        <span className="mr-1.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">session</span>
+        {e.text}
+      </div>
+    ) : null;
+  }
   return null;
 }
 

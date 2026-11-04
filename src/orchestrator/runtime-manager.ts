@@ -10,7 +10,16 @@ import {
   substituteCredentialRefs,
 } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
-import { resolveInjectionEnv } from "../domain/credential-injection.js";
+import {
+  formatInjectionReceipt,
+  pickInjectableCodes,
+  resolveInjectionEnv,
+} from "../domain/credential-injection.js";
+import type {
+  CredentialKind,
+  CredentialKeySpec,
+  CredentialTemplate,
+} from "../domain/credential.js";
 import { buildForkHistoryAppend, planForkContinuation } from "../domain/fork.js";
 import { materializeFailureGuidance, SESSION_BRANCH_PREFIX } from "../domain/git.js";
 import type { LLMConfig } from "../domain/llm-config.js";
@@ -145,23 +154,49 @@ export class RuntimeManager {
     // agent 勾选凭证：共享智能体按属主（分享者）用户空间解析——被分享者直接使用分享者的
     // 凭证配置（specs/2026-09-20-agent-share-tighten-and-duplicate-design.md §2.5）；
     // 缺失的注入 <CODE>_MISSING=1 兜底，agent 可自检。
-    // git 类凭证（kind="git"）不注入 env——token 仅经凭证桥在 donger-git 工具/仓库
-    // 物化内现取，防止 agent 从环境拿到 token 绕过工具直连平台（防线 1）。
+    // 注入面按 kind 收口（pickInjectableCodes）：仅 generic 进 env；git/host 经专用
+    // 工具现取（文档契约「不注入 env」，host 此前被 `!== "git"` 误放进 env）。
+    // 别名（keySpecs.envAlias）让生态标准名（ALIBABA_CLOUD_* 等）随注入直出，
+    // agent 不必在会话内自行桥接（2026-11-04 会话 a3405241 误判根因）。
     let credentialsEnv: Record<string, string> = {};
+    let credentialsAuditNote: string | undefined;
     if (opts.agent?.credentials?.length) {
       const picked = opts.agent.credentials;
       const templates = await Promise.all(
         picked.map((code) => this.deps.credentialSets.getTemplate(code)),
       );
-      const injectable = picked.filter((_, i) => templates[i]?.kind !== "git");
+      const kindByCode = new Map(
+        templates
+          .filter((t): t is CredentialTemplate => t !== undefined)
+          .map((t) => [t.code, t.kind] as const),
+      );
+      const { injectable, excluded } = pickInjectableCodes(picked, kindByCode);
       const filled = await this.deps.credentialSets.getFilledValues(
         opts.sharedAgentSkillOwner?.id ?? user.id,
         injectable,
       );
-      credentialsEnv = resolveInjectionEnv(
+      const keySpecsByCode = new Map(
+        templates
+          .filter((t): t is CredentialTemplate => t !== undefined)
+          .map((t) => [t.code, t.keySpecs] as const),
+      );
+      const result = resolveInjectionEnv(
         filled.map((f) => ({ code: f.code, values: f.values })),
         injectable,
-      ).env;
+        keySpecsByCode,
+      );
+      credentialsEnv = result.env;
+      credentialsAuditNote = formatInjectionReceipt({
+        injected: filled.map((f) => ({
+          code: f.code,
+          keyCount: Object.keys(f.values).length,
+          aliases: (keySpecsByCode.get(f.code) ?? [])
+            .filter((s) => s.envAlias && f.values[s.key] !== undefined)
+            .map((s) => s.envAlias as string),
+        })),
+        missing: result.missing,
+        excluded,
+      });
     }
 
     // agent 分支：显式 agent 可覆盖 skills/工具/mcp/系统提示；否则用 Pack 派生默认
@@ -515,6 +550,7 @@ export class RuntimeManager {
       sessionStore,
       capabilityVersion: 1,
       credentialsEnv,
+      credentialsAuditNote,
       ...(denyRoots.length > 1
         ? {
             sensitiveReadPolicy: {

@@ -8,7 +8,13 @@ import {
   parseCredentialCode,
   withGitPatKeySpecs,
 } from "../../src/domain/credential.js";
-import { resolveInjectionEnv, toEnvName } from "../../src/domain/credential-injection.js";
+import type { CredentialKind } from "../../src/domain/credential.js";
+import {
+  formatInjectionReceipt,
+  pickInjectableCodes,
+  resolveInjectionEnv,
+  toEnvName,
+} from "../../src/domain/credential-injection.js";
 
 describe("toEnvName", () => {
   it("code 与 key 拼接为大写下划线名", () => {
@@ -151,5 +157,106 @@ describe("凭证 code 与结构校验", () => {
         keySpecs: [{ key: "k" }],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("resolveInjectionEnv envAlias（生态标准名别名）", () => {
+  const aliyunSpecs = [
+    { key: "account" },
+    { key: "accessKey", envAlias: "ALIBABA_CLOUD_ACCESS_KEY_ID" },
+    { key: "secretKey", envAlias: "ALIBABA_CLOUD_ACCESS_KEY_SECRET" },
+  ];
+
+  it("命中键额外展开别名变量；平台命名照旧", () => {
+    const { env, missing } = resolveInjectionEnv(
+      [{ code: "aliyun_access_token", values: { account: "a", accessKey: "ak", secretKey: "sk" } }],
+      ["aliyun_access_token"],
+      new Map([["aliyun_access_token", aliyunSpecs]]),
+    );
+    expect(missing).toEqual([]);
+    expect(env.ALIYUN_ACCESS_TOKEN_ACCESSKEY).toBe("ak");
+    expect(env.ALIYUN_ACCESS_TOKEN_SECRETKEY).toBe("sk");
+    expect(env.ALIBABA_CLOUD_ACCESS_KEY_ID).toBe("ak");
+    expect(env.ALIBABA_CLOUD_ACCESS_KEY_SECRET).toBe("sk");
+    expect(env.ALIYUN_ACCESS_TOKEN).toBe(JSON.stringify({ account: "a", accessKey: "ak", secretKey: "sk" }));
+  });
+
+  it("值缺键时对应别名不展开；无 keySpecs 时零别名（向后兼容）", () => {
+    const noAlias = resolveInjectionEnv(
+      [{ code: "c1", values: { accessKey: "ak" } }],
+      ["c1"],
+    );
+    expect(noAlias.env.ALIBABA_CLOUD_ACCESS_KEY_ID).toBeUndefined();
+    const partial = resolveInjectionEnv(
+      [{ code: "c1", values: { accessKey: "ak" } }],
+      ["c1"],
+      new Map([["c1", aliyunSpecs]]),
+    );
+    expect(partial.env.ALIBABA_CLOUD_ACCESS_KEY_ID).toBe("ak");
+    expect(partial.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET).toBeUndefined();
+  });
+
+  it("别名冲突：pickedCodes 顺序靠后者覆盖", () => {
+    const env = resolveInjectionEnv(
+      [
+        { code: "a", values: { k: "v1" } },
+        { code: "b", values: { k: "v2" } },
+      ],
+      ["a", "b"],
+      new Map([
+        ["a", [{ key: "k", envAlias: "SHARED_VAR" }]],
+        ["b", [{ key: "k", envAlias: "SHARED_VAR" }]],
+      ]),
+    ).env;
+    expect(env.SHARED_VAR).toBe("v2");
+  });
+});
+
+describe("pickInjectableCodes（kind 收口注入面）", () => {
+  it("仅 generic 注入；git/host 排除并带 kind；未知 code 按 generic 放行", () => {
+    const kinds = new Map<string, CredentialKind>([
+      ["ak", "generic"],
+      ["pat", "git"],
+      ["ssh-host", "host"],
+    ]);
+    const { injectable, excluded } = pickInjectableCodes(
+      ["ak", "pat", "ssh-host", "ghost-code"],
+      kinds,
+    );
+    expect(injectable).toEqual(["ak", "ghost-code"]);
+    expect(excluded).toEqual([
+      { code: "pat", kind: "git" },
+      { code: "ssh-host", kind: "host" },
+    ]);
+  });
+});
+
+describe("formatInjectionReceipt（注入回执，不含值）", () => {
+  it("注入/缺失/排除三段齐全", () => {
+    const text = formatInjectionReceipt({
+      injected: [
+        { code: "aliyun_access_token", keyCount: 3, aliases: ["ALIBABA_CLOUD_ACCESS_KEY_ID"] },
+      ],
+      missing: ["langfuse-ai-audit"],
+      excluded: [{ code: "jihulab-pat", kind: "git" }],
+    });
+    expect(text).toContain("已注入 aliyun_access_token(3键,别名ALIBABA_CLOUD_ACCESS_KEY_ID)");
+    expect(text).toContain("未配置");
+    expect(text).toContain("langfuse-ai-audit");
+    expect(text).toContain("jihulab-pat(git)");
+    expect(text).not.toContain("secret");
+  });
+
+  it("无别名时省略别名段；全空报未勾选", () => {
+    const plain = formatInjectionReceipt({
+      injected: [{ code: "ops_account", keyCount: 3, aliases: [] }],
+      missing: [],
+      excluded: [],
+    });
+    expect(plain).toContain("ops_account(3键)");
+    expect(plain).not.toContain("别名");
+    expect(
+      formatInjectionReceipt({ injected: [], missing: [], excluded: [] }),
+    ).toContain("未勾选任何凭证");
   });
 });

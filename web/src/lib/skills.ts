@@ -43,6 +43,8 @@ export interface SkillPackDTO {
 export interface CredentialKeySpecDTO {
   key: string;
   label?: string;
+  /** 生态标准变量名别名（服务端注入时额外展开；展示用） */
+  envAlias?: string;
 }
 
 export interface CredentialTemplateDTO {

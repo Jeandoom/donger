@@ -256,3 +256,40 @@ describe.skipIf(process.platform !== "win32")("matchSensitiveRead MSYS 记法归
     expect(matchSensitiveRead("ls //srv/share/x", "C:\\w", critical())).toBeUndefined();
   });
 });
+
+// 2026-11-04 生产误伤回归（会话 a3405241）：sed 替换串 's/=.*/=<redacted>/' 经 JSON
+// 序列化 + 切分后剩一个裸 /，被当作绝对路径判成 confine 越界，整条命令（含 env | grep
+// 探查）被拒，agent 误判「env 全量导出被拦」。纯分隔符/标点 token 不指向任何读取目标，
+// 豁免；带真实目标的越界探测不受影响。
+describe("matchSensitiveRead 纯分隔符 token 噪声豁免", () => {
+  const home = "D:\\deploy\\donger\\data\\workspace\\users\\u1";
+  const cwd = join(home, "agents", "a1", "workspace");
+  const confine = {
+    denyRoots: ["D:\\deploy\\donger\\data"],
+    allowReadRoots: [home],
+    mode: "confine" as const,
+  };
+
+  it("生产原始命令（sed 替换串剩裸 /）不再误拒", () => {
+    const cmd =
+      'cat .tmp-ops-projects.json 2>/dev/null | head -50; echo "===bugs==="; ls bugs/ 2>/dev/null; ' +
+      "echo \"===env===\"; env | grep -iE 'ali|cloud|sls|ak|sk|access' | sed 's/=.*/=<redacted>/'; " +
+      'echo "===cwd==="; pwd; ls -a';
+    expect(matchSensitiveRead(cmd, cwd, confine)).toBeUndefined();
+  });
+
+  it("裸 / 与 ../ 片段不作为路径探测", () => {
+    expect(matchSensitiveRead("ls /", cwd, confine)).toBeUndefined();
+    expect(matchSensitiveRead("cd ../ && ls", cwd, confine)).toBeUndefined();
+    expect(matchSensitiveRead("sed 's/a\\/b\\//' file.txt", cwd, confine)).toBeUndefined();
+  });
+
+  it("带真实目标的目录外读取仍命中（豁免不放走探测）", () => {
+    const hit = matchSensitiveRead("cat /etc/passwd", cwd, confine);
+    expect(hit).toBeDefined();
+    expect(hit?.kind).toBe("outside-allowed");
+    expect(
+      matchSensitiveRead("sed 's/a/b/' D:\\deploy\\donger\\data\\db.sqlite", cwd, confine),
+    ).toBeDefined();
+  });
+});

@@ -112,7 +112,7 @@ export function sanitizeLlmInputAudit(llmInput: string): string {
 export function toAuditEvent(
   e: AuditableRunnerEvent,
   ctx: AuditCtx,
-  extra: { durationMs?: number; model?: string } = {},
+  extra: { durationMs?: number; model?: string; sessionInitText?: string } = {},
 ): Omit<AuditEvent, "id"> {
   const base = {
     conversationId: ctx.conversationId,
@@ -123,7 +123,13 @@ export function toAuditEvent(
   };
   switch (e.type) {
     case "session_init":
-      return { ...base, type: "session_init" };
+      // 凭证注入回执（runtime-manager 组装，orchestrator 经 extra 传入）：
+      // 配置面「已勾选」与运行面「实际注入」在审计里从此有对照物
+      return {
+        ...base,
+        type: "session_init",
+        ...(extra.sessionInitText ? { text: extra.sessionInitText } : {}),
+      };
     case "llm_input":
       // mcpServers.headers/env 含运行时解析后的明文凭证，落库前统一打码
       return { ...base, type: "llm_input", llmInput: sanitizeLlmInputAudit(e.input) };

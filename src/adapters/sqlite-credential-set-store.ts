@@ -91,7 +91,49 @@ export class SqliteCredentialSetStore implements CredentialSetStore {
     }
     // 旧单值凭证体系（pack 声明式）已移除；表为空，直接删除
     this.db.exec("DROP TABLE IF EXISTS user_credentials;");
+    this.backfillAliyunEnvAlias();
     this.migrateLegacySkillCrypto();
+  }
+
+  /**
+   * 幂等回填（2026-11-04 生产事故会话 a3405241）：aliyun_access_token 模板的
+   * accessKey/secretKey 补生态标准名别名（ALIBABA_CLOUD_ACCESS_KEY_ID/SECRET）——
+   * aliyun CLI/官方 SDK 只认 ALIBABA_CLOUD_*，此前仅注入平台命名（ALIYUN_ACCESS_TOKEN_*），
+   * 且该模板早于 envAlias 能力创建，存量必须回填。已含别名的键不覆盖。
+   */
+  private backfillAliyunEnvAlias(): void {
+    const aliasByCode: Record<string, Record<string, string>> = {
+      aliyun_access_token: {
+        accessKey: "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        secretKey: "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+      },
+    };
+    for (const [code, aliasByKey] of Object.entries(aliasByCode)) {
+      const row = this.db
+        .prepare("SELECT keySpecsJson FROM credential_templates WHERE code = ?")
+        .get(code) as { keySpecsJson: string } | undefined;
+      if (!row) continue;
+      let specs: Array<{ key: string; label?: string; envAlias?: string }>;
+      try {
+        specs = JSON.parse(row.keySpecsJson) as typeof specs;
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(specs)) continue;
+      let changed = false;
+      for (const spec of specs) {
+        const alias = aliasByKey[spec.key];
+        if (alias && !spec.envAlias) {
+          spec.envAlias = alias;
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.db
+          .prepare("UPDATE credential_templates SET keySpecsJson = ? WHERE code = ?")
+          .run(JSON.stringify(specs), code);
+      }
+    }
   }
 
   /** 统一迁移（幂等）：skill-crypto 旧格式（iv:tag:ct，无 v1: 前缀）→ 系统密钥 v1: 格式 */

@@ -53,6 +53,13 @@ export interface RunOptions {
   capabilityVersion?: number;
   /** 启用 pack 声明的凭证值（运行时注入 SDK env）。 */
   credentialsEnv?: Record<string, string>;
+  /**
+   * 凭证注入回执（人读文本，不含任何值；runtime-manager 组装）：orchestrator 在
+   * session_init 审计事件上落 text——配置页「已勾选」与会话「实际注入」从此有对照物
+   * （2026-11-04 会话 a3405241：用户已勾选已填值，会话内 agent 因变量名契约错位误判
+   * 「未配置」，无回执可查证）。
+   */
+  credentialsAuditNote?: string;
   /** 透传 SDK allowedTools（工具白名单） */
   allowedTools?: string[];
   /**

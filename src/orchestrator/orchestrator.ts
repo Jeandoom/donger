@@ -1345,7 +1345,7 @@ export class Orchestrator {
           this.activityTracker.observe(p.conversation.id, e);
           // 先落审计再推送：历史（audit）永远 ≥ 实时流，按会话回放不缺事件；审计失败不阻塞推送
           if (e.type !== "text_delta" && e.type !== "thinking_delta") {
-            const extra: { durationMs?: number; model?: string } = {};
+            const extra: { durationMs?: number; model?: string; sessionInitText?: string } = {};
             if (e.type === "tool_use") toolStartMs.set(e.toolUseId, Date.now());
             if (e.type === "tool_result") {
               const start = toolStartMs.get(e.toolUseId);
@@ -1354,6 +1354,9 @@ export class Orchestrator {
             if (e.type === "result") {
               extra.durationMs = Date.now() - turnStartMs;
               extra.model = opts.llm.model;
+            }
+            if (e.type === "session_init" && opts.credentialsAuditNote) {
+              extra.sessionInitText = opts.credentialsAuditNote;
             }
             try {
               await this.deps.auditStore.record(
