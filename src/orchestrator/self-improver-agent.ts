@@ -47,6 +47,7 @@ export function buildSelfImproverAgent(repository?: AgentGitRepository): Agent {
     gitRepositories: repository ? [repository] : [],
     connectorIds: [],
     gitAllowShellGit: true,
+    devPreviewEnabled: false,
     extensionDirectories: [],
     defaultPermissionMode: "ask_before_change",
     version: 1,

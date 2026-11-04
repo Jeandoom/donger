@@ -7,7 +7,7 @@ import { FileChangesTab } from "./FileChangesTab";
 import { FilePreviewModal } from "./FilePreviewModal";
 import { FileTree } from "./FileTree";
 
-type DrawerTab = "files" | "changes";
+type DrawerTab = "files" | "changes" | "preview";
 
 /** 树展示序的扁平文件列表（弹窗内 上一个/下一个 的导航顺序） */
 function flattenFilePaths(nodes: FileNode[]): string[] {
@@ -107,7 +107,7 @@ export function FileBrowserDrawer(props: {
         aria-hidden={!open}
         className={cn(
           "fixed right-0 top-0 z-50 flex h-full w-full flex-col border-l border-border bg-card shadow-xl sm:w-80",
-          tab === "changes" && "sm:w-[40rem]",
+          (tab === "changes" || tab === "preview") && "sm:w-[40rem]",
           open
             ? "visible translate-x-0 transition-transform duration-300"
             : "invisible translate-x-full [transition:transform_.3s_ease,visibility_0s_.3s]",
@@ -119,6 +119,7 @@ export function FileBrowserDrawer(props: {
             [
               ["files", "文件"],
               ["changes", "变更"],
+              ["preview", "预览"],
             ] as const
           ).map(([value, label]) => (
             <button
@@ -179,7 +180,19 @@ export function FileBrowserDrawer(props: {
           </button>
         </div>
 
-        {tab === "changes" ? (
+        {tab === "preview" ? (
+          convId ? (
+            /* 会话 dev server 同源预览（spec 2026-11-04-webgame-dev-loop-design §3.3）：
+               首访 query token 鉴权并由服务端签发短效 cookie，子资源/WS（HMR）凭 cookie 续行 */
+            <iframe
+              title="会话预览"
+              src={`/preview/${convId}/?token=${encodeURIComponent(token)}`}
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : (
+            <div className="p-3 text-sm text-muted-foreground">当前无活跃会话</div>
+          )
+        ) : tab === "changes" ? (
           <FileChangesTab key={refreshTick} conversationId={convId} focusPath={focusPath} />
         ) : (
           <>

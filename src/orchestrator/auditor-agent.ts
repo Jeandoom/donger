@@ -32,6 +32,7 @@ export const BUILTIN_AUDITOR_AGENT: Agent = {
   gitRepositories: [],
   connectorIds: [],
   gitAllowShellGit: true,
+  devPreviewEnabled: false,
   extensionDirectories: [],
   defaultPermissionMode: "ask_before_change",
   version: 1,

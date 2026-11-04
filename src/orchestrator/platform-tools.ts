@@ -200,6 +200,7 @@ export function platformToolDefinitions(deps: PlatformToolsDeps): SdkMcpToolDefi
           credentials: a.credentials ?? [],
           gitRepositories: a.gitRepositories ?? [],
           gitAllowShellGit: a.gitAllowShellGit ?? true,
+          devPreviewEnabled: false,
           mcpServers: a.mcpServers ?? [],
           defaultPermissionMode: "ask_before_change",
         });

@@ -65,6 +65,8 @@ import { SqliteUserSkillRepoStore } from "./adapters/sqlite-user-skill-repo-stor
 import { SqliteUserStore } from "./adapters/sqlite-user-store.js";
 import { SqliteWorkflowRunStore } from "./adapters/sqlite-workflow-run-store.js";
 import { SqliteWorkflowDedupStore } from "./adapters/sqlite-workflow-dedup-store.js";
+import { SqliteSessionRuntimeStore } from "./adapters/sqlite-session-runtime-store.js";
+import { DevServerService } from "./orchestrator/dev-server-service.js";
 import { SqliteWorkflowStore } from "./adapters/sqlite-workflow-store.js";
 import { createSsh2CommandRunner } from "./adapters/ssh2-command-runner.js";
 import { resolveSystemKeySeed, SystemKeyService } from "./adapters/system-key-service.js";
@@ -412,6 +414,7 @@ async function main(): Promise<void> {
       conversationStore,
       messageStore,
       workflowDedupStore,
+      devServerService,
       usageStore,
       auditStore,
       commentStore,
@@ -552,6 +555,10 @@ async function main(): Promise<void> {
   workflowRunStore.migrate();
   const workflowDedupStore = new SqliteWorkflowDedupStore(db);
   workflowDedupStore.migrate();
+  // 会话 dev server 运行态（2026-11-04-webgame-dev-loop-design §3.3）：/preview 反代与
+  // dev_* 工具的账本；进程不跨重启，boot 对账在 devServerService 构造后执行
+  const sessionRuntimeStore = new SqliteSessionRuntimeStore(db);
+  sessionRuntimeStore.migrate();
   const eventFiringStore = new SqliteEventFiringStore(db);
   eventFiringStore.migrate();
   // L2 自动发布执行记录（spec 2026-10-16-feedback-auto-dev-deploy-l2-design §4.5）
@@ -595,6 +602,22 @@ async function main(): Promise<void> {
   // 排水管理器（热发布优雅停机，spec 2026-10-16-hot-deploy-design M1）：早建晚绑——
   // 此处先创建供 createOrch 注入拒入闸；hooks 在 scheduler/eventDispatcher 装配完成后绑定
   const drain = new DrainManager();
+
+  // 会话 dev server 托管服务（2026-11-04-webgame-dev-loop-design §3.3）：平台 spawn
+  // （127.0.0.1 随机口）+ 并发上限 + 闲置回收 + 排水拒启；boot 对账上次进程遗留 running 行
+  const devServerService = new DevServerService({
+    store: sessionRuntimeStore,
+    maxTotal: cfg.devServerMaxTotal,
+    maxPerUser: cfg.devServerMaxPerUser,
+    idleMs: cfg.devServerIdleMs,
+    drain,
+    log: (line) => log.info(line),
+  });
+  void devServerService
+    .reconcileAtBoot()
+    .then((n) => (n > 0 ? log.info({ n }, "dev server 遗留 running 行已对账落 stopped") : undefined))
+    .catch(() => undefined);
+  const stopDevServerReaper = devServerService.startReaper();
 
   // 钉钉机器人消息通道运行时控制器（授权页「应用」即生效，无需重启；spec §3.5）：
   // 配置齐全→重建通道并转移 recipients；清空/不完整→停用；配置未变→no-op
@@ -645,6 +668,7 @@ async function main(): Promise<void> {
     workspaceDir: cfg.workspaceDir,
     taskStore: store,
     workflowDedupStore,
+    devServerService,
     userStore,
     systemEventStore,
     conversationStore,
@@ -876,6 +900,7 @@ async function main(): Promise<void> {
   drain.setHooks({
     stopBackgroundJobs: () => {
       stopWorktreeGc();
+      stopDevServerReaper();
       stopMemoryConsolidator();
       scheduler.stopAll();
       eventDispatcher.pause();
@@ -1006,6 +1031,8 @@ async function main(): Promise<void> {
       log.error({ err: e instanceof Error ? e.message : String(e) }, "排水异常，强制进入关停");
     }
     releaseService.stop();
+    // dev server 全量树杀（进程不跨重启；排水后、关 HTTP 前收口，避免半死进程残留）
+    await Promise.race([devServerService.dispose(), new Promise((resolve) => setTimeout(resolve, 3000))]);
     // 审计缓冲冲刷：停新触发后、关 HTTP 前把排队事件落库（收口一个刷盘周期的崩溃丢失窗口）
     await Promise.race([auditStore.flush(), new Promise((resolve) => setTimeout(resolve, 1000))]);
     await Promise.race([webChannel.stop(), new Promise((resolve) => setTimeout(resolve, 500))]);

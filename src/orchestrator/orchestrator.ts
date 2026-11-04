@@ -87,6 +87,8 @@ import type { DrainGate } from "./drain-manager.js";
 import { bridgeEvents } from "./event-bridge.js";
 import { createFeedbackToolsServer } from "./feedback-tools.js";
 import { createWorkflowDedupToolsServer } from "./workflow-dedup-tools.js";
+import { createDevServerToolsServer } from "./dev-server-tools.js";
+import type { DevServerService } from "./dev-server-service.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
@@ -205,6 +207,11 @@ export interface OrchestratorDeps {
   feedbackStore?: FeedbackStore;
   /** 处理登记（幂等键）存储（2026-10-30-workflow-dedup-design）：缺省=dedup 工具不挂载 */
   workflowDedupStore?: import("../ports/workflow-dedup-store.js").WorkflowDedupStore;
+  /**
+   * dev server 托管服务（2026-11-04-webgame-dev-loop-design §3.3）：缺省=dev_* 工具不挂载。
+   * agent.devPreviewEnabled 会话的平台托管起服/预览反代上游/上限回收都经它。
+   */
+  devServerService?: DevServerService;
   /**
    * 进程内事件发射（→ 触发器管线）。
    * index 侧晚绑定 EventTriggerDispatcher（它依赖本 orchestrator 构造出的 loopRunner）；
@@ -990,6 +997,21 @@ export class Orchestrator {
           dedupTools: createWorkflowDedupToolsServer({
             workflowId: dedupWorkflowId,
             store: this.deps.workflowDedupStore,
+          }),
+        };
+      }
+      // dev server 托管工具（dev-server，2026-11-04-webgame-dev-loop-design §3.3）：
+      // agent.devPreviewEnabled opt-in + 服务已装配才挂载；写边界（会话/项目根）
+      // 构造时闭包绑定——git agent 用会话私有 worktree reposRoot，否则 agent workspace。
+      if (p.agent?.devPreviewEnabled && this.deps.devServerService) {
+        base = {
+          ...base,
+          devServerTools: createDevServerToolsServer({
+            conversationId: p.conversation.id,
+            ownerId: p.user.id,
+            agentId: p.agent.id,
+            root: p.agent.gitRepositories.length > 0 ? context.reposRoot : context.runtimeDir,
+            service: this.deps.devServerService,
           }),
         };
       }

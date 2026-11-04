@@ -90,6 +90,7 @@ export class ClaudeAgentRunner implements AgentRunner {
       ...(opts.auditTools ? { "donger-audit": opts.auditTools } : {}),
       ...(opts.feedbackTools ? { "donger-feedback": opts.feedbackTools } : {}),
       ...(opts.dedupTools ? { "workflow-dedup": opts.dedupTools } : {}),
+      ...(opts.devServerTools ? { "dev-server": opts.devServerTools } : {}),
     };
 
     // —— 引擎状态隔离 + 凭证隔离（INV-3b）：CLAUDE_CONFIG_DIR → engine-state 根；

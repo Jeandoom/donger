@@ -218,6 +218,13 @@ export const AgentSchema = z.object({
    */
   gitAllowShellGit: z.boolean().default(true),
   /**
+   * 平台托管 dev server + /preview 预览通道（2026-11-04-webgame-dev-loop-design §3.3）：
+   * opt-in（缺省关）。开启后该 agent 会话挂载 dev_start/dev_status/dev_logs/dev_stop 工具
+   * （项目根=会话 worktree reposRoot / agent workspace），起服/并发上限/闲置回收由平台治理；
+   * 预览走同源反代 /preview/:convId/*，属主口径守卫。
+   */
+  devPreviewEnabled: z.boolean().default(false),
+  /**
    * Bash 命令白名单（M2-7，能力集 commands 面，spec 2026-10-10-agent-security-kernel-design
    * §4.2；agent 级 opt-in 收紧——缺省/空=不启用，既有语义不变）。非空时 Bash 每个
    * 组合段须以某条目为前缀（如 "git status"/"npm"），白名单外命令强制进审批卡
