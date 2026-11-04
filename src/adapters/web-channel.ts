@@ -90,7 +90,6 @@ import {
 } from "../domain/file-changes.js";
 import { mimeForExt } from "../domain/file-mime.js";
 import { forkTitleOf } from "../domain/fork.js";
-import type { AgentGitRepository } from "../domain/git.js";
 import { validateGitCredentialBindings } from "../domain/git.js";
 import {
   HostExecPolicyInputSchema,
@@ -112,6 +111,7 @@ import type { KbLibrary } from "../domain/kb.js";
 import { KbLibraryInputSchema } from "../domain/kb.js";
 import { lineDiff } from "../domain/kb-diff.js";
 import { canManageKb, canReadKb, kbDeletable, kbShareable } from "../domain/kb-policy.js";
+import { isRetiredBuiltinAgentId } from "../domain/retired-builtin-agents.js";
 import type { LLMConfig } from "../domain/llm-config.js";
 import { LLM_PLATFORMS } from "../domain/llm-platforms.js";
 import { resolveLlmOptions } from "../domain/llm-selection.js";
@@ -172,23 +172,10 @@ import { parseWorkflowInput, type Workflow } from "../domain/workflow.js";
 import type { WorkflowRun } from "../domain/workflow-run.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { ActivitySnapshot } from "../orchestrator/activity-tracker.js";
-import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID } from "../orchestrator/agent-builder.js";
-import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "../orchestrator/assist-agent.js";
-import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "../orchestrator/auditor-agent.js";
 import { buildManualContext, probeEventSource } from "../orchestrator/event-source-probe.js";
 import type { GitAccessCheck, GitAccessGate } from "../orchestrator/git-access-gate.js";
-import { BUILTIN_KB_ASSISTANT_ID } from "../orchestrator/kb-assistant-agent.js";
 import type { NotificationService } from "../orchestrator/notification-service.js";
-import { buildOptimizeBrief } from "../orchestrator/optimize-brief.js";
 import type { SchedulerService } from "../orchestrator/scheduler.js";
-import {
-  BUILTIN_SELF_IMPROVER_AGENT_ID,
-  buildSelfImproverAgent,
-} from "../orchestrator/self-improver-agent.js";
-import {
-  BUILTIN_SKILL_FORGE_AGENT,
-  BUILTIN_SKILL_FORGE_AGENT_ID,
-} from "../orchestrator/skill-forge-agent.js";
 import type { AgentCallbackStore } from "../ports/agent-callback-store.js";
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
@@ -612,7 +599,6 @@ export interface WebChannelDeps {
   callbackRateLimitPerMin?: number;
   gitAccessGate?: GitAccessGate;
   /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库） */
-  selfImproveGitRepository?: AgentGitRepository;
   /** 自动化模块（事件/工作流，spec 2026-10-09-events-workflows-refactor-design）—— 缺省=不支持 */
   eventStore?: EventStore;
   workflowStore?: WorkflowStore;
@@ -4064,62 +4050,6 @@ export class WebChannel implements Channel {
       }
     }
 
-    // POST /api/tasks/:id/optimize —— 触发 task-optimize（T17.4 反馈闭环）
-    // 聚合该任务审计事件+评论为材料，投递到调用者的内置 assist 会话（写盘经 authoring 审批卡确认）。
-    const taskOptimizeMatch = url.match(/^\/api\/tasks\/([\w-]+)\/optimize$/);
-    if (taskOptimizeMatch && req.method === "POST") {
-      const taskId = taskOptimizeMatch[1] ?? "";
-      const uid = this.requireRequestUser(req);
-      // L2：getVisible 语义即"非属主视为不存在"，与原 requesterId 校验等价
-      const task = await this.deps.taskStore?.getVisible(uid, taskId);
-      if (!task) return this.json(res, { error: "task not found" }, 404);
-      if (!this.handler) return this.json(res, { error: "消息处理未就绪" }, 503);
-
-      const events = (await this.deps.auditStore?.listByTask(taskId)) ?? [];
-      const comments = (await this.deps.commentStore?.listByTask(taskId)) ?? [];
-      const agent = task.agentId
-        ? ((await this.agentStore?.get(task.agentId)) ?? undefined)
-        : undefined;
-      const skillsDir = agent ? join(this.deps.workspaceDir, "users", uid, "skills") : undefined;
-      const kbDir = agent ? join(this.deps.workspaceDir, "kb", agent.id) : undefined;
-      const brief = buildOptimizeBrief({
-        task,
-        events,
-        comments,
-        agent,
-        agentSkillsDir: agent ? skillsDir : undefined,
-        agentKbDir: agent ? kbDir : undefined,
-      });
-
-      // 任务专属会话 get-or-create：优化材料（他人路径附件、审计摘要）不混入用户已有
-      // 闲聊/任务历史；同一任务重复点击复用同一会话（按标题精确匹配）
-      const convTitle = `优化分析 ${task.id.slice(0, 8)}`.slice(0, 30);
-      const list = (await this.deps.conversationStore?.listByUser(uid)) ?? [];
-      let conv = list.find((c) => c.agentId === BUILTIN_ASSIST_AGENT_ID && c.title === convTitle);
-      if (!conv) {
-        conv = await this.deps.conversationStore?.createWithAgent(
-          uid,
-          "web",
-          convTitle,
-          BUILTIN_ASSIST_AGENT_ID,
-        );
-      }
-      if (!conv) return this.json(res, { error: "会话存储不可用" }, 500);
-
-      // 用户消息落库 + 投递 orchestrator（builtin 短路，不走 git/附件检查）
-      await this.deps.messageStore
-        ?.add(conv.id, "user", brief)
-        .catch((e) => console.error("[optimize] 保存消息失败", e));
-      this.handler({
-        channelId: "web",
-        threadId: conv.id,
-        requesterId: uid,
-        text: brief,
-        conversationId: conv.id,
-      });
-      return this.json(res, { conversationId: conv.id }, 201);
-    }
-
     // GET /api/users —— 用户列表（2026-09-24 审计 M3：改 adminUserDto 收敛信息面，
     // 不回 homeDir/原始记录；CLI users 命令与页面消费的 id/role/name 字段保持不变）
     if (url === "/api/users" && req.method === "GET") {
@@ -4327,7 +4257,10 @@ export class WebChannel implements Channel {
         }
       }
       if (userId) {
-        const list = (await this.deps.conversationStore?.listByUser(userId)) ?? [];
+        // 已退役内置智能体的历史会话过滤隐藏（数据保留；点开走 resolveAgentForUse 报已下架）
+        const list = ((await this.deps.conversationStore?.listByUser(userId)) ?? []).filter(
+          (c) => !isRetiredBuiltinAgentId(c.agentId),
+        );
         const withMode = await Promise.all(list.map((c) => this.conversationWithMode(c)));
         res.writeHead(200);
         res.end(JSON.stringify(withMode));
@@ -4352,18 +4285,11 @@ export class WebChannel implements Channel {
     // POST /api/conversations —— 会话归属强制为当前登录者（防代他人建会话）
     if (url === "/api/conversations" && req.method === "POST") {
       const body = await this.readBody(req);
-      const { channelId, agentId, kbId } = JSON.parse(body) as {
+      const { channelId, agentId } = JSON.parse(body) as {
         userId?: string;
         channelId?: string;
         agentId?: string;
-        kbId?: string;
       };
-      // KB 会话组合校验（spec §10.1）：kbId 非空 ⇔ agentId=builtin-kb-assistant，防未定义组合
-      if (kbId && agentId !== BUILTIN_KB_ASSISTANT_ID) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: "kbId 仅支持知识库会话（agentId=builtin-kb-assistant）" }));
-        return;
-      }
       const userId = this.requireRequestUser(req);
       if (this.deps.userStore) {
         const user = await this.deps.userStore.get(userId);
@@ -4379,7 +4305,6 @@ export class WebChannel implements Channel {
             channelId ?? "web",
             DEFAULT_CONVERSATION_TITLE,
             agentId,
-            kbId ? { kbId } : undefined,
           )
         : await this.deps.conversationStore?.create(
             userId,
@@ -5383,34 +5308,6 @@ export class WebChannel implements Channel {
     if (agentConvMatch && req.method === "GET") {
       const id = agentConvMatch[1] ?? "";
       const me = this.requireUserId(req);
-      // 平台进化官：内置且仅管理员可用（会话建立与消息入口双重校验）
-      if (id === BUILTIN_SELF_IMPROVER_AGENT_ID) {
-        const meUser = await this.deps.userStore?.get(me);
-        if (meUser?.role !== "admin") {
-          return this.json(res, { error: "forbidden" }, 403);
-        }
-      }
-      // 内置智能体：代码常量不入库，直接 get-or-create 其会话
-      const builtinName =
-        id === BUILTIN_ASSIST_AGENT_ID
-          ? BUILTIN_ASSIST_AGENT.name
-          : id === AGENT_BUILDER_ID
-            ? AGENT_BUILDER_AGENT.name
-            : id === BUILTIN_SKILL_FORGE_AGENT_ID
-              ? BUILTIN_SKILL_FORGE_AGENT.name
-              : id === BUILTIN_AUDITOR_AGENT_ID
-                ? BUILTIN_AUDITOR_AGENT.name
-                : id === BUILTIN_SELF_IMPROVER_AGENT_ID
-                  ? buildSelfImproverAgent(this.deps.selfImproveGitRepository).name
-                  : undefined;
-      if (builtinName) {
-        const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
-        const existing = latestConversationFor(list, id);
-        const conv =
-          existing ??
-          (await this.deps.conversationStore?.createWithAgent(me, "cli", builtinName, id));
-        return this.json(res, conv);
-      }
       const a = await this.agentStore?.get(id);
       if (!a) return this.json(res, { error: "not found" }, 404);
       const meUser = await this.deps.userStore?.get(me);
@@ -5986,31 +5883,6 @@ export class WebChannel implements Channel {
       }
       await kb.shares.removeGrant(id, kbGrantMatch[2] ?? "");
       return this.json(res, { ok: true });
-    }
-    // GET /api/kb/:id/conversation —— KB 会话 get-or-create（canUseKb；agentId=builtin-kb-assistant + kbId）
-    const kbConvMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/conversation$/);
-    if (kbConvMatch && req.method === "GET") {
-      const kb = this.requireKbStores(res);
-      if (!kb) return;
-      const me = this.requireUserId(req);
-      const id = kbConvMatch[1] ?? "";
-      const lib = await kb.libraries.get(id);
-      if (!lib) return this.json(res, { error: "not found" }, 404);
-      const actor = await this.kbActor(me);
-      const granted = await kb.shares.isGranted(id, me);
-      if (!canReadKb(lib, actor, granted)) return this.json(res, { error: "forbidden" }, 403);
-      const list = (await this.deps.conversationStore?.listByUser(me)) ?? [];
-      const existing = list.find((c) => c.kbId === id && c.agentId === BUILTIN_KB_ASSISTANT_ID);
-      const conv =
-        existing ??
-        (await this.deps.conversationStore?.createWithAgent(
-          me,
-          "web",
-          lib.name,
-          BUILTIN_KB_ASSISTANT_ID,
-          { kbId: id },
-        ));
-      return this.json(res, conv);
     }
     // POST /api/kb/:id/accept-share —— 凭链接加入名单（幂等）
     const kbAcceptMatch = kbPath.match(/^\/api\/kb\/([\w-]+)\/accept-share$/);
@@ -8814,7 +8686,6 @@ export class WebChannel implements Channel {
     await store.update(created.id, {
       forkedFromConversationId: conv.id,
       ...(lastPicked ? { forkedFromMessageId: lastPicked.id } : {}),
-      ...(conv.kbId ? { kbId: conv.kbId } : {}),
       ...(conv.permissionMode ? { permissionMode: conv.permissionMode } : {}),
       ...(conv.lastModelRef ? { lastModelRef: conv.lastModelRef } : {}),
       ...(conv.llmSdkType ? { llmSdkType: conv.llmSdkType } : {}),
@@ -9026,22 +8897,6 @@ export class WebChannel implements Channel {
       throw new ForbiddenError("CONVERSATION_FORBIDDEN", "会话不存在或不属于当前用户");
     }
     if (!conversation.agentId) return undefined;
-    // 内置智能体（assist/builder/skill-forge/auditor/kb-assistant）不入库，无仓库配置，跳过 git 检查（否则 404 逃逸会打崩进程）
-    if (
-      conversation.agentId === BUILTIN_ASSIST_AGENT_ID ||
-      conversation.agentId === AGENT_BUILDER_ID ||
-      conversation.agentId === BUILTIN_SKILL_FORGE_AGENT_ID ||
-      conversation.agentId === BUILTIN_AUDITOR_AGENT_ID ||
-      conversation.agentId === BUILTIN_KB_ASSISTANT_ID
-    ) {
-      return undefined;
-    }
-    // 平台进化官：内置但绑定 donger 仓库；返回常量 agent 后由调用方统一做 git 就绪检查
-    if (conversation.agentId === BUILTIN_SELF_IMPROVER_AGENT_ID) {
-      const user = await this.deps.userStore?.get(userId);
-      if (!user) return undefined;
-      return { user, agent: buildSelfImproverAgent(this.deps.selfImproveGitRepository) };
-    }
     const user2 = await this.deps.userStore?.get(userId);
     const agent2 = await this.deps.agentStore?.get(conversation.agentId);
     if (!user2 || !agent2) throw new NotFoundError("AGENT_NOT_FOUND", "智能体不存在");

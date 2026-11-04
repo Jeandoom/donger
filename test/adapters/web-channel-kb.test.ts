@@ -343,50 +343,28 @@ describe("文件真源一致性", () => {
   });
 });
 
-describe("KB 会话（M2）", () => {
-  it("GET /api/kb/:id/conversation get-or-create：同库复用同一会话；未授权 403", async () => {
+describe("KB 会话特性移除（2026-11-04 内置智能体退役）", () => {
+  it("GET /api/kb/:id/conversation 端点已移除（404 掩护）", async () => {
     const kb = await createKb(alice.token, "会话库");
-    const r1 = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
-    expect(r1.status).toBe(200);
-    const c1 = (await r1.json()) as { id: string; agentId: string; kbId?: string };
-    expect(c1.agentId).toBe("builtin-kb-assistant");
-    expect(c1.kbId).toBe(kb.id);
-    const r2 = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
-    expect(((await r2.json()) as { id: string }).id).toBe(c1.id);
-    // bob 未授权：403
-    expect((await req(port, "GET", `/api/kb/${kb.id}/conversation`, bob.token)).status).toBe(403);
-    // 被授予后（只读 canUse）也可对话查阅
-    const er = await req(port, "POST", `/api/kb/${kb.id}/share`, alice.token, { enabled: true });
-    const { token } = (await er.json()) as { token: string };
-    await req(port, "POST", `/api/kb/${kb.id}/accept-share`, bob.token, { token });
-    expect((await req(port, "GET", `/api/kb/${kb.id}/conversation`, bob.token)).status).toBe(200);
+    const r = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
+    expect(r.status).toBe(404);
   });
 
-  it("GET /api/conversations/:id/preflight：KB 会话（内置 kb-assistant 不入库）免 git 检查恒 ready", async () => {
-    const kb = await createKb(alice.token, "preflight 库");
-    const cr = await req(port, "GET", `/api/kb/${kb.id}/conversation`, alice.token);
-    const conv = (await cr.json()) as { id: string };
-    const r = await req(port, "GET", `/api/conversations/${conv.id}/preflight`, alice.token);
-    expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ ready: true, requirements: [] });
-  });
-
-  it("POST /api/conversations 组合校验：kbId 仅限 builtin-kb-assistant", async () => {
-    const bad = await req(port, "POST", "/api/conversations", alice.token, {
+  it("POST /api/conversations：kbId 参数不再受支持（忽略，按普通会话创建）", async () => {
+    const r = await req(port, "POST", "/api/conversations", alice.token, {
       channelId: "web",
       agentId: "some-agent",
       kbId: "kb-1",
     });
-    expect(bad.status).toBe(400);
-    const okr = await req(port, "POST", "/api/conversations", alice.token, {
-      channelId: "web",
-      agentId: "builtin-kb-assistant",
-      kbId: "kb-1",
-    });
-    expect(okr.status).toBe(201);
-    const conv = (await okr.json()) as { agentId: string; kbId?: string };
-    expect(conv.agentId).toBe("builtin-kb-assistant");
-    expect(conv.kbId).toBe("kb-1");
+    expect(r.status).toBe(201);
+    const conv = (await r.json()) as { agentId: string; kbId?: string };
+    expect(conv.agentId).toBe("some-agent");
+    expect(conv.kbId).toBeUndefined();
+  });
+
+  it("已退役内置 kb-assistant 深链不可再创建会话（404）", async () => {
+    const r = await req(port, "GET", "/api/agents/builtin-kb-assistant/conversation", alice.token);
+    expect(r.status).toBe(404);
   });
 
   it("GET /api/audit/kb-search-stats（R-E）：member 403、admin 200 统计结构", async () => {

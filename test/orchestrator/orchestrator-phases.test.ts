@@ -201,35 +201,12 @@ function makeRuntimeMgr(conversationStore: ConversationStore): {
   return { mgr, credentialSets, packStore, installer: fakeInstaller };
 }
 
-const ROUTING_JSON = '{"agentId":"a1","taskType":"dev","rationale":"前端任务"}';
-
-function visibleAgent(): Agent {
-  return {
-    id: "a1",
-    ownerId: "u-webu",
-    name: "A",
-    description: "演示智能体",
-    skills: [],
-    tools: { mode: "all", whitelist: [] },
-    mcpServers: [],
-    credentials: [],
-    gitRepositories: [],
-    gitAllowShellGit: false,
-    extensionDirectories: [],
-    version: 1,
-    createdAt: "",
-    updatedAt: "",
-  };
-}
-
 function build(
   runner: AgentRunner,
   channel: Channel,
   convStore: ConversationStore,
   skills: string[] = ["x-execute"],
   agentOverrides: Partial<Agent> = {},
-  /** listByOwner 返回值：模拟 dispatcher 登记表的可见 agent 集合 */
-  visible: Agent[] = [],
 ): { orch: Orchestrator; store: InMemoryTaskStore } {
   const store = new InMemoryTaskStore();
   const agent: Agent = {
@@ -250,9 +227,9 @@ function build(
   };
   const agentStore = {
     get: async () => ({ ...agent, ...agentOverrides }),
-    listByOwner: async () => visible,
+    listByOwner: async () => [],
     listSharedWith: async () => [],
-    listAll: async () => visible,
+    listAll: async () => [],
     create: async () => agent,
     update: async () => agent,
     delete: async () => {},
@@ -279,51 +256,6 @@ function build(
 const MSG = { channelId: "test", threadId: "th", requesterId: "webu", text: "修复导出乱码" };
 
 describe("agent 任务单执行轮生命周期", () => {
-  it("dispatch 路由 → 单执行轮 → done，无审批卡；prompt 保持原文", async () => {
-    const runner = new ScriptedRunner([
-      { result: ROUTING_JSON }, // dispatcher
-      { result: "执行完成" }, // execute
-    ]);
-    const channel = seqChannel();
-    const { orch, store } = build(runner, channel, statefulConvStore(""));
-
-    await orch.handleMessage(MSG);
-
-    const done = await store.listByStatus("done");
-    expect(done).toHaveLength(1);
-    expect(done[0]?.agentId).toBe("a1");
-    expect(done[0]?.routingRationale).toBe("前端任务");
-    // 无阶段门：整个任务只有 dispatcher + 执行两轮，不弹审批卡
-    expect(channel.cards).toHaveLength(0);
-    expect(runner.prompts).toEqual([MSG.text, MSG.text]);
-    // dispatcher 轮走统一管道但不接续会话（noResume）；执行轮为会话首轮（dispatcher 的
-    // sessionId 不回写），其自身 sdkSessionId 轮末回写供后续消息接续
-    expect(runner.optsList[0]?.resume).toBeUndefined();
-    expect(runner.optsList[0]?.sessionStore).toBeUndefined();
-    expect(runner.optsList[1]?.resume).toBeUndefined();
-    expect(runner.optsList[1]?.sessionStore).toBeDefined();
-  });
-
-  it("dispatcher 登记表读时渲染：提示词只含当前用户可见的 agent", async () => {
-    // 可见集合含自有 agent a1：登记表进入 dispatcher 系统提示
-    const runner = new ScriptedRunner([{ result: ROUTING_JSON }, { result: "执行完成" }]);
-    const channel = seqChannel();
-    const { orch } = build(runner, channel, statefulConvStore(""), ["x-execute"], {}, [
-      visibleAgent(),
-    ]);
-    await orch.handleMessage(MSG);
-    expect(runner.optsList[0]?.systemPromptAppend).toContain("a1");
-    expect(runner.optsList[0]?.systemPromptAppend).toContain("## 场景词表");
-
-    // 可见集合为空：登记表空表提示（非 chat 类任务转 builder 兜底）
-    const runner2 = new ScriptedRunner([
-      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
-    ]);
-    const { orch: orch2 } = build(runner2, seqChannel(), statefulConvStore(""));
-    await orch2.handleMessage(MSG);
-    expect(runner2.optsList[0]?.systemPromptAppend).toContain("当前暂无可用智能体");
-  });
-
   it("显式 agent（会话绑定）→单轮 execute→done，无审批卡", async () => {
     const runner = new ScriptedRunner([{ result: "回答完成" }]);
     const channel = seqChannel();
@@ -357,218 +289,54 @@ describe("agent 任务单执行轮生命周期", () => {
     ).toBe(true);
   });
 
-  it("builtin-assist 会话：短路解析内置智能体，单轮执行且系统提示注入", async () => {
-    const runner = new ScriptedRunner([{ result: "已创建 agent" }]);
-    const channel = seqChannel();
-    const { orch, store } = build(runner, channel, statefulConvStore("builtin-assist"));
-
-    await orch.handleMessage(MSG);
-
-    expect(await store.listByStatus("done")).toHaveLength(1);
-    expect(runner.optsList[0]?.systemPromptAppend).toContain("创作助手");
-    expect(channel.cards).toHaveLength(0);
-  });
-
-  it("assist 会话注入 platformTools（in-process MCP server）", async () => {
-    const runner = new ScriptedRunner([{ result: "完成" }]);
-    const channel = seqChannel();
-    const { orch, store } = build(runner, channel, statefulConvStore("builtin-assist"));
-
-    await orch.handleMessage(MSG);
-
-    expect(await store.listByStatus("done")).toHaveLength(1);
-    expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
-    expect(runner.optsList[0]?.platformTools?.type).toBe("sdk");
-  });
-
-  it("dispatch none 回复含「AI 生成助手」引导", async () => {
-    const runner = new ScriptedRunner([
-      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
-      { result: "已补建" }, // agent-builder 首轮
-    ]);
-    const channel = seqChannel();
-    const { orch } = build(runner, channel, statefulConvStore(""));
-    await orch.handleMessage(MSG);
-    expect(channel.texts.join("\n")).toContain("Agent Builder");
-  });
-
-  it("dispatch none → 转入 agent-builder 兜底（不失败、绑定会话、注入缺口与平台工具）", async () => {
-    const runner = new ScriptedRunner([
-      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
-      { result: "已补建" },
-    ]);
-    const channel = seqChannel();
-    // 占位标题的会话：首条消息到达即被 maybeAutoTitle 按内容异步改名（不再等首轮跑完）
-    const convStore = statefulConvStore("", "新对话");
-    const { orch, store } = build(runner, channel, convStore);
-
-    await orch.handleMessage(MSG);
-    await new Promise((resolve) => setTimeout(resolve, 0)); // 自动命名是 fire-and-forget，让微任务落地
-
-    // 任务不失败，绑定 agent-builder 正常走完
-    expect(await store.listByStatus("failed")).toHaveLength(0);
-    const done = await store.listByStatus("done");
-    expect(done).toHaveLength(1);
-    expect(done[0]?.agentId).toBe("agent-builder");
-    expect(done[0]?.routingRationale).toBe("缺能力");
-    // 任务记录保持用户原文（引导词只注入执行轮，不回写任务）
-    expect(done[0]?.prompt).toBe(MSG.text);
-    // 会话绑定持久化（真实 SqliteConversationStore 行为）；标题=首条消息内容（非引导词）
-    expect(convStore.conv.agentId).toBe("agent-builder");
-    expect(convStore.conv.title).toBe(MSG.text);
-    // 首轮 prompt 含缺口分析 + 原始任务
-    expect(runner.prompts[1]).toContain("缺能力");
-    expect(runner.prompts[1]).toContain("修复导出乱码");
-    // 平台工具注入（write_skill / create_agent / finish_builder 可用）
-    expect(runner.optsList[1]?.platformTools?.name).toBe("donger-platform");
-    // 转入提示
-    expect(channel.texts.join("\n")).toContain("Agent Builder");
-  });
-
-  it("agent-builder 会话绑定后续消息直连（不再过 dispatcher）", async () => {
-    const runner = new ScriptedRunner([
-      { result: '{"agentId":"none","taskType":"dev","rationale":"缺能力"}' },
-      { result: "已补建" },
-      { result: "补充说明" }, // 同会话第二条消息
-    ]);
+  it("未绑定会话消息 → 显式失败提示且不执行（内置路由链退役）", async () => {
+    const runner = new ScriptedRunner([{ result: "不应执行" }]);
     const channel = seqChannel();
     const { orch, store } = build(runner, channel, statefulConvStore(""));
 
     await orch.handleMessage(MSG);
-    await orch.handleMessage({ ...MSG, text: "顺便加个验收 skill" });
 
-    // 轮次：dispatcher → builder 首轮 → builder 第二轮（无第二次 dispatch）
-    expect(runner.prompts).toHaveLength(3);
-    expect(runner.prompts[2]).toContain("顺便加个验收 skill");
-    expect(await store.listByStatus("done")).toHaveLength(2);
+    expect(channel.texts.some((t) => t.includes("未绑定智能体"))).toBe(true);
+    expect(runner.prompts).toEqual([]);
+    expect(await store.listByStatus("done")).toHaveLength(0);
   });
 
-  it("agent-builder 会话：短路解析内置智能体且注入 platformTools", async () => {
-    const runner = new ScriptedRunner([{ result: "已补建" }]);
-    const channel = seqChannel();
-    const { orch, store } = build(runner, channel, statefulConvStore("agent-builder"));
+  it("已退役内置智能体会话 → 报「已下架」（不执行）", async () => {
+    const runner = new ScriptedRunner([{ result: "不应执行" }]);
+    const { orch } = build(runner, seqChannel(), statefulConvStore("builtin-auditor"));
 
-    await orch.handleMessage(MSG);
-
-    expect(await store.listByStatus("done")).toHaveLength(1);
-    expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
-    expect(runner.optsList[0]?.systemPromptAppend).toContain("构建助手");
-  });
-});
-
-describe("dispatch 权限降级", () => {
-  it("路由命中但当前用户无权使用 → 可行动提示 + task failed（不硬抛裸错误）", async () => {
-    const runner = new ScriptedRunner([{ result: ROUTING_JSON }]);
-    const channel = seqChannel();
-    const { orch, store } = build(
-      runner,
-      channel,
-      statefulConvStore(""),
-      ["x-execute"],
-      { ownerId: "someone-else" }, // dispatcher 命中 a1，但 a1 属他人且未分享
-    );
-
-    await orch.handleMessage(MSG);
-
-    const failed = await store.listByStatus("failed");
-    expect(failed).toHaveLength(1);
-    expect(failed[0]?.error).toContain("无权");
-    expect(channel.texts.some((t) => t.includes("无权使用它"))).toBe(true);
-    // 失败后不再进入执行轮（runner 只消费了 dispatcher 路由这一条）
-    expect(runner.prompts).toEqual([MSG.text]);
-  });
-});
-
-describe("内置智能体扩充（技能工坊/会话审计师/平台进化官）", () => {
-  function adminUserStore(): UserStore {
-    const base = mockUserStore();
-    const dir = mkdtempSync(join(tmpdir(), "donger-test-admin-"));
-    const admin: User = {
-      id: "u-admin",
-      name: "admin",
-      role: "admin" as UserRole,
-      homeDir: dir,
-      createdAt: "t",
-      updatedAt: "t",
-    };
-    return {
-      ...base,
-      async get(id) {
-        return id === "u-admin" ? admin : undefined;
-      },
-      async getOrCreateByIdentity(_p, externalId, _name) {
-        return externalId === "u-admin" ? admin : undefined;
-      },
-    } as unknown as UserStore;
-  }
-
-  function buildWithUserStore(
-    userStore: UserStore,
-    convStore: ConversationStore,
-    runner: AgentRunner,
-  ): { orch: Orchestrator; store: InMemoryTaskStore } {
-    const store = new InMemoryTaskStore();
-    const { mgr: runtimeMgr, credentialSets, packStore, installer } = makeRuntimeMgr(convStore);
-    const orch = new Orchestrator({
-      store,
-      userStore,
-      conversationStore: convStore,
-      usageStore: new InMemoryUsageStore(),
-      auditStore: new InMemoryAuditStore(),
-      gates: createDefaultGates(),
-      runner,
-      channel: seqChannel(),
-      runtimeMgr,
-      credentialSets,
-      installer,
-      skillPackStore: packStore,
-      agentStore: {
-        get: async () => undefined,
-        listByOwner: async () => [],
-        listSharedWith: async () => [],
-        listAll: async () => [],
-      } as unknown as import("../../src/ports/agent-store.js").AgentStore,
-    });
-    return { orch, store };
-  }
-
-  it("平台进化官：非管理员直接拒绝（AGENT_FORBIDDEN）", async () => {
-    const runner = new ScriptedRunner([{ result: "ok" }]);
-    const { orch } = build(runner, seqChannel(), statefulConvStore("builtin-self-improver"));
-    // direct 路径的无权语义与 DB agent 一致：resolveAgentForUse 抛 ForbiddenError 向上传播
-    await expect(orch.handleMessage(MSG)).rejects.toThrow("仅管理员可用");
+    await expect(orch.handleMessage(MSG)).rejects.toThrow("已下架");
     expect(runner.prompts).toEqual([]);
   });
 
-  it("平台进化官：管理员可用，注入 donger-audit，系统提示含红线", async () => {
-    const runner = new ScriptedRunner([{ result: "已产出评估" }]);
-    const { orch, store } = buildWithUserStore(
-      adminUserStore(),
-      statefulConvStore("builtin-self-improver"),
-      runner,
-    );
-    await orch.handleMessage({ ...MSG, requesterId: "u-admin" });
-    expect(await store.listByStatus("done")).toHaveLength(1);
-    expect(runner.optsList[0]?.auditTools?.name).toBe("donger-audit");
-    expect(runner.optsList[0]?.systemPromptAppend).toContain("安全红线");
+  it("direct 绑定他人未分享 agent → rejects（AGENT_FORBIDDEN 语义不变）", async () => {
+    const runner = new ScriptedRunner([{ result: "不应执行" }]);
+    const { orch } = build(runner, seqChannel(), statefulConvStore("a1"), ["x-execute"], {
+      ownerId: "someone-else",
+    });
+
+    await expect(orch.handleMessage(MSG)).rejects.toThrow("无权使用该智能体");
+    expect(runner.prompts).toEqual([]);
   });
 
-  it("技能工坊：注入 platformTools 与 donger-audit，挂载双技能", async () => {
-    const runner = new ScriptedRunner([{ result: "技能已写入" }]);
-    const { orch, store } = build(runner, seqChannel(), statefulConvStore("builtin-skill-forge"));
-    await orch.handleMessage(MSG);
-    expect(await store.listByStatus("done")).toHaveLength(1);
-    expect(runner.optsList[0]?.platformTools?.name).toBe("donger-platform");
-    expect(runner.optsList[0]?.auditTools?.name).toBe("donger-audit");
-    expect(runner.optsList[0]?.skills).toEqual(["skill-create", "skill-upgrade"]);
-  });
-
-  it("会话审计师：注入 donger-audit，工具白名单仅 donger-audit", async () => {
+  it("audit 工具白名单声明式挂载：声明 mcp__donger-audit 即注入，mode=all 不注入", async () => {
+    // 2026-11-04 内置退役：donger-audit 挂载从「三个内置 id 特判」改为白名单声明式，
+    // 库内 agent（如 L2 自动修复工程师）声明的工具面从此真实可用
     const runner = new ScriptedRunner([{ result: "分析完成" }]);
-    const { orch, store } = build(runner, seqChannel(), statefulConvStore("builtin-auditor"));
+    const channel = seqChannel();
+    const { orch, store } = build(runner, channel, statefulConvStore("a1"), ["x-execute"], {
+      tools: { mode: "whitelist", whitelist: ["mcp__donger-audit"] },
+    });
     await orch.handleMessage(MSG);
     expect(await store.listByStatus("done")).toHaveLength(1);
     expect(runner.optsList[0]?.auditTools?.name).toBe("donger-audit");
     expect(runner.optsList[0]?.allowedTools).toEqual(["mcp__donger-audit"]);
+
+    const runner2 = new ScriptedRunner([{ result: "完成" }]);
+    const { orch: orch2 } = build(runner2, seqChannel(), statefulConvStore("a1"), ["x-execute"], {
+      tools: { mode: "all", whitelist: [] },
+    });
+    await orch2.handleMessage(MSG);
+    expect(runner2.optsList[0]?.auditTools).toBeUndefined();
   });
 });

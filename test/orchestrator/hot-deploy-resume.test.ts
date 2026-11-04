@@ -156,7 +156,8 @@ function seqChannel() {
   return channel;
 }
 
-async function build(runner: GatedRunner, conv: { id: string; title: string; channelId: string }) {
+async function build(runner: GatedRunner, conv: { id: string; title: string; channelId: string; agentId?: string }) {
+  const boundConv = { agentId: "agent-1", ...conv };
   const store = new InMemoryTaskStore();
   const db = new Database(":memory:");
   const packStore = new SqliteSkillPackStore(db);
@@ -174,7 +175,7 @@ async function build(runner: GatedRunner, conv: { id: string; title: string; cha
     uninstall: async () => {},
     update: async () => ({}) as never,
   };
-  const convStore = convStoreOf(conv);
+  const convStore = convStoreOf(boundConv);
   const runtimeMgr = new RuntimeManager({
     transcriptStore: mockTranscriptStore(),
     conversationStore: convStore,
@@ -201,9 +202,23 @@ async function build(runner: GatedRunner, conv: { id: string; title: string; cha
     channel,
     runtimeMgr,
     credentialSets,
-    // resolveAgentForUse 需要 agentStore（恢复续跑按 task.agentId 直连解析时用）
+    // 内置路由链退役：会话显式绑定 agent；恢复续跑按 task.agentId 直连解析
     agentStore: {
-      get: async () => undefined,
+      get: async (id: string) => ({
+        id,
+        ownerId: "u-webu",
+        name: "测试Agent",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: false,
+        extensionDirectories: [],
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      }),
       listByOwner: async () => [],
       listSharedWith: async () => [],
       listAll: async () => [],
@@ -221,6 +236,7 @@ function interruptedTask(id: string, threadId: string): Task {
     threadId,
     requesterId: "u-webu",
     prompt: "原始任务：整理仓库并出报告",
+    agentId: "agent-1",
     status: "interrupted",
     skillChain: [],
     createdAt: "2026-10-16T10:00:00Z",

@@ -2,14 +2,13 @@ import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type Agent, appendDefaultSkill } from "../domain/agent.js";
 import { canUseAgent } from "../domain/agent-policy.js";
+import { RETIRED_BUILTIN_AGENTS } from "../domain/retired-builtin-agents.js";
 import { toAuditEvent, userMessageAudit } from "../domain/audit.js";
-import { isLikelyChitchat } from "../domain/chitchat.js";
 import type { Conversation } from "../domain/conversation.js";
 import {
   DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
 } from "../domain/conversation-title.js";
-import { type AgentChainConfig, resolveEntry } from "../domain/entry.js";
 import type { GateRouter } from "../domain/gate-router.js";
 import type { AgentGitRepository } from "../domain/git.js";
 import {
@@ -28,7 +27,6 @@ import {
   DEFAULT_PERMISSION_MODE,
   resolveTurnPermissionMode,
 } from "../domain/permission-mode.js";
-import { isChatTaskType, parseRoutingDecision, type RoutingDecision } from "../domain/routing.js";
 import { beginStep, completeStep, type FlowStep } from "../domain/task-flow.js";
 import { nextStatus } from "../domain/task-state-machine.js";
 import type {
@@ -73,16 +71,11 @@ import type { KbFtsIndex } from "../util/kb-fts.js";
 import { friendlyRunnerError } from "../util/runner-error-message.js";
 import { runtimeDir } from "../util/workspace.js";
 import { type ActivitySnapshot, ActivityTracker } from "./activity-tracker.js";
-import { AGENT_BUILDER_AGENT, AGENT_BUILDER_ID, builderCreationAsk } from "./agent-builder.js";
 import { adoptHostExecPolicy } from "./approval-adopt.js";
 import { makeApprovalResolver, makeQuestionResolver } from "./approval-flow.js";
-import { BUILTIN_ASSIST_AGENT, BUILTIN_ASSIST_AGENT_ID } from "./assist-agent.js";
 import { materializeMessageFiles } from "./attachment-materializer.js";
 import { createAuditToolsServer } from "./audit-tools.js";
-import { BUILTIN_AUDITOR_AGENT, BUILTIN_AUDITOR_AGENT_ID } from "./auditor-agent.js";
-import { BUILTIN_CHAT_AGENT } from "./chat-agent.js";
 import { SSH_EGRESS_PATTERN } from "./default-gates.js";
-import { buildDispatcherAgent } from "./dispatch-flow.js";
 import type { DrainGate } from "./drain-manager.js";
 import { bridgeEvents } from "./event-bridge.js";
 import { createFeedbackToolsServer } from "./feedback-tools.js";
@@ -91,18 +84,13 @@ import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
 import { canViewerUseHostTools, createHostToolsServer } from "./host-tools.js";
-import { BUILTIN_KB_ASSISTANT_AGENT, BUILTIN_KB_ASSISTANT_ID } from "./kb-assistant-agent.js";
 import { enqueueAutoLearn, narrowAutoLearnTargets } from "./kb-auto-learn.js";
 import { createKbToolsServer, type KbMount } from "./kb-tools.js";
 import { promptMissingCredentials } from "./missing-credentials-flow.js";
 import type { NotificationService } from "./notification-service.js";
-import { createPlatformToolsServer } from "./platform-tools.js";
 import type { RuntimeManager } from "./runtime-manager.js";
-import { BUILTIN_SELF_IMPROVER_AGENT_ID, buildSelfImproverAgent } from "./self-improver-agent.js";
-import { BUILTIN_AUTO_FIX_AGENT_ID, buildAutoFixAgent } from "./auto-fix-agent.js";
 import { autoDevGitAllowCheck } from "./autodev-gate.js";
 import { isSessionExpiredError } from "./session-expiry.js";
-import { BUILTIN_SKILL_FORGE_AGENT, BUILTIN_SKILL_FORGE_AGENT_ID } from "./skill-forge-agent.js";
 import { guardStreamStall } from "./stream-stall-guard.js";
 import { reconcileZcodeRound } from "./zcode-record-reconciler.js";
 
@@ -113,8 +101,6 @@ export interface OrchestratorDeps {
   messageStore?: MessageStore;
   usageStore: UsageStore;
   auditStore: AuditStore;
-  /** 闲聊短路径开关（运行时性能轮 §效率杠杆）：规则判非任务输入直连 chat 兜底，省 dispatcher 一跳；缺省开 */
-  chitchatShortPath?: boolean;
   gates: GateRouter;
   runner: AgentRunner;
   channel: Channel;
@@ -190,8 +176,6 @@ export interface OrchestratorDeps {
   connectorStore?: ConnectorStore;
   /** 用户技能仓库同步（write_skill/update_skill 落盘后镜像）；缺省=不同步 */
   skillRepoSync?: { onChanged(userId: string): void };
-  /** 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配置=不绑仓库，agent 不可推送） */
-  selfImproveGitRepository?: AgentGitRepository;
   /** L2 kill-switch（DONGER_AUTODEV_DISABLED）：开启时 autoDev git 放行白名单全拒 */
   autodevDisabled?: () => boolean;
   /** 任务评论存储（T17.3：验收门评论落库）；未装配则评论仅随决议透传不落库 */
@@ -211,8 +195,6 @@ export interface OrchestratorDeps {
    * 缺省=不发事件。调用方保证 fire-and-forget。
    */
   eventEmit?: (eventName: string, payload: string) => void;
-  /** agent 链配置（D2）：task-flow 各环节可替换为用户自建 agent，缺省系统内置 */
-  agentChain?: AgentChainConfig;
   /** LLM 流停摆看门狗阈值（毫秒；undefined/0=关闭） */
   turnStallTimeoutMs?: number;
 }
@@ -311,14 +293,7 @@ export class Orchestrator {
   // userId → conversationId → 任务明细
   private readonly userActiveTasks = new Map<string, Map<string, ActiveTaskEntry>>();
   private readonly abortControllers = new Map<string, AbortController>();
-  // conversationId → 触发补建的原任务文本（builder 干跑验证用；进程内存态，重启丢失后回退当前消息）
-  private readonly builderOriginalPrompts = new Map<string, string>();
-  // conversationId → builder 已 finish（待自动重派原任务；runExclusive finally 消费）
-  private readonly builderFinished = new Set<string>();
-  // conversationId → builder 绑定时刻（闲置超时自动解绑用；重启丢失后从下一条消息重新计时）
-  private readonly builderBoundAt = new Map<string, number>();
-  /** builder 绑定闲置上限：超时未完成补建视为放弃，自动解绑回归正常分发 */
-  private static readonly BUILDER_BIND_TIMEOUT_MS = 10 * 60 * 1000;
+  // conversationId → 会话 busy 期间排队的消息（当前任务完成后自动依序处理；进程内存态）
   // conversationId → 会话 busy 期间排队的消息（当前任务完成后自动依序处理；进程内存态）
   private readonly pendingQueues = new Map<string, Array<{ user: User; msg: IncomingMessage }>>();
   /** 同用户最大并行任务数 */
@@ -490,51 +465,12 @@ export class Orchestrator {
     gitMaterializeItems?: RepositoryMaterializeItem[];
     gitBlocked?: string;
   }> {
-    // 内置协助智能体：代码常量直返，不查库不做权限检查（写入以发起用户身份）
-    if (agentId === BUILTIN_ASSIST_AGENT_ID) return { agent: BUILTIN_ASSIST_AGENT };
-    if (agentId === BUILTIN_KB_ASSISTANT_ID) return { agent: BUILTIN_KB_ASSISTANT_AGENT };
-    if (agentId === BUILTIN_SKILL_FORGE_AGENT_ID) return { agent: BUILTIN_SKILL_FORGE_AGENT };
-    if (agentId === BUILTIN_AUDITOR_AGENT_ID) return { agent: BUILTIN_AUDITOR_AGENT };
-    if (agentId === AGENT_BUILDER_ID) return { agent: AGENT_BUILDER_AGENT };
-    // 平台进化官：内置但仅管理员可用；绑定 donger 仓库时走与 DB agent 相同的 git 就绪检查
-    if (agentId === BUILTIN_SELF_IMPROVER_AGENT_ID) {
-      if (user.role !== "admin") {
-        throw new ForbiddenError("AGENT_FORBIDDEN", "平台进化官仅管理员可用");
-      }
-      const agent = buildSelfImproverAgent(this.deps.selfImproveGitRepository);
-      if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
-        const gitAccess = await this.deps.gitAccessGate.check(user, agent);
-        if (!gitAccess.ready) {
-          // 预检去网络化后未就绪只剩本地配置错误（URL 非法/host 被禁）；
-          // 凭证失效/未配置由物化层报错或通用凭证问询承接
-          return {
-            agent,
-            gitBlocked:
-              "平台进化官绑定的 Git 仓库地址无效或超出允许范围，请检查 SELF_IMPROVE_GIT_URL 配置。",
-          };
-        }
-        return { agent, gitMaterializeItems: gitAccess.materializeItems };
-      }
-      return { agent };
-    }
-    // 内置自动修复工程师（L2）：模板化派生自进化官——仅管理员、复用 SELF_IMPROVE_GIT_URL 绑定
-    if (agentId === BUILTIN_AUTO_FIX_AGENT_ID) {
-      if (user.role !== "admin") {
-        throw new ForbiddenError("AGENT_FORBIDDEN", "自动修复工程师仅管理员可用");
-      }
-      const agent = buildAutoFixAgent(this.deps.selfImproveGitRepository);
-      if (this.deps.gitAccessGate && agent.gitRepositories.length > 0) {
-        const gitAccess = await this.deps.gitAccessGate.check(user, agent);
-        if (!gitAccess.ready) {
-          return {
-            agent,
-            gitBlocked:
-              "自动修复工程师绑定的 Git 仓库地址无效或超出允许范围，请检查 SELF_IMPROVE_GIT_URL 配置。",
-          };
-        }
-        return { agent, gitMaterializeItems: gitAccess.materializeItems };
-      }
-      return { agent };
+    // 已退役内置智能体（2026-11-04 全量下架）：历史会话 id 显式报「已下架」而非裸 404
+    if (RETIRED_BUILTIN_AGENTS[agentId]) {
+      throw new NotFoundError(
+        "AGENT_RETIRED",
+        `${RETIRED_BUILTIN_AGENTS[agentId]} 已下架（内置智能体退役）：请改用平台登记的业务智能体`,
+      );
     }
     if (!this.deps.agentStore) {
       throw new ForbiddenError("AGENT_STORE_MISSING", "agent 存储未装配");
@@ -933,12 +869,13 @@ export class Orchestrator {
           };
         }
       }
-      // 审计读取工具（donger-audit）：内置审计智能体、技能工坊、平台进化官挂载。
-      // viewer=发起用户，构造时闭包绑定——member 仅本人 / admin 全量，store L2 visible 兜底。
+      // 审计读取工具（donger-audit）：白名单声明式挂载——agent 声明 mcp__donger-audit
+      // 即装配（2026-11-04 内置智能体退役：原仅三个内置挂载，L2 等声明了该前缀的
+      // 库内 agent 从未真正拿到工具面）。viewer=发起用户，构造时闭包绑定——
+      // member 仅本人 / admin 全量，store L2 visible 兜底。
       if (
-        p.agent?.id === BUILTIN_AUDITOR_AGENT_ID ||
-        p.agent?.id === BUILTIN_SKILL_FORGE_AGENT_ID ||
-        p.agent?.id === BUILTIN_SELF_IMPROVER_AGENT_ID
+        p.agent?.tools.mode === "whitelist" &&
+        p.agent.tools.whitelist.some((t) => t.startsWith("mcp__donger-audit"))
       ) {
         base = {
           ...base,
@@ -1031,37 +968,7 @@ export class Orchestrator {
       if (p.noResume) {
         return { ...base, resume: undefined, sessionStore: undefined };
       }
-      // 内置创作/构建智能体注入平台工具（write_skill / create_agent / finish_builder 等）
-      const isBuiltinAuthor =
-        p.agent?.id === BUILTIN_ASSIST_AGENT_ID ||
-        p.agent?.id === BUILTIN_SKILL_FORGE_AGENT_ID ||
-        p.agent?.id === AGENT_BUILDER_ID;
-      if (!isBuiltinAuthor) return base;
-      if (!this.deps.agentStore || !this.deps.installer || !this.deps.skillPackStore) {
-        throw new ForbiddenError(
-          "PLATFORM_TOOLS_MISSING",
-          "平台工具未装配（agentStore/installer/skillPackStore）",
-        );
-      }
-      return {
-        ...base,
-        platformTools: createPlatformToolsServer({
-          user: p.user,
-          agentStore: this.deps.agentStore,
-          installer: this.deps.installer,
-          packStore: this.deps.skillPackStore,
-          credentialSets: this.deps.credentialSets,
-          connectorStore: this.deps.connectorStore,
-          skillRepoSync: this.deps.skillRepoSync,
-          conversationStore: this.deps.conversationStore,
-          conversationId: p.conversation.id,
-          // write_skill target=agent 落点（与 runtime-manager ensureRuntimeDir 同构）
-          agentWorkspaceSkillsDir: p.agent
-            ? join(p.user.homeDir, "agents", p.agent.id, "workspace", ".agents", "skills")
-            : undefined,
-          onBuilderFinish: () => this.builderFinished.add(p.conversation.id),
-        }),
-      };
+      return base;
     };
     let opts: RunOptions;
     try {
@@ -1714,85 +1621,6 @@ export class Orchestrator {
       .catch(() => {});
   }
 
-  /** agent 链解析：配置的自定义 agent 不存在时兜底内置（启动时已 warn）。 */
-  private async resolveChainAgent(
-    configuredId: string | undefined,
-    builtin: Agent,
-  ): Promise<Agent> {
-    if (!configuredId) return builtin;
-    const custom = await this.deps.agentStore?.get(configuredId);
-    if (!custom) {
-      console.error(`[orchestrator] agentChain 配置的智能体不存在: ${configuredId}，回退内置`);
-      return builtin;
-    }
-    return custom;
-  }
-
-  /**
-   * dispatcher 路由轮（Task Flow 第一步）：走统一 runTurn 管道——
-   * 事件静默落审计/usage，不推送渠道不持久化；不 resume、不回写 sdkSessionId。
-   * 返回结构化路由决策；失败抛 RunnerError("DISPATCH_FAILED")。
-   */
-  /**
-   * 当前用户可分发的 agent 集合（登记表事实源 = agents 表，读时渲染）。
-   * 口径与 resolveAgentForUse 的 canUseAgent 一致：自有 ∪ 被分享 ∪ admin 全量。
-   */
-  private async listDispatchableAgents(user: User): Promise<Agent[]> {
-    const store = this.deps.agentStore;
-    if (!store) return [];
-    const mine = await store.listByOwner(user.id);
-    const shared = await store.listSharedWith(user.id);
-    const all = user.role === "admin" ? await store.listAll() : [];
-    const seen = new Set<string>();
-    const out: Agent[] = [];
-    for (const a of [...mine, ...shared, ...all]) {
-      if (!seen.has(a.id)) {
-        seen.add(a.id);
-        out.push(a);
-      }
-    }
-    return out;
-  }
-
-  private async runDispatcherTurn(p: {
-    task: Task;
-    user: User;
-    conversation: Conversation;
-    prompt: string;
-    runController: AbortController;
-  }): Promise<RoutingDecision> {
-    if (!this.deps.agentStore) {
-      throw new RunnerError("DISPATCH_FAILED", "任务分发未装配（agentStore 缺失）");
-    }
-    // 登记表「业务知识库」列：知识库 id → 名称（绑定库列名，spec §10.2）
-    let kbNames: Map<string, string> | undefined;
-    if (this.deps.kbLibraryStore) {
-      kbNames = new Map((await this.deps.kbLibraryStore.listAll()).map((l) => [l.id, l.name]));
-    }
-    const dispatcher = buildDispatcherAgent(await this.listDispatchableAgents(p.user), kbNames);
-    const r = await this.runTurn({
-      task: { ...p.task, prompt: p.prompt },
-      user: p.user,
-      conversation: p.conversation,
-      threadId: p.conversation.id,
-      channelId: p.task.channelId,
-      agent: dispatcher,
-      skills: dispatcher.skills,
-      noResume: true,
-      silent: true,
-      quietResult: true,
-      runController: p.runController,
-    });
-    if (!r.ok) {
-      throw new RunnerError("DISPATCH_FAILED", `任务分发失败：${r.error ?? "dispatcher 执行出错"}`);
-    }
-    try {
-      return parseRoutingDecision(r.resultText);
-    } catch (e) {
-      throw new RunnerError("DISPATCH_FAILED", `任务分发失败：${(e as Error).message}`, e);
-    }
-  }
-
   /**
    * agent 绑定任务的生命周期：单执行轮 → done。
    * 危险操作的人工闸统一收口在工具审批门（GateRouter + canUseTool）；
@@ -2149,23 +1977,6 @@ export class Orchestrator {
       this.abortControllers.delete(conversation.id);
       this.unmarkBusy(conversation.id);
       this.unregisterActive(user.id, conversation.id);
-      // builder 补建完成（finish_builder）→ 原任务自动重派：复用会话排队机制接续执行
-      if (this.builderFinished.delete(conversation.id)) {
-        const original = this.builderOriginalPrompts.get(conversation.id);
-        this.builderBoundAt.delete(conversation.id);
-        if (original) {
-          this.builderOriginalPrompts.delete(conversation.id);
-          let queue = this.pendingQueues.get(conversation.id);
-          if (!queue) {
-            queue = [];
-            this.pendingQueues.set(conversation.id, queue);
-          }
-          queue.push({
-            user,
-            msg: { ...msg, text: original, builderFromTaskId: msg.builderFromTaskId },
-          });
-        }
-      }
       this.dispatchQueue(conversation.id);
     }
   }
@@ -2212,32 +2023,22 @@ export class Orchestrator {
   ): Promise<string | undefined> {
     const { store, conversationStore, channel } = this.deps;
 
-    // 入口解析（统一对话入口模型）：显式绑定 → direct；否则 task-flow（dispatcher 路由）
-    let entry = resolveEntry(conversation, this.deps.agentChain);
+    // 入口模型（2026-11-04 内置路由链退役后收敛）：仅剩显式绑定 agent 的 direct 入口。
+    // 未绑定会话（钉钉 /new 后直接发消息等）显式失败给可行动指引，不再走 dispatcher 路由。
     let agent: Agent | undefined;
     let sharedAgentSkillOwner: User | undefined;
     let gitMaterializeItems: RepositoryMaterializeItem[] | undefined;
 
-    // builder 绑定闲置超时自愈：用户放弃补建（未调 finish_builder）后，绑定不得永久劫持会话。
-    // 超过上限仍未完成 → 自动解绑，本条消息回归正常分发（重启丢失绑定时刻时从本条消息重新计时）。
-    const builderAgentId = this.deps.agentChain?.builderAgentId ?? AGENT_BUILDER_ID;
-    if (entry.flow === "direct" && entry.agentId === builderAgentId) {
-      const boundAt = this.builderBoundAt.get(conversation.id) ?? Date.now();
-      if (Date.now() - boundAt > Orchestrator.BUILDER_BIND_TIMEOUT_MS) {
-        await conversationStore.update(conversation.id, { agentId: "" });
-        conversation.agentId = "";
-        this.builderBoundAt.delete(conversation.id);
-        this.builderOriginalPrompts.delete(conversation.id);
-        entry = resolveEntry(conversation, this.deps.agentChain);
-        const text = "⏱ Agent Builder 补建会话已超时结束；本条消息将按正常任务分发处理。";
-        await channel.send(msg.threadId, { text });
-      } else {
-        this.builderBoundAt.set(conversation.id, boundAt);
-      }
+    if (!conversation.agentId) {
+      const text =
+        "⚠️ 当前会话未绑定智能体（内置自动路由已下架）。请从智能体页面发起对话，" +
+        "或在平台把会话绑定到业务智能体后再发送任务。";
+      await channel.send(msg.threadId, { text });
+      channel.pushResult?.(conversation.id, "error", text);
+      return conversation.id;
     }
-
-    if (entry.flow === "direct") {
-      const r = await this.resolveAgentForUse(entry.agentId, user);
+    {
+      const r = await this.resolveAgentForUse(conversation.agentId, user);
       if (r.gitBlocked) {
         await channel.send(msg.threadId, { text: r.gitBlocked });
         channel.pushResult?.(conversation.id, "error", r.gitBlocked);
@@ -2317,8 +2118,6 @@ export class Orchestrator {
           ),
           status: "created",
           skillChain: [],
-          // builder 自动重派的消息：串联回触发补建的原 task
-          ...(msg.builderFromTaskId ? { builderFromTaskId: msg.builderFromTaskId } : {}),
           createdAt: now,
           updatedAt: now,
         };
@@ -2328,39 +2127,42 @@ export class Orchestrator {
       const activeEntry = this.userActiveTasks.get(user.id)?.get(conversation.id);
       if (activeEntry) activeEntry.taskId = task.id;
 
-      // 任务分发（P1）：会话未绑定 agent 且装配了 agentStore → 经 dispatcher 路由（Task Flow 第一步）
-      // 闲聊短路径先行：保守规则判「明显非任务」的输入直连 chat 兜底，省掉每消息固定的一跳
-      // dispatcher LLM 调用（isLikelyChitchat 判定宁漏放不误收——误路由代价=真实任务进无工具 chat）
+      // 任务执行入口：会话显式绑定 agent（direct）。内置路由链（dispatcher/闲聊短路径/
+      // builder 补建）已于 2026-11-04 退役——未绑定会话在入口处即被拒（见上方守卫）。
       let firstTurnPrompt: string | undefined;
-      // 恢复续跑：合成指令替代 task.prompt 作为本轮输入；不走闲聊判定与 dispatcher 重路由
+      // 恢复续跑：合成指令替代 task.prompt 作为本轮输入
       if (msg.resumeTaskId) firstTurnPrompt = msg.text;
       let steps: FlowStep[] = task.steps ?? [];
       if (msg.resumeTaskId) {
-        // 恢复续跑：按原任务 agent 归属直连（不再过 dispatcher/闲聊判定）。
-        // 原归属已删除/无权 → 回退 chat 兜底（与闲聊短路径同源：resolveChainAgent 直取常量，
-        // 不经 resolveAgentForUse——内置 chat agent 不在仓库里）
+        // 恢复续跑：按原任务 agent 归属直连（task 行缺省时回退会话绑定——存量 task 行未落
+        // agentId，direct 路径此前只写 steps 不写 agentId）。原归属已删除/无权 → 显式失败
+        // （chat 兜底已退役）。
         let r: Awaited<ReturnType<typeof this.resolveAgentForUse>> | undefined;
-        if (task.agentId) {
+        const resumeAgentId = task.agentId ?? conversation.agentId;
+        if (resumeAgentId) {
           try {
-            r = await this.resolveAgentForUse(task.agentId, user);
+            r = await this.resolveAgentForUse(resumeAgentId, user);
           } catch {
             r = undefined;
           }
         }
-        if (r) {
-          if (r.gitBlocked) {
-            throw new RunnerError(
-              "DISPATCH_FAILED",
-              `恢复的智能体仓库未授权：${r.gitBlocked}`,
-            );
-          }
-          ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
-        } else {
-          agent = await this.resolveChainAgent(
-            this.deps.agentChain?.chatAgentId,
-            BUILTIN_CHAT_AGENT,
+        if (!r) {
+          await store.updateStatus(task.id, "failed", {
+            error: "恢复任务的原智能体已不存在或当前用户无权使用",
+          });
+          const text =
+            "⚠️ 恢复任务失败：原任务绑定的智能体已不存在或你无权使用它。请在业务智能体的会话里重发任务。";
+          await channel.send(msg.threadId, { text });
+          channel.pushResult?.(conversation.id, "error", text);
+          return conversation.id;
+        }
+        if (r.gitBlocked) {
+          throw new RunnerError(
+            "DISPATCH_FAILED",
+            `恢复的智能体仓库未授权：${r.gitBlocked}`,
           );
         }
+        ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
         steps = beginStep(steps, {
           role: "agent",
           agentId: agent.id,
@@ -2368,140 +2170,8 @@ export class Orchestrator {
           startedAt: new Date().toISOString(),
         });
         await store.updateStatus(task.id, "planning", { steps });
-      } else if (
-        (this.deps.chitchatShortPath ?? true) &&
-        !conversation.agentId &&
-        this.deps.agentStore &&
-        isLikelyChitchat(task.prompt)
-      ) {
-        const chatAgent = await this.resolveChainAgent(
-          this.deps.agentChain?.chatAgentId,
-          BUILTIN_CHAT_AGENT,
-        );
-        steps = beginStep(steps, {
-          role: "chat",
-          agentId: chatAgent.id,
-          conversationId: conversation.id,
-          startedAt: new Date().toISOString(),
-        });
-        await store.updateStatus(task.id, nextStatus("created", "plan"), {
-          agentId: chatAgent.id,
-          steps,
-          routingRationale: "闲聊短路径：规则判非任务输入，直连对话兜底",
-        });
-        agent = chatAgent;
-      } else if (!conversation.agentId && this.deps.agentStore) {
-        steps = beginStep(steps, {
-          role: "dispatcher",
-          agentId: this.deps.agentChain?.dispatcherAgentId ?? "builtin-dispatcher",
-          conversationId: conversation.id,
-          startedAt: new Date().toISOString(),
-        });
-        const routing = await this.runDispatcherTurn({
-          task,
-          user,
-          conversation,
-          prompt: task.prompt,
-          runController,
-        });
-        steps = completeStep(steps, { summary: routing.rationale });
-        // "none" = 登记表无匹配智能体：任务类输入转入 agent-builder 对话式补建；chat 类输入走对话兜底
-        if (routing.agentId === "none" && !isChatTaskType(routing.taskType)) {
-          // 不失败：会话绑定 builder（持久化，后续消息直连 builder 多轮澄清，不再过 dispatcher）
-          const builder = await this.resolveChainAgent(
-            this.deps.agentChain?.builderAgentId,
-            AGENT_BUILDER_AGENT,
-          );
-          await store.updateStatus(task.id, nextStatus("created", "plan"), {
-            agentId: builder.id,
-            routingRationale: routing.rationale,
-            steps: beginStep(steps, {
-              role: "builder",
-              agentId: builder.id,
-              conversationId: conversation.id,
-              startedAt: new Date().toISOString(),
-            }),
-          });
-          await conversationStore.update(conversation.id, { agentId: builder.id });
-          conversation.agentId = builder.id;
-          this.builderBoundAt.set(conversation.id, Date.now());
-          // 记录原任务供干跑验证与自动重派（后续澄清轮的 task.prompt 已不是原文）
-          this.builderOriginalPrompts.set(conversation.id, task.prompt);
-          await channel.send(msg.threadId, {
-            text: `🧩 未找到匹配的执行智能体（${routing.rationale}），已转入 Agent Builder，协助你补建该能力：`,
-          });
-          agent = builder;
-          // 引导词经 firstTurnPrompt 注入；task.prompt 保持用户原文（入库/审计/记忆不被污染）
-          firstTurnPrompt = builderCreationAsk(task.prompt, routing.rationale);
-        } else if (routing.agentId !== "none") {
-          let r: Awaited<ReturnType<typeof this.resolveAgentForUse>>;
-          try {
-            r = await this.resolveAgentForUse(routing.agentId, user);
-          } catch (e) {
-            const code = (e as { code?: string })?.code;
-            // dispatcher 偶发输出无效 id（名称/技能名）：转译为可行动的失败提示而非裸 404
-            if (code === "AGENT_NOT_FOUND") {
-              await store.updateStatus(task.id, "failed", {
-                error: `分发异常：dispatcher 选择了不存在的智能体 id "${routing.agentId}"，请重试`,
-                steps: completeStep(steps, { status: "failed", summary: "路由到不存在 id" }),
-              });
-              const text = `⚠️ 分发异常：dispatcher 选择了一个不存在的智能体（${routing.agentId}），请重发任务重试。`;
-              await channel.send(msg.threadId, { text });
-              channel.pushResult?.(conversation.id, "error", text);
-              return conversation.id;
-            }
-            // 权限不足（路由表登记了该 agent，但当前用户无权使用）：降级为可行动提示而非硬失败
-            if (code === "AGENT_FORBIDDEN") {
-              await store.updateStatus(task.id, "failed", {
-                error: `分发异常：路由到智能体 ${routing.agentId} 但当前用户无权使用（属主未分享）`,
-                steps: completeStep(steps, { status: "failed", summary: "路由目标无权使用" }),
-              });
-              const text = `⚠️ 已找到能处理该任务的智能体，但你当前无权使用它。可请智能体属主开启分享授权，或联系管理员；之后重发任务即可。`;
-              await channel.send(msg.threadId, { text });
-              channel.pushResult?.(conversation.id, "error", text);
-              return conversation.id;
-            }
-            throw e;
-          }
-          if (r.gitBlocked) {
-            throw new RunnerError("DISPATCH_FAILED", `路由的智能体仓库未授权：${r.gitBlocked}`);
-          }
-          ({ agent, sharedAgentSkillOwner, gitMaterializeItems } = r);
-          steps = beginStep(steps, {
-            role: "agent",
-            agentId: agent.id,
-            conversationId: conversation.id,
-            startedAt: new Date().toISOString(),
-          });
-          await store.updateStatus(task.id, "planning", {
-            agentId: routing.agentId,
-            routingRationale: routing.rationale,
-            steps,
-          });
-          // 路由反馈（V9）：明确告知任务被谁接了；带任务短 id 供 tasks files 衔接
-          await channel.send(msg.threadId, {
-            text: `📨 已分派给「${agent.name}」（任务 ${task.id.slice(0, 8)}）：${routing.rationale}`,
-          });
-        } else {
-          // 闲聊兜底（chat step）：默认内置 chat agent，可经 agentChain.chatAgentId 替换
-          const chatAgent = await this.resolveChainAgent(
-            this.deps.agentChain?.chatAgentId,
-            BUILTIN_CHAT_AGENT,
-          );
-          steps = beginStep(steps, {
-            role: "chat",
-            agentId: chatAgent.id,
-            conversationId: conversation.id,
-            startedAt: new Date().toISOString(),
-          });
-          await store.updateStatus(task.id, nextStatus("created", "plan"), {
-            agentId: chatAgent.id,
-            steps,
-          });
-          agent = chatAgent;
-        }
       } else {
-        // direct 入口（会话显式绑定 agent）
+        // direct 入口（会话显式绑定 agent）；agentId 落 task 行（中断恢复续跑按行直连）
         if (agent) {
           steps = beginStep(steps, {
             role: "agent",
@@ -2510,7 +2180,10 @@ export class Orchestrator {
             startedAt: new Date().toISOString(),
           });
         }
-        await store.updateStatus(task.id, nextStatus("created", "plan"), { steps });
+        await store.updateStatus(task.id, nextStatus("created", "plan"), {
+          steps,
+          ...(agent ? { agentId: agent.id } : {}),
+        });
       }
       task.steps = steps;
 

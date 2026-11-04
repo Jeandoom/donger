@@ -724,7 +724,6 @@ export class ZcodeAgentRunner implements AgentRunner {
     const gateCheck = createMcpGateCheck(this.gates, opts.permissionMode, opts.gateAllowCheck);
     const servers: ZcodeSessionMcpServer[] = [];
     for (const sdkTools of [
-      opts.platformTools,
       opts.gitPlatformTools,
       opts.hostTools,
       opts.kbTools,

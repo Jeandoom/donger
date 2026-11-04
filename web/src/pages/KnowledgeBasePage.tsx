@@ -259,7 +259,7 @@ function Section({
                 更新于 {new Date(l.updatedAt).toLocaleDateString()}
               </span>
               <div className="flex items-center gap-1.5">
-                {/* 对话入口 M2（builtin-kb-assistant）接入；维护走对话（D4），此处仅库级动作 */}
+                {/* 库级动作（对话入口已随内置知识库管家退役，2026-11-04） */}
                 {onDuplicate && l._role === "manage" ? (
                   <button
                     type="button"

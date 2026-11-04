@@ -85,6 +85,7 @@ function setup(script: FakeScript) {
         sdkSessionId: "",
         title: "测试",
         channelId: "cli",
+        agentId: "agent-1",
         createdAt: "t",
         updatedAt: "t",
         archived: false,
@@ -156,6 +157,34 @@ function setup(script: FakeScript) {
     channel,
     runtimeMgr,
     credentialSets,
+    // 内置路由链退役：会话显式绑定 agent，resolveAgentForUse 走 agents 表口径
+    agentStore: {
+      get: async (id: string) => ({
+        id,
+        ownerId: "u-local",
+        name: "测试Agent",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: false,
+        extensionDirectories: [],
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      }),
+      listByOwner: async () => [],
+      listSharedWith: async () => [],
+      listAll: async () => [],
+      create: async () => {
+        throw new Error("not implemented");
+      },
+      update: async () => {
+        throw new Error("not implemented");
+      },
+      delete: async () => {},
+    } as unknown as import("../../src/ports/agent-store.js").AgentStore,
   });
   channel.onMessage((m) => {
     void orch.handleMessage(m);

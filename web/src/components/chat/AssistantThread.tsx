@@ -31,7 +31,6 @@ import {
 import remarkGfm from "remark-gfm";
 import { type AttachmentKind, attachmentKindForName, uploadUrl } from "../../lib/attachments";
 import { fetchMe } from "../../lib/auth";
-import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
 import { extractChangedFilePaths, shortChangePath } from "../../lib/fileChanges";
 import { lineRefBadge } from "../../lib/lineRefBadge";
@@ -452,7 +451,7 @@ export interface AssistantThreadProps {
 
 export function AssistantThread(props: AssistantThreadProps) {
   const hasPendingInteraction = Boolean(props.pendingApproval || props.pendingCredential);
-  const hasAgent = Boolean(props.agentId) && !isBuiltinAgentId(props.agentId);
+  const hasAgent = Boolean(props.agentId);
   const { candidates, loading, error, refresh } = useMentionCandidatesState(
     hasAgent,
     props.agentId,

@@ -50,10 +50,8 @@ export const TaskSchema = z.object({
   pendingCredentials: z
     .object({ requestedAt: z.string(), missingCodes: z.array(z.string()).optional() })
     .optional(),
-  /** Task Flow 流水线：dispatcher/builder/chat/agent 步骤链（请求级，方案 A 挂用户当前会话） */
+  /** Task Flow 流水线步骤链（请求级，方案 A 挂用户当前会话） */
   steps: z.array(FlowStepSchema).optional(),
-  /** builder 完成自动重派产生本 task 时，指回触发补建的原 task */
-  builderFromTaskId: z.string().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -198,8 +196,6 @@ export const IncomingMessageSchema = z.object({
   mentions: z.array(ResolvedMentionSchema).max(200).optional(),
   /** Web 渠道：用户在对话底栏显式选择的 LLM（modelRef；system|preset:x|provider:id:model） */
   modelRef: z.string().optional(),
-  /** 系统内部：builder 完成后的自动重派消息（task 串联：builderFromTaskId 指回补建触发的 task） */
-  builderFromTaskId: z.string().optional(),
   /**
    * 系统内部：中断恢复续跑（热发布 M2/M3，spec 2026-10-16-hot-deploy-design）。
    * 复用原 task 行（D3 拍板）：interrupted/awaiting_approval --resume--> running，

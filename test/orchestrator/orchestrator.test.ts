@@ -96,6 +96,37 @@ function mockUserStore(): UserStore {
   };
 }
 
+/** 测试用 agentStore stub：任意 id 返回属主为当前测试用户的 agent（内置路由链退役后必装配） */
+function testAgentStore(): import("../../src/ports/agent-store.js").AgentStore {
+  return {
+    get: async (id: string) => ({
+      id,
+      ownerId: "u-u",
+      name: "测试Agent",
+      skills: [],
+      tools: { mode: "all", whitelist: [] },
+      mcpServers: [],
+      credentials: [],
+      gitRepositories: [],
+      gitAllowShellGit: false,
+      extensionDirectories: [],
+      version: 1,
+      createdAt: "",
+      updatedAt: "",
+    }),
+    listByOwner: async () => [],
+    listSharedWith: async () => [],
+    listAll: async () => [],
+    create: async () => {
+      throw new Error("not implemented");
+    },
+    update: async () => {
+      throw new Error("not implemented");
+    },
+    delete: async () => {},
+  } as unknown as import("../../src/ports/agent-store.js").AgentStore;
+}
+
 function mockConversationStore(): ConversationStore {
   const conv: Conversation = {
     id: "conv-1",
@@ -103,6 +134,7 @@ function mockConversationStore(): ConversationStore {
     sdkSessionId: "",
     title: "测试",
     channelId: "test",
+    agentId: "agent-1",
     createdAt: "t",
     updatedAt: "t",
     archived: false,
@@ -111,8 +143,8 @@ function mockConversationStore(): ConversationStore {
     async create() {
       return conv;
     },
-    async get() {
-      return undefined;
+    async get(id) {
+      return id === conv.id ? conv : undefined;
     },
     async getLatest() {
       return conv;
@@ -208,6 +240,7 @@ function setup(
     channel,
     runtimeMgr,
     credentialSets,
+    agentStore: testAgentStore(),
   });
   return { orch, store, channel, usageStore, auditStore };
 }
@@ -365,6 +398,7 @@ describe("Orchestrator", () => {
       channel: channel2,
       runtimeMgr: runtimeMgr2,
       credentialSets: credentialSets2,
+      agentStore: testAgentStore(),
     });
     await orch2.handleMessage(msg);
     expect(channel2.sent.some((m) => m.text.includes("处理出错"))).toBe(true);
@@ -424,6 +458,7 @@ describe("Orchestrator", () => {
           sdkSessionId: "sdk-existing",
           title: "t",
           channelId: "test",
+          agentId: "agent-1",
           createdAt: "t",
           updatedAt: "t",
           archived: false,
@@ -439,6 +474,7 @@ describe("Orchestrator", () => {
           sdkSessionId: "sdk-existing",
           title: "t",
           channelId: "test",
+          agentId: "agent-1",
           createdAt: "t",
           updatedAt: "t",
           archived: false,
@@ -470,6 +506,7 @@ describe("Orchestrator", () => {
       auditStore: new InMemoryAuditStore(),
       runtimeMgr: runtimeMgrCap,
       credentialSets: credentialSetsCap,
+      agentStore: testAgentStore(),
     });
     await orch.handleMessage(msg);
     expect(capturedResume).toBe("sdk-existing");
@@ -582,6 +619,7 @@ describe("Orchestrator", () => {
       channel: fakeChannel(true),
       runtimeMgr: runtimeMgrAudit,
       credentialSets: credentialSetsAudit,
+      agentStore: testAgentStore(),
     });
     await orch.handleMessage(msg);
     expect((await store.listByStatus("done")).length).toBe(1);

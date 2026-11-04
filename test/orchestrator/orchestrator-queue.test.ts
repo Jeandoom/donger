@@ -44,17 +44,6 @@ class GatedRunner implements AgentRunner {
   }
 }
 
-/** 顺序出栈脚本 runner：每轮消费队首脚本（chat 兜底等固定编排用） */
-class ScriptedRunner implements AgentRunner {
-  readonly prompts: string[] = [];
-  constructor(private readonly queue: string[]) {}
-  async *run(task: Task, _opts: RunOptions, _r: ApprovalResolver): AsyncIterable<RunnerEvent> {
-    this.prompts.push(task.prompt);
-    const result = this.queue.shift() ?? "done";
-    yield { type: "result", taskId: task.id, subtype: "success", result };
-  }
-}
-
 /** 全状态任务聚合（InMemoryTaskStore 无全量 list，按枚举状态拼装） */
 async function allTasks(store: InMemoryTaskStore) {
   const statuses = [
@@ -199,7 +188,7 @@ function build(
   };
   const runtimeMgr = new RuntimeManager({
     transcriptStore: mockTranscriptStore(),
-    conversationStore: opts.convStore ?? statefulConvStore(opts.agentId ?? ""),
+    conversationStore: opts.convStore ?? statefulConvStore(opts.agentId ?? "agent-1"),
     config: {
       workspaceDir: mkdtempSync(join(tmpdir(), "donger-test-ws-")),
       llm: { model: "m", baseUrl: "u", authToken: "t" },
@@ -214,7 +203,7 @@ function build(
   const orch = new Orchestrator({
     store,
     userStore: mockUserStore(),
-    conversationStore: opts.convStore ?? statefulConvStore(opts.agentId ?? ""),
+    conversationStore: opts.convStore ?? statefulConvStore(opts.agentId ?? "agent-1"),
     usageStore: new InMemoryUsageStore(),
     auditStore,
     gates: createDefaultGates(),
@@ -222,16 +211,34 @@ function build(
     channel,
     runtimeMgr,
     credentialSets,
-    ...(opts.withDispatch
-      ? {
-          agentStore: {
-            get: async () => undefined,
-            listByOwner: async () => [],
-            listSharedWith: async () => [],
-            listAll: async () => [],
-          },
-        }
-      : {}),
+    agentStore: {
+      // 内置路由链退役后：会话一律显式绑定 agent，resolveAgentForUse 走 agents 表口径
+      get: async (id: string) => ({
+        id,
+        ownerId: "u-webu",
+        name: "测试Agent",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: false,
+        extensionDirectories: [],
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      }),
+      listByOwner: async () => [],
+      listSharedWith: async () => [],
+      listAll: async () => [],
+      create: async () => {
+        throw new Error("not implemented");
+      },
+      update: async () => {
+        throw new Error("not implemented");
+      },
+      delete: async () => {},
+    } as unknown as import("../../src/ports/agent-store.js").AgentStore,
     installer: fakeInstaller,
     skillPackStore: packStore,
   });
@@ -324,101 +331,29 @@ describe("会话 busy 排队", () => {
   });
 });
 
-describe("task flow steps", () => {
-  it("闲聊短路径：规则判非任务输入直连 chat 兜底，跳过 dispatcher 轮", async () => {
-    const runner = new ScriptedRunner(["你好呀，有什么可以帮你？"]);
+describe("入口守卫（内置路由链退役）", () => {
+  it("未绑定会话消息 → 显式失败提示且不执行", async () => {
+    const runner = new GatedRunner();
     const channel = seqChannel();
     const { orch, store } = build(runner, channel, new InMemoryAuditStore(), {
-      withDispatch: true,
+      agentId: "",
     });
 
     await orch.handleMessage(MSG("在吗"));
 
-    const done = await store.listByStatus("done");
-    expect(done).toHaveLength(1);
-    expect(done[0]?.agentId).toBe("builtin-chat");
-    // 只有一跳 chat 轮：无 dispatcher prompt、steps 无 dispatcher 步
-    expect(runner.prompts).toEqual(["在吗"]);
-    expect(done[0]?.steps?.map((s) => `${s.role}:${s.status}`)).toEqual(["chat:done"]);
-    expect(done[0]?.routingRationale).toContain("闲聊短路径");
+    expect(channel.texts.some((t) => t.includes("未绑定智能体"))).toBe(true);
+    expect(runner.prompts).toEqual([]);
+    expect((await allTasks(store)).length).toBe(0);
   });
 
-  it("chat 兜底：非闲聊输入仍走 dispatcher→chat 完整链", async () => {
-    const routing = JSON.stringify({
-      agentId: "none",
-      taskType: "chat",
-      rationale: "闲聊问候",
-    });
-    const runner = new ScriptedRunner([routing, "你好呀，有什么可以帮你？"]);
-    const channel = seqChannel();
-    const { orch, store } = build(runner, channel, new InMemoryAuditStore(), {
-      withDispatch: true,
-    });
-
-    await orch.handleMessage(MSG("给我讲个笑话"));
-
-    const done = await store.listByStatus("done");
-    expect(done).toHaveLength(1);
-    expect(done[0]?.agentId).toBe("builtin-chat");
-    expect(done[0]?.steps?.map((s) => `${s.role}:${s.status}`)).toEqual([
-      "dispatcher:done",
-      "chat:done",
-    ]);
-    expect(done[0]?.steps?.[0]?.summary).toBe("闲聊问候");
-    // dispatcher 轮静默：路由 JSON 不进聊天消息流
-    expect(runner.prompts).toEqual(["给我讲个笑话", "给我讲个笑话"]);
-  });
-
-  it("builder 完成自动重派：原任务作为系统消息接续执行", async () => {
+  it("已退役内置智能体会话 → 报「已下架」（不执行）", async () => {
     const runner = new GatedRunner();
-    const channel = seqChannel();
-    const { orch } = build(runner, channel);
-
-    // 模拟 builder 轮期间已登记原任务、且 finish_builder 已触发
-    (orch as unknown as { builderOriginalPrompts: Map<string, string> }).builderOriginalPrompts.set(
-      "conv-agent",
-      "帮我写个天气查询 agent",
-    );
-    (orch as unknown as { builderFinished: Set<string> }).builderFinished.add("conv-agent");
-
-    // 当前（builder 收尾）消息完成 → finally 检测 finish 标志 → 原任务自动入队重派
-    const p = orch.handleMessage(MSG("好的，收尾吧"));
-    await vi.waitFor(() => expect(runner.prompts).toContain("好的，收尾吧"));
-    runner.release();
-    await p;
-
-    await vi.waitFor(() => expect(runner.prompts).toContain("帮我写个天气查询 agent"));
-    runner.release();
-    await vi.waitFor(async () => {
-      expect(runner.prompts).toEqual(["好的，收尾吧", "帮我写个天气查询 agent"]);
+    const { orch } = build(runner, seqChannel(), new InMemoryAuditStore(), {
+      agentId: "builtin-kb-assistant",
     });
-  });
-});
 
-describe("builder 绑定闲置超时", () => {
-  it("绑定超 10 分钟未完成补建 → 自动解绑，消息回归正常分发", async () => {
-    const runner = new GatedRunner();
-    const channel = seqChannel();
-    const { orch } = build(runner, channel, new InMemoryAuditStore(), {
-      agentId: "agent-builder",
-    });
-    const inner = orch as unknown as {
-      builderBoundAt: Map<string, number>;
-      builderOriginalPrompts: Map<string, string>;
-    };
-
-    // 模拟 11 分钟前绑定了 builder
-    inner.builderBoundAt.set("conv-agent", Date.now() - 11 * 60 * 1000);
-    inner.builderOriginalPrompts.set("conv-agent", "写个天气 agent");
-
-    const p = orch.handleMessage(MSG("明天杭州天气"));
-    await vi.waitFor(() => expect(runner.prompts).toEqual(["明天杭州天气"]));
-    runner.release();
-    await p;
-
-    expect(channel.texts.some((t) => t.includes("超时结束"))).toBe(true);
-    expect(inner.builderBoundAt.has("conv-agent")).toBe(false);
-    expect(inner.builderOriginalPrompts.has("conv-agent")).toBe(false);
+    await expect(orch.handleMessage(MSG("概述知识库"))).rejects.toThrow("已下架");
+    expect(runner.prompts).toEqual([]);
   });
 });
 
@@ -447,7 +382,7 @@ function multiConvStore(): ConversationStore {
         sdkSessionId: "",
         title: title || id,
         channelId: "test",
-        agentId: "",
+        agentId: "agent-1",
         createdAt: "t",
         updatedAt: "t",
         archived: false,

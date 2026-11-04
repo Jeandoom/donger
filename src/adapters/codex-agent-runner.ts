@@ -176,7 +176,6 @@ export class CodexAgentRunner implements AgentRunner {
     const mcpHeaderEnv: Record<string, string> = {};
     let mcpHeaderIndex = 0;
     for (const sdkTools of [
-      opts.platformTools,
       opts.gitPlatformTools,
       opts.hostTools,
       opts.kbTools,
