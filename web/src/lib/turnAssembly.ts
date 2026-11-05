@@ -10,7 +10,7 @@ export interface HistoryMessage {
   files?: ChatMessage["files"];
 }
 
-/** GET /api/conversations/:id/events 的审计事件形状（light 模式；仅消费工具事件） */
+/** GET /api/conversations/:id/events 的审计事件形状（light 模式；消费工具事件与 result 行） */
 export interface HistoryEvent {
   type: string;
   taskId?: string;
@@ -19,6 +19,11 @@ export interface HistoryEvent {
   toolInput?: string;
   toolOutput?: string;
   isError?: boolean;
+  /** result 行携带的徽标元信息（chat UE 轮回合徽标；light 模式原样透传） */
+  inputTokens?: number;
+  outputTokens?: number;
+  model?: string;
+  durationMs?: number;
   recordedAt: string;
 }
 
@@ -33,6 +38,29 @@ interface TurnCursor {
 
 function isToolEvent(event: HistoryEvent): boolean {
   return event.type === "tool_use" || event.type === "tool_result";
+}
+
+/** 回合徽标元信息（tokens/model/duration；chat UE 轮 E2-B） */
+interface TurnMeta {
+  inputTokens?: number;
+  outputTokens?: number;
+  model?: string;
+  durationMs?: number;
+}
+
+/** result 审计行 → 徽标元信息（每 taskId 取最后一条 result 行） */
+function groupMetaByTask(events: HistoryEvent[]): Map<string, TurnMeta> {
+  const byTask = new Map<string, TurnMeta>();
+  for (const event of events) {
+    if (event.type !== "result" || !event.taskId) continue;
+    byTask.set(event.taskId, {
+      ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
+      ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+      ...(event.model ? { model: event.model } : {}),
+      ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    });
+  }
+  return byTask;
 }
 
 function groupEventsByTask(events: HistoryEvent[]): Map<string, HistoryEvent[]> {
@@ -90,6 +118,7 @@ export function assembleTurnMessages(
   events: HistoryEvent[],
 ): ChatMessage[] {
   const eventsByTask = groupEventsByTask(events);
+  const metaByTask = groupMetaByTask(events);
   const cursors = new Map<string, number>();
   const out: ChatMessage[] = [];
   let turn: TurnCursor | null = null;
@@ -112,6 +141,14 @@ export function assembleTurnMessages(
     // 排空剩余事件（最后一条消息之后发生的工具调用也属于本回合）
     for (const taskId of turn.taskIds) drainUntil(taskId, null);
     turn.msg.parts = finalizeTurnParts(turn.msg.parts ?? []);
+    // 徽标元信息：取本回合任一任务的 result 行（一回合常态一个任务；多任务取首个有值的）
+    for (const taskId of turn.taskIds) {
+      const meta = metaByTask.get(taskId);
+      if (meta) {
+        turn.msg.meta = meta;
+        break;
+      }
+    }
     out.push(turn.msg);
     turn = null;
   };

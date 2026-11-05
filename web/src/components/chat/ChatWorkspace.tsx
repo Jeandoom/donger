@@ -22,10 +22,12 @@ import { FileBrowserDrawer } from "../files/FileBrowserDrawer";
 import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { DialogShell } from "../ui/dialog-shell";
-import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
-import { AgentConversationSidebar } from "./AgentConversationSidebar";
+import { useToast } from "../ui/toast";
 import { AssistantThread } from "./AssistantThread";
+import type { ConversationSidebarProps } from "./ConversationSidebar";
+import { ConversationSidebar } from "./ConversationSidebar";
 import { MobileConversationSheet } from "./MobileConversationSheet";
+import { PopoverSelect } from "./PopoverSelect";
 
 export interface ChatWorkspaceProps {
   conversations: ConversationSummary[];
@@ -33,8 +35,8 @@ export interface ChatWorkspaceProps {
   activeConversationIsDraft?: boolean;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
-  /** 分组侧栏（对话模块统一智能体会话）：桌面固定栏 + 移动端浮层共用 */
-  sidebar?: AgentConversationSidebarProps;
+  /** 侧栏（扁平时间流，chat UE 优化轮）：桌面固定栏 + 移动端浮层共用 */
+  sidebar?: ConversationSidebarProps;
   messages: ChatMessage[];
   loadingMessages: boolean;
   isGenerating: boolean;
@@ -49,17 +51,25 @@ export interface ChatWorkspaceProps {
   onDecideCredentialMissing: (decision: string) => void;
   onAnswerQuestion: (answers: Record<string, string>, response?: string) => void;
   inputPlaceholder?: string;
+  /** 助手显示名（chat UE 轮 E2-C：当前 agent 名） */
+  assistantName?: string;
+  /** 执行活动摘要行（chat UE 轮 E2-A） */
+  activityLines?: string[];
+  /** busy 排队深度（chat UE 轮 E3-C） */
+  queueDepth?: number;
   /** 切换会话权限模式（undefined=不支持，隐藏切换器） */
   onPermissionModeChange?: (mode: AgentPermissionMode) => Promise<void>;
   /** 对话可选模型（M2）：空数组/undefined=不支持，隐藏选择器 */
   modelOptions?: { ref: string; label: string; sdkType?: LlmSdkType }[];
   modelRef?: string;
   onModelRefChange?: (ref: string) => void;
-  /** 输入区上方插槽（assist 草稿横幅等） */
-  aboveComposer?: React.ReactNode;
   /** 会话分叉（specs/2026-10-23-conversation-fork-design.md §8）：缺省=整会话；消息级入口传分叉点消息 id。
-   *  undefined=不支持，隐藏顶栏按钮与消息级入口 */
+   *  undefined=不支持，隐藏顶栏按钮与消息级入口。消息级「编辑」（D2）= fork + composer 原文回填，由此派生 */
   onForkConversation?: (messageId?: string) => Promise<boolean>;
+  /** 失败消息一键重发（chat UE 轮 E5-A） */
+  onRetryMessage?: (messageId: string) => void;
+  /** 手动重连（chat UE 轮 E5-E）：断流横幅上的立即补拉入口 */
+  onManualReconnect?: () => void;
   /** 顶栏右侧扩展（「文件」按钮旁，技能问题上报入口等） */
   headerExtra?: React.ReactNode;
   errors: ChatErrors;
@@ -82,43 +92,103 @@ function truncateTitle(title: string): string {
   return title.length > 14 ? `${title.slice(0, 14)}…` : title;
 }
 
+const PERMISSION_MODE_OPTIONS = [
+  { value: "ask_before_change", label: "变更前问询" },
+  { value: "risk_guard", label: "风险拦截" },
+  { value: "full_access", label: "完全权限（高危）", hint: "零审批拦截，硬守卫仍生效" },
+] as const;
+
 export function ChatWorkspace(props: ChatWorkspaceProps) {
+  const toast = useToast();
   const [drawer, setDrawer] = useState<DrawerState>(INITIAL_DRAWER);
   const openFileChange = useCallback((path: string) => {
     setDrawer({ open: true, tab: "changes", focusPath: path });
   }, []);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
-  // 附件 add/send 失败在 assistant-ui 里是静默吞掉的（fire-and-forget），经 adapter onError 上抛到这里显性化
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!attachmentError) return;
-    const timer = setTimeout(() => setAttachmentError(null), 6000);
-    return () => clearTimeout(timer);
-  }, [attachmentError]);
-  // 对话内反馈入口（spec 2026-10-01-chat-feedback-entry-design）：弹窗开关 + 提交成功提示（瞬态自清）
+  // 对话内反馈入口（spec 2026-10-01-chat-feedback-entry-design）
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [feedbackNotice, setFeedbackNotice] = useState<string | null>(null);
-  useEffect(() => {
-    if (!feedbackNotice) return;
-    const timer = setTimeout(() => setFeedbackNotice(null), 6000);
-    return () => clearTimeout(timer);
-  }, [feedbackNotice]);
   const [idCopied, setIdCopied] = useState(false);
+  const [lineageOpen, setLineageOpen] = useState(false);
+  const lineageRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!idCopied) return;
     const timer = setTimeout(() => setIdCopied(false), 1500);
     return () => clearTimeout(timer);
   }, [idCopied]);
+  useEffect(() => {
+    if (!lineageOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (lineageRef.current && !lineageRef.current.contains(e.target as Node)) {
+        setLineageOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [lineageOpen]);
+
+  // Esc 分层（chat UE 轮 E4-C）：浮层/弹窗打开时不劫持（各自 Esc 负责关闭）；
+  // 否则生成中 Esc = 停止输出。mention 候选浮层与自绘菜单均以 role="menu" 渲染。
+  const handleGlobalKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (!props.isGenerating) return;
+      const blocking = document.querySelector('[role="menu"],[role="dialog"],[role="listbox"]');
+      if (blocking) return;
+      const target = e.target as HTMLElement | null;
+      const inInput =
+        target &&
+        (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
+      if (!inInput) return;
+      e.preventDefault();
+      void props.onCancel();
+    },
+    [props.isGenerating, props.onCancel],
+  );
+  useEffect(() => {
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [handleGlobalKeyDown]);
+
   const activeConversation = props.conversations.find((c) => c.id === props.activeConversationId);
   const effectiveMode: AgentPermissionMode =
     activeConversation?.effectivePermissionMode ??
     activeConversation?.permissionMode ??
     "ask_before_change";
-  // 分叉血缘（徽标 + 逐级回溯入口）：源会话在列表内即可点击切换（D4：数据一级，逐个回溯成链）
+  // 分叉血缘链（E6-D 面包屑）：沿 forkedFrom 在已加载列表内回溯（列表含全部未归档会话）；
+  // 链上祖先已归档/不可见时以缺失项收尾（点击态禁用，恢复后可跳转）
+  const lineageChain = useMemo<Array<{ conv: ConversationSummary; missing: boolean }>>(() => {
+    const chain: Array<{ conv: ConversationSummary; missing: boolean }> = [];
+    let cursor = activeConversation?.forkedFrom;
+    const seen = new Set<string>([props.activeConversationId ?? ""]);
+    while (cursor) {
+      if (seen.has(cursor.id)) break;
+      const cursorId = cursor.id;
+      const cursorTitle = cursor.title;
+      const conv = props.conversations.find((c) => c.id === cursorId);
+      if (!conv) {
+        chain.push({
+          conv: {
+            id: cursorId,
+            userId: "",
+            sdkSessionId: "",
+            title: cursorTitle,
+            channelId: "",
+            agentId: "",
+            createdAt: "",
+            updatedAt: "",
+            archived: true,
+          },
+          missing: true,
+        });
+        break;
+      }
+      chain.push({ conv, missing: false });
+      seen.add(conv.id);
+      cursor = conv.forkedFrom;
+    }
+    return chain;
+  }, [activeConversation?.forkedFrom, props.activeConversationId, props.conversations]);
   const forkSource = activeConversation?.forkedFrom;
-  const forkSourceVisible = forkSource
-    ? props.conversations.some((c) => c.id === forkSource.id)
-    : false;
   // Agent SDK 标识：优先取当前选中模型的引擎（随下拉切换即时反映，下一条消息生效），
   // 未显式选过则退回会话上次运行的引擎；草稿/未运行过两者皆空 → 不显示
   const activeSdk =
@@ -129,9 +199,9 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       new DongerAttachmentAdapter(
         props.activeConversationId ?? undefined,
         props.onEnsureConversation,
-        (message) => setAttachmentError(message),
+        (message) => toast.error(message),
       ),
-    [props.activeConversationId, props.onEnsureConversation],
+    [props.activeConversationId, props.onEnsureConversation, toast],
   );
   // 引用候选选中后先攒在 ref（文本标记为事实源），发送时对账后随消息上送
   const mentionsRef = useRef<Mention[]>([]);
@@ -158,6 +228,16 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       () => undefined,
     );
   }, [props.activeConversationId]);
+  // D2 编辑=fork 的 composer 预填桥：AssistantThread 注册 setText，fork 成功后回填原文
+  const composerBridgeRef = useRef<((text: string) => void) | null>(null);
+  const handleEditFromMessage = useMemo(() => {
+    if (!props.onForkConversation) return undefined;
+    return (messageId: string, text: string) => {
+      void props.onForkConversation?.(messageId).then((ok) => {
+        if (ok) composerBridgeRef.current?.(text);
+      });
+    };
+  }, [props.onForkConversation]);
   const runtime = useAssistantRuntimeBridge({
     messages: props.messages,
     loading: props.loadingMessages,
@@ -166,65 +246,51 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     cancel: props.onCancel,
     attachmentAdapter,
   });
-  const sidebarItems = props.conversations.map((conversation) => ({
-    id: conversation.id,
-    title: conversation.title || "(无标题)",
-  }));
-  // 会话权限模式切换器：置于输入框底部、附件按钮左侧
+  // 会话权限模式切换器（E4-A 自绘）：置于输入框底部、附件按钮左侧
   const permissionModePicker = props.onPermissionModeChange ? (
-    <select
-      aria-label="会话权限模式"
+    <PopoverSelect
+      ariaLabel="会话权限模式"
       title="会话权限模式"
       value={effectiveMode}
-      onChange={(e) => {
-        const mode = e.target.value as AgentPermissionMode;
+      options={[...PERMISSION_MODE_OPTIONS]}
+      onChange={(mode) => {
         if (mode === "full_access" && effectiveMode !== "full_access") {
           setConfirmFullAccess(true);
         } else {
-          void props.onPermissionModeChange?.(mode);
+          void props.onPermissionModeChange?.(mode as AgentPermissionMode);
         }
       }}
-      className={`h-9 min-w-0 max-w-[44vw] rounded-lg border px-2 text-xs font-medium ${
-        effectiveMode === "full_access"
-          ? "border-warning/50 bg-warning-soft text-warning-foreground"
-          : "border-border bg-card text-muted-foreground hover:bg-muted"
-      }`}
-    >
-      <option value="ask_before_change">变更前问询</option>
-      <option value="risk_guard">风险拦截</option>
-      <option value="full_access">完全权限（零拦截·高危）</option>
-    </select>
+      buttonClassName={cnPermissionButton(effectiveMode)}
+    />
   ) : null;
 
-  // 会话模型选择器：置于权限模式旁（当前选中的 LLM 随下一条消息生效）
+  // 会话模型选择器（E4-A 自绘）：置于权限模式旁（当前选中的 LLM 随下一条消息生效）
   const modelPicker =
     props.onModelRefChange && props.modelOptions && props.modelOptions.length > 0 ? (
-      <select
-        aria-label="对话模型"
+      <PopoverSelect
+        ariaLabel="对话模型"
         title="对话使用的 LLM（随下一条消息生效）"
         value={props.modelRef ?? ""}
-        onChange={(e) => props.onModelRefChange?.(e.target.value)}
-        className="h-9 min-w-0 max-w-[180px] rounded-lg border border-border bg-card px-2 text-xs font-medium text-muted-foreground hover:bg-muted"
-      >
-        {props.modelOptions.map((option) => (
-          <option key={option.ref} value={option.ref}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        options={props.modelOptions.map((option) => ({
+          value: option.ref,
+          label: option.label,
+          ...(option.sdkType ? { hint: llmSdkLabel(option.sdkType) } : {}),
+        }))}
+        onChange={props.onModelRefChange}
+        align="left"
+      />
     ) : null;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      {props.sidebar ? (
-        <AgentConversationSidebar className="hidden lg:flex" {...props.sidebar} />
-      ) : null}
+      {props.sidebar ? <ConversationSidebar className="hidden lg:flex" {...props.sidebar} /> : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-between border-b border-border bg-card px-3 py-2 lg:px-4">
           <div className="flex min-w-0 items-center gap-2.5">
             <MobileConversationSheet sidebar={props.sidebar} />
             <span className="truncate text-sm font-semibold">
-              {sidebarItems.find((i) => i.id === props.activeConversationId)?.title}
+              {props.conversations.find((c) => c.id === props.activeConversationId)?.title ||
+                (props.activeConversationIsDraft ? "新会话" : "")}
             </span>
             {activeSdk ? (
               <Badge tone={llmSdkTone(activeSdk)} title="当前使用的 Agent SDK">
@@ -232,24 +298,61 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               </Badge>
             ) : null}
             {forkSource ? (
-              forkSourceVisible ? (
+              <div ref={lineageRef} className="relative shrink-0">
                 <button
                   type="button"
-                  className="shrink-0"
-                  title={`切换到源会话「${forkSource.title}」（血缘逐级回溯，specs/2026-10-23-conversation-fork-design.md §8.3）`}
-                  onClick={() => props.onSelectConversation(forkSource.id)}
+                  aria-label="查看分叉血缘链"
+                  aria-expanded={lineageOpen}
+                  title="查看分叉血缘链（点击逐级跳转）"
+                  onClick={() => setLineageOpen((v) => !v)}
                 >
                   <Badge tone="neutral">
                     <GitFork size={11} className="mr-1" aria-hidden="true" />
                     分叉自 {truncateTitle(forkSource.title)}
                   </Badge>
                 </button>
-              ) : (
-                <Badge tone="neutral" title="源会话已归档或不可见">
-                  <GitFork size={11} className="mr-1" aria-hidden="true" />
-                  分叉自 {truncateTitle(forkSource.title)}
-                </Badge>
-              )
+                {lineageOpen ? (
+                  <div
+                    role="menu"
+                    aria-label="分叉血缘链"
+                    className="absolute top-full left-0 z-30 mt-1 w-64 rounded-xl border border-border bg-card py-1 shadow-lg"
+                  >
+                    {[...lineageChain].reverse().map(({ conv, missing }, index, arr) => (
+                      <button
+                        key={conv.id}
+                        type="button"
+                        role="menuitem"
+                        disabled={missing}
+                        title={
+                          missing
+                            ? "源会话已归档，恢复后可跳转"
+                            : `跳转到「${conv.title || "(无标题)"}」`
+                        }
+                        onClick={() => {
+                          setLineageOpen(false);
+                          props.onSelectConversation(conv.id);
+                        }}
+                        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs disabled:pointer-events-none disabled:opacity-50 hover:bg-muted"
+                      >
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {arr.length - index}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-foreground">
+                          {conv.title || "(无标题)"}
+                        </span>
+                        <GitFork
+                          size={11}
+                          className="shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    ))}
+                    <div className="border-t border-border px-2.5 py-1 text-[10px] text-muted-foreground">
+                      当前会话在此链末端
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
             {props.activeConversationIsDraft ? (
               <Badge tone="warning">
@@ -343,7 +446,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               }}
               onCreated={() => {
                 setFeedbackOpen(false);
-                setFeedbackNotice("反馈已提交，感谢！可在「反馈」页查看官方回复进展。");
+                toast.success("反馈已提交，可在「反馈」页查看官方回复进展");
               }}
             />
           </DialogShell>
@@ -361,8 +464,20 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           onCancel={() => setConfirmFullAccess(false)}
         />
         {props.errors.stream ? (
-          <div role="status" className="bg-warning-soft px-3 py-2 text-sm text-warning-foreground">
-            {props.errors.stream}
+          <div
+            role="status"
+            className="flex items-center justify-between gap-2 bg-warning-soft px-3 py-2 text-sm text-warning-foreground"
+          >
+            <span className="min-w-0">{props.errors.stream}</span>
+            {props.onManualReconnect ? (
+              <button
+                type="button"
+                onClick={props.onManualReconnect}
+                className="shrink-0 text-xs font-semibold underline underline-offset-2"
+              >
+                立即重连
+              </button>
+            ) : null}
           </div>
         ) : null}
         {props.errors.messages ? (
@@ -403,6 +518,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onDecideCredentialMissing={props.onDecideCredentialMissing}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
               agentId={activeConversation?.agentId || undefined}
+              assistantName={props.assistantName}
               conversationId={activeConversation?.id}
               onMentionInserted={collectMention}
               onOpenFileChange={openFileChange}
@@ -411,46 +527,17 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
                   ? (messageId) => void props.onForkConversation?.(messageId)
                   : undefined
               }
-              aboveComposer={
-                <>
-                  {props.aboveComposer}
-                  {feedbackNotice ? (
-                    <div
-                      role="status"
-                      className="mb-2 flex items-center justify-between rounded-xl border border-primary/30 bg-primary-soft px-3 py-2 text-sm text-primary-foreground"
-                    >
-                      <span className="min-w-0 break-all">{feedbackNotice}</span>
-                      <button
-                        type="button"
-                        aria-label="关闭提示"
-                        onClick={() => setFeedbackNotice(null)}
-                        className="ml-2 shrink-0 text-xs underline"
-                      >
-                        关闭
-                      </button>
-                    </div>
-                  ) : null}
-                  {attachmentError ? (
-                    <div
-                      role="alert"
-                      className="mb-2 flex items-center justify-between rounded-xl border border-destructive/30 bg-destructive-soft px-3 py-2 text-sm text-destructive"
-                    >
-                      <span className="min-w-0 break-all">{attachmentError}</span>
-                      <button
-                        type="button"
-                        aria-label="关闭提示"
-                        onClick={() => setAttachmentError(null)}
-                        className="ml-2 shrink-0 text-xs underline"
-                      >
-                        关闭
-                      </button>
-                    </div>
-                  ) : null}
-                </>
+              onEditFromMessage={
+                handleEditFromMessage && !props.isGenerating ? handleEditFromMessage : undefined
               }
+              onRetryMessage={props.onRetryMessage}
+              activityLines={props.activityLines}
+              queueDepth={props.queueDepth}
+              isGenerating={props.isGenerating}
+              composerBridge={composerBridgeRef}
               composerLeading={
                 permissionModePicker || modelPicker ? (
-                  /* min-w-0 允许整簇收缩，select 逐级让宽；shrink-0 会溢出压到发送按钮底下 */
+                  /* min-w-0 允许整簇收缩，选择器逐级让宽；shrink-0 会溢出压到发送按钮底下 */
                   <div className="flex min-w-0 items-center gap-1.5">
                     {permissionModePicker}
                     {modelPicker}
@@ -470,4 +557,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       />
     </div>
   );
+}
+
+function cnPermissionButton(mode: AgentPermissionMode): string {
+  return mode === "full_access" ? "border-warning/50 bg-warning-soft text-warning-foreground" : "";
 }

@@ -21,7 +21,14 @@ export type ChatAction =
   | { type: "connection"; state: "connecting" | "open" | "closed" }
   | { type: "generation"; running: boolean }
   | { type: "ws"; msg: SSEEvent }
-  | { type: "user_message"; id?: string; text: string; files?: FileInfo[] }
+  | {
+      type: "user_message";
+      id?: string;
+      text: string;
+      files?: FileInfo[];
+      /** 客户端发送载荷（重试锚点，chat UE 轮 E5-A） */
+      sendPayload?: ChatMessage["sendPayload"];
+    }
   | { type: "message_delivery"; id: string; delivery: MessageDelivery }
   | { type: "clear_approval" }
   | { type: "clear_credential" }
@@ -37,6 +44,8 @@ export type ChatAction =
   | { type: "set_messages"; messages: ChatMessage[] }
   | { type: "loading_messages"; loading: boolean }
   | { type: "remove_conversation"; conversationId: string }
+  | { type: "restore_conversation"; conversation: ConversationSummary }
+  | { type: "set_reconnect_attempts"; count: number }
   | {
       type: "update_conversation";
       conversationId: string;
@@ -50,6 +59,9 @@ export function initialChatState(): ChatState {
     messages: [],
     isGenerating: false,
     stage: null,
+    activityLines: [],
+    queueDepth: 0,
+    reconnectAttempts: 0,
     pendingApproval: null,
     pendingCredential: null,
     pendingQuestion: null,
@@ -176,8 +188,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ...state,
             isGenerating: false,
             stage: null,
+            activityLines: [],
             messages: closeTurn(state.messages, "done"),
           };
+    case "set_reconnect_attempts":
+      return { ...state, reconnectAttempts: action.count };
     case "set_error":
       return { ...state, errors: { ...state.errors, [action.key]: action.message } };
     case "clear_error": {
@@ -193,8 +208,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         text: action.text,
         files: action.files,
         delivery: "sending",
+        ...(action.sendPayload ? { sendPayload: action.sendPayload } : {}),
       };
-      return { ...state, messages: [...messages, msg], isGenerating: true, stage: null };
+      return {
+        ...state,
+        messages: [...messages, msg],
+        isGenerating: true,
+        stage: null,
+        activityLines: [],
+      };
     }
     case "message_delivery":
       return {
@@ -236,6 +258,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: [],
         isGenerating: false,
         stage: null,
+        activityLines: [],
+        queueDepth: 0,
         pendingQuestion: null,
         pendingApproval: null,
         loadingMessages: !isDraft && action.conversationId !== null,
@@ -292,6 +316,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         loadingMessages: false,
         isGenerating: false,
         stage: null,
+        activityLines: [],
       };
     case "loading_messages":
       return { ...state, loadingMessages: action.loading };
@@ -307,6 +332,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         loadingMessages: isActive ? false : state.loadingMessages,
       };
     }
+    case "restore_conversation":
+      // 恢复归档（chat UE 轮 E1-C）：本地即时回列表（数据已在 archive 视图拉取过）
+      return {
+        ...state,
+        conversations: sortByRecentFirst([
+          ...state.conversations,
+          { ...action.conversation, archived: false },
+        ]),
+      };
     case "update_conversation":
       return {
         ...state,
@@ -326,9 +360,13 @@ let fullTextSeq = 0;
 
 function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
   switch (msg.type) {
-    case "activity":
-      // 阶段横幅（🔨 执行阶段等）：过程态，替换式更新，不进消息流（不随历史回放）
-      return { ...state, isGenerating: true, stage: msg.text };
+    case "activity": {
+      // 过程态：stage 替换 + 活动行滚窗（chat UE 轮 E2-A 活动条消费；不进消息流、不随历史回放）
+      const lines = [...state.activityLines, msg.text].slice(-30);
+      return { ...state, isGenerating: true, stage: msg.text, activityLines: lines };
+    }
+    case "queue_depth":
+      return { ...state, queueDepth: msg.depth };
     case "thinking_delta": {
       if (!msg.text) return state;
       // 空白增量且无既有分片承接：不新开回合（沿用 SSE 连接 ack 不建行的既有行为），仅翻转生成态
@@ -477,12 +515,34 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         ),
       };
     case "result": {
+      // 停止语义：后端 stop 路径固定推「已停止生成」（orchestrator pushResult 唯一文案）
+      const stopped = msg.text === "已停止生成";
       const closed = closeTurn(state.messages, msg.subtype === "error" ? "error" : "done");
+      // 徽标元信息落到本轮（仅最后一个被收口的回合；usage 缺省 = 引擎未回传）
+      const withMeta = closed.map((message, i) => {
+        if (i !== closed.length - 1) return message;
+        if (message.role !== "bot" || message.kind !== "turn") return message;
+        return {
+          ...message,
+          ...(msg.usage || stopped
+            ? {
+                meta: {
+                  ...(message.meta ?? {}),
+                  ...(msg.usage ?? {}),
+                },
+                ...(stopped ? { stopped: true } : {}),
+              }
+            : {}),
+        };
+      });
       // 回合已收口：审批门阻塞着轮次不可能正常结束，残留卡必是失效实例（任务中断/重启清扫），撤下
       return {
         ...state,
         isGenerating: false,
-        messages: closed,
+        messages: withMeta,
+        stage: null,
+        activityLines: [],
+        queueDepth: 0,
         pendingQuestion: null,
         pendingApproval: null,
       };
@@ -492,6 +552,8 @@ function applyWsOut(state: ChatState, msg: SSEEvent): ChatState {
         ...state,
         isGenerating: false,
         messages: closeTurn(state.messages, "error"),
+        stage: null,
+        activityLines: [],
         errors: { ...state.errors, stream: msg.error },
         pendingQuestion: null,
         pendingApproval: null,

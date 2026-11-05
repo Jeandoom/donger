@@ -88,4 +88,37 @@ export class SqliteMessageStore implements MessageStore {
       createdAt: r.createdAt as string,
     }));
   }
+
+  async latestByConversation(
+    conversationIds: readonly string[],
+  ): Promise<Map<string, StoredMessage>> {
+    const out = new Map<string, StoredMessage>();
+    // 逐会话取末条（idx_messages_conv 命中，单查亚毫秒级）；createdAt 同值时 rowid DESC 取真正末条
+    const stmt = this.db.prepare(
+      "SELECT * FROM messages WHERE conversationId = ? ORDER BY createdAt DESC, rowid DESC LIMIT 1",
+    );
+    for (const id of conversationIds) {
+      const row = stmt.get(id) as Record<string, unknown> | undefined;
+      if (!row) continue;
+      out.set(id, {
+        id: row.id as string,
+        conversationId: row.conversationId as string,
+        role: row.role as "user" | "bot",
+        text: row.text as string,
+        files: row.files as string,
+        ...(typeof row.taskId === "string" && row.taskId ? { taskId: row.taskId } : {}),
+        createdAt: row.createdAt as string,
+      });
+    }
+    return out;
+  }
+
+  async countBotAfter(conversationId: string, iso: string): Promise<number> {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM messages WHERE conversationId = ? AND role = 'bot' AND createdAt > ?",
+      )
+      .get(conversationId, iso) as { n: number };
+    return row?.n ?? 0;
+  }
 }

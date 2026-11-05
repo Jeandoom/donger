@@ -37,6 +37,14 @@ export interface MissingCredentialsRequest {
 /** 问询决议：继续执行（带病跑）/ 暂停（挂起任务，稍后处理）/ 重试（用户已配置后重跑预检）/ 取消任务 */
 export type MissingCredentialsDecision = "continue" | "pause" | "retry" | "cancel";
 
+/** 轮次用量摘要（chat UE 轮回合徽标；源自引擎 result usage + 轮计时，不含金额） */
+export interface TurnUsageHint {
+  inputTokens?: number;
+  outputTokens?: number;
+  model?: string;
+  durationMs?: number;
+}
+
 /** IM / 控制台入口端口 */
 export interface Channel {
   readonly id: string;
@@ -64,8 +72,15 @@ export interface Channel {
     conversationId: string,
     event: { toolUseId: string; outputPreview: string; isError: boolean },
   ): void;
-  /** 推送完成通知（SSE 版本） */
-  pushResult?(conversationId: string, subtype: "success" | "error", text: string): void;
+  /** 推送完成通知（SSE 版本）。usage 可选：轮次 token/模型/耗时（chat UE 轮回合徽标，随轮实时上屏） */
+  pushResult?(
+    conversationId: string,
+    subtype: "success" | "error",
+    text: string,
+    usage?: TurnUsageHint,
+  ): void;
+  /** 推送会话排队深度（SSE 版本，chat UE 轮）：busy 入队/出队时机广播，前端显示「排队中 · 第 N 位」 */
+  pushQueueDepth?(conversationId: string, depth: number): void;
   /** 推送会话标题更新（SSE 版本；首条用户消息后异步自动改名，打开该会话的客户端侧栏实时刷新） */
   pushConversationTitle?(conversationId: string, title: string): void;
   /** 推送审批卡片（SSE 版本） */

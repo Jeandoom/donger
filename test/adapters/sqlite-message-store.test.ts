@@ -88,4 +88,34 @@ describe("SqliteMessageStore", () => {
     expect(conv.updatedAt).not.toBe(old);
     expect(conv.updatedAt >= old).toBe(true);
   });
+
+  it("latestByConversation 批量取各会话末条（chat UE 轮列表摘要）", async () => {
+    await store.add("c1", "user", "c1 第一条");
+    await new Promise((r) => setTimeout(r, 5));
+    const last1 = await store.add("c1", "bot", "c1 末条");
+    await store.add("c2", "bot", "c2 末条");
+    const map = await store.latestByConversation(["c1", "c2", "c3-空"]);
+    expect(map.size).toBe(2);
+    expect(map.get("c1")?.id).toBe(last1.id);
+    expect(map.get("c2")?.text).toBe("c2 末条");
+    expect(map.has("c3-空")).toBe(false);
+  });
+
+  it("countBotAfter 统计基准时间后的 bot 消息数（未读徽标）", async () => {
+    await store.add("c1", "bot", "旧回复", "[]", undefined, {
+      createdAt: "2026-11-01T00:00:00.000Z",
+    });
+    await store.add("c1", "bot", "新回复A", "[]", undefined, {
+      createdAt: "2026-11-05T08:00:00.000Z",
+    });
+    await store.add("c1", "user", "用户消息不算未读", "[]", undefined, {
+      createdAt: "2026-11-05T09:00:00.000Z",
+    });
+    await store.add("c1", "bot", "新回复B", "[]", undefined, {
+      createdAt: "2026-11-05T10:00:00.000Z",
+    });
+    expect(await store.countBotAfter("c1", "1970-01-01T00:00:00.000Z")).toBe(3);
+    expect(await store.countBotAfter("c1", "2026-11-01T00:00:00.000Z")).toBe(2);
+    expect(await store.countBotAfter("c1", "2026-11-05T10:00:00.000Z")).toBe(0);
+  });
 });

@@ -57,6 +57,10 @@ export function toAssistantMessage(message: ChatMessage): ThreadMessageLike {
   const custom = {
     delivery: message.delivery ?? "accepted",
     files: message.files ?? [],
+    // 回合徽标元信息（chat UE 轮）：token/模型/耗时 + 停止标记 + 回合终态（出错徽标用）
+    ...(message.meta ? { meta: message.meta } : {}),
+    ...(message.stopped ? { stopped: true } : {}),
+    ...(message.kind === "turn" && message.state ? { turnState: message.state } : {}),
     ...(message.forkPointMessageId ? { forkPointMessageId: message.forkPointMessageId } : {}),
   };
   // 顶层 createdAt（Date）：assistant-ui 对 assistant 消息只在该字段落元信息

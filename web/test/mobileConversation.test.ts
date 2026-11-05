@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentConversationSidebarProps } from "../src/components/chat/AgentConversationSidebar";
+import type { ConversationSidebarProps } from "../src/components/chat/ConversationSidebar";
 import { MobileConversationSheet } from "../src/components/chat/MobileConversationSheet";
 import type { SidebarPrefs } from "../src/lib/agentSidebar";
 import type { AgentListDTO } from "../src/lib/agents";
@@ -27,7 +27,7 @@ const prefs: SidebarPrefs = { starredAgentIds: [], agentOrder: ["a1"] };
 function sidebarProps(
   onSelect: ReturnType<typeof vi.fn>,
   onNew: ReturnType<typeof vi.fn>,
-): AgentConversationSidebarProps {
+): ConversationSidebarProps {
   const first: ConversationSummary = {
     id: "c1",
     userId: "u",
@@ -77,8 +77,9 @@ describe("MobileConversationSheet", () => {
       }),
     );
     fireEvent.click(screen.getByRole("button", { name: "打开历史会话" }));
-    // 分组头「+」：在该 agent 下新建会话
-    fireEvent.click(screen.getByRole("button", { name: "在「分析助手」下新建会话" }));
+    // 新侧栏新建流：右上「新建会话」→ agent 选择菜单 → 点选智能体（chat UE 轮扁平化）
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /分析助手/ }));
     expect(onNew).toHaveBeenCalledWith("a1");
     expect(screen.queryByRole("dialog", { name: "历史会话" })).not.toBeInTheDocument();
   });

@@ -59,6 +59,30 @@ describe("SqliteConversationStore", () => {
     expect((await store.listByUser("u1")).length).toBe(0);
   });
 
+  it("listArchivedByUser 返回归档会话（chat UE 轮归档视图）", async () => {
+    const c1 = await store.create("u1", "web", "归档A");
+    const c2 = await store.create("u1", "web", "归档B");
+    await store.create("u2", "web", "别人的");
+    await store.update(c1.id, { archived: true });
+    await new Promise((r) => setTimeout(r, 10));
+    await store.update(c2.id, { archived: true });
+    const archived = await store.listArchivedByUser("u1");
+    expect(archived.map((c) => c.id)).toEqual([c2.id, c1.id]);
+  });
+
+  it("markSeen 只写 lastSeenAt 不刷 updatedAt（防打开旧会话顶乱列表序）", async () => {
+    const c = await store.create("u1", "web", "旧会话");
+    const before = (await store.get(c.id))?.updatedAt;
+    await new Promise((r) => setTimeout(r, 10));
+    await store.markSeen(c.id, "2026-11-05T10:00:00.000Z");
+    const after = await store.get(c.id);
+    expect(after?.lastSeenAt).toBe("2026-11-05T10:00:00.000Z");
+    expect(after?.updatedAt).toBe(before);
+    // 与 update 混用不丢 lastSeenAt
+    await store.update(c.id, { title: "改名" });
+    expect((await store.get(c.id))?.lastSeenAt).toBe("2026-11-05T10:00:00.000Z");
+  });
+
   it("create 默认 agentId=''；createWithAgent 指定", async () => {
     const c = await store.create("u", "web", "t");
     expect(c.agentId).toBe("");

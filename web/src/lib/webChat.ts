@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type {
   AgentPermissionMode,
+  ChatMessage,
   ConversationSummary,
   PendingApproval,
   PendingQuestion,
@@ -53,6 +54,28 @@ async function responseErrorDetail(response: Response): Promise<string> {
   return `HTTP ${response.status}`;
 }
 
+/** 纯结构化事件的 SSE 通道：统一的表驱动监听（chat UE 轮 E5-F 收敛 16 段样板） */
+const STRUCTURED_SSE_EVENTS = [
+  "text",
+  "text_delta",
+  "thinking_delta",
+  "tool_use",
+  "tool_result",
+  "activity",
+  "approval_card",
+  "approval_closed",
+  "credential_missing_card",
+  "ask_user_question",
+  "eviction_notice",
+  "conversation_title",
+  "queue_depth",
+  "result",
+  "error",
+] as const;
+
+/** 会话回合缓存容量（chat UE 轮 E5-D：切换回来先上缓存再后台刷新，LRU 3 份） */
+const TURN_CACHE_LIMIT = 3;
+
 export function useWebChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initialChatState);
   const sseRef = useRef<SSEClient | null>(null);
@@ -62,6 +85,46 @@ export function useWebChat() {
   // 会话可选模型（M2 对话选模型）：随会话切换加载；modelRef 为空 = 不指定（走服务端 fallback）
   const [llmOptions, setLlmOptions] = useState<LlmOptionsDTO>({ options: [], current: "" });
   const [modelRef, setModelRef] = useState("");
+  // 归档会话视图（chat UE 轮 E1-C）：按需加载，独立于活跃列表
+  const [archivedConversations, setArchivedConversations] = useState<ConversationSummary[]>([]);
+  // SSE 事件批处理（chat UE 轮 E5-C）：按到达序入队，rAF 合帧 flush（隐藏页 250ms 定时兜底）。
+  // 顺序敏感（text/tool 交错构成回合时间线），必须整队按序派发，不能按事件类型分流。
+  const wsQueueRef = useRef<SSEEvent[]>([]);
+  const wsFlushScheduledRef = useRef(false);
+  const reconnectCountRef = useRef(0);
+  // 最近会话回合缓存：离开会话时快照、拉取成功时回写、发送/归档时失效
+  const turnCacheRef = useRef<Map<string, ChatMessage[]>>(new Map());
+
+  const dispatchWs = useCallback((msg: SSEEvent) => {
+    wsQueueRef.current.push(msg);
+    if (wsFlushScheduledRef.current) return;
+    wsFlushScheduledRef.current = true;
+    const flush = () => {
+      wsFlushScheduledRef.current = false;
+      const batch = wsQueueRef.current;
+      wsQueueRef.current = [];
+      for (const item of batch) dispatch({ type: "ws", msg: item });
+    };
+    if (typeof document !== "undefined" && document.hidden) {
+      // 后台页：低频合帧即可（渲染不可见，省主线程）
+      setTimeout(flush, 250);
+    } else if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(flush);
+    } else {
+      flush();
+    }
+  }, []);
+
+  const cacheTurns = useCallback((conversationId: string, messages: ChatMessage[]) => {
+    const cache = turnCacheRef.current;
+    cache.delete(conversationId);
+    cache.set(conversationId, messages);
+    while (cache.size > TURN_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }, []);
 
   // 从 JWT 中解析 userId
   const getUserId = useCallback((): string => {
@@ -102,7 +165,7 @@ export function useWebChat() {
     [getUserId],
   );
 
-  /** 加载会话列表 */
+  /** 加载会话列表（后端 enrich：lastMessagePreview/unreadCount 随条目返回） */
   const loadConversations = useCallback(async () => {
     dispatch({ type: "clear_error", key: "conversations" });
     try {
@@ -121,6 +184,106 @@ export function useWebChat() {
       });
     }
   }, [getUserId]);
+
+  /** 加载归档会话（归档视图，chat UE 轮 E1-C；失败静默=视图显示空态） */
+  const loadArchivedConversations = useCallback(async (): Promise<ConversationSummary[]> => {
+    try {
+      const token = getToken();
+      const res = await apiFetch(
+        `/api/conversations?userId=${encodeURIComponent(getUserId())}&archived=1`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const list: ConversationSummary[] = await res.json();
+      setArchivedConversations(list);
+      return list;
+    } catch {
+      setArchivedConversations([]);
+      return [];
+    }
+  }, [getUserId]);
+
+  /** 重命名会话（chat UE 轮 E1-B）：PATCH title，乐观更新 + 失败回滚 */
+  const renameConversation = useCallback(
+    async (id: string, title: string): Promise<boolean> => {
+      const trimmed = title.trim();
+      if (!trimmed) return false;
+      const previous = state.conversations.find((c) => c.id === id)?.title;
+      dispatch({ type: "update_conversation", conversationId: id, patch: { title: trimmed } });
+      try {
+        const token = getToken();
+        const res = await apiFetch(`/api/conversations/${id}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ title: trimmed }),
+        });
+        if (!res.ok) throw new Error(await responseErrorDetail(res));
+        return true;
+      } catch (error: unknown) {
+        dispatch({
+          type: "update_conversation",
+          conversationId: id,
+          patch: { title: previous ?? "" },
+        });
+        dispatch({
+          type: "set_error",
+          key: "conversations",
+          message: errorText(error, "重命名失败"),
+        });
+        return false;
+      }
+    },
+    [state.conversations],
+  );
+
+  /** 恢复归档（chat UE 轮 E1-C）：PATCH archived:false + 本地两列表同步。
+   *  fallback：归档撤销路径传入的快照（归档视图尚未加载/已从视图移除时使用） */
+  const restoreConversation = useCallback(
+    async (id: string, fallback?: ConversationSummary): Promise<boolean> => {
+      const conversation = archivedConversations.find((c) => c.id === id) ?? fallback;
+      if (!conversation) return false;
+      try {
+        const token = getToken();
+        const res = await apiFetch(`/api/conversations/${id}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ archived: false }),
+        });
+        if (!res.ok) throw new Error(await responseErrorDetail(res));
+        setArchivedConversations((list) => list.filter((c) => c.id !== id));
+        dispatch({ type: "restore_conversation", conversation });
+        return true;
+      } catch (error: unknown) {
+        dispatch({
+          type: "set_error",
+          key: "conversations",
+          message: errorText(error, "恢复失败"),
+        });
+        return false;
+      }
+    },
+    [archivedConversations],
+  );
+
+  /** 标记「已打开会话」（chat UE 轮 E1-A）：后端清未读基准 + 本地徽标即清 */
+  const markConversationSeen = useCallback((conversationId: string): void => {
+    const token = getToken();
+    void apiFetch(`/api/conversations/${conversationId}/seen`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).catch(() => {});
+    dispatch({
+      type: "update_conversation",
+      conversationId,
+      patch: { unreadCount: 0, lastSeenAt: new Date().toISOString() },
+    });
+  }, []);
 
   /** 重查会话挂起审批（SSE 重连握手 / 审批 404 换绑共用）：有活实例重新锚定，没有则撤下残卡 */
   const refreshPendingApproval = useCallback(async (conversationId: string): Promise<void> => {
@@ -144,26 +307,34 @@ export function useWebChat() {
    * 断流重连补拉（热发布 M4 P2a，spec 2026-10-16-hot-deploy-design §7.1）：
    * SSE 重连后断线窗口内的增量事件以 history 为准全量重建（messages+events），
    * 消除「重连成功但中间输出永久丢失」。尽力而为：失败保持现状不断流。
+   * 拉取成功同时回写回合缓存（切换闪屏消除的数据源）。
    */
-  const refetchHistory = useCallback(async (conversationId: string): Promise<void> => {
-    const token = getToken();
-    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    try {
-      const [messagesRes, events] = await Promise.all([
-        apiFetch(`/api/conversations/${conversationId}/messages`, { headers: authHeaders }),
-        apiFetch(`/api/conversations/${conversationId}/events?light=1`, { headers: authHeaders })
-          .then((response) =>
-            response.ok ? (response.json() as Promise<{ events: HistoryEvent[] }>) : { events: [] },
-          )
-          .catch(() => ({ events: [] as HistoryEvent[] })),
-      ]);
-      if (!messagesRes.ok) return;
-      const messages = (await messagesRes.json()) as HistoryMessage[];
-      dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events.events) });
-    } catch {
-      // 尽力而为：补拉失败保持当前状态（下条事件仍会增量到达）
-    }
-  }, []);
+  const refetchHistory = useCallback(
+    async (conversationId: string): Promise<void> => {
+      const token = getToken();
+      const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      try {
+        const [messagesRes, events] = await Promise.all([
+          apiFetch(`/api/conversations/${conversationId}/messages`, { headers: authHeaders }),
+          apiFetch(`/api/conversations/${conversationId}/events?light=1`, { headers: authHeaders })
+            .then((response) =>
+              response.ok
+                ? (response.json() as Promise<{ events: HistoryEvent[] }>)
+                : { events: [] },
+            )
+            .catch(() => ({ events: [] as HistoryEvent[] })),
+        ]);
+        if (!messagesRes.ok) return;
+        const messages = (await messagesRes.json()) as HistoryMessage[];
+        const turns = assembleTurnMessages(messages, events.events);
+        cacheTurns(conversationId, turns);
+        dispatch({ type: "set_messages", messages: turns });
+      } catch {
+        // 尽力而为：补拉失败保持当前状态（下条事件仍会增量到达）
+      }
+    },
+    [cacheTurns],
+  );
 
   /** 连接 SSE 流 */
   const connectSSE = useCallback(
@@ -177,138 +348,19 @@ export function useWebChat() {
         close: () => eventSource.close(),
       };
 
-      eventSource.addEventListener("text", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "text") {
-            dispatch({ type: "ws", msg: data });
+      // 结构化事件统一表驱动（data.type 严格等于通道名才派发，与逐段监听时代的守卫一致）
+      for (const eventName of STRUCTURED_SSE_EVENTS) {
+        eventSource.addEventListener(eventName, (e: MessageEvent) => {
+          try {
+            const data = JSON.parse(e.data) as SSEEvent;
+            if (data.type === eventName) {
+              dispatchWs(data);
+            }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("text_delta", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "text_delta") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("thinking_delta", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "thinking_delta") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("tool_use", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "tool_use") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("tool_result", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "tool_result") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("activity", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "activity") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("approval_card", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "approval_card") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("approval_closed", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "approval_closed") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("credential_missing_card", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "credential_missing_card") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("ask_user_question", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "ask_user_question") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("eviction_notice", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "eviction_notice") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      // 首条用户消息后后端异步自动改名：侧栏/头部标题实时刷新
-      eventSource.addEventListener("conversation_title", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "conversation_title") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
+        });
+      }
 
       // 排水广播（热发布优雅停机）：服务更新中，横幅提示；新实例接管后 onopen 会清除
       eventSource.addEventListener("server_draining", (e: MessageEvent) => {
@@ -329,29 +381,6 @@ export function useWebChat() {
         }
       });
 
-      eventSource.addEventListener("result", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "result") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      eventSource.addEventListener("error", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data) as SSEEvent;
-          if (data.type === "error") {
-            dispatch({ type: "ws", msg: data });
-          }
-        } catch {
-          // ignore
-        }
-        // EventSource 会自动重连，无需手动处理
-      });
-
       // 断流重连缺口超出服务端缓冲（热发布 M4）：放弃增量、全量补拉重建
       eventSource.addEventListener("stream_resync", () => {
         void refetchHistory(conversationId);
@@ -360,6 +389,8 @@ export function useWebChat() {
       eventSource.onopen = () => {
         dispatch({ type: "connection", state: "open" });
         dispatch({ type: "clear_error", key: "stream" });
+        reconnectCountRef.current = 0;
+        dispatch({ type: "set_reconnect_attempts", count: 0 });
         // 重连/重开即重查挂起审批：服务重启清扫后残卡随握手撤下，活审批重新锚定
         void refreshPendingApproval(conversationId);
         // 断流补拉（热发布 M4 P2a）：断线窗口增量以 history 重建
@@ -370,19 +401,35 @@ export function useWebChat() {
 
       eventSource.onerror = (event) => {
         if (event instanceof MessageEvent && event.data) return;
+        reconnectCountRef.current += 1;
         dispatch({ type: "connection", state: "closed" });
         dispatch({ type: "generation", running: false });
+        dispatch({ type: "set_reconnect_attempts", count: reconnectCountRef.current });
         dispatch({
           type: "set_error",
           key: "stream",
-          message: "连接中断，浏览器正在自动重连",
+          message: `连接中断，浏览器正在自动重连（第 ${reconnectCountRef.current} 次）`,
         });
       };
 
       return eventSource;
     },
-    [refreshPendingApproval, refetchHistory],
+    [dispatchWs, refreshPendingApproval, refetchHistory],
   );
+
+  /** 手动重连（chat UE 轮 E5-E）：EventSource 自身自动重连，这里立即补拉 + 撤横幅，不等下一轮重试 */
+  const reconnectStream = useCallback(() => {
+    const conversationId = state.activeConversationId;
+    dispatch({ type: "clear_error", key: "stream" });
+    if (
+      !conversationId ||
+      isDraftConversation(state.conversations.find((c) => c.id === conversationId))
+    ) {
+      return;
+    }
+    void refreshPendingApproval(conversationId);
+    void refetchHistory(conversationId);
+  }, [refreshPendingApproval, refetchHistory, state.activeConversationId, state.conversations]);
 
   // 初始连接
   useEffect(() => {
@@ -410,14 +457,25 @@ export function useWebChat() {
 
   useEffect(() => () => messagesRequestRef.current?.abort(), []);
 
-  /** 切换会话（先清空本地消息，再异步加载历史消息） */
+  /** 切换会话：缓存命中先上屏（消闪）再后台刷新；离开时快照进 LRU */
   const switchConversation = useCallback(
     (conversationId: string | null) => {
       messagesRequestRef.current?.abort();
       dispatch({ type: "clear_error", key: "messages" });
+      // 离开前快照当前会话回合（仅非空、非生成中——生成中的回合由 refetch 重建更可靠）
+      if (state.activeConversationId && state.messages.length > 0 && !state.isGenerating) {
+        cacheTurns(state.activeConversationId, state.messages);
+      }
       dispatch({ type: "switch_conversation", conversationId });
       const conversation = state.conversations.find((item) => item.id === conversationId);
       if (!conversationId || isDraftConversation(conversation)) return;
+      // 标记已读（chat UE 轮 E1-A）：打开即清未读徽标
+      markConversationSeen(conversationId);
+      // 缓存命中：先上屏再后台刷新（后台 set_messages 会覆盖为服务端真值）
+      const cached = turnCacheRef.current.get(conversationId);
+      if (cached && cached.length > 0) {
+        dispatch({ type: "set_messages", messages: cached });
+      }
       const controller = new AbortController();
       messagesRequestRef.current = controller;
       const token = getToken();
@@ -478,7 +536,9 @@ export function useWebChat() {
       ])
         .then(([messages, { events }, { question }, { approval }, llmOpts]) => {
           if (messagesRequestRef.current === controller) {
-            dispatch({ type: "set_messages", messages: assembleTurnMessages(messages, events) });
+            const turns = assembleTurnMessages(messages, events);
+            cacheTurns(conversationId, turns);
+            dispatch({ type: "set_messages", messages: turns });
             dispatch({ type: "set_pending_question", question: question ?? null });
             dispatch({
               type: "set_pending_approval",
@@ -508,7 +568,14 @@ export function useWebChat() {
           if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
         });
     },
-    [state.conversations],
+    [
+      cacheTurns,
+      markConversationSeen,
+      state.activeConversationId,
+      state.conversations,
+      state.isGenerating,
+      state.messages,
+    ],
   );
 
   const persistDraftConversation = useCallback(
@@ -554,30 +621,15 @@ export function useWebChat() {
     return persistDraftConversation(active);
   }, [persistDraftConversation, state.activeConversationId, state.conversations]);
 
-  const send = useCallback(
-    async (text: string, files?: FileInfo[], mentions?: Mention[]): Promise<void> => {
-      let active = state.conversations.find((item) => item.id === state.activeConversationId);
-      if (!active) {
-        // 初始空态（尚未选中任何会话）直接发送：先落一个草稿，避免消息被静默丢弃
-        active = await newConversation();
-      }
-      const conversationId = await persistDraftConversation(active);
-      if (!conversationId) {
-        dispatch({ type: "set_error", key: "messages", message: "会话保存失败，请重试" });
-        return;
-      }
-
-      const id = makeId();
+  /** 消息投递（send/retrySend 共用）：503 排水自动重试 3 次 → 失败置 delivery=failed */
+  const postMessage = useCallback(
+    async (
+      conversationId: string,
+      payloadObj: { text: string; files?: FileInfo[]; mentions?: Mention[]; modelRef?: string },
+      optimisticId: string,
+    ): Promise<void> => {
       const token = getToken();
-      dispatch({ type: "user_message", id, text, files });
-      const payload = JSON.stringify({
-        text,
-        files,
-        ...(mentions && mentions.length > 0 ? { mentions } : {}),
-        ...(modelRef ? { modelRef } : {}),
-      });
-      // 排水期自动重试（热发布优雅停机）：503 draining 时保留「发送中」态，
-      // 按 Retry-After 重发（上限 3 次 ≈ 覆盖换槽真空窗）；耗尽才置失败
+      const payload = JSON.stringify(payloadObj);
       const post = async (attempt: number): Promise<void> => {
         try {
           const response = await apiFetch(`/api/conversations/${conversationId}/messages`, {
@@ -606,7 +658,7 @@ export function useWebChat() {
             throw new Error(body.error ?? `HTTP ${response.status}`);
           }
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          dispatch({ type: "message_delivery", id, delivery: "accepted" });
+          dispatch({ type: "message_delivery", id: optimisticId, delivery: "accepted" });
           // 活跃度触达：与后端「消息落库刷新会话 updatedAt」对齐，发消息后该会话实时排到列表最前
           dispatch({
             type: "update_conversation",
@@ -614,17 +666,92 @@ export function useWebChat() {
             patch: { updatedAt: new Date().toISOString() },
           });
         } catch {
-          dispatch({ type: "message_delivery", id, delivery: "failed" });
+          dispatch({ type: "message_delivery", id: optimisticId, delivery: "failed" });
         }
       };
       await post(0);
+    },
+    [],
+  );
+
+  const send = useCallback(
+    async (text: string, files?: FileInfo[], mentions?: Mention[]): Promise<void> => {
+      let active = state.conversations.find((item) => item.id === state.activeConversationId);
+      if (!active) {
+        // 初始空态（尚未选中任何会话）直接发送：先落一个草稿，避免消息被静默丢弃
+        active = await newConversation();
+      }
+      const conversationId = await persistDraftConversation(active);
+      if (!conversationId) {
+        dispatch({ type: "set_error", key: "messages", message: "会话保存失败，请重试" });
+        return;
+      }
+
+      const id = makeId();
+      dispatch({
+        type: "user_message",
+        id,
+        text,
+        files,
+        // 重试锚点（chat UE 轮 E5-A）：失败后一键原样重发
+        sendPayload: { text, files, mentions },
+      });
+      // 发送即失效该会话回合缓存（历史即将变化，防切换回闪旧内容）
+      turnCacheRef.current.delete(conversationId);
+      await postMessage(
+        conversationId,
+        {
+          text,
+          files,
+          ...(mentions && mentions.length > 0 ? { mentions } : {}),
+          ...(modelRef ? { modelRef } : {}),
+        },
+        id,
+      );
     },
     [
       modelRef,
       newConversation,
       persistDraftConversation,
+      postMessage,
       state.activeConversationId,
       state.conversations,
+    ],
+  );
+
+  /** 失败消息一键重发（chat UE 轮 E5-A）：同气泡翻回「发送中」，原载荷重投 */
+  const retryMessage = useCallback(
+    async (id: string): Promise<void> => {
+      const message = state.messages.find((m) => m.id === id);
+      if (!message?.sendPayload) return;
+      const active = state.conversations.find((item) => item.id === state.activeConversationId);
+      const conversationId = active ? await persistDraftConversation(active) : null;
+      if (!conversationId) {
+        dispatch({ type: "set_error", key: "messages", message: "会话保存失败，请重试" });
+        return;
+      }
+      dispatch({ type: "message_delivery", id, delivery: "sending" });
+      const { text, files, mentions } = message.sendPayload;
+      // sendPayload.mentions 在 types 里保持无依赖的 unknown[]（避免 types→lib 循环），此处还原类型
+      const typedMentions = (mentions ?? undefined) as Mention[] | undefined;
+      await postMessage(
+        conversationId,
+        {
+          text,
+          files,
+          ...(typedMentions && typedMentions.length > 0 ? { mentions: typedMentions } : {}),
+          ...(modelRef ? { modelRef } : {}),
+        },
+        id,
+      );
+    },
+    [
+      modelRef,
+      persistDraftConversation,
+      postMessage,
+      state.activeConversationId,
+      state.conversations,
+      state.messages,
     ],
   );
 
@@ -745,7 +872,7 @@ export function useWebChat() {
     [state.pendingQuestion],
   );
 
-  /** 删除会话（软删除，归档）。确认交互由组件层 ConfirmDialog 负责 */
+  /** 归档会话（软删除）。确认交互由组件层 ConfirmDialog 负责；同步清回合缓存与归档视图缓存 */
   const deleteConversation = useCallback(
     async (id: string) => {
       try {
@@ -757,6 +884,8 @@ export function useWebChat() {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
           });
         }
+        turnCacheRef.current.delete(id);
+        setArchivedConversations((list) => list.filter((c) => c.id !== id));
         dispatch({ type: "remove_conversation", conversationId: id });
       } catch {
         /* 忽略 */
@@ -846,6 +975,7 @@ export function useWebChat() {
     ...state,
     dismissEviction,
     send,
+    retryMessage,
     cancel,
     resolveApproval,
     decideCredentialMissing,
@@ -854,9 +984,15 @@ export function useWebChat() {
     newConversation,
     ensureConversation,
     loadConversations,
+    loadArchivedConversations,
+    archivedConversations,
+    renameConversation,
+    restoreConversation,
+    markConversationSeen,
     deleteConversation,
     forkConversation,
     setPermissionMode,
+    reconnectStream,
     llmOptions,
     modelRef,
     setModelRef,

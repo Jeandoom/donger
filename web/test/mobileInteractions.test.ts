@@ -1,11 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { AgentConversationSidebar } from "../src/components/chat/AgentConversationSidebar";
-import type { AgentListDTO } from "../src/lib/agents";
-import type { SidebarPrefs } from "../src/lib/agentSidebar";
-import type { ConversationSummary } from "../src/types";
+import { ConversationSidebar } from "../src/components/chat/ConversationSidebar";
 import { FileBrowserDrawer } from "../src/components/files/FileBrowserDrawer";
+import type { SidebarPrefs } from "../src/lib/agentSidebar";
+import type { AgentListDTO } from "../src/lib/agents";
+import type { ConversationSummary } from "../src/types";
 
 function agentDto(id: string, name: string): AgentListDTO {
   return {
@@ -39,9 +39,9 @@ function conv(id: string, agentId: string, title: string): ConversationSummary {
 const prefs: SidebarPrefs = { starredAgentIds: [], agentOrder: ["a1"] };
 
 describe("mobile interactions", () => {
-  it("gives each conversation delete action an explicit accessible name", () => {
+  it("gives each conversation row action an explicit accessible name", () => {
     render(
-      createElement(AgentConversationSidebar, {
+      createElement(ConversationSidebar, {
         agents: [agentDto("a1", "分析助手")],
         conversations: [conv("c1", "a1", "第一条")],
         activeConversationId: null,
@@ -53,7 +53,10 @@ describe("mobile interactions", () => {
       }),
     );
 
-    expect(screen.getByRole("button", { name: "删除会话：第一条" })).toBeInTheDocument();
+    // chat UE 轮 E1-C：删除语义=移入归档（可恢复），触屏可达（reveal-hover 恒显于 coarse 指针）
+    expect(screen.getByRole("button", { name: "归档会话：第一条" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重命名会话：第一条" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开会话：第一条" })).toBeInTheDocument();
   });
 
   it("exposes the file drawer as a modal dialog", () => {

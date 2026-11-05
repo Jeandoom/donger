@@ -20,4 +20,12 @@ export interface MessageStore {
 
   /** 按 conversationId 获取所有消息（按时间正序） */
   listByConversation(conversationId: string): Promise<StoredMessage[]>;
+
+  /** 批量取各会话最后一条消息（会话列表摘要，chat UE 优化轮）；无消息的会话不在返回 Map 中 */
+  latestByConversation?(
+    conversationIds: readonly string[],
+  ): Promise<Map<string, StoredMessage>>;
+
+  /** 统计某会话某时间之后的 bot 消息数（会话未读徽标，chat UE 优化轮） */
+  countBotAfter?(conversationId: string, iso: string): Promise<number>;
 }

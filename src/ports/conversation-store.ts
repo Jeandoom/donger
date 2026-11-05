@@ -19,8 +19,13 @@ export interface ConversationStore {
   getVisible(viewerId: string, id: string): Promise<Conversation | undefined>;
   /** 列出用户未归档会话（最新在前） */
   listByUser(userId: string): Promise<Conversation[]>;
+  /** 列出用户已归档会话（最新在前；归档视图，chat UE 优化轮） */
+  listArchivedByUser?(userId: string): Promise<Conversation[]>;
   /** 取用户最新未归档会话 */
   getLatest(userId: string, channelId: string): Promise<Conversation | undefined>;
   /** 更新（回写 sdkSessionId / title / agentId / archived；agentId 置空串=解除绑定） */
   update(id: string, patch: Partial<Conversation>): Promise<void>;
+  /** 标记「用户已打开会话」时间（未读徽标基准，chat UE 轮）。与 update 分离：不刷 updatedAt，
+   *  打开旧会话不得把它顶到列表最前（会话排序=最后一条消息时间） */
+  markSeen?(id: string, seenAt: string): Promise<void>;
 }

@@ -27,6 +27,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureKbIdColumn();
     this.ensureLlmSdkTypeColumn();
     this.ensureForkLineageColumns();
+    this.ensureLastSeenAtColumn();
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(userId, archived, updatedAt DESC)",
     );
@@ -80,6 +81,14 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (!cols.some((c) => c.name === "forkedFromMessageId")) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN forkedFromMessageId TEXT");
+    }
+  }
+
+  /** 用户最近打开会话时间列（会话未读徽标基准，chat UE 优化轮）；NULL = 从未打开 */
+  private ensureLastSeenAtColumn(): void {
+    const cols = this.db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "lastSeenAt")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN lastSeenAt TEXT");
     }
   }
 
@@ -150,6 +159,16 @@ export class SqliteConversationStore implements ConversationStore {
     return rows.map((r) => this.rowToConv(r));
   }
 
+  /** 归档会话列表（最新在前；归档视图用，chat UE 优化轮） */
+  async listArchivedByUser(userId: string): Promise<Conversation[]> {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM conversations WHERE userId = ? AND archived = 1 ORDER BY updatedAt DESC",
+      )
+      .all(userId) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToConv(r));
+  }
+
   async getLatest(userId: string, channelId: string): Promise<Conversation | undefined> {
     const row = this.db
       .prepare(
@@ -165,7 +184,7 @@ export class SqliteConversationStore implements ConversationStore {
     const updated = { ...cur, ...patch, updatedAt: new Date().toISOString() };
     this.db
       .prepare(
-        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, llmSdkType = ?, forkedFromConversationId = ?, forkedFromMessageId = ?, archived = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE conversations SET sdkSessionId = ?, title = ?, agentId = ?, kbId = ?, permissionMode = ?, lastModelRef = ?, llmSdkType = ?, forkedFromConversationId = ?, forkedFromMessageId = ?, lastSeenAt = ?, archived = ?, updatedAt = ? WHERE id = ?",
       )
       .run(
         updated.sdkSessionId,
@@ -177,10 +196,16 @@ export class SqliteConversationStore implements ConversationStore {
         updated.llmSdkType ?? null,
         updated.forkedFromConversationId ?? null,
         updated.forkedFromMessageId ?? null,
+        updated.lastSeenAt ?? null,
         updated.archived ? 1 : 0,
         updated.updatedAt,
         id,
       );
+  }
+
+  /** 标记打开时间：只动 lastSeenAt，不刷 updatedAt（防打开旧会话把列表序顶乱） */
+  async markSeen(id: string, seenAt: string): Promise<void> {
+    this.db.prepare("UPDATE conversations SET lastSeenAt = ? WHERE id = ?").run(seenAt, id);
   }
 
   private rowToConv(row: Record<string, unknown>): Conversation {
@@ -206,6 +231,9 @@ export class SqliteConversationStore implements ConversationStore {
         : {}),
       ...(typeof row.forkedFromMessageId === "string" && row.forkedFromMessageId !== ""
         ? { forkedFromMessageId: row.forkedFromMessageId }
+        : {}),
+      ...(typeof row.lastSeenAt === "string" && row.lastSeenAt !== ""
+        ? { lastSeenAt: row.lastSeenAt }
         : {}),
       createdAt: row.createdAt as string,
       updatedAt: row.updatedAt as string,

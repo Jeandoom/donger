@@ -155,7 +155,10 @@ export interface AuditEvent {
     | "approval_decision"
     /** 会话分叉（specs/2026-10-23-conversation-fork-design.md §7；seq=-1 执行外事件；
      *  text=派生摘要，toolInput=JSON {sourceConversationId,forkPointMessageId,copiedMessages}） */
-    | "conversation_forked";
+    | "conversation_forked"
+    /** 会话重命名（chat UE 优化轮 E1-B；seq=-1 执行外事件；text=人读摘要，
+     *  toolInput=JSON {from,to}。此前 PATCH 仅收 permissionMode，重命名零痕迹） */
+    | "conversation_renamed";
   text?: string;
   /** 完整的、已移除密钥的 Agent SDK query 输入。 */
   llmInput?: string;

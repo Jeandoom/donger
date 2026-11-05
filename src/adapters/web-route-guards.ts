@@ -210,6 +210,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       access: { kind: "owner", resource: "conversation" },
       ...ownerConversation,
     },
+    // 「已打开」标记（chat UE 优化轮 E1-A：会话未读徽标清零基准）
+    {
+      method: "POST",
+      pattern: "/api/conversations/:id/seen",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
     // 上传的会话 id 在 query（threadId），属主校验在 resolveAttachmentDir 内执行
     { method: "POST", pattern: "/api/upload", access: { kind: "authenticated" } },
 

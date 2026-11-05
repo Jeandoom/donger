@@ -429,3 +429,92 @@ describe("chatReducer 会话列表按更新时间排序", () => {
     expect(state.conversations.map((c) => c.id)).toEqual(["draft-1", "recent"]);
   });
 });
+
+function makeConv(id: string, updatedAt: string): ConversationSummary {
+  return {
+    id, userId: 'u', sdkSessionId: '', title: id, channelId: 'web', agentId: 'a',
+    createdAt: updatedAt, updatedAt, archived: false,
+  };
+}
+
+describe("chatReducer 活动条/排队/徽标（chat UE 轮）", () => {
+  it("activity 事件：stage 替换 + activityLines 滚窗（cap 30），generation 收口清空", () => {
+    let state = initialChatState();
+    for (let i = 0; i < 35; i += 1) {
+      state = chatReducer(state, { type: "ws", msg: { type: "activity", text: `行${i}` } });
+    }
+    expect(state.activityLines).toHaveLength(30);
+    expect(state.activityLines[0]).toBe("行5");
+    expect(state.isGenerating).toBe(true);
+    state = chatReducer(state, { type: "generation", running: false });
+    expect(state.activityLines).toEqual([]);
+    expect(state.stage).toBeNull();
+  });
+
+  it("queue_depth 事件直达 state；switch_conversation 清活动行与排队", () => {
+    let state = initialChatState();
+    state = chatReducer(state, { type: "ws", msg: { type: "queue_depth", depth: 2 } });
+    expect(state.queueDepth).toBe(2);
+    state = chatReducer(state, {
+      type: "set_conversations",
+      conversations: [makeConv("c1", "2026-09-17T00:00:00.000Z")],
+    });
+    state = chatReducer(state, { type: "switch_conversation", conversationId: "c1" });
+    expect(state.queueDepth).toBe(0);
+    expect(state.activityLines).toEqual([]);
+  });
+
+  it("result 带 usage：落到最后回合 meta；「已停止生成」标 stopped；活动行/排队清零", () => {
+    let state = withMessages([{ id: "u1", role: "user", text: "问" }]);
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "text_delta", messageId: "m1", text: "回答" },
+    });
+    state = chatReducer(state, { type: "ws", msg: { type: "activity", text: "🔧 tool" } });
+    state = chatReducer(state, { type: "ws", msg: { type: "queue_depth", depth: 1 } });
+    state = chatReducer(state, {
+      type: "ws",
+      msg: {
+        type: "result",
+        subtype: "success",
+        text: "完成",
+        usage: { inputTokens: 120, outputTokens: 45, model: "glm-5", durationMs: 8200 },
+      },
+    });
+    const turn = state.messages[1];
+    expect(turn?.meta).toEqual({
+      inputTokens: 120,
+      outputTokens: 45,
+      model: "glm-5",
+      durationMs: 8200,
+    });
+    expect(turn?.stopped).toBeUndefined();
+    expect(state.activityLines).toEqual([]);
+    expect(state.queueDepth).toBe(0);
+  });
+
+  it("result 文本=已停止生成 → stopped 徽标", () => {
+    let state = withMessages([{ id: "u1", role: "user", text: "问" }]);
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "text_delta", messageId: "m1", text: "回答一半" },
+    });
+    state = chatReducer(state, {
+      type: "ws",
+      msg: { type: "result", subtype: "error", text: "已停止生成" },
+    });
+    expect(state.messages[1]?.stopped).toBe(true);
+  });
+
+  it("user_message 可携带 sendPayload（失败重试锚点）", () => {
+    let state = initialChatState();
+    state = chatReducer(state, {
+      type: "user_message",
+      id: "um1",
+      text: "重发我",
+      sendPayload: { text: "重发我" },
+    });
+    expect(state.messages[0]?.sendPayload?.text).toBe("重发我");
+    expect(state.messages[0]?.delivery).toBe("sending");
+  });
+});

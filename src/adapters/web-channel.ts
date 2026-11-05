@@ -428,7 +428,18 @@ type SSEEvent =
       conversationId: string;
       questions: QuestionItem[];
     }
-  | { type: "result"; subtype: "success" | "error"; text: string }
+  | {
+      type: "result";
+      subtype: "success" | "error";
+      text: string;
+      /** 轮次用量摘要（chat UE 轮回合徽标）：实时轮随 result 上屏，历史回看走 audit result 行 */
+      usage?: { inputTokens?: number; outputTokens?: number; model?: string; durationMs?: number };
+    }
+  | {
+      /** 会话排队深度（chat UE 轮）：busy 入队/出队时机广播，前端显示「排队中 · 第 N 位」 */
+      type: "queue_depth";
+      depth: number;
+    }
   | {
       type: "eviction_notice";
       taskId: string;
@@ -1002,9 +1013,19 @@ export class WebChannel implements Channel {
     this.broadcastToConversation(conversationId, { type: "tool_result", ...event });
   }
 
-  /** 向会话的 SSE 客户端推送完成通知 */
-  pushResult(conversationId: string, subtype: "success" | "error", text: string): void {
-    this.broadcastToConversation(conversationId, { type: "result", subtype, text });
+  /** 向会话的 SSE 客户端推送完成通知（usage 可选：轮次 token/模型/耗时，chat UE 轮回合徽标） */
+  pushResult(
+    conversationId: string,
+    subtype: "success" | "error",
+    text: string,
+    usage?: { inputTokens?: number; outputTokens?: number; model?: string; durationMs?: number },
+  ): void {
+    this.broadcastToConversation(conversationId, { type: "result", subtype, text, ...(usage ? { usage } : {}) });
+  }
+
+  /** 会话排队深度广播（chat UE 轮）：busy 入队/出队时机由编排层调用 */
+  pushQueueDepth(conversationId: string, depth: number): void {
+    this.broadcastToConversation(conversationId, { type: "queue_depth", depth });
   }
 
   /** 会话标题更新广播：首条用户消息后异步自动改名，打开该会话的客户端侧栏实时刷新 */
@@ -4257,11 +4278,47 @@ export class WebChannel implements Channel {
         }
       }
       if (userId) {
+        // chat UE 优化轮（specs/2026-11-05-chat-ue-optimization-design.md §4.1）：
+        //   ?archived=1 归档视图 | ?q= 标题过滤 | ?limit&before 游标分页（可选；缺省全量 = 旧行为，
+        //   前端深链 bootstrap 依赖全量列表精确定位，不得改默认）
+        //   每条附 lastMessagePreview + unreadCount（未读 = lastSeenAt 之后的 bot 消息数，cap 99）
+        const wantArchived = this.extractQuery(url, "archived") === "1";
+        const q = (this.extractQuery(url, "q") ?? "").trim().toLowerCase();
+        const limitRaw = Number(this.extractQuery(url, "limit") ?? "");
+        const before = this.extractQuery(url, "before") ?? "";
+        let list = wantArchived
+          ? ((await this.deps.conversationStore?.listArchivedByUser?.(userId)) ?? [])
+          : ((await this.deps.conversationStore?.listByUser(userId)) ?? []);
         // 已退役内置智能体的历史会话过滤隐藏（数据保留；点开走 resolveAgentForUse 报已下架）
-        const list = ((await this.deps.conversationStore?.listByUser(userId)) ?? []).filter(
-          (c) => !isRetiredBuiltinAgentId(c.agentId),
+        list = list.filter((c) => !isRetiredBuiltinAgentId(c.agentId));
+        if (q) list = list.filter((c) => (c.title || "").toLowerCase().includes(q));
+        if (Number.isFinite(limitRaw) && limitRaw > 0) {
+          const startIdx = before ? list.findIndex((c) => c.updatedAt === before) + 1 : 0;
+          list = startIdx > 0 ? list.slice(startIdx, startIdx + limitRaw) : list.slice(0, limitRaw);
+        }
+        const messageStore = this.deps.messageStore;
+        const previews = messageStore?.latestByConversation
+          ? await messageStore.latestByConversation(list.map((c) => c.id))
+          : undefined;
+        const withMode = await Promise.all(
+          list.map(async (c) => {
+            const enriched = await this.conversationWithMode(c);
+            let unreadCount = 0;
+            if (messageStore?.countBotAfter) {
+              const n = await messageStore.countBotAfter(
+                c.id,
+                c.lastSeenAt ?? "1970-01-01T00:00:00.000Z",
+              );
+              unreadCount = Math.min(n, 99);
+            }
+            const preview = previews?.get(c.id);
+            return {
+              ...enriched,
+              unreadCount,
+              ...(preview ? { lastMessagePreview: preview.text.slice(0, 120) } : {}),
+            };
+          }),
         );
-        const withMode = await Promise.all(list.map((c) => this.conversationWithMode(c)));
         res.writeHead(200);
         res.end(JSON.stringify(withMode));
       } else {
@@ -4330,36 +4387,116 @@ export class WebChannel implements Channel {
         res.end(JSON.stringify({ error: "conversation not found" }));
         return;
       }
-      const body = JSON.parse(await this.readBody(req)) as { permissionMode?: string };
-      const parsed = AgentPermissionModeSchema.safeParse(body.permissionMode);
-      if (!parsed.success) {
+      const body = JSON.parse(await this.readBody(req)) as {
+        permissionMode?: string;
+        title?: string;
+        archived?: boolean;
+      };
+      const hasPermissionMode = body.permissionMode !== undefined;
+      const hasTitle = typeof body.title === "string";
+      const hasArchived = typeof body.archived === "boolean";
+      if (!hasPermissionMode && !hasTitle && !hasArchived) {
         res.writeHead(400);
-        res.end(
-          JSON.stringify({
-            error: "permissionMode 无效（ask_before_change | risk_guard | full_access）",
-          }),
-        );
+        res.end(JSON.stringify({ error: "无可更新字段（permissionMode | title | archived）" }));
         return;
       }
-      const previous = conv.permissionMode ?? "ask_before_change（跟随智能体默认）";
-      await this.deps.conversationStore?.update(conversationId, { permissionMode: parsed.data });
-      // 内存 registry 即时更新：进行中轮的下一次工具调用即按新模式校验
-      this.deps.onPermissionModeChange?.(conversationId, parsed.data);
-      try {
-        await this.deps.auditStore?.record({
-          conversationId,
-          taskId: "",
-          userId: viewer.id,
-          seq: -1,
-          type: "permission_mode_change",
-          text: `会话权限模式：${previous} → ${parsed.data}`,
-          toolInput: JSON.stringify({ from: conv.permissionMode, to: parsed.data }),
-          recordedAt: new Date().toISOString(),
-        });
-      } catch {
-        // 审计失败不阻断切换
+      if (hasTitle) {
+        const t = (body.title as string).trim();
+        if (t.length === 0 || t.length > 200) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: "title 需为 1-200 字符" }));
+          return;
+        }
       }
-      this.json(res, { ok: true, permissionMode: parsed.data });
+      // archived 仅开放恢复语义（归档走 DELETE，沿用既有口径）；重复恢复幂等
+      if (hasArchived && (body.archived as boolean) !== false) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "archived 仅支持 false（恢复归档）" }));
+        return;
+      }
+      // 重命名（chat UE 优化轮 E1-B）：审计 seq=-1 落痕
+      if (hasTitle) {
+        const nextTitle = (body.title as string).trim();
+        if (conv.title !== nextTitle) {
+          const previousTitle = conv.title;
+          await this.deps.conversationStore?.update(conversationId, { title: nextTitle });
+          try {
+            await this.deps.auditStore?.record({
+              conversationId,
+              taskId: "",
+              userId: viewer.id,
+              seq: -1,
+              type: "conversation_renamed",
+              text: `会话重命名：${previousTitle} → ${nextTitle}`,
+              toolInput: JSON.stringify({ from: previousTitle, to: nextTitle }),
+              recordedAt: new Date().toISOString(),
+            });
+          } catch {
+            // 审计失败不阻断
+          }
+        }
+      }
+      // 恢复归档（chat UE 优化轮 E1-C：归档视图的「恢复」出口）
+      if (hasArchived && conv.archived) {
+        await this.deps.conversationStore?.update(conversationId, { archived: false });
+      }
+      if (hasPermissionMode) {
+        const parsed = AgentPermissionModeSchema.safeParse(body.permissionMode);
+        if (!parsed.success) {
+          res.writeHead(400);
+          res.end(
+            JSON.stringify({
+              error: "permissionMode 无效（ask_before_change | risk_guard | full_access）",
+            }),
+          );
+          return;
+        }
+        const previous = conv.permissionMode ?? "ask_before_change（跟随智能体默认）";
+        await this.deps.conversationStore?.update(conversationId, { permissionMode: parsed.data });
+        // 内存 registry 即时更新：进行中轮的下一次工具调用即按新模式校验
+        this.deps.onPermissionModeChange?.(conversationId, parsed.data);
+        try {
+          await this.deps.auditStore?.record({
+            conversationId,
+            taskId: "",
+            userId: viewer.id,
+            seq: -1,
+            type: "permission_mode_change",
+            text: `会话权限模式：${previous} → ${parsed.data}`,
+            toolInput: JSON.stringify({ from: conv.permissionMode, to: parsed.data }),
+            recordedAt: new Date().toISOString(),
+          });
+        } catch {
+          // 审计失败不阻断切换
+        }
+        this.json(res, { ok: true, permissionMode: parsed.data });
+        return;
+      }
+      const updated = await this.deps.conversationStore?.get(conversationId);
+      this.json(res, {
+        ok: true,
+        conversation: updated ? await this.conversationWithMode(updated) : undefined,
+      });
+      return;
+    }
+
+    // POST /api/conversations/:id/seen —— 标记「已打开」（未读徽标清零基准；chat UE 优化轮 E1-A）
+    const seenConvMatch = url.match(/^\/api\/conversations\/([\w-]+)\/seen$/);
+    if (seenConvMatch && req.method === "POST") {
+      const conversationId = seenConvMatch[1] ?? "";
+      const viewer = this.currentViewer(req);
+      const conv =
+        viewer.role === "admin"
+          ? await this.deps.conversationStore?.get(conversationId)
+          : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
+      if (!conv) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "conversation not found" }));
+        return;
+      }
+      await this.deps.conversationStore?.markSeen?.(conversationId, new Date().toISOString());
+      res.writeHead(204);
+      res.end();
       return;
     }
 

@@ -252,6 +252,38 @@ const MSG = (text: string) => ({
   text,
 });
 
+describe("queue_depth 广播（chat UE 轮排队可视化）", () => {
+  it("busy 入队推 depth=N，出队接续推余量，收尾清零", async () => {
+    const runner = new GatedRunner();
+    const depths: number[] = [];
+    const channel: Channel = {
+      ...seqChannel(),
+      pushQueueDepth: (_cid, depth) => depths.push(depth),
+    };
+    const { orch } = build(runner, channel);
+
+    const p1 = orch.handleMessage(MSG("任务1"));
+    await vi.waitFor(() => expect(runner.prompts).toEqual(["任务1"]));
+    // 任务1 运行中（非排队）：无 queue_depth 推送
+    expect(depths).toEqual([]);
+
+    await orch.handleMessage(MSG("任务2"));
+    await orch.handleMessage(MSG("任务3"));
+    // 入队两次：深度 1 → 2
+    expect(depths).toEqual([1, 2]);
+
+    runner.release();
+    await p1;
+    // 任务1 收尾 → 任务2 出队（余 1）；GatedRunner 每轮各自挂 gate，须再放行任务2
+    await vi.waitFor(() => expect(runner.prompts).toEqual(["任务1", "任务2"]));
+    runner.release();
+    // 任务2 收尾 → 任务3 出队（余 0）
+    await vi.waitFor(() => expect(runner.prompts).toEqual(["任务1", "任务2", "任务3"]));
+    runner.release();
+    await vi.waitFor(() => expect(depths).toEqual([1, 2, 1, 0]));
+  });
+});
+
 describe("会话 busy 排队", () => {
   it("busy 时第二条消息入队并在当前任务完成后自动处理", async () => {
     const runner = new GatedRunner();

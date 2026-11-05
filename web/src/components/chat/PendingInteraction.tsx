@@ -22,7 +22,9 @@ export function PendingInteraction({
 }: PendingInteractionProps) {
   return (
     <>
-      {approval ? <ApprovalCard approval={approval} error={approvalError} onResolve={onResolveApproval} /> : null}
+      {approval ? (
+        <ApprovalCard approval={approval} error={approvalError} onResolve={onResolveApproval} />
+      ) : null}
       {credential ? (
         <MissingCredentialsCard
           key={credential.reqId}
@@ -55,9 +57,10 @@ function ApprovalCard({
       <div className="text-sm font-semibold text-warning-foreground">{approval.title}</div>
       <div className="mt-1 text-sm text-warning-foreground">{approval.summary}</div>
       {approval.adoptDraft ? (
-        <div className="mt-2.5 rounded-lg border border-warning/30 bg-white/60 p-2.5">
-          <div className="text-xs text-slate-600">
-            通过并记住此类命令（主机 <span className="font-mono">{approval.adoptDraft.hostCode}</span>
+        <div className="mt-2.5 rounded-lg border border-warning/30 bg-card/80 p-2.5">
+          <div className="text-xs text-foreground/80">
+            通过并记住此类命令（主机{" "}
+            <span className="font-mono">{approval.adoptDraft.hostCode}</span>
             ，前缀命中即免审批；可在前缀框调整粒度）：
           </div>
           <Input
@@ -109,11 +112,11 @@ function MissingCredentialsCard({
 }) {
   return (
     <div className="rounded-xl border border-primary/40 bg-primary-soft p-4">
-      <div className="font-semibold text-blue-800">缺少凭证</div>
-      <div className="mt-1 text-sm text-blue-700">
+      <div className="font-semibold text-primary">缺少凭证</div>
+      <div className="mt-1 text-sm text-foreground/80">
         当前智能体需要以下凭证，但你的账号尚未配置（值仅存你个人账号）：
       </div>
-      <ul className="mt-1 list-inside list-disc text-sm text-blue-800">
+      <ul className="mt-1 list-inside list-disc text-sm text-foreground/90">
         {items.map((item) => (
           <li key={item.code}>
             {item.name}（<span className="font-mono">{item.code}</span>）需要键：
@@ -121,10 +124,10 @@ function MissingCredentialsCard({
           </li>
         ))}
       </ul>
-      <div className="mt-1 text-xs text-blue-600">
+      <div className="mt-1 text-xs text-muted-foreground">
         请先到
         <a
-          className="mx-0.5 font-medium underline"
+          className="mx-0.5 font-medium text-primary underline"
           href={`/settings/credentials?fill=${encodeURIComponent(items[0]?.code ?? "")}`}
           target="_blank"
           rel="noreferrer"

@@ -143,4 +143,62 @@ body {
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
+
+  /* 触屏可达统一规范（chat UE 优化轮 E6-B）：hover 显现的操作钮，触屏（pointer:coarse）
+     与键盘聚焦恒显——替换旧「lg 起改 hover」断点 hack（触屏大屏不可达） */
+  .reveal-hover {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .group:hover .reveal-hover,
+  .reveal-hover:focus-visible,
+  .reveal-hover:focus-within {
+    opacity: 1;
+  }
+  @media (pointer: coarse) {
+    .reveal-hover {
+      opacity: 1;
+    }
+    /* 触屏上相对时间标签与操作钮互斥（空间有限），隐藏时间保操作可达 */
+    .hover-time {
+      display: none;
+    }
+  }
+}
+
+/* 流式打字光标（chat UE 优化轮 E2-D）：运行中回合正文尾部闪烁竖条 */
+@keyframes donger-caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0.15;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: hsl(var(--primary));
+  animation: donger-caret-blink 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-caret {
+    animation: none;
+  }
+}
+
+/* 长列表轻量渲染（chat UE 优化轮 D5 轻方案）：最近 12 个直接子元素恒全渲染
+   （进行中回合/决策区相关必在窗口内），更早的交给 content-visibility 跳过渲染；
+   不上虚拟化（assistant-ui 渲染面受库控制，全量虚拟化收益存疑） */
+.donger-thread-viewport > *:nth-last-child(n + 13) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
 }

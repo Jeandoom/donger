@@ -43,8 +43,19 @@ export type SSEEvent =
       conversationId: string;
       questions: PendingQuestionItem[];
     }
-  | { type: "result"; subtype: "success" | "error"; text: string }
+  | {
+      type: "result";
+      subtype: "success" | "error";
+      text: string;
+      /** 轮次用量摘要（chat UE 轮回合徽标）：实时轮随 result 上屏，历史回看走 events 回放的 result 行 */
+      usage?: TurnUsage;
+    }
   | { type: "activity"; text: string }
+  | {
+      /** 会话排队深度（chat UE 轮）：busy 入队/出队时机广播，前端显示「排队中 · 第 N 位」 */
+      type: "queue_depth";
+      depth: number;
+    }
   | {
       type: "eviction_notice";
       taskId: string;
@@ -59,6 +70,14 @@ export type SSEEvent =
   /** 排水广播（热发布优雅停机）：服务更新中，当前对话完成后切换、新消息暂缓 */
   | { type: "server_draining"; deadline?: number; reason?: string }
   | { type: "error"; error: string };
+
+/** 轮次用量摘要（回合徽标；与后端 SSE result.usage / audit result 行对齐，不含金额） */
+export interface TurnUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  model?: string;
+  durationMs?: number;
+}
 
 /** 并发淘汰通知（eviction_notice 事件的前端形态，弹窗展示用） */
 export interface EvictionNotice {
@@ -109,6 +128,19 @@ export interface ChatMessage {
   taskId?: string;
   /** 回合内最后一条 bot 消息的服务端 id（消息级「从此分叉」的分叉点；流式回合不带） */
   forkPointMessageId?: string;
+  /** 回合徽标元信息（chat UE 轮）：实时轮来自 result.usage，历史回合来自 events 回放 result 行 */
+  meta?: TurnUsage;
+  /** 本轮被用户停止（result.text=「已停止生成」；仅实时可判，历史回合不带） */
+  stopped?: boolean;
+  /** 客户端发送载荷（重试用，chat UE 轮 E5-A；仅本地乐观消息携带，不持久化） */
+  sendPayload?: { text: string; files?: FileInfoLike[]; mentions?: unknown[] };
+}
+
+/** 附件形状（避免 types ↔ lib/chatReducer 循环依赖的本地最小结构） */
+interface FileInfoLike {
+  path: string;
+  name: string;
+  type: "image" | "markdown" | "document";
 }
 
 export interface PendingApproval {
@@ -182,6 +214,12 @@ export interface ConversationSummary {
   llmSdkType?: LlmSdkType;
   /** 分叉血缘：源会话 id+标题（specs/2026-10-23-conversation-fork-design.md §8.3） */
   forkedFrom?: { id: string; title: string };
+  /** 最后一条消息摘要（列表 enrich，chat UE 轮 E1-A；截 120 字） */
+  lastMessagePreview?: string;
+  /** 未读 bot 消息数（lastSeenAt 之后；cap 99） */
+  unreadCount?: number;
+  /** 用户最近打开时间（seen 端点回写；本地列表排序不依赖） */
+  lastSeenAt?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -194,6 +232,12 @@ export interface ChatState {
   isGenerating: boolean;
   /** 当前执行阶段横幅（🔨 执行阶段等，后端 activity 事件；过程态，不随历史回放） */
   stage: string | null;
+  /** 运行期活动摘要行（activity SSE，chat UE 轮 E2-A；滚窗 30 条，回合收口即清） */
+  activityLines: string[];
+  /** busy 排队深度（queue_depth SSE，chat UE 轮 E3-C；0=无排队） */
+  queueDepth: number;
+  /** SSE 断线自动重连尝试计数（chat UE 轮 E5-E；连接成功清零） */
+  reconnectAttempts: number;
   pendingApproval: PendingApproval | null;
   pendingCredential: PendingCredential | null;
   pendingQuestion: PendingQuestion | null;

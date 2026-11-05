@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
+import { CommandPalette } from "../components/chat/CommandPalette";
 import { EvictionNoticeDialog } from "../components/chat/EvictionNoticeDialog";
 import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { SkillIssueReportDialog } from "../components/chat/SkillIssueReportDialog";
+import { ToastProvider, useToast } from "../components/ui/toast";
 import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/agentSidebar";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { apiFetch } from "../lib/auth";
@@ -31,8 +33,9 @@ function readLocalPrefs(): SidebarPrefs | null {
   }
 }
 
-export function ChatPage() {
+function ChatPageInner() {
   const wc = useWebChat();
+  const toast = useToast();
   const [params] = useSearchParams();
   const deepLinkAgent = params.get("agent");
   const deepLinkConv = params.get("conv");
@@ -43,6 +46,8 @@ export function ChatPage() {
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const bootstrappedRef = useRef(false);
+  // Cmd/Ctrl+K 命令面板（chat UE 优化轮 E1-E）
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const [gitPreflight, setGitPreflight] = useState<GitPreflightDTO>({
     ready: false,
@@ -116,11 +121,28 @@ export function ChatPage() {
     [],
   );
 
+  // Cmd/Ctrl+K 全局唤起命令面板（输入态放行：面板需要输入框聚焦）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const activeConversation = wc.conversations.find(
     (conversation) => conversation.id === wc.activeConversationId,
   );
   const activeIsDraft = activeConversation?.isDraft;
   const activeAgent = agents.find((a) => a.id === activeConversation?.agentId);
+  const agentNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const agent of agents) map.set(agent.id, agent.name);
+    return map;
+  }, [agents]);
 
   const checkGitAccess = useCallback(async (): Promise<GitPreflightDTO | undefined> => {
     if (!wc.activeConversationId || activeIsDraft) {
@@ -145,7 +167,7 @@ export function ChatPage() {
   }, [wc.activeConversationId, checkGitAccess]);
 
   // 初始定位（仅一次）：?agent= 深链优先（继续该 agent 最近会话，没有才新建草稿）；
-  // 无深链则打开最近一条智能体会话（「默认对话agent」概念已移除，新建一律走分组头「+」）。
+  // 无深链则打开最近一条智能体会话（「默认对话agent」概念已移除，新建一律走「+」）。
   // 列表/智能体/偏好三者就绪后才执行。
   useEffect(() => {
     if (bootstrappedRef.current) return;
@@ -193,8 +215,15 @@ export function ChatPage() {
   ]);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <EvictionNoticeDialog notice={wc.evictionNotice} onClose={wc.dismissEviction} />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        conversations={wc.conversations}
+        agents={agentNameMap}
+        onSelect={wc.switchConversation}
+      />
       {reportIssueOpen && activeAgent && activeConversation?.agentId ? (
         <SkillIssueReportDialog
           agentId={activeConversation.agentId}
@@ -214,11 +243,26 @@ export function ChatPage() {
         sidebar={{
           agents,
           conversations: wc.conversations,
+          archivedConversations: wc.archivedConversations,
           activeConversationId: wc.activeConversationId,
           prefs: normalizedPrefs,
           onPrefsChange: changePrefs,
           onSelectConversation: wc.switchConversation,
           onDeleteConversation: wc.deleteConversation,
+          onUndoArchive: (conversation) => {
+            void wc.restoreConversation(conversation.id, conversation).then((ok) => {
+              if (ok) toast.success("已恢复到会话列表");
+              else toast.error("恢复失败");
+            });
+          },
+          onRestoreConversation: (id) => {
+            void wc.restoreConversation(id).then((ok) => {
+              if (ok) toast.success("已恢复到会话列表");
+              else toast.error("恢复失败");
+            });
+          },
+          onRenameConversation: (id, title) => wc.renameConversation(id, title),
+          onOpenArchive: () => void wc.loadArchivedConversations(),
           onNewConversation: (agentId) => {
             const agent = agents.find((a) => a.id === agentId);
             void wc.newConversation(agentId, agent?.defaultPermissionMode);
@@ -233,6 +277,9 @@ export function ChatPage() {
         connection={wc.connection}
         onCancel={wc.cancel}
         onEnsureConversation={wc.ensureConversation}
+        assistantName={activeAgent?.name}
+        activityLines={wc.activityLines}
+        queueDepth={wc.queueDepth}
         onPermissionModeChange={wc.setPermissionMode}
         modelOptions={wc.llmOptions.options}
         modelRef={wc.modelRef}
@@ -241,6 +288,8 @@ export function ChatPage() {
         onDecideCredentialMissing={wc.decideCredentialMissing}
         onAnswerQuestion={wc.answerQuestion}
         inputPlaceholder={activeAgent ? `向 ${activeAgent.name} 发消息…` : "输入消息…"}
+        onRetryMessage={(id) => void wc.retryMessage(id)}
+        onManualReconnect={wc.reconnectStream}
         headerExtra={
           activeAgent && activeConversation?.agentId ? (
             <button
@@ -279,5 +328,13 @@ export function ChatPage() {
         }
       />
     </div>
+  );
+}
+
+export function ChatPage() {
+  return (
+    <ToastProvider>
+      <ChatPageInner />
+    </ToastProvider>
   );
 }

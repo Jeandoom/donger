@@ -48,7 +48,7 @@ import type {
 import type { AgentShareStore } from "../ports/agent-share-store.js";
 import type { AgentStore } from "../ports/agent-store.js";
 import type { AuditStore } from "../ports/audit-store.js";
-import type { Channel } from "../ports/channel.js";
+import type { Channel, TurnUsageHint } from "../ports/channel.js";
 import type { CommentStore } from "../ports/comment-store.js";
 import type { ConnectorStore } from "../ports/connector-store.js";
 import type { ConversationStore } from "../ports/conversation-store.js";
@@ -636,7 +636,14 @@ export class Orchestrator {
     feedbackCorrelation?: { feedbackId: string };
     /** 处理登记（幂等键）工作流 id（2026-10-30-workflow-dedup-design）：workflow-dedup 工具写边界 */
     dedupWorkflowId?: string;
-  }): Promise<{ aborted: boolean; ok: boolean; error?: string; resultText: string }> {
+  }): Promise<{
+    aborted: boolean;
+    ok: boolean;
+    error?: string;
+    resultText: string;
+    /** 轮次用量摘要（chat UE 轮）：随 pushResult 上屏，供回合徽标（token/模型/耗时） */
+    usage?: TurnUsageHint;
+  }> {
     const { channel, gates } = this.deps;
     // 主机执行策略（2026-10-12 拍板，specs/2026-10-12-host-exec-policy-design.md）：
     // host_exec/host_logs_clean 免审/审批按策略表裁决（deny 先行→主机精确>'*'→scope 特异度
@@ -1402,9 +1409,19 @@ export class Orchestrator {
 
     const resultText =
       last?.type === "result" ? (last.result ?? last.error ?? "(无结果)") : "(无结果)";
+    // 轮次用量摘要（chat UE 轮回合徽标）：随 result SSE 上屏；历史回看走 audit result 行
+    const usage: TurnUsageHint | undefined =
+      last?.type === "result" && last.usage
+        ? {
+            inputTokens: last.usage.inputTokens,
+            outputTokens: last.usage.outputTokens,
+            model: opts.llm.model,
+            durationMs: Date.now() - turnStartMs,
+          }
+        : undefined;
     // 自动学习（spec §10.3，M4）：kbAutoLearn 开启且绑库时异步沉淀，不阻塞响应、失败静默落审计
     this.maybeEnqueueAutoLearn(p, resultText, ok);
-    return { aborted: false, ok, error, resultText };
+    return { aborted: false, ok, error, resultText, ...(usage ? { usage } : {}) };
   }
 
   /** 自动学习入队（条件过滤 + 异步；任何失败仅落 audit_events 静默）。P3：四路萃取编排 */
@@ -1671,12 +1688,12 @@ export class Orchestrator {
       // 会话零反馈，用户只能靠手动重发试探。展示文案走友好映射，库存原始错误供诊断
       const reason = friendlyRunnerError(r.error) || "任务失败";
       await channel.send(p.threadId, { text: `❌ 处理出错：${reason}` }).catch(() => {});
-      channel.pushResult?.(p.conversation.id, "error", reason);
+      channel.pushResult?.(p.conversation.id, "error", reason, r.usage);
       return p.conversation.id;
     }
 
     await store.updateStatus(p.task.id, nextStatus("running", "finish"));
-    channel.pushResult?.(p.conversation.id, "success", r.resultText || "完成");
+    channel.pushResult?.(p.conversation.id, "success", r.resultText || "完成", r.usage);
     if (p.memoryDump) {
       // legacy 倾倒：原文截断（知识体系轮 P1——倾倒只做恢复线索，不做沉淀主通道）
       p.memoryDump.append(
@@ -1905,6 +1922,8 @@ export class Orchestrator {
       return conversation.id;
     }
     queue.push({ user, msg });
+    // 排队深度广播（chat UE 轮）：前端在用户气泡上显示「排队中 · 第 N 位」
+    channel.pushQueueDepth?.(conversation.id, queue.length);
     const text = `⏳ 已排队：当前任务完成后自动处理（前方 ${queue.length - 1} 条）`;
     await channel.send(msg.threadId, { text });
     return conversation.id;
@@ -1997,6 +2016,8 @@ export class Orchestrator {
       this.pendingQueues.delete(conversationId);
       return;
     }
+    // 出队即广播余量（chat UE 轮）：前端撤「排队中」徽标
+    this.deps.channel.pushQueueDepth?.(conversationId, queue?.length ?? 0);
     // 重新解析会话：排队期间 agentId 可能已被绑定（如 builder 转入）
     void (async () => {
       try {

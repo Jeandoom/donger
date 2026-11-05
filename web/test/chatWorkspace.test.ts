@@ -1,10 +1,10 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { type ComponentProps, createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentConversationSidebarProps } from "../src/components/chat/AgentConversationSidebar";
 import { ChatWorkspace } from "../src/components/chat/ChatWorkspace";
+import type { ConversationSidebarProps } from "../src/components/chat/ConversationSidebar";
 
-function sidebarProps(): AgentConversationSidebarProps {
+function sidebarProps(): ConversationSidebarProps {
   return {
     agents: [],
     conversations: [],
@@ -79,7 +79,8 @@ describe("ChatWorkspace", () => {
     expect(screen.getByLabelText("用户消息")).toHaveTextContent("检查服务");
     expect(screen.getByLabelText("助手消息")).toHaveTextContent("服务运行正常");
     expect(screen.getByText("你")).toBeInTheDocument();
-    expect(screen.getByText("donger")).toBeInTheDocument();
+    // chat UE 轮 E2-C：助手名随 agent（未传 assistantName 时缺省「助手」，不再硬编码 donger）
+    expect(screen.getByText("助手")).toBeInTheDocument();
   });
 
   it("hides the welcome state while an interaction card is pending", () => {
@@ -96,7 +97,7 @@ describe("ChatWorkspace", () => {
     renderWorkspace({ isGenerating: true, onCancel });
 
     expect(screen.getByRole("status", { name: "思考中" })).toBeInTheDocument();
-    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("助手");
     expect(screen.getByLabelText("助手消息")).toHaveTextContent("思考中");
     expect(screen.getAllByLabelText("助手消息")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "停止输出" }));
@@ -114,7 +115,7 @@ describe("ChatWorkspace", () => {
     });
 
     expect(screen.queryByRole("status", { name: "思考中" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("助手消息")).toHaveTextContent("donger");
+    expect(screen.getByLabelText("助手消息")).toHaveTextContent("助手");
     expect(screen.getByLabelText("助手消息")).toHaveTextContent("你");
   });
 

@@ -156,15 +156,28 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps) {
         type="button"
         variant="ghost"
         size="icon"
-        aria-label="添加内容"
+        aria-label={attachmentFull ? "添加内容（附件已满）" : "添加内容"}
         aria-expanded={open}
-        className="min-h-11 min-w-11 rounded-full text-muted-foreground"
+        className="relative min-h-11 min-w-11 rounded-full text-muted-foreground"
         onClick={() => {
           if (!open) props.onOpen();
           setOpen((v) => !v);
         }}
       >
         <Plus aria-hidden="true" size={18} />
+        {attachmentCount > 0 ? (
+          <span
+            aria-label={`已添加 ${attachmentCount} 个附件`}
+            className={cn(
+              "absolute -top-0.5 -right-0.5 rounded-full px-1 text-[9px] font-semibold leading-4",
+              attachmentFull
+                ? "bg-warning text-warning-foreground"
+                : "bg-primary text-primary-foreground",
+            )}
+          >
+            {attachmentCount}
+          </span>
+        ) : null}
       </Button>
       {open ? (
         <div

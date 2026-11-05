@@ -23,6 +23,8 @@ export const ConversationSchema = z.object({
   forkedFromConversationId: z.string().optional(),
   /** 血缘：分叉点消息 id（D5 单档「含此条」语义下 = 最后一条被复制的消息）；会话级整史分叉 = 源会话末条 */
   forkedFromMessageId: z.string().optional(),
+  /** 用户最近一次打开该会话的时间（会话未读徽标基准；缺省 = 从未打开，全部 bot 消息计未读） */
+  lastSeenAt: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   archived: z.boolean(),

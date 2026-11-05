@@ -1,11 +1,11 @@
 import { MessagesSquare, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
-import { AgentConversationSidebar } from "./AgentConversationSidebar";
+import type { ConversationSidebarProps } from "./ConversationSidebar";
+import { ConversationSidebar } from "./ConversationSidebar";
 
 export interface MobileConversationSheetProps {
-  /** 分组侧栏内容；选中会话后自动关闭浮层 */
-  sidebar?: AgentConversationSidebarProps;
+  /** 侧栏内容；选中会话后自动关闭浮层 */
+  sidebar?: ConversationSidebarProps;
 }
 
 export function MobileConversationSheet(props: MobileConversationSheetProps) {
@@ -57,7 +57,7 @@ export function MobileConversationSheet(props: MobileConversationSheetProps) {
               <X size={20} />
             </button>
             {props.sidebar ? (
-              <AgentConversationSidebar
+              <ConversationSidebar
                 className="h-full w-full border-r-0 [&>div:first-child]:pr-12"
                 {...props.sidebar}
                 onItemSelected={() => setOpen(false)}
