@@ -65,6 +65,10 @@ export function buildTeambitionEnvelope(
       isDone: task?.isDone,
       operatorId: payload.data?.operatorId,
     },
-    replyAnchor: { platform: "teambition", kind: "task", taskId, ...(orgId ? { orgId } : {}) },
+    replyAnchor: {
+      platform: "teambition",
+      kind: "task",
+      target: { taskId, ...(orgId ? { orgId } : {}) },
+    },
   };
 }

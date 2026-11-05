@@ -93,6 +93,11 @@ export interface AgentDTO {
   feedbackScope?: AgentFeedbackScopeDTO;
   /** 会话权限模式默认值（缺省=变更前问询） */
   defaultPermissionMode?: "ask_before_change" | "risk_guard" | "full_access";
+  /** 智能体回复通知策略（缺省 {enabled:true, channels:["inapp"]}；后端补全） */
+  notifyPolicy?: {
+    enabled: boolean;
+    channels: Array<"inapp" | "dingtalk" | "webhook" | "email">;
+  };
   createdAt: string;
   updatedAt: string;
 }

@@ -27,6 +27,23 @@ export interface ChatUpstreamConfig {
   model: string;
 }
 
+/**
+ * 桥执行工具面（2026-11-05 codex-namespace 专项）：codex 0.155 把 mcp_servers 工具
+ * 暴露为 namespace 型聚合工具， Responses→chat 翻译无法承载（模型侧不可见）。
+ * runner 据此把 MCP 工具面（in-process 平台工具台 + agent 连接器）注册给桥：
+ * toolDefs() 展平为 function 工具注入上游 chat 请求；模型 tool_call 命中时由
+ * execute() 直接执行，桥以 function_call+function_call_output 内联回传 codex
+ * （协议实验 scripts/tmp-mock-probe.cjs e1 实证 codex 接受该形态）。
+ */
+export interface BridgeToolExecutor {
+  /** 展平后的工具定义（名称约定 mcp__<server>__<tool>），每次 run 首次调用后缓存 */
+  toolDefs(): Promise<Array<{ name: string; description?: string; parameters?: unknown }>>;
+  /** 执行一个展平名调用，返回工具结果文本（含门禁拒绝文案/错误文案） */
+  execute(name: string, args: Record<string, unknown>): Promise<string>;
+  /** run 收尾：关闭底层 MCP 连接（stdio 子进程/内存传输等） */
+  close(): Promise<void>;
+}
+
 /** in-process MCP server 实例与审批门检查回调的类型面（实现上移共享桥后原位再导出） */
 export type { McpGateCheck, McpServerLike } from "./mcp-http-bridge.js";
 
@@ -67,6 +84,7 @@ function contentText(content: unknown): string {
 export function translateResponsesRequestToChat(
   body: JsonRecord,
   fallbackModel: string,
+  bridgeToolDefs?: Array<{ name: string; description?: string; parameters?: unknown }>,
 ): ChatCompletionRequest {
   const messages: Array<JsonRecord> = [];
   const instructions = typeof body.instructions === "string" ? body.instructions : "";
@@ -126,6 +144,20 @@ export function translateResponsesRequestToChat(
       // 非 function 工具（web_search 等服务端工具）：无 chat 对应，跳过
     }
   }
+  // 桥执行工具面（mcp__<server>__<tool> 展平名）：namespace 之外的补位注入，重名让位原生
+  for (const def of bridgeToolDefs ?? []) {
+    if (tools.some((t) => (t as { function?: { name?: string } }).function?.name === def.name)) {
+      continue;
+    }
+    tools.push({
+      type: "function",
+      function: {
+        name: def.name,
+        ...(def.description ? { description: def.description } : {}),
+        ...(def.parameters !== undefined ? { parameters: def.parameters } : {}),
+      },
+    });
+  }
 
   const model = typeof body.model === "string" && body.model ? body.model : fallbackModel;
   return {
@@ -165,9 +197,16 @@ export class ChatToResponsesTranslator {
     { id: string; callId: string; name: string; arguments: string; done: boolean }
   >();
   private usage: JsonRecord | null = null;
+  /** 桥执行工具面（非空时命中名工具由桥执行，finish 延迟 completed 等待内联回传） */
+  private readonly bridge: { names: Set<string>; execute: (name: string, args: Record<string, unknown>) => Promise<string> } | null;
+  private bridgePending: Array<{ callId: string; name: string; arguments: string }> = [];
 
-  constructor(responseId = `resp_${randomUUID().replaceAll("-", "")}`) {
+  constructor(
+    responseId = `resp_${randomUUID().replaceAll("-", "")}`,
+    bridge?: { names: Set<string>; execute: (name: string, args: Record<string, unknown>) => Promise<string> } | null,
+  ) {
     this.responseId = responseId;
+    this.bridge = bridge ?? null;
   }
 
   /** 首个事件：response.created（SSE 流开头发出） */
@@ -284,7 +323,7 @@ export class ChatToResponsesTranslator {
     return events;
   }
 
-  /** 上游流结束：补齐各 item 的 done 事件 + response.completed */
+  /** 上游流结束：补齐各 item 的 done 事件；命中桥执行工具时延迟 completed（等内联回传） */
   finish(): JsonRecord[] {
     const events: JsonRecord[] = [];
     for (const [, call] of [...this.calls.entries()].sort((a, b) => a[0] - b[0])) {
@@ -311,6 +350,50 @@ export class ChatToResponsesTranslator {
       // completed.output 引用同一对象：更新为完成形态（codex 从 response.completed 读最终输出）
       this.replaceItem(call.id, doneItem);
     }
+    // 桥执行工具命中：记录待执行清单，completed 由 handle() 执行后经 completedAfterBridge 补发
+    if (this.bridge) {
+      const deferred = [...this.calls.values()].filter((c) => this.bridge?.names.has(c.name));
+      if (deferred.length > 0) {
+        this.bridgePending = deferred.map((c) => ({
+          callId: c.callId,
+          name: c.name,
+          arguments: c.arguments,
+        }));
+        return events;
+      }
+    }
+    events.push(...this.finishTail());
+    return events;
+  }
+
+  /** 桥执行待办清单（finish 命中桥工具时非空） */
+  bridgeCallsPending(): Array<{ callId: string; name: string; arguments: string }> {
+    return this.bridgePending;
+  }
+
+  /** 桥执行结果内联项：function_call_output 追加为新输出项（e1 实证 codex 接受该形态） */
+  bridgeEmitOutput(callId: string, output: string): JsonRecord {
+    const item = { type: "function_call_output", call_id: callId, output };
+    this.emittedItems.push(item);
+    const payload = {
+      type: "response.output_item.done",
+      output_index: this.outputIndex,
+      item,
+    };
+    this.outputIndex += 1;
+    return payload;
+  }
+
+  /** 桥执行回传完毕：补齐剩余 done 事件 + response.completed（output 含内联输出项） */
+  completedAfterBridge(): JsonRecord[] {
+    const events = this.finishTail();
+    this.bridgePending = [];
+    return events;
+  }
+
+  /** message/reasoning done 事件 + response.completed（finish 与桥路径共用尾段） */
+  private finishTail(): JsonRecord[] {
+    const events: JsonRecord[] = [];
     if (this.messageId !== null) {
       events.push({
         type: "response.output_text.done",
@@ -394,6 +477,8 @@ export class CodexChatBridge {
   private server: Server | null = null;
   private startPromise: Promise<number> | null = null;
   private readonly upstreams = new Map<string, ChatUpstreamConfig>();
+  /** run → 桥执行工具面（spec §4b：MCP 工具展平注入 + 内联执行） */
+  private readonly bridgeToolExecutors = new Map<string, BridgeToolExecutor>();
   /** MCP 挂载委托给共享桥（engineLabel 用于静态拒绝文案） */
   private readonly mcpBridge = new McpHttpBridge("OpenAI");
 
@@ -445,6 +530,24 @@ export class CodexChatBridge {
     this.upstreams.delete(token);
   }
 
+  /** 注册该 run 的桥执行工具面（MCP 展平注入 + 内联执行；含门禁语义由 executor 实现承载） */
+  registerBridgeTools(token: string, executor: BridgeToolExecutor): void {
+    this.bridgeToolExecutors.set(token, executor);
+  }
+
+  /** run 收尾：注销并关闭底层 MCP 连接 */
+  async unregisterBridgeTools(token: string): Promise<void> {
+    const executor = this.bridgeToolExecutors.get(token);
+    this.bridgeToolExecutors.delete(token);
+    if (executor) {
+      try {
+        await executor.close();
+      } catch {
+        // 连接清理失败不阻断收尾（stdio 子进程随进程组退出兜底）
+      }
+    }
+  }
+
   /**
    * 把 in-process MCP server 实例挂载为 Streamable HTTP MCP 端点（stateless 模式），
    * 路径含 run-token 鉴权。返回给 codex config.mcp_servers 用的完整 URL。
@@ -473,6 +576,14 @@ export class CodexChatBridge {
     this.server = null;
     this.startPromise = null;
     this.upstreams.clear();
+    for (const [, executor] of this.bridgeToolExecutors) {
+      try {
+        await executor.close();
+      } catch {
+        // 收尾失败不阻断 close
+      }
+    }
+    this.bridgeToolExecutors.clear();
     if (!server) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -506,7 +617,17 @@ export class CodexChatBridge {
       return;
     }
 
-    const chatRequest = translateResponsesRequestToChat(parsed, upstream.model);
+    const bridgeExecutor = this.bridgeToolExecutors.get(typeof token === "string" ? token : "") ?? null;
+    let bridgeToolDefs: Array<{ name: string; description?: string; parameters?: unknown }> | undefined;
+    if (bridgeExecutor) {
+      try {
+        bridgeToolDefs = await bridgeExecutor.toolDefs();
+      } catch {
+        // 工具面拉取失败：本轮退化为无 MCP 工具（不阻断对话）
+        bridgeToolDefs = undefined;
+      }
+    }
+    const chatRequest = translateResponsesRequestToChat(parsed, upstream.model, bridgeToolDefs);
     if (process.env.DONGER_BRIDGE_DEBUG) {
       console.error(
         "[codex-bridge] responses→chat tools:",
@@ -517,7 +638,15 @@ export class CodexChatBridge {
         (parsed as { stream?: unknown }).stream,
       );
     }
-    const translator = new ChatToResponsesTranslator();
+    const translator = new ChatToResponsesTranslator(
+      undefined,
+      bridgeExecutor && bridgeToolDefs
+        ? {
+            names: new Set(bridgeToolDefs.map((t) => t.name)),
+            execute: (name, args) => bridgeExecutor.execute(name, args),
+          }
+        : null,
+    );
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
@@ -583,6 +712,27 @@ export class CodexChatBridge {
       // 上游中断：按已完成内容收尾（codex 收到 completed 即正常落账）
     }
     for (const event of translator.finish()) writeSse(res, event);
+    // 桥执行工具命中：直接执行并以 function_call_output 内联回传（绕开 codex 路由）
+    const pending = translator.bridgeCallsPending();
+    if (pending.length > 0 && bridgeExecutor) {
+      for (const call of pending) {
+        let args: Record<string, unknown> = {};
+        try {
+          const parsedArgs = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+          if (parsedArgs && typeof parsedArgs === "object") args = parsedArgs;
+        } catch {
+          // 参数非法：原样传空，由工具侧报错
+        }
+        let output: string;
+        try {
+          output = await bridgeExecutor.execute(call.name, args);
+        } catch (error) {
+          output = `MCP 工具执行失败：${error instanceof Error ? error.message : String(error)}`;
+        }
+        writeSse(res, translator.bridgeEmitOutput(call.callId, output));
+      }
+      for (const event of translator.completedAfterBridge()) writeSse(res, event);
+    }
     res.end();
   }
 }

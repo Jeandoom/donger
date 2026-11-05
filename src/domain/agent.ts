@@ -218,6 +218,13 @@ export const AgentSchema = z.object({
    */
   gitAllowShellGit: z.boolean().default(true),
   /**
+   * 平台托管 dev server + /preview 预览通道（2026-11-04-webgame-dev-loop-design §3.3）：
+   * opt-in（缺省关）。开启后该 agent 会话挂载 dev_start/dev_status/dev_logs/dev_stop 工具
+   * （项目根=会话 worktree reposRoot / agent workspace），起服/并发上限/闲置回收由平台治理；
+   * 预览走同源反代 /preview/:convId/*，属主口径守卫。
+   */
+  devPreviewEnabled: z.boolean().default(false),
+  /**
    * Bash 命令白名单（M2-7，能力集 commands 面，spec 2026-10-10-agent-security-kernel-design
    * §4.2；agent 级 opt-in 收紧——缺省/空=不启用，既有语义不变）。非空时 Bash 每个
    * 组合段须以某条目为前缀（如 "git status"/"npm"），白名单外命令强制进审批卡
@@ -235,6 +242,20 @@ export const AgentSchema = z.object({
   scenario: z.enum(SCENARIO_KEYS).optional(),
   /** 会话权限模式默认值：绑定该 agent 的会话未手动覆盖时生效（缺省=变更前问询） */
   defaultPermissionMode: AgentPermissionModeSchema.default("ask_before_change"),
+  /**
+   * 通知策略（2026-11-05 统一通知设计 D9）：智能体回复通知的渠道白名单。
+   * 缺省 {enabled:true, channels:["inapp"]}（站内保底，站外由用户订阅 opt-in）；
+   * 消费点 orchestrator 轮末 emit（agent.replied/agent.run_failed）。
+   */
+  notifyPolicy: z
+    .object({
+      enabled: z.boolean().default(true),
+      channels: z
+        .array(z.enum(["inapp", "dingtalk", "webhook", "email"]))
+        .min(1)
+        .default(["inapp"]),
+    })
+    .optional(),
   /** 会话资源范围（% 会话引用的候选与「全部会话」展开都受此过滤；缺省 = 功能未开启） */
   conversationScope: AgentConversationScopeSchema.optional(),
   /** 反馈资源范围（# 反馈引用的候选与「全部反馈」展开都受此过滤；缺省 = 功能未开启） */

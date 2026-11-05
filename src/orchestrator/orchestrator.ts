@@ -80,6 +80,8 @@ import type { DrainGate } from "./drain-manager.js";
 import { bridgeEvents } from "./event-bridge.js";
 import { createFeedbackToolsServer } from "./feedback-tools.js";
 import { createWorkflowDedupToolsServer } from "./workflow-dedup-tools.js";
+import { createDevServerToolsServer } from "./dev-server-tools.js";
+import type { DevServerService } from "./dev-server-service.js";
 import type { FeedbackStore } from "../ports/feedback-store.js";
 import type { GitAccessGate } from "./git-access-gate.js";
 import { createGitPlatformToolsServer } from "./git-platform-tools.js";
@@ -189,6 +191,11 @@ export interface OrchestratorDeps {
   feedbackStore?: FeedbackStore;
   /** 处理登记（幂等键）存储（2026-10-30-workflow-dedup-design）：缺省=dedup 工具不挂载 */
   workflowDedupStore?: import("../ports/workflow-dedup-store.js").WorkflowDedupStore;
+  /**
+   * dev server 托管服务（2026-11-04-webgame-dev-loop-design §3.3）：缺省=dev_* 工具不挂载。
+   * agent.devPreviewEnabled 会话的平台托管起服/预览反代上游/上限回收都经它。
+   */
+  devServerService?: DevServerService;
   /**
    * 进程内事件发射（→ 触发器管线）。
    * index 侧晚绑定 EventTriggerDispatcher（它依赖本 orchestrator 构造出的 loopRunner）；
@@ -937,6 +944,21 @@ export class Orchestrator {
           }),
         };
       }
+      // dev server 托管工具（dev-server，2026-11-04-webgame-dev-loop-design §3.3）：
+      // agent.devPreviewEnabled opt-in + 服务已装配才挂载；写边界（会话/项目根）
+      // 构造时闭包绑定——git agent 用会话私有 worktree reposRoot，否则 agent workspace。
+      if (p.agent?.devPreviewEnabled && this.deps.devServerService) {
+        base = {
+          ...base,
+          devServerTools: createDevServerToolsServer({
+            conversationId: p.conversation.id,
+            ownerId: p.user.id,
+            agentId: p.agent.id,
+            root: p.agent.gitRepositories.length > 0 ? context.reposRoot : context.runtimeDir,
+            service: this.deps.devServerService,
+          }),
+        };
+      }
       // agent 绑定了 git 仓库时注入 git 工具（donger-git）：CLI 工作区工具（reposRoot=
       // 会话 repos 目录——会话 worktree 隔离时为该会话私有 worktree 区，与后台物化
       // 返回路径一致收敛）+ 平台 API 工具；共享智能体凭证桥按分享者现取（§2.5）
@@ -1358,21 +1380,28 @@ export class Orchestrator {
       return { aborted: true, ok: false, resultText: "" };
     }
 
-    // 通知收编（spec §6）：任务完成/失败 → 站内信（决策②：交互式会话同样发）。
-    // 内部轮/非末轮静默；无人值守轮由 loop-runner 发 loop 事件，此处跳过防双发
+    // 智能体回复通知（2026-11-05 统一通知设计 §2.4，原 task.completed/failed 收编）：
+    // 交互式会话每轮回复后通知；工作流派发轮（unattended）/内部轮（silent/quietResult）不发——
+    // 守卫即拍板语义「工作流调用的轮不发智能体通知」。渠道=agent.notifyPolicy.channels
+    // （缺省 ["inapp"]），与用户订阅的最终交集在通知内核完成。
     if (!p.silent && !p.quietResult && !p.unattended && last?.type === "result") {
-      void this.deps.notificationService
-        ?.notify({
-          event: ok ? "task.completed" : "task.failed",
-          recipients: [{ kind: "user", userId: p.user.id }],
-          title: ok ? "任务完成" : "任务失败",
-          body: (ok ? (last.result ?? "(无结果)") : (last.error ?? "未知错误")).slice(0, 400),
-          // 详情直达该任务所在会话（NotificationPage「详情」按钮跳转）
-          link: `/?conv=${p.conversation.id}`,
-          dedupeKey: `task:${p.task.id}:${ok ? "completed" : "failed"}`,
-          data: { conversationId: p.conversation.id, taskId: p.task.id },
-        })
-        .catch((e) => console.error("[orchestrator] 任务通知失败", e));
+      const notifyPolicy = p.agent?.notifyPolicy;
+      if (!notifyPolicy || notifyPolicy.enabled) {
+        const agentName = p.agent?.name ?? "智能体";
+        void this.deps.notificationService
+          ?.notify({
+            event: ok ? "agent.replied" : "agent.run_failed",
+            recipients: [{ kind: "user", userId: p.user.id }],
+            title: ok ? `「${agentName}」已回复` : `「${agentName}」回复失败`,
+            body: (ok ? (last.result ?? "(无结果)") : (last.error ?? "未知错误")).slice(0, 400),
+            // 详情直达该任务所在会话（点开/打开会话均联动标已读）
+            link: `/?conv=${p.conversation.id}`,
+            dedupeKey: `agent:${p.task.id}:${ok ? "replied" : "failed"}`,
+            data: { conversationId: p.conversation.id, taskId: p.task.id },
+            channels: notifyPolicy?.channels ?? ["inapp"],
+          })
+          .catch((e) => console.error("[orchestrator] 智能体回复通知失败", e));
+      }
     }
 
     // 用量统计：result 带 usage 就落一条（错误运行也落，subtype 无关）；失败仅日志

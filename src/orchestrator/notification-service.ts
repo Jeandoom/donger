@@ -4,6 +4,7 @@ import {
   isMandatoryGroup,
   isNotificationEvent,
   NOTIFICATION_EVENT_CATALOG,
+  NOTIFICATION_GROUP_LABELS,
   type NotificationEventGroup,
   type NotificationIntent,
   type NotificationPrefsEntry,
@@ -92,7 +93,8 @@ export class NotificationService {
     ];
     const inappIds = new Map<string, string>();
     for (const userId of userIds) {
-      if (!userId || !(await this.enabledFor(userId, spec.group, spec.mandatoryInapp))) continue;
+      // 站内恒发（2026-11-05 统一通知设计）：三分类 inapp 全组锁定，偏好表 inapp 行不再生效
+      if (!userId) continue;
       // 通道白名单（M3 notifyPolicy.channels）：不含站内信则跳过站内落库
       if (intent.channels && !intent.channels.includes("inapp")) continue;
       const unread = await this.deps.store.unreadCount(userId);
@@ -112,6 +114,8 @@ export class NotificationService {
         link: intent.link,
         dedupeKey: intent.dedupeKey,
         createdAt: new Date().toISOString(),
+        // agent 组事件（已读联动）：打开会话批量标已读
+        conversationId: intent.data?.conversationId,
       };
       await this.deps.store.insertInApp(row);
       inappIds.set(userId, row.id);
@@ -125,18 +129,6 @@ export class NotificationService {
         inappIds,
       );
     }
-  }
-
-  /** 路由合成：强制站内信 > 用户偏好 > 默认开（spec §4.4）；站外通道一律 opt-in */
-  private async enabledFor(
-    userId: string,
-    group: NotificationEventGroup,
-    mandatoryInapp: boolean,
-  ): Promise<boolean> {
-    if (mandatoryInapp) return true;
-    const prefs = await this.deps.store.getPrefs(userId);
-    const pref = prefs.find((p) => p.eventGroup === group && p.channel === "inapp");
-    return pref ? pref.enabled : true;
   }
 
   // ===== 站外分发（M2）=====
@@ -156,7 +148,12 @@ export class NotificationService {
         const enabled = prefs.some(
           (p) => p.eventGroup === group && p.channel === channelId && p.enabled,
         );
-        if (!enabled || !adapter) continue;
+        if (!enabled) {
+          // 被裁剪提醒（拍板 D8 累计计数）：用户关闭订阅 → 计数累加 + 24h 窗口提醒，次数可见
+          await this.recordTrim(userId, group, channelId, "你未订阅该渠道");
+          continue;
+        }
+        if (!adapter) continue;
         if (!adapter.available()) {
           await this.recordDelivery(
             userId,
@@ -171,6 +168,8 @@ export class NotificationService {
         }
         const resolved = await this.resolveOutboundAddress(userId, channelId);
         if (!resolved) {
+          // 地址未配置同样算裁剪（需求：未配置或关闭订阅都提醒）
+          await this.recordTrim(userId, group, channelId, "你未配置该渠道的投递地址");
           await this.recordDelivery(
             userId,
             channelId,
@@ -525,10 +524,44 @@ export class NotificationService {
 
   /** 偏好写入：强制组仅锁站内信关闭（站外通道自由开关），返回 false 表示被拒 */
   async setPref(userId: string, entry: NotificationPrefsEntry): Promise<boolean> {
-    if (!entry.enabled && entry.channel === "inapp" && isMandatoryGroup(entry.eventGroup)) {
+    // 站内信全组锁定（2026-11-05 统一通知设计：系统通知默认开启且无法关闭；站内恒发）
+    if (!entry.enabled && entry.channel === "inapp") {
       return false;
     }
     await this.deps.store.setPref(userId, entry);
     return true;
+  }
+
+  /**
+   * 被裁剪累计计数（拍板 D8）：每次裁剪 count+1；提醒通知按日桶 dedupeKey 合并
+   * （同用户×渠道×组当天只一条，计数持续累加，用户始终可见次数）。fail-closed：
+   * 统计/提醒任何失败仅日志，绝不影响主投递流程。
+   */
+  private async recordTrim(
+    userId: string,
+    group: NotificationEventGroup,
+    channel: OutboundChannelId,
+    reason: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    try {
+      const count = await this.deps.store.bumpTrimStat(userId, group, channel, now);
+      const groupLabel = NOTIFICATION_GROUP_LABELS[group];
+      const channelLabel = channel === "dingtalk" ? "钉钉" : channel === "email" ? "邮件" : "Webhook";
+      await this.notify({
+        event: "notify.channel_trimmed",
+        // 仅站内（关键）：裁剪提醒若进站外分发会再次命中「未订阅」分支 → recordTrim 递归
+        channels: ["inapp"],
+        recipients: [{ kind: "user", userId }],
+        title: `${groupLabel}有消息未能投递到${channelLabel}`,
+        body:
+          `已累计 ${count} 条「${groupLabel}」消息因${reason}，未能投递到${channelLabel}，` +
+          `均已转为系统通知。可在通知中心的订阅偏好中开启该渠道订阅${channel !== "dingtalk" && channel !== "email" ? "并配置地址" : ""}后恢复投递。`,
+        link: "/notifications",
+        dedupeKey: `trim:${userId}:${channel}:${group}:${now.slice(0, 10)}`,
+      });
+    } catch (e) {
+      console.error("[notification] 裁剪提醒记录失败", e);
+    }
   }
 }

@@ -210,7 +210,7 @@ describe("群消息事件路由（spec 2026-10-27 §4.2 M1）", () => {
     expect(env.replyAnchor).toEqual({
       platform: "dingtalk",
       kind: "group",
-      threadId: "cid-group-1",
+      target: { threadId: "cid-group-1" },
     });
   });
 

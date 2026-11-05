@@ -86,6 +86,16 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       pattern: "/api/webhooks/teambition",
       access: { kind: "public" },
     },
+    // 飞书事件订阅 webhook（2026-11-05 统一通知设计 M4 样板）：verification token 校验
+    // + url_verification challenge 直答，机器通道同 TB 口径
+    {
+      method: "POST",
+      pattern: "/api/webhooks/lark",
+      access: { kind: "public" },
+    },
+    // 渠道自持配置（2026-11-05 统一通知设计 §2.2 D6）：admin 读写；secret 永不回显
+    { method: "GET", pattern: "/api/channel-connections/:id/config", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/channel-connections/:id/config", access: { kind: "admin" } },
     { method: "POST", pattern: "/api/auth/exchange", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/register", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },
@@ -127,6 +137,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     {
       method: "POST",
       pattern: "/api/conversations/:id/cancel",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
+    {
+      // 已读联动（2026-11-05 统一通知设计 §2.4）：打开会话批量标该会话未读通知已读
+      method: "POST",
+      pattern: "/api/conversations/:id/seen",
       access: { kind: "owner", resource: "conversation" },
       ...ownerConversation,
     },
@@ -513,6 +530,10 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "*", pattern: "/api/connectors/:id", access: { kind: "authenticated" } },
 
     // 自动化模块：事件 + 工作流（requireOwned* 在 handler 内判定；
+    // 渠道连接（2026-11-05 统一通知设计 §2.2）：列表 authenticated（不回配置值）；
+    // 连通性测试发起真实外部请求 → admin
+    { method: "GET", pattern: "/api/channel-connections", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/channel-connections/:id/test", access: { kind: "admin" } },
     // spec 2026-10-09-events-workflows-refactor-design §8）
     { method: "GET", pattern: "/api/events", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/events", access: { kind: "authenticated" } },

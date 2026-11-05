@@ -19,6 +19,7 @@ export const emptyAgent: AgentEditorForm = {
   gitAllowShellGit: false,
   hostExecAllowlist: [],
   defaultPermissionMode: "ask_before_change",
+  notifyPolicy: { enabled: true, channels: ["inapp"] },
   conversationScope: { enabled: false, agentIds: [] },
   knowledgeBaseIds: [],
   kbAutoLearn: false,

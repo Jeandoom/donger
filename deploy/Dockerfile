@@ -20,6 +20,19 @@ FROM ${NODE_IMAGE}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git bash tzdata ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+# 会话 dev server 预览通道的浏览器底座（2026-11-04-webgame-dev-loop-design §3.2）：
+# @playwright/mcp 钉版（勿用 @latest——其默认 chrome-for-testing 修订号随版漂移，与镜像
+# 内 install-browser 必须同版配对）；headless shell + chromium 全量 + 系统 apt 依赖
+# （install-deps 经 playwright CLI 装，apt 包集跨修订通用）。~300MB 量级，放运行层。
+# 镜像源（builder 段的 ENV 不跨 stage）：npmmirror registry + playwright 二进制镜像；
+# 浏览器落 node 用户缓存（USER node 后 stdio MCP 以 node 跑）
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+RUN npx -y --registry=https://registry.npmmirror.com @playwright/mcp@0.0.84 install-browser chromium \
+ && npx -y --registry=https://registry.npmmirror.com playwright@1.57.0 install-deps chromium \
+ && npm cache clean --force \
+ && chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"
+# MCP stdio 以非 root node 用户跑浏览器：容器内禁沙箱（无 user namespaces），模板侧 --no-sandbox
 # SHELL=/bin/bash：Claude CLI Bash 工具的 shell 发现依赖，缺失报 "No suitable shell found"（09-22 实证坑）
 ENV SHELL=/bin/bash TZ=Asia/Shanghai LANG=C.UTF-8 NODE_ENV=production
 ARG GIT_SHA=unknown

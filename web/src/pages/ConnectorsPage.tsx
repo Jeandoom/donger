@@ -21,6 +21,15 @@ import {
   testConnector,
   updateConnector,
 } from "../lib/connectors";
+import {
+  type ChannelConnectionDTO,
+  fetchChannelConnections,
+  testChannelConnection,
+} from "../lib/channelConnections";
+import { type AddressesView, fetchAddresses } from "../lib/notifications";
+import { fetchMe } from "../lib/auth";
+import { AddressBookCard } from "../components/AddressBookCard";
+import { ChannelConnectionsView } from "../components/connectors/ChannelConnectionsView";
 import { fetchCredentialTemplates } from "../lib/skills";
 
 /** 表单状态：类型（MCP 服务 / HTTP 接口）+ 鉴权三档（无 / Bearer 引用凭证 / 自定义 KV）+ 代理认证 */
@@ -136,7 +145,11 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+type ConnectorTab = "capability" | "channel";
+
 export function ConnectorsPage() {
+  const [tab, setTab] = useState<ConnectorTab>("capability");
+  const [isAdmin, setIsAdmin] = useState(false);
   const [connectors, setConnectors] = useState<ConnectorDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -177,14 +190,56 @@ export function ConnectorsPage() {
     }
   }, []);
 
+  // 渠道连接（2026-11-05 统一通知设计 §2.2）：连接器页 tab2 数据源
+  const [channels, setChannels] = useState<ChannelConnectionDTO[]>([]);
+  const [channelLoading, setChannelLoading] = useState(true);
+  const [channelError, setChannelError] = useState("");
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testOutcomes, setTestOutcomes] = useState<
+    Record<string, { ok: boolean; error?: string; detail?: string }>
+  >({});
+  const [addresses, setAddresses] = useState<AddressesView | null>(null);
+
+  const reloadChannels = useCallback(() => {
+    setChannelLoading(true);
+    setChannelError("");
+    fetchChannelConnections()
+      .then(setChannels)
+      .catch((reason: unknown) =>
+        setChannelError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setChannelLoading(false));
+    fetchAddresses()
+      .then(setAddresses)
+      .catch(() => {});
+  }, []);
+
+  const runChannelTest = (id: string) => {
+    setTestingId(id);
+    setTestOutcomes((prev) => ({ ...prev, [id]: { ok: false, detail: "测试中…" } }));
+    testChannelConnection(id)
+      .then((r) => setTestOutcomes((prev) => ({ ...prev, [id]: r })))
+      .catch((reason: unknown) =>
+        setTestOutcomes((prev) => ({
+          ...prev,
+          [id]: { ok: false, error: reason instanceof Error ? reason.message : String(reason) },
+        })),
+      )
+      .finally(() => setTestingId(null));
+  };
+
   useEffect(() => {
     void reload();
+    fetchMe()
+      .then((me) => setIsAdmin(me?.role === "admin"))
+      .catch(() => {});
     fetchCredentialTemplates()
       .then((templates) =>
         setCredentialOptions(templates.map((t) => ({ code: t.code, name: t.name }))),
       )
       .catch(() => {});
-  }, [reload]);
+    reloadChannels();
+  }, [reload, reloadChannels]);
 
   const mine = connectors.filter((c) => c.createdByMe);
   const global = connectors.filter((c) => !c.createdByMe && c.shareScope === "global");
@@ -428,14 +483,39 @@ export function ConnectorsPage() {
       <PageHeader
         className="mb-5"
         title="连接器"
-        description="外部能力接入：注册外部 MCP 服务（注入智能体工具）或 HTTP 接口（配置与凭证登记），凭证不进上下文"
+        description="能力连接：注册外部 MCP 服务（注入智能体工具）或 HTTP 接口；渠道连接：通知渠道对接、连通性测试与入站监听（2026-11-05 统一通知设计）"
         actions={
-          <Button onClick={openCreate}>
-            <Plus className="h-4 w-4" />
-            新建连接器
-          </Button>
+          tab === "capability" ? (
+            <Button onClick={openCreate}>
+              <Plus className="h-4 w-4" />
+              新建连接器
+            </Button>
+          ) : undefined
         }
       />
+      <Segmented
+        className="mb-5 w-fit"
+        options={[
+          { value: "capability", label: "能力连接" },
+          { value: "channel", label: "渠道连接" },
+        ]}
+        value={tab}
+        onChange={(v) => setTab(v as ConnectorTab)}
+      />
+      {tab === "channel" ? (
+        <ChannelConnectionsView
+          channels={channels}
+          loading={channelLoading}
+          error={channelError}
+          isAdmin={isAdmin}
+          testingId={testingId}
+          testOutcomes={testOutcomes}
+          addresses={addresses}
+          onTest={runChannelTest}
+          onReload={reloadChannels}
+        />
+      ) : (
+        <>
       <p className="mb-4 text-xs text-muted-foreground">
         MCP 类型连接器可
         <span className="font-medium text-foreground">共享到全局</span>
@@ -695,6 +775,8 @@ export function ConnectorsPage() {
             </div>
           )}
         </DialogShell>
+      )}
+        </>
       )}
 
       <ConfirmDialog

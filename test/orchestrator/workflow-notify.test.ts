@@ -324,7 +324,7 @@ describe("notifyPolicy source 回源通道（spec 2026-10-27 §4.4 D3）", () =>
     sender: { id: "staff-1", name: "张三" },
     source: { openConversationId: "cid-group-1", conversationType: "2" },
     text: "@机器人 处理",
-    replyAnchor: { platform: "dingtalk", kind: "group", threadId: "cid-group-1" },
+    replyAnchor: { platform: "dingtalk", kind: "group", target: { threadId: "cid-group-1" } },
   });
 
   it("锚点在场 + channels 含 source → sourceDeliver 回群投递；站内信仍落（含强制补 inapp）", async () => {
@@ -346,10 +346,10 @@ describe("notifyPolicy source 回源通道（spec 2026-10-27 §4.4 D3）", () =>
 
     expect(s.sourceDeliver).toHaveBeenCalledOnce();
     const [anchor, text] = s.sourceDeliver.mock.calls[0] as [
-      { platform: string; threadId: string },
+      { platform: string; target: { threadId: string } },
       string,
     ];
-    expect(anchor).toEqual({ platform: "dingtalk", kind: "group", threadId: "cid-group-1" });
+    expect(anchor).toEqual({ platform: "dingtalk", kind: "group", target: { threadId: "cid-group-1" } });
     expect(text).toContain("通知正文");
     // source 请求强制补 inapp：站内信白名单不被跳过
     const notifyIntent = s.notify.mock.calls.find(
@@ -392,7 +392,7 @@ describe("notifyPolicy direct 模式（2026-10-28 直接回复执行结果）", 
     sender: { id: "staff-1", name: "张三" },
     source: { openConversationId: "cid-group-2", conversationType: "2" },
     text: "@机器人 处理",
-    replyAnchor: { platform: "dingtalk", kind: "group", threadId: "cid-group-2" },
+    replyAnchor: { platform: "dingtalk", kind: "group", target: { threadId: "cid-group-2" } },
   });
 
   it("success + correlation 收件人：不派生写手轮，主 run 执行结果原样投递并兜底落反馈回复", async () => {
@@ -449,10 +449,10 @@ describe("notifyPolicy direct 模式（2026-10-28 直接回复执行结果）", 
     expect(s.handleMessage).toHaveBeenCalledTimes(1);
     expect(s.sourceDeliver).toHaveBeenCalledOnce();
     const [anchor, text] = s.sourceDeliver.mock.calls[0] as [
-      { platform: string; threadId: string },
+      { platform: string; target: { threadId: string } },
       string,
     ];
-    expect(anchor).toEqual({ platform: "dingtalk", kind: "group", threadId: "cid-group-2" });
+    expect(anchor).toEqual({ platform: "dingtalk", kind: "group", target: { threadId: "cid-group-2" } });
     expect(text).toContain("通知正文");
     expect((await s.runStore.getRun(nRun!.id))?.renderedPrompt).toContain("通知正文");
   });

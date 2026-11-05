@@ -4,14 +4,8 @@
 import { apiFetch } from "./auth";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
-export type NotificationEventGroup =
-  | "task"
-  | "loop"
-  | "system"
-  | "account"
-  | "feedback"
-  | "deploy"
-  | "share";
+/** 通知三分类（2026-11-05 统一通知设计）：系统/工作流/智能体 */
+export type NotificationEventGroup = "system" | "workflow" | "agent";
 export type NotificationChannel = "inapp" | "dingtalk" | "webhook" | "email";
 
 export interface NotificationItem {
@@ -31,10 +25,43 @@ export interface NotificationListResult {
   unread: number;
 }
 
+/** 未读列表按标题合并后的行（微信会话式：同标题一行 + 数量角标） */
+export interface GroupedNotificationRow {
+  title: string;
+  /** 组内最新一条，行内展示与「详情」跳转都用它 */
+  latest: NotificationItem;
+  /** 合并条数，1 = 未合并 */
+  count: number;
+}
+
+/**
+ * 按标题精确匹配合并通知行。自动化任务（循环运行等）会产生大量同标题通知，
+ * 未读列表逐条平铺会刷屏；合并后角标计条数，「详情」只展开最新一条。
+ * 返回按 latest.createdAt 倒序，与后端列表排序一致。
+ */
+export function groupNotificationsByTitle(items: NotificationItem[]): GroupedNotificationRow[] {
+  const map = new Map<string, GroupedNotificationRow>();
+  for (const n of items) {
+    const row = map.get(n.title);
+    if (row) {
+      row.count += 1;
+      if (n.createdAt > row.latest.createdAt) row.latest = n;
+    } else {
+      map.set(n.title, { title: n.title, latest: n, count: 1 });
+    }
+  }
+  return [...map.values()].sort((a, b) => (a.latest.createdAt < b.latest.createdAt ? 1 : -1));
+}
+
+/** 已读联动：打开会话把该会话全部未读通知标已读（2026-11-05 统一通知设计 §2.4） */
+export async function seenConversation(conversationId: string): Promise<void> {
+  await apiFetch(`/api/conversations/${conversationId}/seen`, { method: "POST" });
+}
+
 export interface NotificationPrefGroup {
   eventGroup: NotificationEventGroup;
   label: string;
-  /** 账号安全组强制站内信：站内开关锁定为开（决策⑤），站外通道自由 */
+  /** 站内信锁定组（三分类全组锁定，后端恒发）：站内开关锁定为开，站外通道自由 */
   mandatory: boolean;
   channels: { inapp: boolean; dingtalk: boolean; webhook: boolean; email: boolean };
 }

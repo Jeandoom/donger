@@ -24,8 +24,7 @@ describe("buildTeambitionEnvelope（webhook 载荷归一）", () => {
     expect(env!.replyAnchor).toEqual({
       platform: "teambition",
       kind: "task",
-      taskId: "task-9",
-      orgId: "org-1",
+      target: { taskId: "task-9", orgId: "org-1" },
     });
     expect(env!.occurredAt).toBe(new Date(1_770_000_000_000).toISOString());
   });

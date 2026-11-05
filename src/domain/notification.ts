@@ -8,10 +8,10 @@ import { z } from "zod";
  */
 
 export type NotificationEvent =
-  | "task.completed"
-  | "task.failed"
-  | "loop.run_succeeded"
-  | "loop.run_failed"
+  | "agent.replied"
+  | "agent.run_failed"
+  | "workflow.run_succeeded"
+  | "workflow.run_failed"
   | "loop.queue_overflow"
   | "eviction.notice"
   | "user.role_changed"
@@ -24,18 +24,16 @@ export type NotificationEvent =
   | "deploy.succeeded"
   | "deploy.failed"
   | "workflow.result_notified"
+  | "notify.channel_trimmed"
   | "agent.skill_issue_reported"
   | "agent.skill_suggestion";
 
 /** 订阅偏好按事件组粒度（用户不感知单事件开关）；组×通道成矩阵 */
-export type NotificationEventGroup =
-  | "task"
-  | "loop"
-  | "system"
-  | "account"
-  | "feedback"
-  | "deploy"
-  | "share";
+/**
+ * 通知三分类（2026-11-05 统一通知设计拍板）：系统/工作流/智能体。
+ * 用户订阅矩阵按此三行×渠道配置；站内信全组锁定开启（isMandatoryGroup 恒真）。
+ */
+export type NotificationEventGroup = "system" | "workflow" | "agent";
 
 export type NotificationSeverity = "info" | "warn" | "critical";
 
@@ -55,22 +53,28 @@ export interface NotificationEventSpec {
 }
 
 export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationEventSpec> = {
-  "task.completed": { group: "task", severity: "info", mandatoryInapp: false, label: "任务完成" },
-  "task.failed": { group: "task", severity: "warn", mandatoryInapp: false, label: "任务失败" },
-  "loop.run_succeeded": {
-    group: "loop",
+  // 智能体通知：交互式会话每轮回复后通知（工作流派发/内部轮不发，守卫见 orchestrator emit 点）
+  "agent.replied": { group: "agent", severity: "info", mandatoryInapp: false, label: "智能体已回复" },
+  "agent.run_failed": {
+    group: "agent",
+    severity: "warn",
+    mandatoryInapp: false,
+    label: "智能体回复失败",
+  },
+  "workflow.run_succeeded": {
+    group: "workflow",
     severity: "info",
     mandatoryInapp: false,
-    label: "循环任务运行成功",
+    label: "工作流运行成功",
   },
-  "loop.run_failed": {
-    group: "loop",
+  "workflow.run_failed": {
+    group: "workflow",
     severity: "critical",
     mandatoryInapp: false,
-    label: "循环任务运行失败",
+    label: "工作流运行失败",
   },
   "loop.queue_overflow": {
-    group: "loop",
+    group: "system",
     severity: "warn",
     mandatoryInapp: false,
     label: "触发队列溢出丢事件",
@@ -82,7 +86,7 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     label: "并发任务被自动结束",
   },
   "user.role_changed": {
-    group: "account",
+    group: "system",
     severity: "critical",
     mandatoryInapp: true,
     label: "账号角色变更",
@@ -94,20 +98,20 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     label: "任务缺凭证暂停",
   },
   "feedback.replied": {
-    group: "feedback",
+    group: "system",
     severity: "info",
     mandatoryInapp: false,
     label: "反馈有新回复",
   },
   "approval.requested": {
-    group: "task",
+    group: "agent",
     severity: "warn",
     // 强制站内信：审批不决议 = workflow 永久挂起（2026-10-10 生产实证），不允许被组偏好静音
     mandatoryInapp: true,
     label: "等待审批",
   },
   "approval.decided": {
-    group: "task",
+    group: "agent",
     severity: "info",
     mandatoryInapp: false,
     label: "审批已决议",
@@ -119,37 +123,44 @@ export const NOTIFICATION_EVENT_CATALOG: Record<NotificationEvent, NotificationE
     label: "系统公告",
   },
   "deploy.detected": {
-    group: "deploy",
+    group: "system",
     severity: "warn",
     mandatoryInapp: false,
     label: "发现新提交待部署",
   },
   "deploy.succeeded": {
-    group: "deploy",
+    group: "system",
     severity: "info",
     mandatoryInapp: false,
     label: "部署成功",
   },
   "deploy.failed": {
-    group: "deploy",
+    group: "system",
     severity: "critical",
     mandatoryInapp: false,
     label: "部署失败",
   },
   "workflow.result_notified": {
-    group: "task",
+    group: "workflow",
     severity: "info",
     mandatoryInapp: false,
     label: "工作流结果通知",
   },
+  // 被裁剪提醒（拍板 D8 累计计数）：发送方指定渠道被用户订阅/地址裁剪时转入系统通知并提示次数
+  "notify.channel_trimmed": {
+    group: "system",
+    severity: "warn",
+    mandatoryInapp: true,
+    label: "渠道投递被裁剪提醒",
+  },
   "agent.skill_issue_reported": {
-    group: "share",
+    group: "agent",
     severity: "info",
     mandatoryInapp: false,
     label: "智能体技能问题上报",
   },
   "agent.skill_suggestion": {
-    group: "share",
+    group: "agent",
     severity: "info",
     mandatoryInapp: false,
     label: "技能修订建议（萃取）",
@@ -161,18 +172,14 @@ export function isNotificationEvent(v: unknown): v is NotificationEvent {
 }
 
 export const NOTIFICATION_GROUP_LABELS: Record<NotificationEventGroup, string> = {
-  task: "任务结果",
-  loop: "循环任务",
-  system: "系统提醒",
-  account: "账号安全",
-  feedback: "反馈回复",
-  deploy: "部署运维",
-  share: "分享协作",
+  system: "系统通知",
+  workflow: "工作流通知",
+  agent: "智能体通知",
 };
 
-/** account 组整体强制站内信（组内事件 mandatoryInapp=true），订阅矩阵中锁定为开 */
-export function isMandatoryGroup(group: NotificationEventGroup): boolean {
-  return group === "account";
+/** 三分类站内信全组锁定（需求拍板：系统通知默认开启且无法关闭；站内信恒发，UI/接口双守卫） */
+export function isMandatoryGroup(_group: NotificationEventGroup): boolean {
+  return true;
 }
 
 /** 通知意图：事件源只声明语义事件，不感知通道（spec §4.1） */
@@ -210,6 +217,8 @@ export interface InAppNotification {
   dedupeKey?: string;
   readAt?: string;
   createdAt: string;
+  /** agent 组事件携带：打开会话批量标已读（已读联动） */
+  conversationId?: string;
 }
 
 /** 用户订阅偏好条目（notification_prefs 表行） */
@@ -220,7 +229,7 @@ export interface NotificationPrefsEntry {
 }
 
 export const NotificationPrefInputSchema = z.object({
-  eventGroup: z.enum(["task", "loop", "system", "account", "feedback", "deploy", "share"]),
+  eventGroup: z.enum(["system", "workflow", "agent"]),
   channel: z.enum(["inapp", "dingtalk", "webhook", "email"]),
   enabled: z.boolean(),
 });

@@ -82,6 +82,11 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  // 会话 dev server 托管限额（2026-11-04-webgame-dev-loop-design §3.3）：全局/单用户并发
+  // 上限与闲置回收（毫秒，lastAccessAt 由 /preview 反代续期）
+  DEV_SERVER_MAX_TOTAL: z.coerce.number().int().positive().default(4),
+  DEV_SERVER_MAX_PER_USER: z.coerce.number().int().positive().default(2),
+  DEV_SERVER_IDLE_MS: z.coerce.number().int().positive().default(30 * 60_000),
   // 智能体回调链接发起限流（次/分钟/token，防泄露后被刷 LLM 费用）
   CALLBACK_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   // LLM 流停摆看门狗：轮内超过该毫秒数无任何事件视为挂死，中断并立即收尾（0=关闭）
@@ -208,6 +213,12 @@ export interface AppConfig {
   gitCloneTimeoutMs: number;
   /** 会话级 git worktree 隔离（GIT_SESSION_WORKTREE，默认 true） */
   gitSessionWorktree: boolean;
+  /** 会话 dev server 全局并发上限（DEV_SERVER_MAX_TOTAL，默认 4；spec 2026-11-04-webgame-dev-loop-design §3.3） */
+  devServerMaxTotal: number;
+  /** 会话 dev server 单用户并发上限（DEV_SERVER_MAX_PER_USER，默认 2） */
+  devServerMaxPerUser: number;
+  /** 会话 dev server 闲置回收阈值（毫秒，DEV_SERVER_IDLE_MS，默认 30 分钟；/preview 反代续期） */
+  devServerIdleMs: number;
   gitAllowPrivateHosts: boolean;
   /** 触发器 http source 是否允许内网目标（TRIGGER_ALLOW_PRIVATE_NET，默认 false） */
   triggerAllowPrivateNet: boolean;
@@ -288,6 +299,9 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     setupToken: e.SETUP_TOKEN.trim(),
     gitCloneTimeoutMs: e.GIT_CLONE_TIMEOUT_MS,
     gitSessionWorktree: e.GIT_SESSION_WORKTREE,
+    devServerMaxTotal: e.DEV_SERVER_MAX_TOTAL,
+    devServerMaxPerUser: e.DEV_SERVER_MAX_PER_USER,
+    devServerIdleMs: e.DEV_SERVER_IDLE_MS,
     gitAllowPrivateHosts: e.GIT_ALLOW_PRIVATE_HOSTS,
     triggerAllowPrivateNet: e.TRIGGER_ALLOW_PRIVATE_NET,
     triggerQueueMaxPending: e.TRIGGER_QUEUE_MAX_PENDING,

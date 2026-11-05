@@ -127,6 +127,9 @@ export interface RunOptions {
   /** in-process 处理登记 MCP server（workflow-dedup）：dedup.enabled 工作流派发轮挂载；
    *  写边界（workflowId）构造时闭包绑定（spec 2026-10-30-workflow-dedup-design） */
   dedupTools?: McpSdkServerConfigWithInstance;
+  /** in-process dev server 托管 MCP server（dev-server）：agent.devPreviewEnabled 会话挂载；
+   *  写边界（会话/项目根）构造时闭包绑定（spec 2026-11-04-webgame-dev-loop-design §3.3） */
+  devServerTools?: McpSdkServerConfigWithInstance;
   /**
    * AskUserQuestion 交互桥（可选）：CLI 把该工具的用户交互搭在权限通道（checkPermissions
    * 恒 behavior:"ask"），期望宿主收集答案后以 updatedInput.answers 放行。未提供时按

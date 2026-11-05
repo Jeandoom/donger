@@ -1,6 +1,7 @@
 import { RefreshCw, Square } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { fetchChannelConnections } from "../lib/channelConnections";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -197,6 +198,13 @@ export function WorkflowEditorPage() {
   const [notifyRecipients, setNotifyRecipients] = useState<"correlation" | "owner">("correlation");
   const [notifyInapp, setNotifyInapp] = useState(true);
   const [notifyDingtalk, setNotifyDingtalk] = useState(false);
+  // 注册表驱动的可订阅渠道（2026-11-05 统一通知设计拍板 #2）：仅展示 outboundPush 且就绪的渠道，
+  // 未适配渠道不进选择列表
+  const [notifyChannelIds, setNotifyChannelIds] = useState<Array<"dingtalk" | "webhook" | "email">>([
+    "dingtalk",
+    "webhook",
+    "email",
+  ]);
   const [notifyWebhook, setNotifyWebhook] = useState(false);
   const [notifyEmail, setNotifyEmail] = useState(false);
   const [notifySource, setNotifySource] = useState(false);
@@ -248,6 +256,19 @@ export function WorkflowEditorPage() {
     notifySource,
   });
   const pristineRef = useRef<string | null>(null);
+  // 可订阅渠道（拍板 #2）：注册表 outboundPush 且就绪才展示；加载失败=缺省全显（fail-open）
+  useEffect(() => {
+    fetchChannelConnections()
+      .then((channels) => {
+        const ids = channels
+          .filter((c) => c.capabilities.outboundPush && c.available)
+          .map((c) => c.id)
+          .filter((x): x is "dingtalk" | "webhook" | "email" => x !== "inapp");
+        if (ids.length > 0) setNotifyChannelIds(ids);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (loaded && pristineRef.current === null) pristineRef.current = snapshot;
   }, [loaded, snapshot]);
@@ -854,9 +875,15 @@ export function WorkflowEditorPage() {
                 {(
                   [
                     ["inapp", "站内信", notifyInapp, setNotifyInapp],
-                    ["dingtalk", "钉钉", notifyDingtalk, setNotifyDingtalk],
-                    ["webhook", "Webhook", notifyWebhook, setNotifyWebhook],
-                    ["email", "邮件", notifyEmail, setNotifyEmail],
+                    ...(notifyChannelIds.includes("dingtalk")
+                      ? [["dingtalk", "钉钉", notifyDingtalk, setNotifyDingtalk] as const]
+                      : []),
+                    ...(notifyChannelIds.includes("webhook")
+                      ? [["webhook", "Webhook", notifyWebhook, setNotifyWebhook] as const]
+                      : []),
+                    ...(notifyChannelIds.includes("email")
+                      ? [["email", "邮件", notifyEmail, setNotifyEmail] as const]
+                      : []),
                     ["source", "回复来源（消息事件回群/回任务）", notifySource, setNotifySource],
                   ] as const
                 ).map(([key, label, checked, set]) => (

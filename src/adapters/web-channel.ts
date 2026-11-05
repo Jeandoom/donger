@@ -12,10 +12,13 @@ import {
 } from "node:fs";
 import {
   createServer as createHttpServer,
+  request as proxyHttpRequest,
   type IncomingMessage as HttpRequest,
   type Server as HttpServer,
   type ServerResponse,
 } from "node:http";
+import type { Duplex } from "node:stream";
+import { connect as netConnect } from "node:net";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -550,6 +553,17 @@ export interface WebChannelDeps {
   feedbackStore?: FeedbackStore;
   /** 通知内核（spec 2026-09-28-notification-module-design；缺省=通知端点 503、不发站内信） */
   notificationService?: NotificationService;
+  /** 已读联动（2026-11-05 统一通知设计 §2.4）：打开会话批量标该会话未读通知已读 */
+  notificationStore?: import("../ports/notification-store.js").NotificationStore;
+  /** 渠道连接注册表（2026-11-05 统一通知设计 §2.2；连接器页「渠道连接」分区数据源） */
+  channelRegistry?: import("../orchestrator/channel-registry.js").ChannelConnectionRegistry;
+  /** 渠道自持配置存储（connection 渠道的配置 CRUD；加密在路由层做） */
+  channelConnectionStore?: import("./sqlite-channel-connection-store.js").SqliteChannelConnectionStore;
+  /** 飞书 webhook 校验/归一晚绑定钩子（适配器实例在 index 侧注册表） */
+  larkVerifier?: (payload: { header?: { token?: string } }) => boolean;
+  larkNormalizer?: (payload: unknown) => import("../domain/event-payloads.js").PlatformMessageEnvelope | null;
+  /** 配置加密器（channel_connections 自持配置落库加密；缺省=base64 明文兼容） */
+  secretCipher?: { encrypt(plaintext: string): string; decrypt(ciphertext: string): string };
   /** 知识库三表存储（spec 2026-09-22-knowledge-base-design；缺省=KB 端点 503） */
   kbLibraryStore?: KbLibraryStore;
   kbShareStore?: KbShareStore;
@@ -686,6 +700,11 @@ export interface WebChannelDeps {
       reason?: string;
     };
   };
+  /**
+   * 会话 dev server 托管服务（2026-11-04-webgame-dev-loop-design §3.3）：
+   * /preview/:convId/* 同源反代的上游解析与续期；缺省=预览端点 404 引导。
+   */
+  devServerService?: import("../orchestrator/dev-server-service.js").DevServerService;
   publicBaseUrl?: string;
   agentMeta?: { presets: LlmPreset[]; skillPaths: string[] };
   llm?: LLMConfig;
@@ -777,6 +796,12 @@ export class WebChannel implements Channel {
   private readonly githubBindStateMap = new Map<string, { userId: string; exp: number }>();
   /** 一次性登录 code → JWT（规格 M4：OAuth/验证回调 302 不再携带 token，60 秒单次有效） */
   private readonly oneTimeCodes = new Map<string, { token: string; exp: number }>();
+  /**
+   * /preview 预览会话 cookie（spec 2026-11-04-webgame-dev-loop-design §3.3）：iframe 内
+   * 子资源/WS 请求带不上 Authorization/query token，首次带凭证访问时签发短效 HttpOnly
+   * cookie（滑动续期），后续子资源与 WS upgrade 以 cookie 鉴权。
+   */
+  private readonly previewCookies = new Map<string, { userId: string; exp: number }>();
   /** /api 路由守卫：授权单点收口，未登记路由一律 404（fail-closed） */
   private readonly routeGuard: ApiRouteGuard;
 
@@ -964,6 +989,15 @@ export class WebChannel implements Channel {
           requestHandler,
         )
       : createHttpServer(requestHandler);
+    // /preview WS 隧道（vite HMR 等 upgrade 请求，spec 2026-11-04-webgame-dev-loop-design
+    // §3.3）：仅放行本通道；平台其余面无 WebSocket，upgrade 一律断。
+    server.on("upgrade", (req, socket, head) => {
+      if ((req.url ?? "").startsWith("/preview/")) {
+        this.handlePreviewUpgrade(req, socket as Duplex, head);
+      } else {
+        socket.destroy();
+      }
+    });
     this.server = server;
     this.readyPromise = new Promise<void>((resolve) => {
       server.listen(this.deps.port, this.deps.host ?? "0.0.0.0", () => resolve());
@@ -1452,6 +1486,13 @@ export class WebChannel implements Channel {
         return;
       }
 
+      // POST /api/webhooks/lark —— 飞书事件订阅入口（免认证面：verification token 校验；
+      // url_verification challenge 直答；归一委托渠道适配器）
+      if (req.method === "POST" && pathname === "/api/webhooks/lark") {
+        await this.handleLarkWebhook(req, res);
+        return;
+      }
+
       // 授权单点收口：未登记路由 404（fail-closed），owner/admin 判定统一在此执行。
       // 守卫通过后写回 req.userId，下游 handler 既有取身份逻辑不变。
       const viewer = await this.resolveViewer(req);
@@ -1605,6 +1646,14 @@ export class WebChannel implements Channel {
       }
       res.writeHead(404);
       res.end("Not found");
+      return;
+    }
+
+    // /preview/:convId/* 会话 dev server 同源反代（2026-11-04-webgame-dev-loop-design §3.3）：
+    // html 经 files/content 会落 text/plain 防执行策略，站点预览专走本通道；
+    // 属主/admin 口径 + 运行中上游，反代续期 lastAccessAt（闲置回收依据）
+    if (url === "/preview" || url.startsWith("/preview/")) {
+      await this.handlePreviewProxy(req, res);
       return;
     }
 
@@ -2008,6 +2057,164 @@ export class WebChannel implements Channel {
     });
     res.writeHead(200);
     res.end(JSON.stringify({ ok: true }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // /preview 会话预览反代（spec 2026-11-04-webgame-dev-loop-design §3.3）
+  // ---------------------------------------------------------------------------
+
+  /** 预览 cookie 解析：无效/过期返回 null；命中即滑动续期 */
+  private readPreviewCookie(req: HttpRequest): string | null {
+    const header = req.headers.cookie ?? "";
+    const raw = header
+      .split(";")
+      .map((s) => s.trim())
+      .find((s) => s.startsWith("donger_preview="));
+    if (!raw) return null;
+    const token = raw.slice("donger_preview=".length);
+    const entry = this.previewCookies.get(token);
+    const now = Date.now();
+    if (!entry || entry.exp <= now) {
+      this.previewCookies.delete(token);
+      return null;
+    }
+    entry.exp = now + 2 * 3_600_000;
+    return entry.userId;
+  }
+
+  /** 鉴权（cookie 优先，回落 header/query token）+ 属主/admin 校验 + 上游解析；命中签发 cookie */
+  private async resolvePreviewTarget(
+    req: HttpRequest,
+    conversationId: string,
+  ): Promise<
+    | { ok: true; port: number; issueCookie?: string }
+    | { ok: false; status: number; message: string }
+  > {
+    const svc = this.deps.devServerService;
+    if (!svc) return { ok: false, status: 503, message: "preview service unavailable" };
+    if (!/^[\w-]+$/.test(conversationId)) {
+      return { ok: false, status: 400, message: "bad conversation id" };
+    }
+    let userId = this.readPreviewCookie(req);
+    let issueCookie: string | undefined;
+    if (!userId) {
+      userId = await this.authMiddleware(req);
+      if (!userId) return { ok: false, status: 401, message: "unauthorized" };
+      // 签发短效预览 cookie（随机 token，进程内 jar；iframe 子资源/WS 用它续行）
+      issueCookie = randomBytes(24).toString("hex");
+      this.previewCookies.set(issueCookie, { userId, exp: Date.now() + 2 * 3_600_000 });
+      if (this.previewCookies.size > 1_000) {
+        const now = Date.now();
+        for (const [k, v] of this.previewCookies) {
+          if (v.exp <= now) this.previewCookies.delete(k);
+        }
+      }
+    }
+    const conv = this.deps.conversationStore
+      ? await this.deps.conversationStore.get(conversationId)
+      : undefined;
+    if (!conv) return { ok: false, status: 404, message: "conversation not found" };
+    if (conv.userId !== userId) {
+      const user = this.deps.userStore ? await this.deps.userStore.get(userId) : undefined;
+      if (user?.role !== "admin") return { ok: false, status: 403, message: "forbidden" };
+    }
+    const port = await svc.resolveUpstream(conversationId);
+    if (!port) {
+      return {
+        ok: false,
+        status: 404,
+        message: "dev server 未运行：请在会话内让 agent 调用 dev_start 工具启动预览",
+      };
+    }
+    void svc.touch(conversationId).catch(() => undefined);
+    return { ok: true, port, issueCookie };
+  }
+
+  private async handlePreviewProxy(req: HttpRequest, res: ServerResponse): Promise<void> {
+    // 参数段收窄（铁律：[\w-]+ 段 + 尾部查询串原样透传，防贪婪吃 ?token=）
+    const raw = req.url ?? "/";
+    const match = raw.match(/^\/preview\/([\w-]+)(?:\/(.*))?$/);
+    const conversationId = match?.[1] ?? "";
+    const target = await this.resolvePreviewTarget(req, conversationId);
+    if (!target.ok) {
+      res.writeHead(target.status, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(target.message);
+      return;
+    }
+    const upstreamPath = match?.[2] ? `/${match[2]}` : "/";
+    const headers: Record<string, string | string[]> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (k.toLowerCase() === "host" || k.toLowerCase() === "connection") continue;
+      if (v !== undefined) headers[k] = v;
+    }
+    headers.host = `127.0.0.1:${target.port}`;
+    const cookieToSet = target.ok ? target.issueCookie : undefined;
+    const upstream = proxyHttpRequest(
+      {
+        host: "127.0.0.1",
+        port: target.port,
+        path: upstreamPath,
+        method: req.method,
+        headers,
+      },
+      (ur) => {
+        const mergedHeaders: Record<string, string | string[]> = {};
+        for (const [k, v] of Object.entries(ur.headers)) {
+          if (v !== undefined) mergedHeaders[k] = v;
+        }
+        if (cookieToSet) {
+          const existing = ur.headers["set-cookie"];
+          mergedHeaders["set-cookie"] = [
+            ...(Array.isArray(existing) ? existing : existing ? [existing] : []),
+            `donger_preview=${cookieToSet}; Path=/preview; HttpOnly; SameSite=Lax; Max-Age=7200`,
+          ];
+        }
+        res.writeHead(ur.statusCode ?? 502, mergedHeaders);
+        ur.pipe(res);
+      },
+    );
+    upstream.on("error", () => {
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("dev server upstream error");
+      } else {
+        res.destroy();
+      }
+    });
+    req.pipe(upstream);
+  }
+
+  /** WS 隧道：/preview 前缀以外已在挂载点拦截；鉴权与上游同 HTTP 面（cookie 可随 upgrade 头携带） */
+  private handlePreviewUpgrade(req: HttpRequest, socket: Duplex, head: Buffer): void {
+    const raw = req.url ?? "/";
+    const match = raw.match(/^\/preview\/([\w-]+)(?:\/(.*))?$/);
+    if (!match) {
+      socket.destroy();
+      return;
+    }
+    void (async () => {
+      const target = await this.resolvePreviewTarget(req, match[1] ?? "");
+      if (!target.ok) {
+        socket.destroy();
+        return;
+      }
+      const upstreamPath = match[2] ? `/${match[2]}` : "/";
+      const upstream = netConnect(target.port, "127.0.0.1", () => {
+        const lines = [`${req.method ?? "GET"} ${upstreamPath} HTTP/1.1`];
+        for (const [k, v] of Object.entries(req.headers)) {
+          if (k.toLowerCase() === "host") continue;
+          if (Array.isArray(v)) for (const vv of v) lines.push(`${k}: ${vv}`);
+          else if (v !== undefined) lines.push(`${k}: ${v}`);
+        }
+        lines.push(`host: 127.0.0.1:${target.port}`);
+        upstream.write(lines.join("\r\n") + "\r\n\r\n");
+        if (head.length > 0) upstream.write(head);
+        upstream.pipe(socket);
+        socket.pipe(upstream);
+      });
+      upstream.on("error", () => socket.destroy());
+      socket.on("error", () => upstream.destroy());
+    })();
   }
 
   /**
@@ -4113,6 +4320,17 @@ export class WebChannel implements Channel {
       return;
     }
 
+    // POST /api/conversations/:id/seen —— 已读联动（2026-11-05 统一通知设计 §2.4）：
+    // 打开会话把该会话全部未读通知（agent.replied 等）标已读；仅本人
+    const seenMatch = url.match(/^\/api\/conversations\/([\w-]+)\/seen$/);
+    if (seenMatch && req.method === "POST") {
+      const viewer = this.currentViewer(req);
+      const marked = this.deps.notificationStore
+        ? await this.deps.notificationStore.markReadByConversation(viewer.id, seenMatch[1] ?? "")
+        : 0;
+      return this.json(res, { ok: true, marked });
+    }
+
     // GET /api/conversations/:id/messages — 会话消息列表
     // GET /api/conversations/:id/events[?light=1] —— 会话执行事件回放（audit 统一事件源；属主判定由 routeGuard 执行）
     const eventsMatch = url.match(/^\/api\/conversations\/([\w-]+)\/events(?:\?.*)?$/);
@@ -5025,6 +5243,73 @@ export class WebChannel implements Channel {
       }
       const ok = await svc.markRead(viewer.id, body.id);
       if (!ok) return this.json(res, { error: "通知不存在或已读" }, 404);
+      return this.json(res, { ok: true });
+    }
+
+    // GET /api/channel-connections —— 渠道连接列表（2026-11-05 统一通知设计 §2.2；
+    // authenticated：只回能力/状态/配置来源归属，永不回配置值；配置管理在授权页/地址簿）
+    if (url === "/api/channel-connections" && req.method === "GET") {
+      const registry = this.deps.channelRegistry;
+      if (!registry) return this.json(res, { error: "渠道连接未启用" }, 503);
+      const channels = registry.list().map((a) => ({
+        id: a.id,
+        displayName: a.displayName,
+        description: a.description,
+        capabilities: a.capabilities,
+        configSource: a.configSource,
+        configHint: a.configHint,
+        available: a.available(),
+        status: a.status?.() ?? null,
+      }));
+      return this.json(res, { channels });
+    }
+
+    // POST /api/channel-connections/:id/test —— 渠道连通性测试（admin：发起真实外部探活）
+    const channelTestMatch = url.match(/^\/api\/channel-connections\/([\w-]+)\/test$/);
+    if (channelTestMatch && req.method === "POST") {
+      const viewer = this.currentViewer(req);
+      if (viewer.role !== "admin") return this.json(res, { error: "forbidden" }, 403);
+      const adapter = this.deps.channelRegistry?.get(channelTestMatch[1] ?? "");
+      if (!adapter) return this.json(res, { error: "not found" }, 404);
+      try {
+        const result = await adapter.testConnection();
+        return this.json(res, result);
+      } catch (e) {
+        return this.json(res, { ok: false, error: (e as Error).message.slice(0, 200) }, 200);
+      }
+    }
+
+    // GET/PUT /api/channel-connections/:id/config —— 渠道自持配置（2026-11-05 §2.2 D6；
+    // admin；secret 永不回显，回显 configSource 的可编辑键集合）
+    const channelConfigMatch = url.match(/^\/api\/channel-connections\/([\w-]+)\/config$/);
+    if (channelConfigMatch && (req.method === "GET" || req.method === "PUT")) {
+      const viewer = this.currentViewer(req);
+      if (viewer.role !== "admin") return this.json(res, { error: "forbidden" }, 403);
+      const platform = channelConfigMatch[1] ?? "";
+      const store = this.deps.channelConnectionStore;
+      if (!store) return this.json(res, { error: "渠道配置存储未启用" }, 503);
+      if (req.method === "GET") {
+        const row = store.get(platform);
+        return this.json(res, {
+          platform,
+          configured: !!row,
+          enabled: row ? !!row.enabled : false,
+          updatedAt: row?.updatedAt ?? null,
+        });
+      }
+      const body = JSON.parse(await this.readBody(req)) as {
+        config?: Record<string, string>;
+        enabled?: boolean;
+      };
+      if (typeof body.config !== "object" || body.config === null) {
+        return this.json(res, { error: "config 为必填对象" }, 400);
+      }
+      // 敏感键不回显：保存即生效；GET 仅回 configured/enabled 元信息
+      const encrypted = this.deps.secretCipher
+        ? this.deps.secretCipher.encrypt(JSON.stringify(body.config))
+        : Buffer.from(JSON.stringify(body.config)).toString("base64");
+      store.put(platform, encrypted, body.enabled ?? true);
+      this.deps.channelRegistry?.get(platform)?.testConnection().catch(() => {});
       return this.json(res, { ok: true });
     }
 
@@ -6963,7 +7248,50 @@ export class WebChannel implements Channel {
     } catch {
       return respond(400, { error: "invalid json" });
     }
-    const envelope = buildTeambitionEnvelope(payload);
+    // 归一收编（2026-11-05 统一通知设计 §2.6）：payload→信封委托渠道适配器（HTTP 面/验签/
+    // 限流/防环仍在本 handler）；未注册=渠道未启用
+    const tbAdapter = this.deps.channelRegistry?.get("teambition");
+    const envelope = tbAdapter?.normalizeWebhook
+      ? tbAdapter.normalizeWebhook(payload)
+      : buildTeambitionEnvelope(payload);
+    if (!envelope) return respond(200, { ok: true, skipped: "unshaped" });
+    if (!this.deps.teambitionRouter) return respond(200, { ok: true, skipped: "router-missing" });
+    const outcome = await this.deps.teambitionRouter.route(envelope);
+    return respond(200, { ok: true, consumed: outcome.consumed, fired: outcome.fired });
+  }
+
+  /** POST /api/webhooks/lark —— 飞书事件订阅（2026-11-05 统一通知设计 M4 样板）：
+   * url_verification challenge 直答；verification token 校验；归一委托渠道适配器 → 路由。 */
+  private async handleLarkWebhook(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const respond = (status: number, body: Record<string, unknown>): void => {
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(body));
+    };
+    if (!this.deps.larkVerifier || !this.deps.larkNormalizer) {
+      return respond(404, { error: "not found" });
+    }
+    if (!this.rateLimiter.hit(`lark-webhook:${this.clientIp(req)}`, 60_000, 120)) {
+      return respond(429, { error: "rate limited" });
+    }
+    let payload: {
+      type?: string;
+      challenge?: string;
+      header?: { event_type?: string; token?: string };
+      event?: unknown;
+    };
+    try {
+      payload = JSON.parse(await this.readBody(req));
+    } catch {
+      return respond(400, { error: "invalid json" });
+    }
+    // url_verification 握手（飞书开放平台首次登记回调）
+    if (payload.type === "url_verification") {
+      return respond(200, { challenge: payload.challenge ?? "" });
+    }
+    if (!this.deps.larkVerifier(payload)) {
+      return respond(401, { error: "invalid token" });
+    }
+    const envelope = this.deps.larkNormalizer(payload);
     if (!envelope) return respond(200, { ok: true, skipped: "unshaped" });
     if (!this.deps.teambitionRouter) return respond(200, { ok: true, skipped: "router-missing" });
     const outcome = await this.deps.teambitionRouter.route(envelope);

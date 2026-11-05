@@ -10,6 +10,7 @@ import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/age
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
 import { apiFetch } from "../lib/auth";
 import { fetchGitPreflight, type GitPreflightDTO } from "../lib/gitSettings";
+import { seenConversation } from "../lib/notifications";
 import { useWebChat } from "../lib/webChat";
 
 const PREFS_STORAGE_KEY = "donger.sidebarPrefs.v1";
@@ -136,6 +137,12 @@ function ChatPageInner() {
   const activeConversation = wc.conversations.find(
     (conversation) => conversation.id === wc.activeConversationId,
   );
+  // 已读联动：进入会话即把该会话未读通知（智能体回复通知等）标已读（fire-and-forget，草稿跳过）
+  useEffect(() => {
+    const id = wc.activeConversationId;
+    if (!id || id.startsWith("draft-")) return;
+    void seenConversation(id).catch(() => {});
+  }, [wc.activeConversationId]);
   const activeIsDraft = activeConversation?.isDraft;
   const activeAgent = agents.find((a) => a.id === activeConversation?.agentId);
   const agentNameMap = useMemo(() => {

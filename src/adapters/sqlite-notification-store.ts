@@ -113,6 +113,16 @@ export class SqliteNotificationStore implements NotificationStore {
         PRIMARY KEY (userId, eventGroup, channel)
       );
 
+      CREATE TABLE IF NOT EXISTS notification_trim_stats (
+        userId TEXT NOT NULL,
+        eventGroup TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        lastNotifiedAt TEXT,
+        lastAt TEXT NOT NULL,
+        PRIMARY KEY (userId, eventGroup, channel)
+      );
+
       CREATE TABLE IF NOT EXISTS notification_addresses (
         userId TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -124,6 +134,65 @@ export class SqliteNotificationStore implements NotificationStore {
       );
     `);
     this.migrateDeliveries();
+    this.migrateNotif20261105();
+  }
+
+  /**
+   * 2026-11-05 统一通知设计迁移（幂等）：
+   * ① notifications 加 conversationId 列（agent.replied 已读联动：打开会话批量标已读）；
+   * ② 订阅偏好 7 组 → 3 类归并（task→agent、loop→workflow、account/feedback/deploy→system、
+   *    share→agent、system 同名保留），同 (user,新组,channel) 多行按 OR 合并，inapp 全部刷为开；
+   * ③ 若无旧组值则跳过（幂等）。
+   */
+  private migrateNotif20261105(): void {
+    const nCols = (
+      this.db.prepare("PRAGMA table_info(notifications)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    if (nCols.length > 0 && !nCols.includes("conversationId")) {
+      this.db.exec("ALTER TABLE notifications ADD COLUMN conversationId TEXT");
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_notifications_conversation ON notifications(conversationId, userId, readAt)",
+      );
+    }
+
+    const LEGACY_GROUPS = ["task", "loop", "account", "feedback", "deploy", "share"];
+    const hasLegacy = this.db
+      .prepare(
+        `SELECT COUNT(*) n FROM notification_prefs WHERE eventGroup IN (${LEGACY_GROUPS.map(() => "?").join(",")})`,
+      )
+      .get(...LEGACY_GROUPS) as { n: number };
+    if (!hasLegacy.n) return;
+
+    const MAPPING: Record<string, string> = {
+      task: "agent",
+      loop: "workflow",
+      account: "system",
+      feedback: "system",
+      deploy: "system",
+      share: "agent",
+      system: "system",
+    };
+    const rows = this.db
+      .prepare("SELECT userId, eventGroup, channel, enabled FROM notification_prefs")
+      .all() as Array<{ userId: string; eventGroup: string; channel: string; enabled: number }>;
+    const merged = new Map<string, { userId: string; group: string; channel: string; enabled: number }>();
+    for (const r of rows) {
+      const group = MAPPING[r.eventGroup] ?? r.eventGroup;
+      const key = `${r.userId}|${group}|${r.channel}`;
+      const prev = merged.get(key);
+      const enabled = r.channel === "inapp" ? 1 : Math.max(prev?.enabled ?? 0, r.enabled);
+      merged.set(key, { userId: r.userId, group, channel: r.channel, enabled });
+    }
+    const tx = this.db.transaction(() => {
+      this.db.exec("DELETE FROM notification_prefs");
+      const ins = this.db.prepare(
+        "INSERT INTO notification_prefs (userId, eventGroup, channel, enabled) VALUES (?, ?, ?, ?)",
+      );
+      for (const m of merged.values()) {
+        ins.run(m.userId, m.group, m.channel, m.enabled);
+      }
+    });
+    tx();
   }
 
   /** deliveries 升级：M1 旧表 notificationId NOT NULL 且无 event/title 冗余列。
@@ -157,8 +226,8 @@ export class SqliteNotificationStore implements NotificationStore {
   async insertInApp(n: InAppNotification): Promise<"inserted" | "duplicate"> {
     const result = this.db
       .prepare(
-        `INSERT INTO notifications (id, userId, event, severity, title, body, link, dedupeKey, readAt, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO notifications (id, userId, event, severity, title, body, link, dedupeKey, readAt, createdAt, conversationId)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(dedupeKey) WHERE dedupeKey IS NOT NULL DO NOTHING`,
       )
       .run(
@@ -172,6 +241,7 @@ export class SqliteNotificationStore implements NotificationStore {
         n.dedupeKey ?? null,
         n.readAt ?? null,
         n.createdAt,
+        (n as { conversationId?: string }).conversationId ?? null,
       );
     return result.changes > 0 ? "inserted" : "duplicate";
   }
@@ -228,6 +298,30 @@ export class SqliteNotificationStore implements NotificationStore {
     const result = this.db
       .prepare("UPDATE notifications SET readAt = ? WHERE userId = ? AND readAt IS NULL")
       .run(new Date().toISOString(), userId);
+    return result.changes;
+  }
+
+  /** 被裁剪累计计数（拍板 D8）：upsert count+1，返回累计值 */
+  async bumpTrimStat(userId: string, eventGroup: string, channel: string, at: string): Promise<number> {
+    const row = this.db
+      .prepare(
+        `INSERT INTO notification_trim_stats (userId, eventGroup, channel, count, lastNotifiedAt, lastAt)
+         VALUES (?, ?, ?, 1, NULL, ?)
+         ON CONFLICT(userId, eventGroup, channel)
+         DO UPDATE SET count = count + 1, lastAt = excluded.lastAt
+         RETURNING count`,
+      )
+      .get(userId, eventGroup, channel, at) as { count: number };
+    return row.count;
+  }
+
+  /** 已读联动：打开会话把该会话全部未读通知标已读 */
+  async markReadByConversation(userId: string, conversationId: string): Promise<number> {
+    const result = this.db
+      .prepare(
+        "UPDATE notifications SET readAt = ? WHERE conversationId = ? AND userId = ? AND readAt IS NULL",
+      )
+      .run(new Date().toISOString(), conversationId, userId);
     return result.changes;
   }
 

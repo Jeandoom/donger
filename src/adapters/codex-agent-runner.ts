@@ -9,6 +9,14 @@ import type { RunnerEvent, Task, TokenUsage } from "../domain/types.js";
 import type { AgentRunner, ApprovalResolver, RunOptions } from "../ports/agent-runner.js";
 import { materializeWhitelistedSkills } from "../util/skill-materialization.js";
 import type { ChatUpstreamConfig, CodexChatBridge } from "./codex-chat-bridge.js";
+import {
+  createBridgeToolExecutor,
+  HttpBridgeMcpClient,
+  InProcessBridgeMcpClient,
+  StdioBridgeMcpClient,
+  type BridgeGateCheck,
+  type BridgeMcpClient,
+} from "./bridge-mcp-client.js";
 
 /**
  * OpenAI 引擎 runner：用 Codex Agent SDK（codex exec 通道）驱动。
@@ -168,13 +176,26 @@ export class CodexAgentRunner implements AgentRunner {
     };
     this.bridge.registerUpstream(upstreamToken, upstream);
 
-    // —— MCP 装配（M2）——
-    // in-process 平台工具台（platform/git/host/kb/audit）：桥上挂 Streamable HTTP 端点给 codex，
-    // 审批门命中在桥内静态拒绝（决策点 ①A）。连接器 stdio/http mcpServers：headers 凭证经
-    // env_http_headers 注入（值只进 env，不进 argv 防 --config 泄漏面）。
-    const mcpServerConfigs: Record<string, unknown> = {};
-    const mcpHeaderEnv: Record<string, string> = {};
-    let mcpHeaderIndex = 0;
+    // —— MCP 装配（2026-11-05 codex-namespace 专项）——
+    // codex 0.155 把 mcp_servers 工具暴露为 namespace 型聚合工具（模型侧不可见，协议实验
+    // 实锤），旧「挂 Streamable HTTP 端点进 codex config」形态整体失效。改为：runner 把
+    // MCP 工具面（in-process 平台工具台 + agent 连接器 stdio/http）注册给桥的
+    // BridgeToolExecutor——桥把工具展平为 function 注入上游 chat 请求，模型 tool_call 命中
+    // 由桥直接执行并内联回传 codex。审批门语义保持：命中（ask 档/risk_guard 的 force 门）
+    // 在 executor 内静态拒绝 fail-closed（决策点 ①A，文案与 mcp-http-bridge 同款）。
+    const bridgeEntries: Array<{ client: BridgeMcpClient; gateCheck: BridgeGateCheck }> = [];
+    const bridgeGateCheck: BridgeGateCheck = (tool, args) => {
+      // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄。
+      // 模式分流（2026-10-13 权限模式轮）：full_access 零拦截全放行；risk_guard 放行
+      // 非 force 门；codex 无审批卡通道，命中门维持静态拒绝。
+      if (opts.gateAllowCheck?.(tool, args)) return undefined;
+      const gated = this.gates.match(tool, args);
+      if (!gated) return undefined;
+      const mode = opts.permissionMode?.();
+      if (mode === "full_access") return undefined;
+      if (mode === "risk_guard" && !gated.force) return undefined;
+      return gated;
+    };
     for (const sdkTools of [
       opts.gitPlatformTools,
       opts.hostTools,
@@ -182,49 +203,40 @@ export class CodexAgentRunner implements AgentRunner {
       opts.auditTools,
       opts.feedbackTools,
       opts.dedupTools,
+      opts.devServerTools,
     ]) {
       if (!sdkTools) continue;
-      const url = await this.bridge.mountMcp(
-        upstreamToken,
-        sdkTools.name,
-        sdkTools.instance as never,
-        // agent 级白名单放行（含 force 门）：判定范围由 orchestrator 侧钩子收窄。
-        // 模式分流（2026-10-13 权限模式轮）：full_access 零拦截全放行；risk_guard 放行
-        // 非 force 门；codex 无审批卡通道，命中门（ask 模式/risk_guard 的 force 门）
-        // 维持桥内静态拒绝 fail-closed。
-        (tool, args) => {
-          if (opts.gateAllowCheck?.(tool, args)) return undefined;
-          const gated = this.gates.match(tool, args);
-          if (!gated) return undefined;
-          const mode = opts.permissionMode?.();
-          if (mode === "full_access") return undefined;
-          if (mode === "risk_guard" && !gated.force) return undefined;
-          return gated;
-        },
-      );
-      mcpServerConfigs[sdkTools.name] = { url };
+      bridgeEntries.push({
+        client: new InProcessBridgeMcpClient(sdkTools.name, sdkTools.instance as never),
+        gateCheck: bridgeGateCheck,
+      });
     }
     for (const server of (opts.mcpServers ?? []) as McpServerConfig[]) {
-      if (server.type === "stdio") {
-        mcpServerConfigs[server.name] = {
-          command: server.command,
-          ...(server.args?.length ? { args: server.args } : {}),
-          ...(server.env && Object.keys(server.env).length > 0 ? { env: server.env } : {}),
-        };
-      } else {
-        const envHeaders: Record<string, string> = {};
-        for (const [key, value] of Object.entries(server.headers ?? {})) {
-          const envName = `DONGER_MCPH_${mcpHeaderIndex}`;
-          mcpHeaderIndex += 1;
-          mcpHeaderEnv[envName] = value;
-          envHeaders[key] = envName;
-        }
-        mcpServerConfigs[server.name] = {
-          url: server.url,
-          ...(Object.keys(envHeaders).length > 0 ? { env_http_headers: envHeaders } : {}),
-        };
+      if (server.type === "stdio" && server.command) {
+        bridgeEntries.push({
+          client: new StdioBridgeMcpClient(server.name, {
+            command: server.command,
+            ...(server.args?.length ? { args: server.args } : {}),
+            ...(server.env ?? {}),
+            // cwd=会话工作区：MCP 落盘产物（截图等）才能进文件树（与 claude/zcode 同语义）
+            cwd,
+          }),
+          gateCheck: bridgeGateCheck,
+        });
+      } else if (server.url) {
+        bridgeEntries.push({
+          client: new HttpBridgeMcpClient(server.name, {
+            url: server.url,
+            ...(server.headers ? { headers: server.headers } : {}),
+          }),
+          gateCheck: bridgeGateCheck,
+        });
       }
     }
+    this.bridge.registerBridgeTools(
+      upstreamToken,
+      createBridgeToolExecutor("OpenAI", bridgeEntries),
+    );
 
     try {
       const client = this.codexFactory({
@@ -234,7 +246,6 @@ export class CodexAgentRunner implements AgentRunner {
           CODEX_HOME: codexHome,
           DONGER_BRIDGE_TOKEN: upstreamToken,
           ...opts.credentialsEnv,
-          ...mcpHeaderEnv,
           ...(opts.pythonPaths?.length
             ? {
                 PYTHONPATH: [
@@ -258,7 +269,8 @@ export class CodexAgentRunner implements AgentRunner {
           },
           approval_policy: "never",
           sandbox_mode: sandboxMode,
-          ...(Object.keys(mcpServerConfigs).length > 0 ? { mcp_servers: mcpServerConfigs } : {}),
+          // mcp_servers 不再下发（codex 0.155 namespace 语义模型侧不可见）：
+          // MCP 工具面改由桥展平注入 + 内联执行，见上方 registerBridgeTools
         },
       });
       const threadOptions: Record<string, unknown> = {
@@ -387,7 +399,7 @@ export class CodexAgentRunner implements AgentRunner {
         }
       }
     } finally {
-      await this.bridge.unmountAllMcp(upstreamToken);
+      await this.bridge.unregisterBridgeTools(upstreamToken);
       this.bridge.unregisterUpstream(upstreamToken);
     }
   }

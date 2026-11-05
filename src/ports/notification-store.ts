@@ -49,6 +49,10 @@ export interface NotificationStore {
   markRead(userId: string, id: string): Promise<boolean>;
   markAllRead(userId: string): Promise<number>;
   getPrefs(userId: string): Promise<NotificationPrefsEntry[]>;
+  /** 被裁剪累计计数（拍板 D8）：count+1 并返回累计值 */
+  bumpTrimStat(userId: string, eventGroup: string, channel: string, at: string): Promise<number>;
+  /** 已读联动：打开会话把该会话全部未读通知标已读，返回条数 */
+  markReadByConversation(userId: string, conversationId: string): Promise<number>;
   setPref(
     userId: string,
     entry: { eventGroup: NotificationEventGroup; channel: NotificationChannelId; enabled: boolean },

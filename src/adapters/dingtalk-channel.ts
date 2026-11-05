@@ -48,7 +48,11 @@ export function buildDingTalkGroupEnvelope(m: RobotTextMessage): PlatformMessage
     source: { openConversationId: m.conversationId, conversationType: m.conversationType },
     text: normalizeDingTalkMessage(m).text,
     raw: { robotCode: m.robotCode, isAdmin: m.isAdmin, msgtype: m.msgtype },
-    replyAnchor: { platform: "dingtalk", kind: "group", threadId: m.conversationId },
+    replyAnchor: {
+      platform: "dingtalk",
+      kind: "group",
+      target: { threadId: m.conversationId },
+    },
   };
 }
 
@@ -132,6 +136,11 @@ export class DingTalkChannel implements Channel {
 
   stop(): void {
     this.client?.disconnect();
+  }
+
+  /** 长连接在线状态（渠道连接卡片入站展示；onMessage 建链后即非空） */
+  isRunning(): boolean {
+    return this.client !== undefined;
   }
 
   async send(threadId: string, msg: OutgoingMessage): Promise<void> {
