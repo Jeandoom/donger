@@ -54,19 +54,19 @@ describe("NotificationService 内核", () => {
     store.migrate();
     const svc = new NotificationService({ store });
     await svc.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: "u1" }],
       title: "任务完成",
       body: "ok",
-      dedupeKey: "task:t1:completed",
+      dedupeKey: "task:t1:replied",
     });
     // 同 dedupeKey 重发 → 不重复
     await svc.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: "u1" }],
       title: "任务完成",
       body: "ok",
-      dedupeKey: "task:t1:completed",
+      dedupeKey: "task:t1:replied",
     });
     expect(await svc.unreadCount("u1")).toBe(1);
 
@@ -84,52 +84,42 @@ describe("NotificationService 内核", () => {
     db.close();
   });
 
-  it("订阅偏好：关闭组不再投递；强制组（账号安全）锁定开且 setPref 拒绝", async () => {
+  it("订阅偏好：站内信全组锁定拒关（三分类恒发）；组偏好仅约束站外", async () => {
     const db = new Database(":memory:");
     const store = new SqliteNotificationStore(db);
     store.migrate();
     const svc = new NotificationService({ store });
 
-    // 关闭 task 组站内信
-    expect(await svc.setPref("u1", { eventGroup: "task", channel: "inapp", enabled: false })).toBe(
-      true,
-    );
+    // 三分类站内信全部拒绝关闭（拍板：系统通知默认开启且无法关闭，站内恒发）
+    for (const group of ["system", "workflow", "agent"] as const) {
+      expect(await svc.setPref("u1", { eventGroup: group, channel: "inapp", enabled: false })).toBe(
+        false,
+      );
+    }
+
+    // 即便偏好表被旁路写成关，站内照投（enabledFor 对 inapp 恒真）
+    for (const group of ["system", "workflow", "agent"] as const) {
+      await store.setPref("u1", { eventGroup: group, channel: "inapp", enabled: false });
+    }
     await svc.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: "u1" }],
-      title: "t",
+      title: "t1",
       body: "b",
     });
-    expect(await svc.unreadCount("u1")).toBe(0);
-
-    // system 组关闭后：credential.missing 不投，eviction.notice（mandatory）仍投
-    await svc.setPref("u1", { eventGroup: "system", channel: "inapp", enabled: false });
     await svc.notify({
       event: "credential.missing",
       recipients: [{ kind: "user", userId: "u1" }],
-      title: "t",
+      title: "t2",
       body: "b",
     });
-    await svc.notify({
-      event: "eviction.notice",
-      recipients: [{ kind: "user", userId: "u1" }],
-      title: "t",
-      body: "b",
-    });
-    expect(await svc.unreadCount("u1")).toBe(1);
-
-    // account 组强制：setPref 拒绝；user.role_changed 即便偏好表被旁路改关也仍投递
-    expect(
-      await svc.setPref("u1", { eventGroup: "account", channel: "inapp", enabled: false }),
-    ).toBe(false);
-    await svc.setPref("u1", { eventGroup: "account", channel: "inapp", enabled: true });
     await svc.notify({
       event: "user.role_changed",
       recipients: [{ kind: "user", userId: "u1" }],
-      title: "t",
+      title: "t3",
       body: "b",
     });
-    expect(await svc.unreadCount("u1")).toBe(2);
+    expect(await svc.unreadCount("u1")).toBe(3);
     db.close();
   });
 
@@ -256,21 +246,21 @@ describe("通知 Web API", () => {
     const aliceId = (await userStore.getOrCreateByIdentity("test", "alice", "alice")).id;
     const bobId = (await userStore.getOrCreateByIdentity("test", "bob", "bob")).id;
     await notificationService.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: aliceId }],
       title: "A1",
       body: "b",
       dedupeKey: "a1",
     });
     await notificationService.notify({
-      event: "loop.run_failed",
+      event: "workflow.run_failed",
       recipients: [{ kind: "user", userId: aliceId }],
       title: "A2",
       body: "b",
       dedupeKey: "a2",
     });
     await notificationService.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: bobId }],
       title: "B1",
       body: "b",
@@ -314,7 +304,7 @@ describe("通知 Web API", () => {
     expect(final.count).toBe(0);
   });
 
-  it("订阅偏好：矩阵含强制组；账号安全关 409；任务组关后不再投递", async () => {
+  it("订阅偏好：矩阵为三分类；站内信全组锁定 409；站外 opt-in 可开", async () => {
     const port = await startChannel();
     const token = await tokenFor("carol");
     const carolId = (await userStore.getOrCreateByIdentity("test", "carol", "carol")).id;
@@ -328,29 +318,26 @@ describe("通知 Web API", () => {
         channels: { inapp: boolean; dingtalk: boolean; webhook: boolean };
       }>;
     };
-    expect(groups.map((g) => g.eventGroup)).toEqual([
-      "task",
-      "loop",
-      "system",
-      "account",
-      "feedback",
-      "deploy",
-      "share",
-    ]);
-    const account = groups.find((g) => g.eventGroup === "account");
-    expect(account?.mandatory).toBe(true);
-    expect(account?.channels.inapp).toBe(true);
-    // 站外通道 opt-in：缺省全关
-    expect(account?.channels.dingtalk).toBe(false);
-    expect(account?.channels.webhook).toBe(false);
+    expect(groups.map((g) => g.eventGroup)).toEqual(["system", "workflow", "agent"]);
+    // 三分类全部锁定站内信（mandatory），inapp 恒开
+    for (const g of groups) {
+      expect(g.mandatory).toBe(true);
+      expect(g.channels.inapp).toBe(true);
+      // 站外通道 opt-in：缺省全关
+      expect(g.channels.dingtalk).toBe(false);
+      expect(g.channels.webhook).toBe(false);
+    }
 
-    const deny = await put(
-      port,
-      "/api/notifications/prefs",
-      { eventGroup: "account", channel: "inapp", enabled: false },
-      token,
-    );
-    expect(deny.status).toBe(409);
+    // 任意组站内信拒关 → 409
+    for (const group of ["system", "workflow", "agent"] as const) {
+      const deny = await put(
+        port,
+        "/api/notifications/prefs",
+        { eventGroup: group, channel: "inapp", enabled: false },
+        token,
+      );
+      expect(deny.status).toBe(409);
+    }
     const bad = await put(
       port,
       "/api/notifications/prefs",
@@ -359,31 +346,32 @@ describe("通知 Web API", () => {
     );
     expect(bad.status).toBe(400);
 
+    // 试图关闭智能体组站内信后，通知仍投递（恒发）
     await put(
       port,
       "/api/notifications/prefs",
-      { eventGroup: "task", channel: "inapp", enabled: false },
+      { eventGroup: "agent", channel: "inapp", enabled: false },
       token,
     );
     await notificationService.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: carolId }],
       title: "x",
       body: "y",
       dedupeKey: "c1",
     });
-    expect(await notificationService.unreadCount(carolId)).toBe(0);
+    expect(await notificationService.unreadCount(carolId)).toBe(1);
 
     const after = (await (await get(port, "/api/notifications/prefs", token)).json()) as {
       groups: Array<{ eventGroup: string; channels: { inapp: boolean } }>;
     };
-    expect(after.groups.find((g) => g.eventGroup === "task")?.channels.inapp).toBe(false);
+    expect(after.groups.find((g) => g.eventGroup === "agent")?.channels.inapp).toBe(true);
 
-    // 站外通道偏好可开（dingtalk/webhook 非强制组约束）
+    // 站外通道偏好可开
     const out = await put(
       port,
       "/api/notifications/prefs",
-      { eventGroup: "loop", channel: "webhook", enabled: true },
+      { eventGroup: "workflow", channel: "webhook", enabled: true },
       token,
     );
     expect(out.status).toBe(200);
@@ -462,7 +450,7 @@ function setupDispatcher(handleMessage: (msg: unknown) => Promise<string | undef
 }
 
 describe("EventDispatcher 通知收编", () => {
-  it("运行成功 → loop.run_succeeded 站内信（属主收件，带工作流深链）", async () => {
+  it("运行成功 → workflow.run_succeeded 站内信（属主收件，带工作流深链）", async () => {
     const s = setupDispatcher(vi.fn().mockResolvedValue("conv-1"));
     const e = await s.eventStore.create({
       ownerId: "u1",
@@ -488,12 +476,12 @@ describe("EventDispatcher 通知收编", () => {
     await new Promise((resolve) => setImmediate(resolve));
     const list = await s.notifications.list("u1", { limit: 10, offset: 0 });
     expect(list.total).toBe(1);
-    expect(list.items[0]?.event).toBe("loop.run_succeeded");
+    expect(list.items[0]?.event).toBe("workflow.run_succeeded");
     expect(list.items[0]?.link).toBe(`/workflows/${w.id}`);
     s.db.close();
   });
 
-  it("运行失败 → loop.run_failed 站内信（critical）", async () => {
+  it("运行失败 → workflow.run_failed 站内信（critical）", async () => {
     const s = setupDispatcher(vi.fn().mockRejectedValue(new Error("boom")));
     const e = await s.eventStore.create({
       ownerId: "u1",
@@ -517,7 +505,7 @@ describe("EventDispatcher 通知收编", () => {
     }
     await new Promise((resolve) => setImmediate(resolve));
     const list = await s.notifications.list("u1", { limit: 10, offset: 0 });
-    expect(list.items[0]?.event).toBe("loop.run_failed");
+    expect(list.items[0]?.event).toBe("workflow.run_failed");
     expect(list.items[0]?.severity).toBe("critical");
     expect(list.items[0]?.body).toContain("boom");
     s.db.close();
@@ -539,7 +527,7 @@ function fetchMock(handler: (url: string, init: RequestInit) => Response) {
 
 const sampleNotice: OutboundNotification = {
   id: "n-1",
-  event: "loop.run_failed",
+  event: "workflow.run_failed",
   severity: "critical",
   title: "t",
   body: "b",
@@ -621,9 +609,9 @@ describe("NotificationService 站外分发", () => {
     const { adapter, calls } = fakeAdapter("webhook");
     const svc = new NotificationService({ store, adapters: [adapter], retryDelaysMs: [0, 0] });
 
-    // 未订阅：不发起投递
+    // 未订阅：不发起投递（裁剪累计计数走站内提醒，不产生站外调用）
     await svc.notify({
-      event: "task.completed",
+      event: "agent.replied",
       recipients: [{ kind: "user", userId: "u1" }],
       title: "t",
       body: "b",
@@ -632,10 +620,10 @@ describe("NotificationService 站外分发", () => {
     await flushMs();
     expect(calls).toHaveLength(0);
 
-    // 订阅 loop 组 webhook 但未绑地址 → skipped
-    await svc.setPref("u1", { eventGroup: "loop", channel: "webhook", enabled: true });
+    // 订阅 workflow 组 webhook 但未绑地址 → skipped
+    await svc.setPref("u1", { eventGroup: "workflow", channel: "webhook", enabled: true });
     await svc.notify({
-      event: "loop.run_failed",
+      event: "workflow.run_failed",
       recipients: [{ kind: "user", userId: "u1" }],
       title: "t",
       body: "b",
@@ -652,7 +640,7 @@ describe("NotificationService 站外分发", () => {
     expect(saved.ok).toBe(true);
     if (saved.ok) expect(saved.probe.reachable).toBe(true);
     await svc.notify({
-      event: "loop.run_failed",
+      event: "workflow.run_failed",
       recipients: [{ kind: "user", userId: "u1" }],
       title: "t2",
       body: "b2",
@@ -666,7 +654,7 @@ describe("NotificationService 站外分发", () => {
     deliveries = await svc.listDeliveries(10);
     expect(deliveries[0]?.status).toBe("ok");
     expect(deliveries[0]?.channel).toBe("webhook");
-    expect(deliveries[0]?.event).toBe("loop.run_failed");
+    expect(deliveries[0]?.event).toBe("workflow.run_failed");
     db.close();
   });
 
@@ -684,10 +672,10 @@ describe("NotificationService 站外分发", () => {
       },
     };
     const svc = new NotificationService({ store, adapters: [flaky], retryDelaysMs: [0, 0] });
-    await svc.setPref("u1", { eventGroup: "task", channel: "webhook", enabled: true });
+    await svc.setPref("u1", { eventGroup: "agent", channel: "webhook", enabled: true });
     await svc.saveWebhookAddress("u1", { url: "https://example.com/hook" }, {});
     await svc.notify({
-      event: "task.failed",
+      event: "agent.run_failed",
       recipients: [{ kind: "user", userId: "u1" }],
       title: "t",
       body: "b",

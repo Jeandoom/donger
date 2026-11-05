@@ -141,6 +141,7 @@ export function AgentEditorPage() {
             gitAllowShellGit: a.gitAllowShellGit ?? false,
             hostExecAllowlist: a.hostExecAllowlist ?? [],
             defaultPermissionMode: a.defaultPermissionMode ?? "ask_before_change",
+            notifyPolicy: a.notifyPolicy ?? { enabled: true, channels: ["inapp"] },
             conversationScope: a.conversationScope ?? { enabled: false, agentIds: [] },
             // KB 三字段此前漏装：编辑器看不到存量绑定/自动学习开关，一动勾选即把存量绑定清空
             knowledgeBaseIds: a.knowledgeBaseIds ?? [],

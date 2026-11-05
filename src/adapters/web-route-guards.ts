@@ -131,6 +131,13 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       ...ownerConversation,
     },
     {
+      // 已读联动（2026-11-05 统一通知设计 §2.4）：打开会话批量标该会话未读通知已读
+      method: "POST",
+      pattern: "/api/conversations/:id/seen",
+      access: { kind: "owner", resource: "conversation" },
+      ...ownerConversation,
+    },
+    {
       method: "GET",
       pattern: "/api/conversations/:id/messages",
       access: { kind: "owner", resource: "conversation" },

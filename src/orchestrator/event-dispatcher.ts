@@ -779,7 +779,7 @@ export class EventDispatcher {
   private notify(wf: Workflow, run: WorkflowRun, title: string, body: string): void {
     void this.deps.notifications
       ?.notify({
-        event: run.status === "success" ? "loop.run_succeeded" : "loop.run_failed",
+        event: run.status === "success" ? "workflow.run_succeeded" : "workflow.run_failed",
         recipients: [{ kind: "user", userId: wf.ownerId }],
         title,
         body: body.slice(0, 400),

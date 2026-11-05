@@ -242,6 +242,20 @@ export const AgentSchema = z.object({
   scenario: z.enum(SCENARIO_KEYS).optional(),
   /** 会话权限模式默认值：绑定该 agent 的会话未手动覆盖时生效（缺省=变更前问询） */
   defaultPermissionMode: AgentPermissionModeSchema.default("ask_before_change"),
+  /**
+   * 通知策略（2026-11-05 统一通知设计 D9）：智能体回复通知的渠道白名单。
+   * 缺省 {enabled:true, channels:["inapp"]}（站内保底，站外由用户订阅 opt-in）；
+   * 消费点 orchestrator 轮末 emit（agent.replied/agent.run_failed）。
+   */
+  notifyPolicy: z
+    .object({
+      enabled: z.boolean().default(true),
+      channels: z
+        .array(z.enum(["inapp", "dingtalk", "webhook", "email"]))
+        .min(1)
+        .default(["inapp"]),
+    })
+    .optional(),
   /** 会话资源范围（% 会话引用的候选与「全部会话」展开都受此过滤；缺省 = 功能未开启） */
   conversationScope: AgentConversationScopeSchema.optional(),
   /** 反馈资源范围（# 反馈引用的候选与「全部反馈」展开都受此过滤；缺省 = 功能未开启） */

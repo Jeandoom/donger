@@ -76,7 +76,7 @@ describe("通知通道白名单（M3 notifyPolicy.channels 语义）", () => {
     // email 通道地址解析不依赖地址簿（getUserEmail 直给），最干净的白名单观测面
     const em = fakeAdapter("email");
     const { svc, db } = makeSvc([em.adapter], { userEmail: "u@example.com" });
-    await svc.setPref("u1", { eventGroup: "task", channel: "email", enabled: true });
+    await svc.setPref("u1", { eventGroup: "workflow", channel: "email", enabled: true });
     await svc.notify({ ...baseIntent, channels: ["email"] });
     await new Promise((r) => setTimeout(r, 30));
     expect(em.sent).toHaveLength(1);
@@ -92,14 +92,14 @@ describe("email 通道（M3）", () => {
   it("注册邮箱身份即投递地址；未注册邮箱 → skipped 不报错", async () => {
     const em = fakeAdapter("email");
     const withAddr = makeSvc([em.adapter], { userEmail: "u@example.com" });
-    await withAddr.svc.setPref("u1", { eventGroup: "task", channel: "email", enabled: true });
+    await withAddr.svc.setPref("u1", { eventGroup: "workflow", channel: "email", enabled: true });
     await withAddr.svc.notify(baseIntent);
     await new Promise((r) => setTimeout(r, 30));
     expect(em.sent).toHaveLength(1);
 
     const em2 = fakeAdapter("email");
     const noAddr = makeSvc([em2.adapter]);
-    await noAddr.svc.setPref("u2", { eventGroup: "task", channel: "email", enabled: true });
+    await noAddr.svc.setPref("u2", { eventGroup: "workflow", channel: "email", enabled: true });
     await noAddr.svc.notify({
       ...baseIntent,
       recipients: [{ kind: "user", userId: "u2" }],

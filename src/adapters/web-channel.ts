@@ -542,6 +542,8 @@ export interface WebChannelDeps {
   feedbackStore?: FeedbackStore;
   /** 通知内核（spec 2026-09-28-notification-module-design；缺省=通知端点 503、不发站内信） */
   notificationService?: NotificationService;
+  /** 已读联动（2026-11-05 统一通知设计 §2.4）：打开会话批量标该会话未读通知已读 */
+  notificationStore?: import("../ports/notification-store.js").NotificationStore;
   /** 知识库三表存储（spec 2026-09-22-knowledge-base-design；缺省=KB 端点 503） */
   kbLibraryStore?: KbLibraryStore;
   kbShareStore?: KbShareStore;
@@ -4279,6 +4281,17 @@ export class WebChannel implements Channel {
       res.writeHead(activity ? 200 : 204);
       res.end(activity ? JSON.stringify({ activity }) : "");
       return;
+    }
+
+    // POST /api/conversations/:id/seen —— 已读联动（2026-11-05 统一通知设计 §2.4）：
+    // 打开会话把该会话全部未读通知（agent.replied 等）标已读；仅本人
+    const seenMatch = url.match(/^\/api\/conversations\/([\w-]+)\/seen$/);
+    if (seenMatch && req.method === "POST") {
+      const viewer = this.currentViewer(req);
+      const marked = this.deps.notificationStore
+        ? await this.deps.notificationStore.markReadByConversation(viewer.id, seenMatch[1] ?? "")
+        : 0;
+      return this.json(res, { ok: true, marked });
     }
 
     // GET /api/conversations/:id/messages — 会话消息列表

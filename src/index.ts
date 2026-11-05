@@ -683,6 +683,7 @@ async function main(): Promise<void> {
     workflowRunStore,
     eventFiringStore,
     notificationService,
+    notificationStore,
     agentMeta: {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],

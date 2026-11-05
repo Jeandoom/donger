@@ -15,6 +15,7 @@ import {
   fetchAddresses,
   fetchNotificationPrefs,
   fetchNotifications,
+  groupNotificationsByTitle,
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationChannel,
@@ -243,6 +244,11 @@ function InboxCard(props: {
   onLoadMore: () => void;
 }) {
   const { items, total, unread, unreadOnly, loading, loadError } = props;
+  // 未读视图按标题合并成会话式一行（自动化循环任务同标题刷屏）；已读视图逐条原样。
+  // 本地已标记已读的条目（点了详情还没刷新）从合并组里即时剔除。
+  const rows = unreadOnly
+    ? groupNotificationsByTitle(items.filter((n) => !n.readAt))
+    : items.map((n) => ({ title: n.title, latest: n, count: 1 }));
   return (
     <Card className="flex flex-col">
       <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
@@ -278,55 +284,63 @@ function InboxCard(props: {
 
       {loadError ? (
         <div className="px-4 py-6 text-sm text-red-600">加载失败：{loadError}</div>
-      ) : items.length === 0 && !loading ? (
+      ) : rows.length === 0 && !loading ? (
         <div className="flex flex-col items-center gap-2 px-4 py-10 text-muted-foreground">
           <BellOff size={24} />
           <span className="text-sm">{unreadOnly ? "没有未读通知" : "暂无通知"}</span>
         </div>
       ) : (
         <ul className="divide-y">
-          {items.map((n) => (
-            <li key={n.id}>
-              {/* 内容区与「详情」为兄弟按钮（不可嵌套）：点内容或点详情都=标已读+跳对应功能位置 */}
-              <div
-                className={cn(
-                  "flex items-center gap-2 px-4 py-3 transition-colors hover:bg-accent/50",
-                  !n.readAt && "bg-primary/[0.04]",
-                )}
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 cursor-pointer text-left"
-                  onClick={() => props.onOpen(n)}
+          {rows.map((row) => {
+            const n = row.latest;
+            return (
+              <li key={unreadOnly ? row.title : n.id}>
+                {/* 内容区与「详情」为兄弟按钮（不可嵌套）：点内容或点详情都=标已读+跳对应功能位置 */}
+                <div
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-3 transition-colors hover:bg-accent/50",
+                    !n.readAt && "bg-primary/[0.04]",
+                  )}
                 >
-                  <span className="flex items-center gap-2">
-                    {!n.readAt && <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />}
-                    <span className={cn("text-sm", !n.readAt && "font-medium")}>{n.title}</span>
-                    <span className={cn("text-[11px]", SEVERITY_TONES[n.severity])}>
-                      {n.severity === "critical" ? "严重" : n.severity === "warn" ? "警告" : ""}
-                    </span>
-                    <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground">
-                      {formatRelativeTime(n.createdAt)}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 line-clamp-2 block pl-4 text-xs text-muted-foreground">
-                    {n.body}
-                  </span>
-                </button>
-                {n.link && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="shrink-0"
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 cursor-pointer text-left"
                     onClick={() => props.onOpen(n)}
                   >
-                    详情
-                    <ChevronRight size={14} />
-                  </Button>
-                )}
-              </div>
-            </li>
-          ))}
+                    <span className="flex items-center gap-2">
+                      {!n.readAt && <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />}
+                      <span className={cn("text-sm", !n.readAt && "font-medium")}>{n.title}</span>
+                      {row.count > 1 && (
+                        <Badge tone="primary" className="min-w-5 justify-center px-1.5">
+                          {row.count}
+                        </Badge>
+                      )}
+                      <span className={cn("text-[11px]", SEVERITY_TONES[n.severity])}>
+                        {n.severity === "critical" ? "严重" : n.severity === "warn" ? "警告" : ""}
+                      </span>
+                      <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground">
+                        {formatRelativeTime(n.createdAt)}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 line-clamp-2 block pl-4 text-xs text-muted-foreground">
+                      {n.body}
+                    </span>
+                  </button>
+                  {n.link && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => props.onOpen(n)}
+                    >
+                      详情
+                      <ChevronRight size={14} />
+                    </Button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
 
@@ -351,7 +365,7 @@ function PrefsCard(props: {
       <div className="border-b px-4 py-3">
         <div className="text-sm font-medium">订阅偏好</div>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          控制各类通知投递到哪些通道；站外通道按事件组订阅（opt-in），通道未配置时投递自动跳过
+          控制三类通知（系统/工作流/智能体）投递到哪些渠道；站外渠道按通知类型订阅（opt-in），未订阅或未配置地址时消息转为系统通知并累计提醒
         </p>
       </div>
       {props.error ? <div className="px-4 py-3 text-sm text-red-600">{props.error}</div> : null}

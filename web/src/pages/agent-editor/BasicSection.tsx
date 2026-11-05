@@ -3,8 +3,19 @@ import type { RefObject } from "react";
 import { FormField, FormSection } from "../../components/ui/form-section";
 import { Input } from "../../components/ui/input";
 import { RadioCard } from "../../components/ui/radio-card";
+import { Switch } from "../../components/ui/switch";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm, ScenarioIssue } from "./model";
+
+const NOTIFY_CHANNELS: Array<{
+  id: "inapp" | "dingtalk" | "webhook" | "email";
+  label: string;
+}> = [
+  { id: "inapp", label: "站内信" },
+  { id: "dingtalk", label: "钉钉" },
+  { id: "webhook", label: "Webhook" },
+  { id: "email", label: "邮件" },
+];
 
 const SCENARIOS: Array<{
   value: AgentEditorForm["scenario"];
@@ -63,6 +74,53 @@ export function BasicSection({
               />
             );
           })}
+        </div>
+      </FormField>
+
+      <FormField
+        label="回复通知"
+        hint="交互式对话中智能体每次回复后发送通知（最终与你在通知中心的渠道订阅取交集生效）；工作流调用的轮不发。查看对话或通知即标已读"
+      >
+        <div className="flex flex-col gap-2.5">
+          <label className="flex w-fit items-center gap-2 text-sm">
+            <Switch
+              checked={form.notifyPolicy?.enabled ?? true}
+              onCheckedChange={(v) =>
+                patch({
+                  notifyPolicy: { enabled: v, channels: form.notifyPolicy?.channels ?? ["inapp"] },
+                })
+              }
+              aria-label="启用回复通知"
+            />
+            启用回复通知
+          </label>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {NOTIFY_CHANNELS.map((c) => {
+              const checked = (form.notifyPolicy?.channels ?? ["inapp"]).includes(c.id);
+              return (
+                <label
+                  key={c.id}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const current = form.notifyPolicy?.channels ?? ["inapp"];
+                      const next = e.target.checked
+                        ? [...new Set([...current, c.id])]
+                        : current.filter((x) => x !== c.id);
+                      if (next.length === 0) return; // 至少保留一个渠道
+                      patch({
+                        notifyPolicy: { enabled: form.notifyPolicy?.enabled ?? true, channels: next },
+                      });
+                    }}
+                  />
+                  {c.label}
+                </label>
+              );
+            })}
+          </div>
         </div>
       </FormField>
 
