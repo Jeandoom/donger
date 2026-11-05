@@ -115,7 +115,11 @@
 
 - M1.1 浏览器钉版：宿主机 `@playwright/mcp@0.0.84`（与本机 chromium-1228 直接配对，免 executable-path）+ Dockerfile 同版钉装。
 - M1.2 方法论技能：`skills/webgame-dev/SKILL.md`（随内置技能分发）。
-- M1.3 zcode/codex 真机冒烟：**环境受限未做**（dev 库无 zcode/codex provider 凭证、CLI 未登录态）；静态核证已过（三引擎挂载列表同构追加、zcode stdio 透传路径与 dedup 同款、env 白名单保留 PATH/LOCALAPPDATA）。列为上线前验收项。
+- M1.3 双引擎真机冒烟（2026-11-05，隔离实例=worktree 合并码+临时库+3310，智谱 token 造 provider，spec 附录见 scripts/tmp-smoke-dual-engine.mts）：
+  - **zcode 引擎 PASS**：stdio MCP 经 session/create 原生透传真机可用——agent 自主 browser_navigate+browser_take_screenshot，PNG 1280×720 落 `.shots/`（worktree 内），汇报含标题与相对路径。两个调优发现：①playwright MCP 托管 chrome 配置目录会被并发实例锁（`Browser is already in use`）——**MCP 参数必须加 `--isolated`**（参考配置已更新）；②zcode 会话 env 白名单下 npx 解析/浏览器解析慢会拖死 MCP 初始化（180s 超时）——用 `command:"node"` 直跑 cli.js + `--executable-path` 直连后秒起。
+  - **codex 引擎：冒烟 FAIL → 专项修复后 PASS（2026-11-05 同日收口）**。冒烟根因链：配置链全通（donger 命令行实送 `mcp_servers.playwright`、`codex mcp list` enabled、rmcp 握手成功），但 codex 0.155 把 MCP 工具暴露为 **namespace 型聚合工具 `mcp__playwright`**（mock 实捕 `"type":"namespace"`），donger 桥 `codex-chat-bridge.ts` 只映射 `type:"function"` → 工具被丢、模型永远看不到；修复候选证伪：dot 名调用路由拒（`unsupported call`）、`features.tool_search_always_defer_mcp_tools=false` 无效（新版退役开关已被解析器拒绝）。
+  - **修复形态（协议实验 `scripts/tmp-mock-probe.cjs` e1 实证）**：桥内联工具环——runner 把 MCP 工具面（in-process 平台工具台 + agent 连接器 stdio/http）注册给桥的 `BridgeToolExecutor`（新文件 `bridge-mcp-client.ts`：InMemory/Stdio/StreamableHTTP 三传输客户端，懒连接+超时守卫），桥把工具展平为 `mcp__<server>__<tool>` function 工具注入上游 chat 请求，模型 tool_call 命中由桥直接执行并以 function_call+function_call_output 内联回传 codex（codex 不再配置任何 mcp_servers，namespace 路由彻底绕开）。审批门语义保持（executor 内静态拒绝，文案与 mcp-http-bridge 同款）；审计保持（内联对随流经 codex runner 事件管线，tool_result 正常落审计）。
+  - **修复验证（隔离实例真机）**：codex 引擎 navigate+截图全链路 PASS（PNG 1280×720 落 `.shots/`，cwd=会话工作区——StdioBridgeMcpClient 显式传 cwd，修掉首版落在后端进程 cwd 的偏差）；**连坐影响一并修复**——donger-host×7/donger-kb×5/dedup 等 MCP 工具在 codex 引擎模型侧全部可见可执行（修复前同被 namespace 语义覆盖而不可用，属平台级存量回归）；测试：桥单测 +4（展平注入/延迟收尾/executor 路由门禁/端到端两轮续推）17/17 绿，runner 测试 8/8 绿，tsc 清零。
 - M2 全部 9 项已落地并提交；新增 18 用例全绿（store 4/tools 4/service 6/路由 4，service 与路由为真子进程测试）；后端全量 1886 过，7 个失败文件单跑全绿=存量并行抖动（含非改动面文件，实锤与本次改动无关）；tsc 与 web 构建双清零。
 - busy mutex（M2.6）：复核后**不新增**——同会话串行已有 `busyConversations` 排队、跨会话同 agent 冲突由会话 worktree 隔离（默认开）消解；runtime-manager 遗留注释已改写为当前事实。
 - 参考项目 agent 配置（部署后创建，字段 `devPreviewEnabled: true` 旧后端会静默剥离，必须在分支部署后建）：
@@ -125,7 +129,7 @@
   "name": "网页开发工坊",
   "description": "绑定项目仓库的网站/游戏开发智能体（dev_* 工具 + playwright e2e + 平台预览）",
   "gitRepositories": [{ "name": "<项目仓>", "credentialTemplate": "<git 凭证模板 code>" }],
-  "mcpServers": [{ "name": "playwright", "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.84", "--headless"] }],
+  "mcpServers": [{ "name": "playwright", "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.84", "--headless", "--isolated"] }],
   "skills": ["webgame-dev"],
   "defaultPermissionMode": "full_access",
   "devPreviewEnabled": true

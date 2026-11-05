@@ -373,3 +373,236 @@ describe("CodexChatBridge MCP 挂载（真实 MCP 客户端回环）", () => {
     expect(response.status).toBe(404);
   });
 });
+
+
+// —— 2026-11-05 codex-namespace 专项：MCP 工具面展平注入 + 桥内联执行 ——
+
+describe("translateResponsesRequestToChat 桥工具面注入", () => {
+  it("bridgeToolDefs 以 function 工具补位注入，原生同名让位", () => {
+    const chat = translateResponsesRequestToChat(
+      {
+        input: "hi",
+        tools: [{ type: "function", name: "shell", parameters: { type: "object" } }],
+      },
+      "fallback",
+      [
+        {
+          name: "mcp__playwright__browser_navigate",
+          description: "nav",
+          parameters: { type: "object" },
+        },
+        { name: "shell", description: "dup" },
+      ],
+    );
+    const names = (chat.tools ?? []).map(
+      (t) => (t as { function?: { name?: string } }).function?.name,
+    );
+    expect(names).toContain("mcp__playwright__browser_navigate");
+    expect(names.filter((n) => n === "shell").length).toBe(1);
+    const injected = (chat.tools ?? []).find(
+      (t) =>
+        (t as { function?: { name?: string } }).function?.name ===
+        "mcp__playwright__browser_navigate",
+    ) as { function: { description?: string } };
+    expect(injected.function.description).toBe("nav");
+  });
+});
+
+describe("ChatToResponsesTranslator 桥执行延迟收尾", () => {
+  const BRIDGE = {
+    names: new Set(["mcp__playwright__browser_navigate"]),
+    execute: async () => "nav-ok",
+  };
+
+  it("非桥工具照常 completed", () => {
+    const t = new ChatToResponsesTranslator("resp_x");
+    t.handleChunk({
+      choices: [
+        { delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "shell", arguments: "{}" } }] } },
+      ],
+    });
+    const events = t.finish();
+    expect(events.at(-1)?.type).toBe("response.completed");
+    expect(t.bridgeCallsPending()).toEqual([]);
+  });
+
+  it("桥工具命中：finish 延迟 completed，内联回传后 completed 含输出项", () => {
+    const t = new ChatToResponsesTranslator("resp_y", BRIDGE);
+    t.handleChunk({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "c9",
+                function: { name: "mcp__playwright__browser_navigate", arguments: '{"url":"data:x"}' },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const finishEvents = t.finish();
+    expect(finishEvents.find((e) => e.type === "response.completed")).toBeUndefined();
+    const pending = t.bridgeCallsPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.name).toBe("mcp__playwright__browser_navigate");
+    const outputEvent = t.bridgeEmitOutput(pending[0]!.callId, "nav-ok");
+    expect(outputEvent.item).toMatchObject({
+      type: "function_call_output",
+      call_id: "c9",
+      output: "nav-ok",
+    });
+    const tail = t.completedAfterBridge();
+    expect(tail.at(-1)?.type).toBe("response.completed");
+    expect(JSON.stringify(tail)).toContain("nav-ok");
+  });
+});
+
+describe("createBridgeToolExecutor", () => {
+  it("展平名注入/门禁拒绝/路由执行", async () => {
+    const { createBridgeToolExecutor } = await import("../../src/adapters/bridge-mcp-client.js");
+    const calls: string[] = [];
+    const executor = createBridgeToolExecutor("OpenAI", [
+      {
+        client: {
+          serverName: "playwright",
+          listTools: async () => [
+            { name: "browser_navigate", description: "nav", inputSchema: { type: "object" } },
+          ],
+          callTool: async (tool, args) => {
+            calls.push(`${tool}:${JSON.stringify(args)}`);
+            return `ok:${tool}`;
+          },
+          close: async () => {},
+        },
+        gateCheck: (name) => (name.includes("browser_navigate") ? undefined : { gateId: "test-gate" }),
+      },
+    ]);
+    const defs = await executor.toolDefs();
+    expect(defs.map((d) => d.name)).toEqual(["mcp__playwright__browser_navigate"]);
+    const out = await executor.execute("mcp__playwright__browser_navigate", { url: "x" });
+    expect(out).toBe("ok:browser_navigate");
+    const gated = await executor.execute("mcp__playwright__other", {});
+    expect(gated).toContain("test-gate");
+    await executor.close();
+  });
+});
+
+describe("CodexChatBridge 桥执行工具面端到端", () => {
+  const servers: Server[] = [];
+  const bridges: CodexChatBridge[] = [];
+
+  afterEach(async () => {
+    for (const bridge of bridges.splice(0)) await bridge.close();
+    for (const server of servers.splice(0)) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("注入工具→模型 tool_call→桥执行→内联回传→续轮 tool 结果可见", async () => {
+    const turns: Array<Record<string, unknown>> = [];
+    let turn = 0;
+    const upstream = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const parsed = JSON.parse(body) as { messages?: Array<Record<string, unknown>> };
+        turns.push(parsed);
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        if (turn === 0) {
+          res.write(
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: "call_n1",
+                        function: {
+                          name: "mcp__playwright__browser_navigate",
+                          arguments: '{"url":"data:x"}',
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            })}\n\n`,
+          );
+          res.write(
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`,
+          );
+        } else {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "done" } }] })}\n\n`);
+          res.write(
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+          );
+        }
+        res.write("data: [DONE]\n\n");
+        res.end();
+        turn += 1;
+      });
+    });
+    await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+    const upPort = (upstream.address() as { port: number }).port;
+    servers.push(upstream);
+
+    const bridge = new CodexChatBridge();
+    bridges.push(bridge);
+    const port = await bridge.ensureStarted();
+    bridge.registerUpstream("tok", {
+      baseUrl: `http://127.0.0.1:${upPort}/v1`,
+      apiKey: "k",
+      model: "m",
+    });
+    bridge.registerBridgeTools("tok", {
+      toolDefs: async () => [
+        {
+          name: "mcp__playwright__browser_navigate",
+          description: "nav",
+          parameters: { type: "object", properties: { url: { type: "string" } } },
+        },
+      ],
+      execute: async () => "nav-ok",
+      close: async () => {},
+    });
+
+    const r1 = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST",
+      headers: { "x-donger-bridge": "tok", "content-type": "application/json" },
+      body: JSON.stringify({ input: "go", model: "m" }),
+    });
+    const t1 = await r1.text();
+    expect(t1).toContain('"function_call_output"');
+    expect(t1).toContain("nav-ok");
+    expect(t1).toContain("response.completed");
+
+    const r2 = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST",
+      headers: { "x-donger-bridge": "tok", "content-type": "application/json" },
+      body: JSON.stringify({
+        input: [
+          {
+            type: "function_call",
+            call_id: "call_n1",
+            name: "mcp__playwright__browser_navigate",
+            arguments: '{"url":"data:x"}',
+          },
+          { type: "function_call_output", call_id: "call_n1", output: "nav-ok" },
+        ],
+        model: "m",
+      }),
+    });
+    await r2.text();
+    const last = turns.at(-1) as {
+      messages?: Array<{ role: string; content?: string; tool_calls?: unknown }>;
+    };
+    const toolMsg = (last.messages ?? []).find((m) => m.role === "tool");
+    expect(String(toolMsg?.content)).toContain("nav-ok");
+    const toolCallMsg = (last.messages ?? []).find((m) => Array.isArray(m.tool_calls));
+    expect(JSON.stringify(toolCallMsg)).toContain("mcp__playwright__browser_navigate");
+  });
+});
