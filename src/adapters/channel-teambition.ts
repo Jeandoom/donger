@@ -1,7 +1,12 @@
 import type { TeambitionModuleConfig } from "../domain/module-config.js";
-import { getAppAccessToken, resetTeambitionTokenCache } from "../util/teambition-api.js";
+import { buildTeambitionEnvelope, type TeambitionWebhookPayload } from "../domain/teambition.js";
+import { createTaskComment, getAppAccessToken, resetTeambitionTokenCache } from "../util/teambition-api.js";
+import type { PlatformMessageEnvelope } from "../domain/event-payloads.js";
+import type { ReplyAnchor } from "../domain/event.js";
 import type {
   ChannelAdapter,
+  ChannelDelivery,
+  ChannelReplyMessage,
   ChannelStatusSnapshot,
   ChannelTestResult,
 } from "../ports/channel-adapter.js";
@@ -53,6 +58,29 @@ export class TeambitionChannelAdapter implements ChannelAdapter {
     } catch (e) {
       return { ok: false, error: (e as Error).message.slice(0, 200) };
     }
+  }
+
+  /** 回原投递：任务评论（app 身份；收编 index sourceDeliver teambition 分支）。
+   * orgId 优先锚点 target（跨组织触发场景），缺省回落连接配置。 */
+  async replyToSource(anchor: ReplyAnchor, message: ChannelReplyMessage): Promise<ChannelDelivery> {
+    if (anchor.kind !== "task" || !anchor.target.taskId) {
+      throw new Error(`Teambition 回原锚点形态不符: kind=${anchor.kind}`);
+    }
+    const cfg = this.getConfig();
+    if (!cfg?.appKey || !cfg?.appSecret || !cfg?.orgId) {
+      throw new Error("Teambition 配置不完整（appKey/appSecret/orgId）");
+    }
+    const result = await createTaskComment(
+      { ...cfg, orgId: anchor.target.orgId ?? cfg.orgId },
+      anchor.target.taskId,
+      message.body,
+    );
+    return { ok: true, receipt: { taskId: anchor.target.taskId, dynamicId: result.dynamicId } };
+  }
+
+  /** 入站 webhook 归一（M3 收编）：payload → 统一信封（含回原锚点）；非任务形态 → null */
+  normalizeWebhook(payload: unknown): PlatformMessageEnvelope | null {
+    return buildTeambitionEnvelope(payload as TeambitionWebhookPayload) ?? null;
   }
 
   status(): ChannelStatusSnapshot {

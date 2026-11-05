@@ -778,22 +778,9 @@ async function main(): Promise<void> {
     // source 回源出站（spec 2026-10-27-platform-message-subscription-design §4.4 D3）：
     // 钉钉=dtChannel 群感知 send 回群；TB=平台级应用评论回源任务（插件门+配置即用）
     sourceDeliver: async (anchor, text) => {
-      if (anchor.platform === "dingtalk") {
-        const ch = dtChannel;
-        if (!ch) throw new Error("钉钉通道未启用，无法回源投递");
-        await ch.send(anchor.threadId, { text, markdown: true });
-        return;
-      }
-      if (anchor.platform === "teambition") {
-        if (!isPluginEnabled(pluginHost.snapshot(), "platform.teambition")) {
-          throw new Error("platform.teambition 插件已停用");
-        }
-        const tb = moduleConfigStore.getTeambition();
-        if (!tb) throw new Error("Teambition 未配置（授权页）");
-        await createTaskComment(tb, anchor.taskId, text);
-        return;
-      }
-      throw new Error("source 回源不支持的平台锚点");
+      // 回原投递收编（2026-11-05 统一通知设计 §2.6）：按注册表路由，适配器自证能力；
+      // 失败向上抛 → 通知轮置 failed（拍板：与收件人解析失败同级，可观测）
+      await channelRegistry.replyToSource(anchor, { body: text });
     },
   });
   // 平台消息事件路由（spec §4.2 M1）：钉钉群 @ 归一信封 → 订阅匹配 → fire 统一管线；

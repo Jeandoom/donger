@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { ReplyAnchor } from "../../src/domain/event.js";
+import type {
+  ChannelAdapter,
+  ChannelReplyMessage,
+} from "../../src/ports/channel-adapter.js";
 import { DingTalkChannelAdapter } from "../../src/adapters/channel-dingtalk.js";
 import { EmailChannelAdapter } from "../../src/adapters/channel-email.js";
 import { TeambitionChannelAdapter } from "../../src/adapters/channel-teambition.js";
@@ -93,5 +98,96 @@ describe("EmailChannelAdapter / WebhookChannelAdapter", () => {
     const result = await adapter.testConnection();
     expect(result.ok).toBe(true);
     expect(result.detail).toContain("地址簿");
+  });
+});
+
+describe("ChannelConnectionRegistry.replyToSource", () => {
+  const anchor: ReplyAnchor = { platform: "test", kind: "group", target: { threadId: "t1" } };
+  const message: ChannelReplyMessage = { body: "hello" };
+
+  function makeAdapter(overrides: Partial<ChannelAdapter> = {}): ChannelAdapter {
+    return {
+      id: "test",
+      displayName: "测试渠道",
+      description: "",
+      capabilities: { outboundPush: false, replyToSource: true, inbound: null },
+      configSource: "connection",
+      configHint: "",
+      available: () => true,
+      testConnection: async () => ({ ok: true }),
+      replyToSource: async (a, m) => ({
+        ok: true,
+        receipt: { threadId: a.target.threadId },
+        ...(m ? {} : {}),
+      }),
+      ...overrides,
+    };
+  }
+
+  it("按 anchor.platform 路由并把锚点原样传给适配器", async () => {
+    const seen: Array<{ anchor: ReplyAnchor; message: ChannelReplyMessage }> = [];
+    const adapter = makeAdapter({
+      replyToSource: async (a, m) => {
+        seen.push({ anchor: a, message: m });
+        return { ok: true, receipt: { threadId: a.target.threadId } };
+      },
+    });
+    const registry = new ChannelConnectionRegistry();
+    registry.register(adapter);
+    const delivery = await registry.replyToSource(anchor, message);
+    expect(delivery.ok).toBe(true);
+    expect(delivery.receipt).toMatchObject({ threadId: "t1" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.anchor).toBe(anchor);
+  });
+
+  it("未注册平台抛错（原 sourceDeliver if/else 的『不支持的平台锚点』语义收编）", async () => {
+    const registry = new ChannelConnectionRegistry();
+    await expect(registry.replyToSource({ ...anchor, platform: "ghost" }, message)).rejects.toThrow(
+      "回源平台未注册: ghost",
+    );
+  });
+
+  it("渠道不支持回原抛错；未启用抛错（不静默降级）", async () => {
+    const noReply = makeAdapter({
+      capabilities: { outboundPush: true, replyToSource: false, inbound: null },
+      replyToSource: undefined,
+    });
+    const registry = new ChannelConnectionRegistry();
+    registry.register(noReply);
+    await expect(registry.replyToSource(anchor, message)).rejects.toThrow("不支持回原投递");
+
+    const disabled = makeAdapter({ available: () => false });
+    const registry2 = new ChannelConnectionRegistry();
+    registry2.register(disabled);
+    await expect(registry2.replyToSource(anchor, message)).rejects.toThrow("未启用");
+  });
+
+  it("真实适配器路由：dingtalk 锚点走群 send、形态不符 fail-closed", async () => {
+    let sent: Array<{ threadId: string; text: string }> = [];
+    const channel = {
+      isRunning: () => true,
+      send: async (threadId: string, m: { text: string }) => {
+        sent.push({ threadId, text: m.text });
+      },
+    } as never;
+    const adapter = new DingTalkChannelAdapter(
+      () => ({ appKey: "k", appSecret: "s", robotCode: "r" }),
+      () => channel,
+    );
+    const registry = new ChannelConnectionRegistry();
+    registry.register(adapter);
+    await registry.replyToSource(
+      { platform: "dingtalk", kind: "group", target: { threadId: "cid" } },
+      { body: "回群内容" },
+    );
+    expect(sent).toEqual([{ threadId: "cid", text: "回群内容" }]);
+
+    await expect(
+      registry.replyToSource(
+        { platform: "dingtalk", kind: "task", target: { taskId: "x" } },
+        { body: "x" },
+      ),
+    ).rejects.toThrow("形态不符");
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { extractReplyAnchor } from "../../src/domain/event-payloads.js";
 import { parseEventInput } from "../../src/domain/event.js";
 import {
   type ExecutionCompletedFact,
@@ -160,5 +161,45 @@ describe("execution correlation 提取与透传", () => {
       correlation: { feedbackId: 42 },
     });
     expect(parseExecutionCompletedPayload(badCorr)?.correlation).toBeUndefined();
+  });
+});
+
+describe("extractReplyAnchor 锚点归一（2026-11-05 统一通知设计）", () => {
+  it("信封形状直取", () => {
+    const payload = JSON.stringify({
+      replyAnchor: { platform: "dingtalk", kind: "group", target: { threadId: "cid" } },
+    });
+    expect(extractReplyAnchor(payload)).toEqual({
+      platform: "dingtalk",
+      kind: "group",
+      target: { threadId: "cid" },
+    });
+  });
+
+  it("旧判别联合形状（顶层 threadId/taskId）归一收进 target——存量 run.context 免迁移", () => {
+    const legacyGroup = JSON.stringify({
+      replyAnchor: { platform: "dingtalk", kind: "group", threadId: "cid" },
+    });
+    expect(extractReplyAnchor(legacyGroup)).toEqual({
+      platform: "dingtalk",
+      kind: "group",
+      target: { threadId: "cid" },
+    });
+    const legacyTask = JSON.stringify({
+      replyAnchor: { platform: "teambition", kind: "task", taskId: "t9", orgId: "o1" },
+    });
+    expect(extractReplyAnchor(legacyTask)).toEqual({
+      platform: "teambition",
+      kind: "task",
+      target: { taskId: "t9", orgId: "o1" },
+    });
+  });
+
+  it("非锚点载荷/无标识键 → null", () => {
+    expect(extractReplyAnchor(null)).toBeNull();
+    expect(extractReplyAnchor('{"event":"timer"}')).toBeNull();
+    expect(
+      extractReplyAnchor(JSON.stringify({ replyAnchor: { platform: "dingtalk", kind: "group" } })),
+    ).toBeNull();
   });
 });

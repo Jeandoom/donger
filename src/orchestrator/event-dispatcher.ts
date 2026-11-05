@@ -476,6 +476,9 @@ export class EventDispatcher {
       ...(run.context
         ? { correlation: extractExecutionCorrelation(run.context) ?? undefined }
         : {}),
+      // 回源锚点级联透传（2026-11-05 统一通知设计 §2.6）：下游级联工作流的通知轮
+      // 可回最原始触发源；非消息触发为 undefined
+      ...(run.context ? { replyAnchor: extractReplyAnchor(run.context) ?? undefined } : {}),
     };
     for (const eventName of EXECUTION_COMPLETION_EVENT_NAMES) {
       const payload = buildExecutionCompletedPayload({ ...base, event: eventName });
@@ -741,6 +744,8 @@ export class EventDispatcher {
       // 无锚点（手动运行/非消息事件）→ 降级站内信（上方 notify 恒发）并留痕
       if (policy.channels.includes("source")) {
         if (ctx.replyAnchor && this.deps.sourceDeliver) {
+          // 回原失败置轮失败（2026-11-05 统一通知设计 §2.6 拍板）：通知轮唯一职责是投递，
+          // 回源失败与收件人解析失败同级可观测（原 log-only 是监控盲区）；站内信已先发不受影响
           await this.deps
             .sourceDeliver(ctx.replyAnchor, body)
             .then(() =>
@@ -749,9 +754,10 @@ export class EventDispatcher {
                 "notify run: source 通道回源投递完成",
               ),
             )
-            .catch((e: unknown) =>
-              logger.error({ runId: run.id, err: String(e) }, "notify run: source 回源投递失败"),
-            );
+            .catch((e: unknown) => {
+              logger.error({ runId: run.id, err: String(e) }, "notify run: source 回源投递失败");
+              throw new Error(`回源投递失败：${String(e)}`);
+            });
         } else {
           logger.warn(
             {

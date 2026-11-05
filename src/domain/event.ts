@@ -204,10 +204,19 @@ export function parseEventInput(raw: unknown): EventInput {
 /** 触发来源（EventFiring.source / WorkflowRun.eventName 前缀语义） */
 export type EventFireSource = "manual" | "schedule" | "call" | "system" | "message";
 
-/** 回复锚点（spec §4.4 D3）：消息事件触发时随 payload 持久化，通知轮 source 通道据此回源 */
-export type ReplyAnchor =
-  | { platform: "dingtalk"; kind: "group"; threadId: string }
-  | { platform: "teambition"; kind: "task"; taskId: string; orgId?: string };
+/**
+ * 回复锚点（spec §4.4 D3；2026-11-05 统一通知设计信封化）：消息事件触发时随 payload
+ * 持久化，通知轮 source 通道据此回源。开放信封——platform/kind 由渠道适配器声明支持集，
+ * target 装平台原始标识（各适配器自定义并校验）；新增回源平台零核心类型改动。
+ * 旧判别联合形状（顶层 threadId/taskId）由 extractReplyAnchor 归一兼容。
+ */
+export interface ReplyAnchor {
+  platform: string;
+  kind: string;
+  target: Record<string, string>;
+  /** 采集时刻（时效治理依据，可选） */
+  capturedAt?: string;
+}
 
 /** 事件一次触发的上下文：payload=matcher 判定对象+{{triggerOutput}} 变量原文 */
 export interface FireContext {

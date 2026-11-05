@@ -48,7 +48,11 @@ export function buildDingTalkGroupEnvelope(m: RobotTextMessage): PlatformMessage
     source: { openConversationId: m.conversationId, conversationType: m.conversationType },
     text: normalizeDingTalkMessage(m).text,
     raw: { robotCode: m.robotCode, isAdmin: m.isAdmin, msgtype: m.msgtype },
-    replyAnchor: { platform: "dingtalk", kind: "group", threadId: m.conversationId },
+    replyAnchor: {
+      platform: "dingtalk",
+      kind: "group",
+      target: { threadId: m.conversationId },
+    },
   };
 }
 

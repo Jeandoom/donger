@@ -10,6 +10,7 @@
  * channel-adapter 管「这个渠道是什么、通不通、听不听」。
  */
 import type { ReplyAnchor } from "../domain/event.js";
+import type { PlatformMessageEnvelope } from "../domain/event-payloads.js";
 
 export type ChannelInboundMode = "webhook" | "pull" | "stream";
 
@@ -77,4 +78,11 @@ export interface ChannelAdapter {
 
   /** 回原投递（M3 收编 sourceDeliver；锚点=自描述信封） */
   replyToSource?(anchor: ReplyAnchor, message: ChannelReplyMessage): Promise<ChannelDelivery>;
+
+  /**
+   * 入站 webhook 归一（M3 收编）：capabilities.inbound==="webhook" 时实现——
+   * HTTP 面（路由/限流/验签响应）留在 web-channel，归一逻辑（payload→统一信封）
+   * 委托适配器；null=非本渠道事件形态（调用方快速 200 应答）。
+   */
+  normalizeWebhook?(payload: unknown): PlatformMessageEnvelope | null;
 }

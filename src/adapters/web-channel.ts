@@ -7063,7 +7063,12 @@ export class WebChannel implements Channel {
     } catch {
       return respond(400, { error: "invalid json" });
     }
-    const envelope = buildTeambitionEnvelope(payload);
+    // 归一收编（2026-11-05 统一通知设计 §2.6）：payload→信封委托渠道适配器（HTTP 面/验签/
+    // 限流/防环仍在本 handler）；未注册=渠道未启用
+    const tbAdapter = this.deps.channelRegistry?.get("teambition");
+    const envelope = tbAdapter?.normalizeWebhook
+      ? tbAdapter.normalizeWebhook(payload)
+      : buildTeambitionEnvelope(payload);
     if (!envelope) return respond(200, { ok: true, skipped: "unshaped" });
     if (!this.deps.teambitionRouter) return respond(200, { ok: true, skipped: "router-missing" });
     const outcome = await this.deps.teambitionRouter.route(envelope);

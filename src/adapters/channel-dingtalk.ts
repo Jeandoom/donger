@@ -2,8 +2,11 @@ import type { DingTalkModuleConfig } from "../domain/module-config.js";
 import { dingTalkRobotReady } from "../domain/module-config.js";
 import type { DingTalkChannel } from "./dingtalk-channel.js";
 import { getAccessToken } from "../util/dingtalk-api.js";
+import type { ReplyAnchor } from "../domain/event.js";
 import type {
   ChannelAdapter,
+  ChannelDelivery,
+  ChannelReplyMessage,
   ChannelStatusSnapshot,
   ChannelTestResult,
 } from "../ports/channel-adapter.js";
@@ -49,6 +52,17 @@ export class DingTalkChannelAdapter implements ChannelAdapter {
     } catch (e) {
       return { ok: false, error: (e as Error).message.slice(0, 200) };
     }
+  }
+
+  /** 回原投递：群机器人 groupMessages/send 回触发群（收编 index sourceDeliver dingtalk 分支） */
+  async replyToSource(anchor: ReplyAnchor, message: ChannelReplyMessage): Promise<ChannelDelivery> {
+    if (anchor.kind !== "group" || !anchor.target.threadId) {
+      throw new Error(`钉钉回原锚点形态不符: kind=${anchor.kind}`);
+    }
+    const channel = this.getChannel();
+    if (!channel) throw new Error("钉钉通道未启用，无法回源投递");
+    await channel.send(anchor.target.threadId, { text: message.body, markdown: true });
+    return { ok: true, receipt: { threadId: anchor.target.threadId } };
   }
 
   status(): ChannelStatusSnapshot {

@@ -106,6 +106,9 @@ export interface ExecutionCompletedFact {
    * 下游级联（通知/回复闭环）据此定位提交人与反馈单，老 payload 无此字段照常解析。
    */
   correlation?: ExecutionCorrelation;
+  /** 回源锚点（2026-11-05 统一通知设计级联透传）：主 run 触发载荷含锚点时随信封携带，
+   * 下游级联工作流的通知轮可回最原始触发源；老 payload 无此字段照常解析 */
+  replyAnchor?: import("./event.js").ReplyAnchor;
 }
 
 export interface ExecutionCorrelation {
@@ -169,7 +172,13 @@ export function parseExecutionCompletedPayload(payload: string): ExecutionComple
       c.submitterId
         ? { feedbackId: c.feedbackId, submitterId: c.submitterId }
         : undefined;
-    return { ...(raw as ExecutionCompletedFact), correlation };
+    // replyAnchor 可选；存在但形状残缺则剥除（同 correlation 尽力而为语义）
+    const a = raw.replyAnchor as Record<string, unknown> | undefined;
+    const replyAnchor =
+      a && typeof a.platform === "string" && a.target && typeof a.target === "object"
+        ? (a as unknown as import("./event.js").ReplyAnchor)
+        : undefined;
+    return { ...(raw as ExecutionCompletedFact), correlation, replyAnchor };
   } catch {
     return null;
   }
@@ -312,18 +321,30 @@ export function extractReplyAnchor(
 ): import("./event.js").ReplyAnchor | null {
   if (!payload) return null;
   try {
-    const parsed = JSON.parse(payload) as { replyAnchor?: import("./event.js").ReplyAnchor };
+    const parsed = JSON.parse(payload) as { replyAnchor?: Record<string, unknown> };
     const a = parsed.replyAnchor;
-    if (
-      a &&
-      typeof a === "object" &&
-      typeof a.platform === "string" &&
-      (typeof (a as { threadId?: unknown }).threadId === "string" ||
-        typeof (a as { taskId?: unknown }).taskId === "string")
-    ) {
-      return a;
+    if (!a || typeof a !== "object" || typeof a.platform !== "string" || !a.platform) return null;
+    // 信封形状（target）直取；旧判别联合形状（顶层 threadId/taskId）归一收进 target，
+    // 存量 run.context 免迁移
+    if (a.target && typeof a.target === "object") {
+      const target = a.target as Record<string, string>;
+      if (Object.values(target).every((v) => typeof v === "string")) {
+        return {
+          platform: a.platform,
+          kind: typeof a.kind === "string" ? a.kind : "unknown",
+          target,
+          ...(typeof a.capturedAt === "string" ? { capturedAt: a.capturedAt } : {}),
+        };
+      }
+      return null;
     }
-    return null;
+    const target: Record<string, string> = {};
+    for (const key of ["threadId", "taskId", "orgId", "messageId", "chatId"]) {
+      if (typeof a[key] === "string" && a[key]) target[key] = a[key] as string;
+    }
+    return Object.keys(target).length > 0
+      ? { platform: a.platform, kind: typeof a.kind === "string" ? a.kind : "unknown", target }
+      : null;
   } catch {
     return null;
   }

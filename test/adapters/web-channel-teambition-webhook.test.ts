@@ -137,7 +137,7 @@ describe("POST /api/webhooks/teambition", () => {
       topic: string;
       eventId: string;
       source: { taskId: string };
-      replyAnchor: { platform: string; kind: string; taskId: string };
+      replyAnchor: { platform: string; kind: string; target: { taskId: string; orgId?: string } };
     };
     expect(env.platform).toBe("teambition");
     expect(env.topic).toBe("task.update");
@@ -145,8 +145,7 @@ describe("POST /api/webhooks/teambition", () => {
     expect(env.replyAnchor).toEqual({
       platform: "teambition",
       kind: "task",
-      taskId: "task-9",
-      orgId: "org-1",
+      target: { taskId: "task-9", orgId: "org-1" },
     });
   });
 
