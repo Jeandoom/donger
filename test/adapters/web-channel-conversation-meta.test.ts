@@ -98,7 +98,9 @@ describe("WebChannel 会话列表 enrich / 重命名 / 归档 / seen", () => {
       method: "POST",
       headers: auth(),
     });
-    expect(seenRes.status).toBe(204);
+    // 合并期与统一通知轮同端点收口：200+{ok,marked}（通知已读数）而非裸 204
+    expect(seenRes.status).toBe(200);
+    expect(((await seenRes.json()) as { ok: boolean }).ok).toBe(true);
     const conv = await conversationStore.get(convId);
     expect(conv?.lastSeenAt).toBeTruthy();
     expect(conv?.updatedAt).toBe(before);

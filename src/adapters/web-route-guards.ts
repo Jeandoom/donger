@@ -141,7 +141,8 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       ...ownerConversation,
     },
     {
-      // 已读联动（2026-11-05 统一通知设计 §2.4）：打开会话批量标该会话未读通知已读
+      // 已读联动（2026-11-05 统一通知设计 §2.4）+ 会话未读徽标清零基准（chat UE 优化轮 E1-A）：
+      // 打开会话批量标该会话未读通知已读 + conversations.lastSeenAt=now（合并期两轮同端点收口）
       method: "POST",
       pattern: "/api/conversations/:id/seen",
       access: { kind: "owner", resource: "conversation" },
@@ -224,13 +225,6 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     {
       method: "GET",
       pattern: "/api/conversations/:id/pending-approval",
-      access: { kind: "owner", resource: "conversation" },
-      ...ownerConversation,
-    },
-    // 「已打开」标记（chat UE 优化轮 E1-A：会话未读徽标清零基准）
-    {
-      method: "POST",
-      pattern: "/api/conversations/:id/seen",
       access: { kind: "owner", resource: "conversation" },
       ...ownerConversation,
     },

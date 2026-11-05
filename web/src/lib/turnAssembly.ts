@@ -19,7 +19,8 @@ export interface HistoryEvent {
   toolInput?: string;
   toolOutput?: string;
   isError?: boolean;
-  /** result 行携带的徽标元信息（chat UE 轮回合徽标；light 模式原样透传） */
+  /** result 行携带的徽标元信息（chat UE 轮回合徽标；audit 行 token 在嵌套 usage，model/duration 平铺） */
+  usage?: { inputTokens?: number; outputTokens?: number };
   inputTokens?: number;
   outputTokens?: number;
   model?: string;
@@ -48,14 +49,17 @@ interface TurnMeta {
   durationMs?: number;
 }
 
-/** result 审计行 → 徽标元信息（每 taskId 取最后一条 result 行） */
+/** result 审计行 → 徽标元信息（每 taskId 取最后一条 result 行）。
+ *  token 双口径：audit 行映射为嵌套 usage；SSE 回放/宽容形状为平铺（e2e 实锤修正） */
 function groupMetaByTask(events: HistoryEvent[]): Map<string, TurnMeta> {
   const byTask = new Map<string, TurnMeta>();
   for (const event of events) {
     if (event.type !== "result" || !event.taskId) continue;
+    const inputTokens = event.usage?.inputTokens ?? event.inputTokens;
+    const outputTokens = event.usage?.outputTokens ?? event.outputTokens;
     byTask.set(event.taskId, {
-      ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
-      ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
       ...(event.model ? { model: event.model } : {}),
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     });

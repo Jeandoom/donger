@@ -162,7 +162,8 @@ function MessageActions({
           <Pencil size={12} aria-hidden="true" />
         </button>
       ) : null}
-      {onFork && messageId ? <ForkIcon /> : null}
+      {/* 助手回合的 messageId 由 ForkIcon 自身从 metadata.custom 读（回合末条消息 id），故不在此判 messageId */}
+      {onFork ? <ForkIcon /> : null}
     </span>
   );
 }

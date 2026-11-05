@@ -141,3 +141,55 @@ describe("assembleTurnMessages", () => {
     expect((out[1]?.parts ?? []).map((p) => p.kind)).toEqual(["text", "tool"]);
   });
 });
+
+describe("回合徽标 meta 提取（chat UE 轮）", () => {
+  it("audit result 行嵌套 usage → meta；与平铺形状兼容", () => {
+    const out = assembleTurnMessages(
+      [
+        msg("u1", "user", "问", "2026-09-14T10:00:00Z"),
+        msg("b1", "bot", "答", "2026-09-14T10:00:01Z", "t9"),
+      ],
+      [
+        {
+          type: "result",
+          taskId: "t9",
+          usage: { inputTokens: 1200, outputTokens: 456 },
+          model: "glm-e2e",
+          durationMs: 8200,
+          recordedAt: "2026-09-14T10:00:02Z",
+        },
+      ],
+    );
+    expect(out[1]?.meta).toEqual({
+      inputTokens: 1200,
+      outputTokens: 456,
+      model: "glm-e2e",
+      durationMs: 8200,
+    });
+    const out2 = assembleTurnMessages(
+      [msg("u2", "user", "问", "2026-09-14T11:00:00Z"), msg("b2", "bot", "答", "2026-09-14T11:00:01Z", "t8")],
+      [
+        {
+          type: "result",
+          taskId: "t8",
+          inputTokens: 10,
+          outputTokens: 5,
+          model: "m2",
+          recordedAt: "2026-09-14T11:00:02Z",
+        },
+      ],
+    );
+    expect(out2[1]?.meta).toEqual({ inputTokens: 10, outputTokens: 5, model: "m2" });
+  });
+
+  it("非 result 行/无 taskId 不产生 meta", () => {
+    const out = assembleTurnMessages(
+      [msg("u1", "user", "问", "2026-09-14T10:00:00Z"), msg("b1", "bot", "答", "2026-09-14T10:00:01Z", "t7")],
+      [
+        { type: "tool_use", taskId: "t7", toolName: "Bash", toolInput: "{}", recordedAt: "2026-09-14T10:00:01Z" },
+        { type: "result", usage: { inputTokens: 5, outputTokens: 1 }, recordedAt: "2026-09-14T10:00:02Z" },
+      ],
+    );
+    expect(out[1]?.meta).toBeUndefined();
+  });
+});

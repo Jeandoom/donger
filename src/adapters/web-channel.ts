@@ -4320,14 +4320,27 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // POST /api/conversations/:id/seen —— 已读联动（2026-11-05 统一通知设计 §2.4）：
-    // 打开会话把该会话全部未读通知（agent.replied 等）标已读；仅本人
+    // POST /api/conversations/:id/seen —— 打开会话的「已读」双语义收口：
+    // ①统一通知设计 §2.4：该会话全部未读通知（agent.replied 等）标已读；
+    // ②chat UE 优化轮 E1-A：conversations.lastSeenAt = now（会话未读徽标清零基准）。
+    // 两轮各自实现了同端点，合并期收口为一个 handler（仅本人；会话不存在 404）
     const seenMatch = url.match(/^\/api\/conversations\/([\w-]+)\/seen$/);
     if (seenMatch && req.method === "POST") {
+      const conversationId = seenMatch[1] ?? "";
       const viewer = this.currentViewer(req);
+      const conv =
+        viewer.role === "admin"
+          ? await this.deps.conversationStore?.get(conversationId)
+          : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
+      if (!conv) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "conversation not found" }));
+        return;
+      }
       const marked = this.deps.notificationStore
-        ? await this.deps.notificationStore.markReadByConversation(viewer.id, seenMatch[1] ?? "")
+        ? await this.deps.notificationStore.markReadByConversation(viewer.id, conversationId)
         : 0;
+      await this.deps.conversationStore?.markSeen?.(conversationId, new Date().toISOString());
       return this.json(res, { ok: true, marked });
     }
 
@@ -4695,26 +4708,6 @@ export class WebChannel implements Channel {
         ok: true,
         conversation: updated ? await this.conversationWithMode(updated) : undefined,
       });
-      return;
-    }
-
-    // POST /api/conversations/:id/seen —— 标记「已打开」（未读徽标清零基准；chat UE 优化轮 E1-A）
-    const seenConvMatch = url.match(/^\/api\/conversations\/([\w-]+)\/seen$/);
-    if (seenConvMatch && req.method === "POST") {
-      const conversationId = seenConvMatch[1] ?? "";
-      const viewer = this.currentViewer(req);
-      const conv =
-        viewer.role === "admin"
-          ? await this.deps.conversationStore?.get(conversationId)
-          : await this.deps.conversationStore?.getVisible(viewer.id, conversationId);
-      if (!conv) {
-        res.writeHead(404);
-        res.end(JSON.stringify({ error: "conversation not found" }));
-        return;
-      }
-      await this.deps.conversationStore?.markSeen?.(conversationId, new Date().toISOString());
-      res.writeHead(204);
-      res.end();
       return;
     }
 
