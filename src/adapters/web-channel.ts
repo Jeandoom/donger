@@ -544,6 +544,8 @@ export interface WebChannelDeps {
   notificationService?: NotificationService;
   /** 已读联动（2026-11-05 统一通知设计 §2.4）：打开会话批量标该会话未读通知已读 */
   notificationStore?: import("../ports/notification-store.js").NotificationStore;
+  /** 渠道连接注册表（2026-11-05 统一通知设计 §2.2；连接器页「渠道连接」分区数据源） */
+  channelRegistry?: import("../orchestrator/channel-registry.js").ChannelConnectionRegistry;
   /** 知识库三表存储（spec 2026-09-22-knowledge-base-design；缺省=KB 端点 503） */
   kbLibraryStore?: KbLibraryStore;
   kbShareStore?: KbShareStore;
@@ -5091,6 +5093,39 @@ export class WebChannel implements Channel {
       const ok = await svc.markRead(viewer.id, body.id);
       if (!ok) return this.json(res, { error: "通知不存在或已读" }, 404);
       return this.json(res, { ok: true });
+    }
+
+    // GET /api/channel-connections —— 渠道连接列表（2026-11-05 统一通知设计 §2.2；
+    // authenticated：只回能力/状态/配置来源归属，永不回配置值；配置管理在授权页/地址簿）
+    if (url === "/api/channel-connections" && req.method === "GET") {
+      const registry = this.deps.channelRegistry;
+      if (!registry) return this.json(res, { error: "渠道连接未启用" }, 503);
+      const channels = registry.list().map((a) => ({
+        id: a.id,
+        displayName: a.displayName,
+        description: a.description,
+        capabilities: a.capabilities,
+        configSource: a.configSource,
+        configHint: a.configHint,
+        available: a.available(),
+        status: a.status?.() ?? null,
+      }));
+      return this.json(res, { channels });
+    }
+
+    // POST /api/channel-connections/:id/test —— 渠道连通性测试（admin：发起真实外部探活）
+    const channelTestMatch = url.match(/^\/api\/channel-connections\/([\w-]+)\/test$/);
+    if (channelTestMatch && req.method === "POST") {
+      const viewer = this.currentViewer(req);
+      if (viewer.role !== "admin") return this.json(res, { error: "forbidden" }, 403);
+      const adapter = this.deps.channelRegistry?.get(channelTestMatch[1] ?? "");
+      if (!adapter) return this.json(res, { error: "not found" }, 404);
+      try {
+        const result = await adapter.testConnection();
+        return this.json(res, result);
+      } catch (e) {
+        return this.json(res, { ok: false, error: (e as Error).message.slice(0, 200) }, 200);
+      }
     }
 
     // GET /api/notifications/prefs —— 订阅偏好（组×通道矩阵；站内缺省开，站外 opt-in）

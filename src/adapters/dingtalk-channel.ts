@@ -134,6 +134,11 @@ export class DingTalkChannel implements Channel {
     this.client?.disconnect();
   }
 
+  /** 长连接在线状态（渠道连接卡片入站展示；onMessage 建链后即非空） */
+  isRunning(): boolean {
+    return this.client !== undefined;
+  }
+
   async send(threadId: string, msg: OutgoingMessage): Promise<void> {
     const recipient = this.recipients.get(threadId);
     if (!recipient) throw new ChannelError("NO_RECIPIENT", `钉钉无 ${threadId} 的 recipient`);

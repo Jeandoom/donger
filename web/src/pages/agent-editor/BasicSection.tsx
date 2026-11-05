@@ -7,7 +7,8 @@ import { Switch } from "../../components/ui/switch";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm, ScenarioIssue } from "./model";
 
-const NOTIFY_CHANNELS: Array<{
+/** 缺省内置（fail-open）：注册表加载失败时仍可配置；正常路径由 AgentEditorPage 传注册表过滤结果 */
+const DEFAULT_NOTIFY_CHANNELS: Array<{
   id: "inapp" | "dingtalk" | "webhook" | "email";
   label: string;
 }> = [
@@ -34,12 +35,15 @@ export function BasicSection({
   patch,
   issues,
   nameInputRef,
+  notifyChannels = DEFAULT_NOTIFY_CHANNELS,
 }: {
   form: AgentEditorForm;
   patch: (p: Partial<AgentEditorForm>) => void;
   /** 场景联动前置警示（inline 展示 + 跨区跳转链接，不阻断保存） */
   issues: ScenarioIssue[];
   nameInputRef?: RefObject<HTMLInputElement>;
+  /** 通知渠道选项（注册表驱动：outboundPush 且就绪的渠道；拍板 #2 未适配不展示） */
+  notifyChannels?: Array<{ id: "inapp" | "dingtalk" | "webhook" | "email"; label: string }>;
 }) {
   return (
     <FormSection id="agent-sec-basic" no="1" title="基本" description="名称、用途与场景定位">
@@ -95,7 +99,7 @@ export function BasicSection({
             启用回复通知
           </label>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-            {NOTIFY_CHANNELS.map((c) => {
+            {notifyChannels.map((c) => {
               const checked = (form.notifyPolicy?.channels ?? ["inapp"]).includes(c.id);
               return (
                 <label

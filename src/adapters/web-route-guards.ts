@@ -513,6 +513,10 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
     { method: "*", pattern: "/api/connectors/:id", access: { kind: "authenticated" } },
 
     // 自动化模块：事件 + 工作流（requireOwned* 在 handler 内判定；
+    // 渠道连接（2026-11-05 统一通知设计 §2.2）：列表 authenticated（不回配置值）；
+    // 连通性测试发起真实外部请求 → admin
+    { method: "GET", pattern: "/api/channel-connections", access: { kind: "authenticated" } },
+    { method: "POST", pattern: "/api/channel-connections/:id/test", access: { kind: "admin" } },
     // spec 2026-10-09-events-workflows-refactor-design §8）
     { method: "GET", pattern: "/api/events", access: { kind: "authenticated" } },
     { method: "POST", pattern: "/api/events", access: { kind: "authenticated" } },

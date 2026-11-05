@@ -23,8 +23,12 @@ import { LocalExtensionDirectoryResolver } from "./adapters/local-extension-dire
 import { LocalFileBrowser } from "./adapters/local-file-browser.js";
 import { LocalSkillInstaller } from "./adapters/local-skill-installer.js";
 import { MemoryRateLimiter } from "./adapters/memory-rate-limiter.js";
+import { DingTalkChannelAdapter } from "./adapters/channel-dingtalk.js";
 import { DingTalkNotificationAdapter } from "./adapters/notif-dingtalk.js";
+import { EmailChannelAdapter } from "./adapters/channel-email.js";
 import { EmailNotificationAdapter } from "./adapters/notif-email.js";
+import { TeambitionChannelAdapter } from "./adapters/channel-teambition.js";
+import { WebhookChannelAdapter } from "./adapters/channel-webhook.js";
 import { WebhookNotificationAdapter } from "./adapters/notif-webhook.js";
 import { RoutingAgentRunner } from "./adapters/routing-agent-runner.js";
 import { SkillJobRunner } from "./adapters/skill-jobs.js";
@@ -84,6 +88,7 @@ import { DrainManager } from "./orchestrator/drain-manager.js";
 import { EventDispatcher } from "./orchestrator/event-dispatcher.js";
 import { GitAccessGate } from "./orchestrator/git-access-gate.js";
 import { startMemoryConsolidator } from "./orchestrator/memory-consolidator.js";
+import { ChannelConnectionRegistry } from "./orchestrator/channel-registry.js";
 import { MessageEventRouter } from "./orchestrator/message-event-router.js";
 import { NotificationService } from "./orchestrator/notification-service.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
@@ -552,6 +557,21 @@ async function main(): Promise<void> {
       (await userStore.getIdentities(userId)).find((i) => i.provider === "email")?.externalId,
   });
 
+  // 渠道连接注册表（2026-11-05 统一通知设计 §2.2）：渠道一等资产登记口——
+  // 连接器页「渠道连接」分区数据源；M3 起回原投递/入站路由按注册表消费
+  const channelRegistry = new ChannelConnectionRegistry();
+  channelRegistry.register(
+    new DingTalkChannelAdapter(() => moduleConfigStore?.getDingTalk(), () => dtChannel),
+  );
+  channelRegistry.register(
+    new TeambitionChannelAdapter(
+      () => moduleConfigStore?.getTeambition(),
+      () => isPluginEnabled(pluginHost.snapshot(), "platform.teambition"),
+    ),
+  );
+  channelRegistry.register(new EmailChannelAdapter(() => moduleConfigStore?.getEmail()));
+  channelRegistry.register(new WebhookChannelAdapter());
+
   // Web Channel（始终启动）
   const fileBrowser = new LocalFileBrowser({
     userStore,
@@ -684,6 +704,7 @@ async function main(): Promise<void> {
     eventFiringStore,
     notificationService,
     notificationStore,
+    channelRegistry,
     agentMeta: {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],

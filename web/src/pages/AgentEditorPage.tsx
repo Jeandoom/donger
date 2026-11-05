@@ -16,6 +16,11 @@ import {
   updateAgent,
 } from "../lib/agents";
 import { type ConnectorDTO, fetchConnectors } from "../lib/connectors";
+import {
+  fetchChannelConnections,
+  notifyChannelOptions,
+  type ChannelConnectionDTO,
+} from "../lib/channelConnections";
 import { createKb } from "../lib/kb";
 import { fetchPluginSnapshot } from "../lib/plugins";
 import { fetchCredentialTemplates } from "../lib/skills";
@@ -73,6 +78,9 @@ export function AgentEditorPage() {
     Array<{ code: string; name: string; repoUrl?: string }>
   >([]);
   const [mcpJsonText, setMcpJsonText] = useState("[]");
+  const [notifyChannelList, setNotifyChannelList] = useState<
+    Array<{ id: "inapp" | "dingtalk" | "webhook" | "email"; label: string }>
+  >([]);
   const [mcpJsonError, setMcpJsonError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const scrollRootRef = useRef<HTMLDivElement>(null);
@@ -100,8 +108,14 @@ export function AgentEditorPage() {
 
   useEffect(() => {
     // 智能体只可勾选 MCP 类型连接器（HTTP 类型是接口登记，不注入工具）
+    // 智能体只可勾选 MCP 类型连接器（HTTP 类型是接口登记，不注入工具）
     fetchConnectors()
       .then((list) => setConnectors(list.filter((c) => c.type === "mcp")))
+      .catch(() => {});
+    fetchChannelConnections()
+      .then((channels: ChannelConnectionDTO[]) =>
+        setNotifyChannelList(notifyChannelOptions(channels)),
+      )
       .catch(() => {});
   }, []);
 
@@ -500,6 +514,11 @@ export function AgentEditorPage() {
             {...sectionProps}
             issues={issues.filter((i) => i.section === "agent-sec-basic")}
             nameInputRef={nameInputRef}
+            notifyChannels={
+              notifyChannelList.length > 0
+                ? notifyChannelList
+                : undefined
+            }
           />
           <PromptSkillsSection {...sectionProps} meta={meta} />
           <ToolsPermsSection
