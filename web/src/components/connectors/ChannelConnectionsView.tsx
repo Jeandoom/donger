@@ -1,9 +1,16 @@
+import { useState } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
+import { Input } from "../ui/input";
+import { Switch } from "../ui/switch";
 import { AddressBookCard } from "../AddressBookCard";
 import type { AddressesView } from "../../lib/notifications";
-import type { ChannelConnectionDTO } from "../../lib/channelConnections";
+import {
+  type ChannelConnectionDTO,
+  fetchChannelConfig,
+  saveChannelConfig,
+} from "../../lib/channelConnections";
 
 /** 能力徽标：适配 ✓ / 暂未适配（拍板 #2：能力声明制，未适配灰标展示） */
 function CapabilityBadge({ label, adapted }: { label: string; adapted: boolean }) {
@@ -124,6 +131,10 @@ export function ChannelConnectionsView(props: {
                 </p>
               ) : null}
 
+              {c.configSource === "connection" && props.isAdmin ? (
+                <ConnectionConfigForm platform={c.id} onSaved={props.onReload} />
+              ) : null}
+
               {hasAddressBook ? (
                 <div className="border-t pt-3">
                   <div className="mb-2 text-xs font-semibold text-muted-foreground">
@@ -140,6 +151,96 @@ export function ChannelConnectionsView(props: {
           );
         })
       )}
+    </div>
+  );
+}
+
+/** 渠道自持配置表单（connection 渠道；secret 保存后永不回显，重填即覆盖） */
+function ConnectionConfigForm(props: { platform: string; onSaved: () => void }) {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [enabled, setEnabled] = useState(false);
+  const [appId, setAppId] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+  const [verificationToken, setVerificationToken] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  if (!loaded) {
+    setLoaded(true);
+    fetchChannelConfig(props.platform)
+      .then((view) => {
+        setConfigured(view.configured);
+        setEnabled(view.enabled);
+      })
+      .catch(() => {});
+  }
+
+  const save = () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const config: Record<string, string> = { appId, appSecret };
+    if (verificationToken) config.verificationToken = verificationToken;
+    saveChannelConfig(props.platform, config, enabled)
+      .then(() => {
+        setConfigured(true);
+        setAppSecret("");
+        setNotice("已保存并生效（测试连接可验证连通性）");
+        props.onSaved();
+      })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="border-t pt-3">
+      <div className="mb-2 flex items-center gap-3">
+        <span className="text-xs font-semibold text-muted-foreground">连接配置</span>
+        {configured !== null ? (
+          <Badge tone={configured ? "success" : "neutral"}>
+            {configured ? "已配置" : "未配置"}
+          </Badge>
+        ) : null}
+        <label className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Switch
+            checked={enabled}
+            disabled={!configured}
+            onCheckedChange={(v) => setEnabled(v)}
+            aria-label="启用渠道"
+          />
+          启用
+        </label>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Input
+          placeholder="App ID"
+          value={appId}
+          onChange={(e) => setAppId(e.target.value)}
+          className="max-w-sm"
+        />
+        <Input
+          placeholder="App Secret（保存后不回显；留空=保留原值）"
+          type="password"
+          value={appSecret}
+          onChange={(e) => setAppSecret(e.target.value)}
+          className="max-w-sm"
+        />
+        <Input
+          placeholder="Verification Token（事件订阅校验，可选）"
+          value={verificationToken}
+          onChange={(e) => setVerificationToken(e.target.value)}
+          className="max-w-sm"
+        />
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {notice ? <p className="text-xs text-success">{notice}</p> : null}
+        <Button size="sm" variant="secondary" disabled={busy || !appId} onClick={save}>
+          {busy ? "保存中…" : "保存配置"}
+        </Button>
+      </div>
     </div>
   );
 }

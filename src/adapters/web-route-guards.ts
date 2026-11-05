@@ -86,6 +86,16 @@ export function buildWebRouteGuardSpecs(deps: WebRouteGuardDeps): RouteGuardSpec
       pattern: "/api/webhooks/teambition",
       access: { kind: "public" },
     },
+    // 飞书事件订阅 webhook（2026-11-05 统一通知设计 M4 样板）：verification token 校验
+    // + url_verification challenge 直答，机器通道同 TB 口径
+    {
+      method: "POST",
+      pattern: "/api/webhooks/lark",
+      access: { kind: "public" },
+    },
+    // 渠道自持配置（2026-11-05 统一通知设计 §2.2 D6）：admin 读写；secret 永不回显
+    { method: "GET", pattern: "/api/channel-connections/:id/config", access: { kind: "admin" } },
+    { method: "PUT", pattern: "/api/channel-connections/:id/config", access: { kind: "admin" } },
     { method: "POST", pattern: "/api/auth/exchange", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/register", access: { kind: "public" } },
     { method: "POST", pattern: "/api/auth/login", access: { kind: "public" } },

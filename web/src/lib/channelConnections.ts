@@ -57,3 +57,33 @@ export function notifyChannelOptions(channels: ChannelConnectionDTO[]): Array<{
   }
   return options;
 }
+
+export interface ChannelConfigView {
+  platform: string;
+  configured: boolean;
+  enabled: boolean;
+  updatedAt: string | null;
+}
+
+/** 渠道自持配置元信息（admin；secret 永不回显） */
+export async function fetchChannelConfig(platform: string): Promise<ChannelConfigView> {
+  const r = await apiFetch(`/api/channel-connections/${platform}/config`);
+  if (!r.ok) throw new Error(`config ${r.status}`);
+  return (await r.json()) as ChannelConfigView;
+}
+
+export async function saveChannelConfig(
+  platform: string,
+  config: Record<string, string>,
+  enabled = true,
+): Promise<void> {
+  const r = await apiFetch(`/api/channel-connections/${platform}/config`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config, enabled }),
+  });
+  if (!r.ok) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `save ${r.status}`);
+  }
+}

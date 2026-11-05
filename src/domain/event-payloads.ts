@@ -302,6 +302,8 @@ export interface PlatformMessageEnvelope {
     orgId?: string;
     projectId?: string;
     taskId?: string;
+    /** 飞书群聊 id（lark M4 样板） */
+    chatId?: string;
   };
   text: string;
   /** 平台原始裁剪（排障面；敏感字段由通道层脱敏） */

@@ -26,6 +26,8 @@ import { MemoryRateLimiter } from "./adapters/memory-rate-limiter.js";
 import { DingTalkChannelAdapter } from "./adapters/channel-dingtalk.js";
 import { DingTalkNotificationAdapter } from "./adapters/notif-dingtalk.js";
 import { EmailChannelAdapter } from "./adapters/channel-email.js";
+import { LarkChannelAdapter, type LarkConfig } from "./adapters/channel-lark.js";
+import { SqliteChannelConnectionStore } from "./adapters/sqlite-channel-connection-store.js";
 import { EmailNotificationAdapter } from "./adapters/notif-email.js";
 import { TeambitionChannelAdapter } from "./adapters/channel-teambition.js";
 import { WebhookChannelAdapter } from "./adapters/channel-webhook.js";
@@ -571,6 +573,20 @@ async function main(): Promise<void> {
   );
   channelRegistry.register(new EmailChannelAdapter(() => moduleConfigStore?.getEmail()));
   channelRegistry.register(new WebhookChannelAdapter());
+  // 飞书样板（M4「四步接入」验收）：配置自持 channel_connections（D6；secretCipher 加密落库）
+  const channelConnectionStore = new SqliteChannelConnectionStore(db);
+  channelConnectionStore.migrate();
+  const readLarkConfig = (): LarkConfig | undefined => {
+    const row = channelConnectionStore.get("lark");
+    if (!row || !row.enabled) return undefined;
+    try {
+      return JSON.parse(secretCipher.decrypt(row.config)) as LarkConfig;
+    } catch (e) {
+      console.error("[channel-connections] lark 配置解密失败", e);
+      return undefined;
+    }
+  };
+  channelRegistry.register(new LarkChannelAdapter(readLarkConfig));
 
   // Web Channel（始终启动）
   const fileBrowser = new LocalFileBrowser({
@@ -705,6 +721,8 @@ async function main(): Promise<void> {
     notificationService,
     notificationStore,
     channelRegistry,
+    channelConnectionStore,
+    secretCipher,
     agentMeta: {
       presets: cfg.agentLlmPresets,
       skillPaths: cfg.builtinSkillsDir ? [cfg.builtinSkillsDir] : [],
@@ -794,6 +812,18 @@ async function main(): Promise<void> {
   webChannelDeps.teambitionRouter = messageEventRouter;
   const teambitionEnabled = () =>
     isPluginEnabled(pluginHost.snapshot(), "platform.teambition");
+  // 飞书 webhook 校验器晚绑定（路由内读取 registry 适配器实例）
+  webChannelDeps.larkVerifier = (payload: { header?: { token?: string } }) => {
+    const adapter = channelRegistry.get("lark");
+    return adapter && "verifyWebhook" in adapter
+      ? (adapter as { verifyWebhook(p: { header?: { token?: string } }): boolean }).verifyWebhook(
+          payload,
+        )
+      : false;
+  };
+  webChannelDeps.larkNormalizer = (payload: unknown) => {
+    return channelRegistry.get("lark")?.normalizeWebhook?.(payload) ?? null;
+  };
   webChannelDeps.teambitionEnabled = teambitionEnabled;
   // TB MCP token 常驻续期（access 1h 效期；凭证 tb-mcp 三件套 TOKEN/REFRESH_TOKEN/CLIENT_ID）：
   // 插件停用=不启动。过期症状=SDK 会话启动握手 401→MCP 服务被剔除；续期后新会话自动重挂

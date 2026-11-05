@@ -546,6 +546,13 @@ export interface WebChannelDeps {
   notificationStore?: import("../ports/notification-store.js").NotificationStore;
   /** 渠道连接注册表（2026-11-05 统一通知设计 §2.2；连接器页「渠道连接」分区数据源） */
   channelRegistry?: import("../orchestrator/channel-registry.js").ChannelConnectionRegistry;
+  /** 渠道自持配置存储（connection 渠道的配置 CRUD；加密在路由层做） */
+  channelConnectionStore?: import("./sqlite-channel-connection-store.js").SqliteChannelConnectionStore;
+  /** 飞书 webhook 校验/归一晚绑定钩子（适配器实例在 index 侧注册表） */
+  larkVerifier?: (payload: { header?: { token?: string } }) => boolean;
+  larkNormalizer?: (payload: unknown) => import("../domain/event-payloads.js").PlatformMessageEnvelope | null;
+  /** 配置加密器（channel_connections 自持配置落库加密；缺省=base64 明文兼容） */
+  secretCipher?: { encrypt(plaintext: string): string; decrypt(ciphertext: string): string };
   /** 知识库三表存储（spec 2026-09-22-knowledge-base-design；缺省=KB 端点 503） */
   kbLibraryStore?: KbLibraryStore;
   kbShareStore?: KbShareStore;
@@ -1455,6 +1462,13 @@ export class WebChannel implements Channel {
       // 未配置/插件停用=404 不暴露；TB 5 秒 200 硬约束 ↔ route 同步快返回
       if (req.method === "POST" && pathname === "/api/webhooks/teambition") {
         await this.handleTeambitionWebhook(req, res);
+        return;
+      }
+
+      // POST /api/webhooks/lark —— 飞书事件订阅入口（免认证面：verification token 校验；
+      // url_verification challenge 直答；归一委托渠道适配器）
+      if (req.method === "POST" && pathname === "/api/webhooks/lark") {
+        await this.handleLarkWebhook(req, res);
         return;
       }
 
@@ -5128,6 +5142,40 @@ export class WebChannel implements Channel {
       }
     }
 
+    // GET/PUT /api/channel-connections/:id/config —— 渠道自持配置（2026-11-05 §2.2 D6；
+    // admin；secret 永不回显，回显 configSource 的可编辑键集合）
+    const channelConfigMatch = url.match(/^\/api\/channel-connections\/([\w-]+)\/config$/);
+    if (channelConfigMatch && (req.method === "GET" || req.method === "PUT")) {
+      const viewer = this.currentViewer(req);
+      if (viewer.role !== "admin") return this.json(res, { error: "forbidden" }, 403);
+      const platform = channelConfigMatch[1] ?? "";
+      const store = this.deps.channelConnectionStore;
+      if (!store) return this.json(res, { error: "渠道配置存储未启用" }, 503);
+      if (req.method === "GET") {
+        const row = store.get(platform);
+        return this.json(res, {
+          platform,
+          configured: !!row,
+          enabled: row ? !!row.enabled : false,
+          updatedAt: row?.updatedAt ?? null,
+        });
+      }
+      const body = JSON.parse(await this.readBody(req)) as {
+        config?: Record<string, string>;
+        enabled?: boolean;
+      };
+      if (typeof body.config !== "object" || body.config === null) {
+        return this.json(res, { error: "config 为必填对象" }, 400);
+      }
+      // 敏感键不回显：保存即生效；GET 仅回 configured/enabled 元信息
+      const encrypted = this.deps.secretCipher
+        ? this.deps.secretCipher.encrypt(JSON.stringify(body.config))
+        : Buffer.from(JSON.stringify(body.config)).toString("base64");
+      store.put(platform, encrypted, body.enabled ?? true);
+      this.deps.channelRegistry?.get(platform)?.testConnection().catch(() => {});
+      return this.json(res, { ok: true });
+    }
+
     // GET /api/notifications/prefs —— 订阅偏好（组×通道矩阵；站内缺省开，站外 opt-in）
     if (url === "/api/notifications/prefs" && req.method === "GET") {
       const svc = this.deps.notificationService;
@@ -7069,6 +7117,44 @@ export class WebChannel implements Channel {
     const envelope = tbAdapter?.normalizeWebhook
       ? tbAdapter.normalizeWebhook(payload)
       : buildTeambitionEnvelope(payload);
+    if (!envelope) return respond(200, { ok: true, skipped: "unshaped" });
+    if (!this.deps.teambitionRouter) return respond(200, { ok: true, skipped: "router-missing" });
+    const outcome = await this.deps.teambitionRouter.route(envelope);
+    return respond(200, { ok: true, consumed: outcome.consumed, fired: outcome.fired });
+  }
+
+  /** POST /api/webhooks/lark —— 飞书事件订阅（2026-11-05 统一通知设计 M4 样板）：
+   * url_verification challenge 直答；verification token 校验；归一委托渠道适配器 → 路由。 */
+  private async handleLarkWebhook(req: HttpRequest, res: ServerResponse): Promise<void> {
+    const respond = (status: number, body: Record<string, unknown>): void => {
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(body));
+    };
+    if (!this.deps.larkVerifier || !this.deps.larkNormalizer) {
+      return respond(404, { error: "not found" });
+    }
+    if (!this.rateLimiter.hit(`lark-webhook:${this.clientIp(req)}`, 60_000, 120)) {
+      return respond(429, { error: "rate limited" });
+    }
+    let payload: {
+      type?: string;
+      challenge?: string;
+      header?: { event_type?: string; token?: string };
+      event?: unknown;
+    };
+    try {
+      payload = JSON.parse(await this.readBody(req));
+    } catch {
+      return respond(400, { error: "invalid json" });
+    }
+    // url_verification 握手（飞书开放平台首次登记回调）
+    if (payload.type === "url_verification") {
+      return respond(200, { challenge: payload.challenge ?? "" });
+    }
+    if (!this.deps.larkVerifier(payload)) {
+      return respond(401, { error: "invalid token" });
+    }
+    const envelope = this.deps.larkNormalizer(payload);
     if (!envelope) return respond(200, { ok: true, skipped: "unshaped" });
     if (!this.deps.teambitionRouter) return respond(200, { ok: true, skipped: "router-missing" });
     const outcome = await this.deps.teambitionRouter.route(envelope);

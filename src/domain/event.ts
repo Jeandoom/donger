@@ -43,8 +43,8 @@ export function generateCallPath(): string {
   return `/hooks/${randomBytes(8).toString("hex")}`;
 }
 
-/** 平台消息事件支持的平台（M1=钉钉；TB 随 M2） */
-export const MESSAGE_PLATFORMS = ["dingtalk", "teambition"] as const;
+/** 平台消息事件支持的平台（M1=钉钉；TB 随 M2；lark=M4 样板） */
+export const MESSAGE_PLATFORMS = ["dingtalk", "teambition", "lark"] as const;
 export type MessagePlatform = (typeof MESSAGE_PLATFORMS)[number];
 
 /**
