@@ -83,7 +83,6 @@ export class ClaudeAgentRunner implements AgentRunner {
 
     const mcpServersSdk: Record<string, SdkMcpServerConfig> = {
       ...(opts.mcpServers?.length ? mcpServersToSdk(opts.mcpServers) : {}),
-      ...(opts.platformTools ? { "donger-platform": opts.platformTools } : {}),
       ...(opts.gitPlatformTools ? { "donger-git": opts.gitPlatformTools } : {}),
       ...(opts.hostTools ? { "donger-host": opts.hostTools } : {}),
       ...(opts.kbTools ? { "donger-kb": opts.kbTools } : {}),
@@ -387,7 +386,6 @@ export class ClaudeAgentRunner implements AgentRunner {
           includePartialMessages: true,
           allowedTools: opts.allowedTools,
           mcpServers: opts.mcpServers,
-          platformTools: opts.platformTools ? "donger-platform" : undefined,
           additionalDirectories,
           sandbox: {
             enabled: true,

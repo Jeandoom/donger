@@ -1,12 +1,9 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { BookOpen, Check, Copy, GitFork, Megaphone } from "lucide-react";
+import { Check, Copy, GitFork, Megaphone } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAssistantRuntimeBridge } from "../../lib/assistantRuntimeBridge";
-import { isBuiltinAgentId } from "../../lib/builtinAgents";
 import type { FileInfo } from "../../lib/chatReducer";
 import { DongerAttachmentAdapter } from "../../lib/dongerAttachmentAdapter";
-import type { ConversationCandidate } from "../../lib/feedback";
-import { fetchKnowledgeBases } from "../../lib/kb";
 import { type LlmSdkType, llmSdkLabel, llmSdkTone } from "../../lib/llmSdk";
 import type { Mention } from "../../lib/mentions";
 import { reconcileMentions } from "../../lib/mentions";
@@ -113,24 +110,6 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     return () => clearTimeout(timer);
   }, [idCopied]);
   const activeConversation = props.conversations.find((c) => c.id === props.activeConversationId);
-  // 知识库会话标识（体验轮）：顶栏显示绑定库名——会话标题会被自动改名，库名不能靠标题
-  const activeKbId = activeConversation?.kbId;
-  const [kbName, setKbName] = useState<string>();
-  useEffect(() => {
-    setKbName(undefined);
-    if (!activeKbId) return;
-    let alive = true;
-    fetchKnowledgeBases()
-      .then((libs) => {
-        if (alive) setKbName(libs.find((l) => l.id === activeKbId)?.name ?? "知识库");
-      })
-      .catch(() => {
-        if (alive) setKbName("知识库");
-      });
-    return () => {
-      alive = false;
-    };
-  }, [activeKbId]);
   const effectiveMode: AgentPermissionMode =
     activeConversation?.effectivePermissionMode ??
     activeConversation?.permissionMode ??
@@ -250,12 +229,6 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
             {activeSdk ? (
               <Badge tone={llmSdkTone(activeSdk)} title="当前使用的 Agent SDK">
                 {llmSdkLabel(activeSdk)}
-              </Badge>
-            ) : null}
-            {activeKbId ? (
-              <Badge tone="info" title="知识库会话：检索与维护限定在该库">
-                <BookOpen size={11} className="mr-1" aria-hidden="true" />
-                {kbName ?? "知识库"}
               </Badge>
             ) : null}
             {forkSource ? (
@@ -429,11 +402,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               onResolveApproval={props.onResolveApproval}
               onDecideCredentialMissing={props.onDecideCredentialMissing}
               placeholder={props.inputPlaceholder ?? "输入消息…"}
-              agentId={
-                activeConversation?.agentId && !isBuiltinAgentId(activeConversation.agentId)
-                  ? activeConversation.agentId
-                  : undefined
-              }
+              agentId={activeConversation?.agentId || undefined}
               conversationId={activeConversation?.id}
               onMentionInserted={collectMention}
               onOpenFileChange={openFileChange}

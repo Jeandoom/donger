@@ -194,28 +194,6 @@ export function buildProgram(): Command {
       });
     });
 
-  program
-    .command("agent-new")
-    .description("AI 生成助手：对话式创建 agent / skill（写操作经审批卡确认后落库）")
-    .action((_opts: object, cmd: Command) =>
-      run(async () => {
-        const { api, baseUrl, token } = requireApi(cmd);
-        // 内置 assist 智能体（builtin-assist，不入库）：后端短路解析，写操作过 authoring 门
-        await runChat({ api, baseUrl, token, agent: "builtin-assist" });
-      }),
-    );
-
-  program
-    .command("agent-builder")
-    .description("Agent Builder：描述想要的业务能力，对话式补建 skills + agent 并登记路由表")
-    .action((_opts: object, cmd: Command) =>
-      run(async () => {
-        const { api, baseUrl, token } = requireApi(cmd);
-        // 内置 builder 智能体（agent-builder，不入库）：分发无匹配时的兜底，也可主动进入
-        await runChat({ api, baseUrl, token, agent: "agent-builder" });
-      }),
-    );
-
   // ── tasks ──
   const tasks = program.command("tasks").description("任务查看与管理");
   tasks
@@ -476,23 +454,6 @@ export function buildProgram(): Command {
         walk(roots, 0);
       }),
     );
-  tasks
-    .command("optimize <id>")
-    .description(
-      "触发 task-optimize：聚合审计+评论，进入 AI 生成助手会话确认修订提案（支持短 id 前缀）",
-    )
-    .action((id: string, _opts: object, cmd: Command) =>
-      run(async () => {
-        const { api, baseUrl, token } = requireApi(cmd);
-        const taskId = await resolveId(id, () => fetchAllTasks(api), "任务", "tasks list");
-        const { conversationId } = await api.optimizeTask(taskId);
-        console.log(
-          `已发起优化分析，进入优化会话 ${conversationId.slice(0, 8)}（提案落盘会弹审批卡）：`,
-        );
-        await runChat({ api, baseUrl, token, conversationId });
-      }),
-    );
-
   // ── audit ──
   const audit = program.command("audit").description("审计查看");
   audit

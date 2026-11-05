@@ -161,7 +161,7 @@ class FakeMessageStore {
   }
 }
 
-const CONV = { id: "conv-appr", title: "审批落库测试", userId: "local" };
+const CONV = { id: "conv-appr", title: "审批落库测试", userId: "local", agentId: "agent-1" };
 
 interface Instance {
   web: WebChannel;
@@ -235,8 +235,23 @@ async function bootInstance(
     credentialSets,
     approvalStore: shared.approvalStore,
     messageStore: shared.messages as never,
+    // 内置路由链退役：会话显式绑定 agent，resolveAgentForUse 走 agents 表口径
     agentStore: {
-      get: async () => undefined,
+      get: async (id: string) => ({
+        id,
+        ownerId: "local",
+        name: "测试Agent",
+        skills: [],
+        tools: { mode: "all", whitelist: [] },
+        mcpServers: [],
+        credentials: [],
+        gitRepositories: [],
+        gitAllowShellGit: false,
+        extensionDirectories: [],
+        version: 1,
+        createdAt: "",
+        updatedAt: "",
+      }),
       listByOwner: async () => [],
       listSharedWith: async () => [],
       listAll: async () => [],

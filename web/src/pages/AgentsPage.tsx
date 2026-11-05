@@ -1,4 +1,3 @@
-import { Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
@@ -14,9 +13,7 @@ import {
   fetchAgents,
   scenarioLabel,
 } from "../lib/agents";
-import { BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import { fetchMe } from "../lib/auth";
-import { BUILTIN_AGENT_ENTRIES, BUILTIN_SELF_IMPROVER_AGENT_ID } from "../lib/builtinAgents";
 import { PlatformNotesCard } from "../components/PlatformNotesCard";
 
 export function AgentsPage() {
@@ -59,9 +56,6 @@ export function AgentsPage() {
   const kw = keyword.trim().toLowerCase();
   const match = (a: AgentListDTO) =>
     !kw || a.name.toLowerCase().includes(kw) || (a.description ?? "").toLowerCase().includes(kw);
-  const builtins = BUILTIN_AGENT_ENTRIES.filter(
-    (a) => (admin || a.id !== BUILTIN_SELF_IMPROVER_AGENT_ID) && match(a),
-  );
   const mine = agents.filter((a) => a._mine && match(a));
   const shared = agents.filter((a) => !a._mine && match(a));
 
@@ -83,18 +77,7 @@ export function AgentsPage() {
       <PageHeader
         title="智能体"
         description="管理你的自动化 Agent，配置技能与凭证"
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => navigate(`/?agent=${BUILTIN_ASSIST_AGENT_ID}`)}
-            >
-              <Sparkles aria-hidden="true" size={14} className="inline" />
-              AI 生成
-            </Button>
-            <Button onClick={() => navigate("/agents/new")}>+ 新建智能体</Button>
-          </>
-        }
+        actions={<Button onClick={() => navigate("/agents/new")}>+ 新建智能体</Button>}
       />
 
       <Input
@@ -124,13 +107,6 @@ export function AgentsPage() {
         duplicatingId={duplicatingId}
         empty={kw ? "没有匹配的智能体" : "暂无他人分享的智能体；通过分享链接授权后会出现在这里"}
       />
-      <Section
-        title="系统默认"
-        items={builtins}
-        builtin
-        onChat={(a) => navigate(`/?agent=${a.id}`)}
-      />
-
       {admin ? <PlatformNotesCard /> : null}
 
       <ConfirmDialog
@@ -156,8 +132,6 @@ function Section({
   items,
   onDelete,
   empty,
-  builtin = false,
-  onChat,
   openHref,
   onDuplicate,
   duplicatingId,
@@ -166,10 +140,6 @@ function Section({
   items: AgentListDTO[];
   onDelete?: (a: AgentListDTO) => void;
   empty?: string;
-  /** 系统默认智能体：不入库，不可编辑/删除，卡片只保留「对话」 */
-  builtin?: boolean;
-  /** builtin 卡的「对话」回调（跳转 /?agent=<id> 深链） */
-  onChat?: (a: AgentListDTO) => void;
   /** 卡片点击去向：我创建的进详情页；分享给我的直达对话（分享收紧：被分享者不可看详情） */
   openHref?: (a: AgentListDTO) => string;
   onDuplicate?: (a: AgentListDTO) => void;
@@ -180,29 +150,8 @@ function Section({
       <h2 className="text-sm font-semibold text-muted-foreground">{title}</h2>
       {items.length ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {items.map((a) =>
-            builtin ? (
-              <Card key={a.id} className="flex flex-col gap-2.5 p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft text-xs font-bold text-primary">
-                      {a.name.charAt(0).toUpperCase()}
-                    </span>
-                    <span className="truncate text-[13px] font-semibold">{a.name}</span>
-                  </span>
-                  <Badge tone="info">内置</Badge>
-                </div>
-                <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
-                  {a.description ?? "—"}
-                </p>
-                <div className="mt-auto flex items-center justify-end">
-                  <Button variant="secondary" size="sm" onClick={() => onChat?.(a)}>
-                    对话
-                  </Button>
-                </div>
-              </Card>
-            ) : (
-              <Card key={a.id} className="flex flex-col gap-2.5 p-4">
+          {items.map((a) => (
+            <Card key={a.id} className="flex flex-col gap-2.5 p-4">
                 <div className="flex items-start justify-between gap-2">
                   <Link
                     to={openHref ? openHref(a) : `/agents/${a.id}`}
@@ -255,8 +204,7 @@ function Section({
                   </div>
                 </div>
               </Card>
-            ),
-          )}
+          ))}
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">{empty ?? "暂无"}</p>

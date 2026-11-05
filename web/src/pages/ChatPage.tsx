@@ -1,23 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { AssistDraftBanner } from "../components/chat/AssistDraftBanner";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { EvictionNoticeDialog } from "../components/chat/EvictionNoticeDialog";
 import { GitAccessBlocker } from "../components/chat/GitAccessBlocker";
 import { SkillIssueReportDialog } from "../components/chat/SkillIssueReportDialog";
 import { emptyPrefs, normalizeSidebarPrefs, type SidebarPrefs } from "../lib/agentSidebar";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
-import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
-import { apiFetch, fetchMe } from "../lib/auth";
-import {
-  BUILTIN_AGENT_ENTRIES,
-  BUILTIN_SELF_IMPROVER_AGENT_ID,
-  isBuiltinAgentId,
-} from "../lib/builtinAgents";
+import { apiFetch } from "../lib/auth";
 import { fetchGitPreflight, type GitPreflightDTO } from "../lib/gitSettings";
 import { useWebChat } from "../lib/webChat";
-
-/** 内置协助智能体的合成侧栏条目见 lib/builtinAgents.ts（BUILTIN_AGENT_ENTRIES） */
 
 const PREFS_STORAGE_KEY = "donger.sidebarPrefs.v1";
 const PREFS_SAVE_DEBOUNCE_MS = 500;
@@ -59,16 +50,13 @@ export function ChatPage() {
   });
   const [gitLoading, setGitLoading] = useState(false);
   const [gitError, setGitError] = useState("");
-  const [assistDraft, setAssistDraft] = useState("");
   const [reportIssueOpen, setReportIssueOpen] = useState(false);
 
-  // 载入智能体列表（内置条目置顶；平台进化官仅管理员可见）
+  // 载入智能体列表（内置智能体已退役，全部条目来自 agents 表）
   useEffect(() => {
-    const visibleBuiltins = (admin: boolean) =>
-      BUILTIN_AGENT_ENTRIES.filter((e) => admin || e.id !== BUILTIN_SELF_IMPROVER_AGENT_ID);
-    Promise.all([fetchAgents(), fetchMe()])
-      .then(([list, me]) => setAgents([...visibleBuiltins(me?.role === "admin"), ...list]))
-      .catch(() => setAgents(visibleBuiltins(false)))
+    fetchAgents()
+      .then(setAgents)
+      .catch(() => setAgents([]))
       .finally(() => setAgentsLoaded(true));
   }, []);
 
@@ -97,10 +85,7 @@ export function ChatPage() {
     };
   }, []);
 
-  const managedIds = useMemo(
-    () => agents.filter((a) => !isBuiltinAgentId(a.id)).map((a) => a.id),
-    [agents],
-  );
+  const managedIds = useMemo(() => agents.map((a) => a.id), [agents]);
   // 剔除已删除智能体 + 新增智能体补位；渲染与持久化统一用规范化后的值
   const normalizedPrefs = useMemo(
     () => normalizeSidebarPrefs(managedIds, prefs),
@@ -158,16 +143,6 @@ export function ChatPage() {
   useEffect(() => {
     if (wc.activeConversationId) void checkGitAccess();
   }, [wc.activeConversationId, checkGitAccess]);
-
-  // 兜底入口带入的草稿：深链进入 assist 会话时读一次（读后即删）
-  useEffect(() => {
-    if (deepLinkAgent !== BUILTIN_ASSIST_AGENT_ID) return;
-    const draft = sessionStorage.getItem(ASSIST_DRAFT_STORAGE_KEY);
-    if (draft) {
-      setAssistDraft(draft);
-      sessionStorage.removeItem(ASSIST_DRAFT_STORAGE_KEY);
-    }
-  }, [deepLinkAgent]);
 
   // 初始定位（仅一次）：?agent= 深链优先（继续该 agent 最近会话，没有才新建草稿）；
   // 无深链则打开最近一条智能体会话（「默认对话agent」概念已移除，新建一律走分组头「+」）。
@@ -248,9 +223,6 @@ export function ChatPage() {
             const agent = agents.find((a) => a.id === agentId);
             void wc.newConversation(agentId, agent?.defaultPermissionMode);
           },
-          onNewKbConversation: (kbId) => {
-            void wc.newConversation("builtin-kb-assistant", undefined, kbId);
-          },
         }}
         messages={wc.messages}
         loadingMessages={wc.loadingMessages}
@@ -270,9 +242,7 @@ export function ChatPage() {
         onAnswerQuestion={wc.answerQuestion}
         inputPlaceholder={activeAgent ? `向 ${activeAgent.name} 发消息…` : "输入消息…"}
         headerExtra={
-          activeAgent &&
-          activeConversation?.agentId &&
-          !isBuiltinAgentId(activeConversation.agentId) ? (
+          activeAgent && activeConversation?.agentId ? (
             <button
               type="button"
               onClick={() => setReportIssueOpen(true)}
@@ -281,18 +251,6 @@ export function ChatPage() {
             >
               技能问题
             </button>
-          ) : undefined
-        }
-        aboveComposer={
-          assistDraft ? (
-            <AssistDraftBanner
-              draft={assistDraft}
-              onSend={(text) => {
-                setAssistDraft("");
-                void wc.send(text);
-              }}
-              onDismiss={() => setAssistDraft("")}
-            />
           ) : undefined
         }
         errors={wc.errors}

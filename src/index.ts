@@ -484,8 +484,6 @@ async function main(): Promise<void> {
       skillPackStore,
       connectorStore,
       skillRepoSync,
-      selfImproveGitRepository,
-      agentChain: cfg.agentChain,
       turnStallTimeoutMs: cfg.turnStallTimeoutMs,
       eventEmit: (eventName, payload) => {
         const dispatch = eventEmitRef.current;
@@ -517,33 +515,6 @@ async function main(): Promise<void> {
     credentialSets,
     getHomeDir: (uid) => join(usersDir, uid),
   });
-
-  // 平台进化官绑定的 donger 仓库（SELF_IMPROVE_GIT_URL；未配=undefined，实现/推送环节不可用）
-  const selfImproveGitRepository: AgentGitRepository | undefined = cfg.selfImproveGit
-    ? {
-        id: "donger-self",
-        name: "donger",
-        provider: cfg.selfImproveGit.provider,
-        url: cfg.selfImproveGit.url,
-        required: true,
-        shallow: true,
-        syncMode: "fastForward",
-        ...(cfg.selfImproveGit.credentialCode
-          ? { credentialCode: cfg.selfImproveGit.credentialCode }
-          : {}),
-      }
-    : undefined;
-
-  // agent 链配置校验（D2）：自定义 dispatcher/builder/chat agent 须已登记，缺失仅告警（运行时兜底内置）
-  for (const [env, id] of [
-    ["DISPATCHER_AGENT_ID", cfg.agentChain.dispatcherAgentId],
-    ["BUILDER_AGENT_ID", cfg.agentChain.builderAgentId],
-    ["CHAT_AGENT_ID", cfg.agentChain.chatAgentId],
-  ] as const) {
-    if (id && !(await agentStore.get(id))) {
-      log.warn({ env, agentId: id }, "agentChain 配置的智能体不存在，运行时将回退系统内置");
-    }
-  }
 
   // 自动化模块 stores（event / workflow / run / firing；迁移顺序有约束，spec §9：
   // event 吸收 triggers → workflow 吸收 loops → run 搬运 loop_runs+trigger_queue 并收尾 DROP）
@@ -704,7 +675,6 @@ async function main(): Promise<void> {
     kbFts,
     callbackRateLimitPerMin: cfg.callbackRateLimitPerMin,
     gitAccessGate,
-    selfImproveGitRepository: selfImproveGitRepository,
     publicBaseUrl: cfg.publicBaseUrl,
     inviteStore,
     trustProxy: cfg.trustProxy,

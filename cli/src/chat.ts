@@ -27,7 +27,6 @@ const COMMANDS = [
   "/result",
   "/resume",
   "/agent",
-  "/agent-new",
   "/chat",
   "/new",
   "/file",
@@ -35,12 +34,6 @@ const COMMANDS = [
   "/cancel",
   "/exit",
 ];
-
-/** 内置智能体（不入库，后端短路解析）：id → 展示名 */
-const BUILTIN_AGENTS: Record<string, string> = {
-  "builtin-assist": "AI 生成助手",
-  "agent-builder": "Agent Builder",
-};
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -108,9 +101,6 @@ const ATTACH_EXTS = new Set([
   "sh",
   "ps1",
 ]);
-
-/** 内置智能体上下文标记（builtin-assist / agent-builder，id 即后端常量） */
-const BUILTIN_ASSIST_ID = "builtin-assist";
 
 /**
  * /resume 作用域过滤（PM 会话隔离）：agent 上下文默认只列该 agent 的会话，
@@ -496,7 +486,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     await session?.connected();
   }
 
-  /** 回到未创建态（/new、/agent、/chat、/agent-new 切换后） */
+  /** 回到未创建态（/new、/agent、/chat 切换后） */
   function resetConversation(): void {
     session?.stop();
     resetRoundState();
@@ -551,16 +541,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   write(pc.dim(`用户 ${meUser.name}（${meUser.role}）\n`));
   // 直连既有会话（tasks optimize 的优化会话等）：跳过 agent 选择，直接 attach
   if (opts.conversationId) {
-    const list = await api.listConversations(meUser.id).catch(() => []);
-    const conv = list.find((c) => c.id === opts.conversationId);
-    const convAgentId = conv?.agentId ?? "";
-    const convBuiltin = BUILTIN_AGENTS[convAgentId];
-    currentAgent = convBuiltin ? { id: convAgentId, name: convBuiltin, _mine: true } : null;
+    currentAgent = null;
     await switchTo({ conversationId: opts.conversationId, agent: currentAgent });
-  } else if (opts.agent && BUILTIN_AGENTS[opts.agent]) {
-    // 内置智能体（不入库，后端短路解析）：AI 生成 / Agent Builder 入口
-    const builtinName = BUILTIN_AGENTS[opts.agent] ?? opts.agent;
-    currentAgent = { id: opts.agent, name: builtinName, _mine: true };
   } else if (opts.agent) {
     const agents = await api.listAgents().catch(() => []);
     const hit = agents.find((a) => a.id === opts.agent || a.name === opts.agent);
@@ -691,7 +673,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     if (t === "/help") {
       emit(
         pc.dim(
-          `${COMMANDS.join("  ")}\n  /tasks [id前缀|all] 任务列表（agent 会话内仅列当前会话）/详情与最终输出  /result <id前缀> 只看任务结果  /cancel [id前缀] 中断当前或指定任务\n  /status 连接与会话状态  /resume 恢复历史会话（agent 内仅列该 agent 的会话，/resume all 查看全部）  /agent 切换智能体  /agent-new 对话式创建 agent  /chat 回到默认会话\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /exit 退出\n`,
+          `${COMMANDS.join("  ")}\n  /tasks [id前缀|all] 任务列表（agent 会话内仅列当前会话）/详情与最终输出  /result <id前缀> 只看任务结果  /cancel [id前缀] 中断当前或指定任务\n  /status 连接与会话状态  /resume 恢复历史会话（agent 内仅列该 agent 的会话，/resume all 查看全部）  /agent 切换智能体  /chat 回到默认会话\n  /file <路径> 附加图片/md  /multi 多行输入（. 提交 /q 放弃）  /new 新会话（保留当前智能体）  /exit 退出\n`,
         ),
       );
       continue;
@@ -707,16 +689,6 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       const picked = await selectAgent();
       if (picked === null && currentAgent === null) continue; // 无 agent 可选，保持原状
       currentAgent = picked;
-      resetConversation();
-      continue;
-    }
-    if (t === "/agent-new") {
-      // 等价顶层命令 donger agent-new：切到内置 assist 对话式创建 agent/skill
-      currentAgent = {
-        id: BUILTIN_ASSIST_ID,
-        name: BUILTIN_AGENTS[BUILTIN_ASSIST_ID]!,
-        _mine: true,
-      };
       resetConversation();
       continue;
     }
@@ -741,9 +713,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         api.listConversations(meUser.id).catch(() => []),
         api.listAgents().catch(() => []),
       ]);
-      // 全量视图需标注归属 agent（含内置）；agent 视图同源冗余，不带
-      const nameOf = (id: string): string =>
-        BUILTIN_AGENTS[id] ?? agents.find((a) => a.id === id)?.name ?? "";
+      // 全量视图需标注归属 agent；agent 视图同源冗余，不带
+      const nameOf = (id: string): string => agents.find((a) => a.id === id)?.name ?? "";
       const { items: sorted, scope } = filterResumeScope(list, currentAgent, arg);
       if (sorted.length === 0) {
         emit(
@@ -778,10 +749,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         // 按会话归属反查 agent（而非「当前选中」），提示行/后续会话才能正确显示；
         // agent 视图下反查结果即当前 agent（列表已按其过滤），幂等
         const targetAgent = hit.agentId
-          ? (agents.find((a) => a.id === hit.agentId) ??
-            (BUILTIN_AGENTS[hit.agentId]
-              ? { id: hit.agentId, name: BUILTIN_AGENTS[hit.agentId]!, _mine: true }
-              : null))
+          ? (agents.find((a) => a.id === hit.agentId) ?? null)
           : null;
         await switchTo({ conversationId: hit.id, agent: targetAgent });
       } else {

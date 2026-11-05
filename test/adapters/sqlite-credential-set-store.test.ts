@@ -183,6 +183,39 @@ describe("SqliteCredentialSetStore", () => {
     expect((await legacyStore.getFilledValues(owner, ["legacy"]))[0]?.name).toBe("旧库改名");
     db.close();
   });
+
+  it("migrate 回填：aliyun_access_token 自动补生态别名 envAlias（幂等，2026-11-04 a3405241）", async () => {
+    await store.createTemplate("aliyun_access_token", {
+      code: "aliyun_access_token",
+      name: "阿里云服务sls凭证",
+      kind: "generic",
+      keySpecs: [{ key: "account" }, { key: "accessKey" }, { key: "secretKey" }],
+    }, owner);
+
+    // beforeEach 里 migrate 已跑过（当时模板不存在）；再次 migrate 触发回填
+    store.migrate();
+    let specs = (await store.getTemplate("aliyun_access_token"))?.keySpecs ?? [];
+    expect(specs.find((k) => k.key === "accessKey")?.envAlias).toBe("ALIBABA_CLOUD_ACCESS_KEY_ID");
+    expect(specs.find((k) => k.key === "secretKey")?.envAlias).toBe("ALIBABA_CLOUD_ACCESS_KEY_SECRET");
+    expect(specs.find((k) => k.key === "account")?.envAlias).toBeUndefined();
+
+    // 幂等：已含别名不覆盖；其他模板不受影响
+    await store.updateTemplate("aliyun_access_token", {
+      code: "aliyun_access_token",
+      name: "阿里云服务sls凭证",
+      kind: "generic",
+      keySpecs: [
+        { key: "account" },
+        { key: "accessKey", envAlias: "MY_CUSTOM_ALIAS" },
+        { key: "secretKey" },
+      ],
+    });
+    store.migrate();
+    specs = (await store.getTemplate("aliyun_access_token"))?.keySpecs ?? [];
+    expect(specs.find((k) => k.key === "accessKey")?.envAlias).toBe("MY_CUSTOM_ALIAS");
+    expect(specs.find((k) => k.key === "secretKey")?.envAlias).toBe("ALIBABA_CLOUD_ACCESS_KEY_SECRET");
+    expect((await store.getTemplate("jihulab-pat")) === undefined).toBe(true);
+  });
 });
 
 function byCode(list: Array<{ code: string }>): string[] {

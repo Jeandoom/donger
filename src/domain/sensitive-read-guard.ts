@@ -69,6 +69,13 @@ function expandTilde(token: string): string {
 // Git for Windows 会把 /tmp 挂到宿主 TEMP（属宿主用户目录），按越界处理。
 const MSYS_VIRTUAL = /^([a-z]:)?\/(dev|proc|sys)(\/|$)/;
 
+// 纯标点/分隔符 token（含路径分隔符 / \）：不指向任何具体读取目标，只产生误报不产生
+// 防御。生产实锤（2026-11-04 会话 a3405241）：`sed 's/=.*/=<redacted>/'` 经 JSON 序列化
+// + 切分后剩一个裸 `/`，按绝对路径解析成根目录 → confine 误判「读取越界」整条拒绝，
+// 同命令里的 `env | grep` 探查因此从未执行，agent 被误导成「env 全量导出被拦」。
+// ../ 一类纯穿越片段本就在豁免集（无法定位目标）；带真实目标的 ../etc/passwd 不受影响。
+const PUNCTUATION_ONLY = /^[\\.,;:!?'"/\\]+$/;
+
 /** 命令 token 切分：空白/引号/shell 组合符/重定向都算边界 */
 function tokenize(command: string): string[] {
   return command
@@ -96,9 +103,10 @@ export function matchSensitiveRead(
   const confine = policy.mode === "confine";
   if (policy.denyRoots.length === 0 && !confine) return undefined;
   for (const token of tokenize(raw)) {
-    // 纯标点/孤立转义片段跳过（JSON 序列化 blob 扫描会切出孤立反斜杠一类噪声，
-    // resolve 后成盘根幻影路径——只产生误报不产生防御，2026-10-11 实测）
-    if (/^[\\.,;:!?'"]+$/.test(token)) continue;
+    // 纯标点/分隔符跳过（JSON 序列化 blob 扫描会切出孤立反斜杠、sed 替换串剩下的
+    // 裸 `/` 一类噪声——resolve 后成盘根幻影路径，只产生误报不产生防御，
+    // 2026-10-11 / 2026-11-04 两次生产实测）
+    if (PUNCTUATION_ONLY.test(token)) continue;
     // 只对像路径的 token 做解析（含分隔符、盘符、~、.. 段）；纯命令词（cat/git）跳过
     const looksPath =
       /[\\/]/.test(token) ||

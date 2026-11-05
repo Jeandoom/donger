@@ -53,6 +53,13 @@ export interface RunOptions {
   capabilityVersion?: number;
   /** 启用 pack 声明的凭证值（运行时注入 SDK env）。 */
   credentialsEnv?: Record<string, string>;
+  /**
+   * 凭证注入回执（人读文本，不含任何值；runtime-manager 组装）：orchestrator 在
+   * session_init 审计事件上落 text——配置页「已勾选」与会话「实际注入」从此有对照物
+   * （2026-11-04 会话 a3405241：用户已勾选已填值，会话内 agent 因变量名契约错位误判
+   * 「未配置」，无回执可查证）。
+   */
+  credentialsAuditNote?: string;
   /** 透传 SDK allowedTools（工具白名单） */
   allowedTools?: string[];
   /**
@@ -94,8 +101,6 @@ export interface RunOptions {
   /** 插件共享运行库目录（<plugin>/scripts，存在才注入）：
    *  runner 并入 PYTHONPATH，供技能脚本 `from credentials import ...` 等共享包导入 */
   pythonPaths?: string[];
-  /** in-process 平台工具 MCP server（assist 会话注入；instance 不可序列化，仅运行时使用） */
-  platformTools?: McpSdkServerConfigWithInstance;
   /** in-process git 平台元数据 MCP server（agent 绑定 git 仓库时注入） */
   gitPlatformTools?: McpSdkServerConfigWithInstance;
   /** in-process 远程主机运维 MCP server（donger-host；会话用户为 admin 或部署目标属主时注入，

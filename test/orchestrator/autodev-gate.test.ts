@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { buildAutoFixAgent, BUILTIN_AUTO_FIX_AGENT_ID } from "../../src/orchestrator/auto-fix-agent.js";
 import {
   autoDevGitAllowCheck,
   AUTOFIX_BRANCH_RE,
@@ -75,32 +74,5 @@ describe("autoDevGitAllowCheck", () => {
     expect(AUTOFIX_BRANCH_RE.test("fix-20261017-a.b_c-1")).toBe(true);
     expect(AUTOFIX_BRANCH_RE.test("fix-20261-x")).toBe(false);
     expect(AUTOFIX_BRANCH_RE.test("fix-20261017")).toBe(false);
-  });
-});
-
-describe("buildAutoFixAgent", () => {
-  it("内置常量：admin 模板、工具面含 Bash/Edit/Write 但无 git_merge_mr 入口语义", () => {
-    const agent = buildAutoFixAgent();
-    expect(agent.id).toBe(BUILTIN_AUTO_FIX_AGENT_ID);
-    expect(agent.tools.mode).toBe("whitelist");
-    for (const tool of ["Bash", "Edit", "Write", "mcp__donger-git"]) {
-      expect(agent.tools.whitelist.some((t) => t === tool || tool.startsWith(t)), tool).toBe(true);
-    }
-    expect(agent.systemPrompt).toContain("[autofix]");
-    expect(agent.systemPrompt).toContain("donger-proposal");
-    expect(agent.systemPrompt).toContain("<untrusted>");
-  });
-
-  it("仓库绑定注入后 gitRepositories 生效", () => {
-    const repo = {
-      id: "r1",
-      name: "donger",
-      provider: "gitee" as const,
-      url: "https://gitee.com/o/donger.git",
-      required: true,
-      shallow: true,
-      syncMode: "fastForward" as const,
-    };
-    expect(buildAutoFixAgent(repo).gitRepositories).toHaveLength(1);
   });
 });

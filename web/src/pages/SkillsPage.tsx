@@ -5,7 +5,6 @@ import {
   GitBranch,
   Loader2,
   RefreshCw,
-  Sparkles,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -24,7 +23,6 @@ import { Select } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { type AgentListDTO, fetchAgents } from "../lib/agents";
-import { ASSIST_DRAFT_STORAGE_KEY, BUILTIN_ASSIST_AGENT_ID } from "../lib/assist";
 import {
   cancelSkillJob,
   credentialStatus,
@@ -155,7 +153,6 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 export function SkillsPage() {
-  const navigate = useNavigate();
   const [packs, setPacks] = useState<SkillPackDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -310,20 +307,6 @@ export function SkillsPage() {
         description="为智能体安装可插拔的技能能力"
         actions={
           <>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                // 带草稿意图进对话（体验轮）：不再裸落通用会话让用户重新描述需求
-                sessionStorage.setItem(
-                  ASSIST_DRAFT_STORAGE_KEY,
-                  "帮我创建一个新的技能包：\n- 技能名称：\n- 解决什么问题：\n- 期望的触发场景：\n请先和我确认需求，再生成完整的 SKILL.md（含 frontmatter）。",
-                );
-                navigate(`/?agent=${BUILTIN_ASSIST_AGENT_ID}`);
-              }}
-            >
-              <Sparkles aria-hidden="true" size={14} className="inline" />
-              AI 生成
-            </Button>
             <Button variant="secondary" onClick={() => setRepoOpen(true)}>
               <GitBranch aria-hidden="true" size={14} className="inline" />
               Git 仓库

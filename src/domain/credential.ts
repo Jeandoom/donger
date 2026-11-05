@@ -27,6 +27,18 @@ export const CredentialKeySpecSchema = z.object({
     .regex(/^[A-Za-z0-9_]+$/, "键名仅允许字母数字下划线"),
   /** 表单渲染用的人读说明（不参与注入） */
   label: z.string().max(100).optional(),
+  /**
+   * 生态标准变量名别名（可选，大写字母数字下划线）：注入时在 <CODE>_<KEY> 之外
+   * 额外展开同名环境变量，让消费方（如 aliyun CLI 只认 ALIBABA_CLOUD_ACCESS_KEY_ID）
+   * 无需桥接即可取值——「平台注入名=生态标准名」原则的配置入口。
+   * 生产事故 2026-11-04（会话 a3405241）：智能体只认 ALIBABA_CLOUD_*，平台注入的
+   * ALIYUN_ACCESS_TOKEN_* 不被识别，误判「未配置凭证」。
+   */
+  envAlias: z
+    .string()
+    .max(64)
+    .regex(/^[A-Z][A-Z0-9_]*$/, "envAlias 需为大写字母开头的环境变量名（大写字母/数字/下划线）")
+    .optional(),
 });
 export type CredentialKeySpec = z.infer<typeof CredentialKeySpecSchema>;
 

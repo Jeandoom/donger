@@ -95,7 +95,10 @@ export function TemplateFormDialog(props: {
             ? [...GIT_PAT_KEYS].map((key) => ({ key }))
             : kind === "host"
               ? [...HOST_KEYS].map((key) => ({ key }))
-              : keys.map((key) => ({ key })),
+              : keys.map((key) => {
+                  const alias = aliasEntries.find(([k]) => k === key)?.[1];
+                  return alias ? { key, envAlias: alias } : { key };
+                }),
       };
       if (props.mode === "create") {
         await createCredentialTemplate(payload);
@@ -127,6 +130,11 @@ export function TemplateFormDialog(props: {
   };
 
   const isCreate = props.mode === "create";
+  // 编辑存量模板时保住 keySpecs 上的生态别名（表单只编辑键名；别名由 API 维护，
+  // 重建 keySpecs 若不带回去会把别名抹掉）
+  const aliasEntries = (t?.keySpecs ?? [])
+    .filter((s) => s.envAlias)
+    .map((s) => [s.key, s.envAlias as string] as const);
   const keyNames =
     kind === "git" ? [...GIT_PAT_KEYS] : kind === "host" ? [...HOST_KEYS] : keys;
 
@@ -323,6 +331,12 @@ export function TemplateFormDialog(props: {
             </div>
           )}
           {keysError ? <p className="text-[11px] text-destructive">{keysError}</p> : null}
+          {aliasEntries.length > 0 ? (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              已配置生态别名（注入时额外展开同名环境变量）：
+              {aliasEntries.map(([k, a]) => `${k} → ${a}`).join("、")}
+            </p>
+          ) : null}
         </FormField>
 
         <FormField label="说明" hint="用途、获取方式等，列表中展示（可选）">

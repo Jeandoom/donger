@@ -40,9 +40,9 @@ export interface GuardDenial {
  * 白名单命中判定，条目两形态：
  * - 工具全名（内置工具名或 mcp__server__tool 三段名）：精确匹配；
  * - MCP 服务器前缀（mcp__server 两段名）：放行该服务器全部工具——与 SDK allowedTools
- *   的 server 级语义对齐（agent-builder 注释：server 级白名单 SDK 对其下工具自动放行）。
+ *   的 server 级语义对齐（server 级白名单 SDK 对其下工具自动放行）。
  *   PreToolUse hook 必经守卫若仍按全名精确匹配，前缀条目下的 MCP 工具会被全数误拒
- *   （排障 2026-10-14：知识库管家白名单 mcp__donger-kb，kb_* 调用全被拒——KB 会话无法查看库）。
+ *   （排障 2026-10-14：白名单 mcp__donger-kb 的 kb_* 调用全被拒——库会话无法查看库）。
  * 前缀匹配以 __ 分隔符收口：mcp__a 不放行 mcp__ab__c 形似名。
  */
 export function matchesToolWhitelist(toolName: string, allowedTools: readonly string[]): boolean {

@@ -83,6 +83,18 @@ describe("toAuditEvent", () => {
   it("session_init → 仅上下文", () => {
     const e = toAuditEvent({ type: "session_init", taskId: "t1", sessionId: "s1" }, ctx);
     expect(e).toMatchObject({ type: "session_init", conversationId: "c1" });
+    expect(e.text).toBeUndefined();
+  });
+
+  it("session_init → 凭证注入回执挂 text（extra.sessionInitText）", () => {
+    const withNote = toAuditEvent(
+      { type: "session_init", taskId: "t1", sessionId: "s1" },
+      ctx,
+      { sessionInitText: "凭证注入回执：已注入 aliyun_access_token(3键,别名ALIBABA_CLOUD_ACCESS_KEY_ID/ALIBABA_CLOUD_ACCESS_KEY_SECRET)" },
+    );
+    expect(withNote.type).toBe("session_init");
+    expect(withNote.text).toContain("凭证注入回执");
+    expect(withNote.text).toContain("ALIBABA_CLOUD_ACCESS_KEY_ID");
   });
 });
 
