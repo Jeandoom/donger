@@ -63,7 +63,7 @@ export function MentionBackdrop(props: {
     <div
       ref={props.backdropRef}
       aria-hidden="true"
-      className="pointer-events-none absolute inset-0 overflow-hidden px-3 py-2 text-sm leading-6 whitespace-pre-wrap break-words text-foreground"
+      className="pointer-events-none absolute inset-0 overflow-hidden px-3 py-2 text-sm leading-6 whitespace-pre-wrap break-words text-foreground max-sm:text-base"
     >
       {tokens.map((token, i) =>
         token.type === "mention" ? (

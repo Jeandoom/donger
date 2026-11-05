@@ -28,6 +28,7 @@ import type { ConversationSidebarProps } from "./ConversationSidebar";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MobileConversationSheet } from "./MobileConversationSheet";
 import { PopoverSelect } from "./PopoverSelect";
+import { ShortcutHelp } from "./ShortcutHelp";
 
 export interface ChatWorkspaceProps {
   conversations: ConversationSummary[];
@@ -109,6 +110,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [idCopied, setIdCopied] = useState(false);
   const [lineageOpen, setLineageOpen] = useState(false);
+  // `?` 快捷键帮助表（E4-C 键盘契约）
+  const [helpOpen, setHelpOpen] = useState(false);
   const lineageRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!idCopied) return;
@@ -128,19 +131,43 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
 
   // Esc 分层（chat UE 轮 E4-C）：浮层/弹窗打开时不劫持（各自 Esc 负责关闭）；
   // 否则生成中 Esc = 停止输出。mention 候选浮层与自绘菜单均以 role="menu" 渲染。
+  // 输入态守卫：/ 与 ？ 只在非输入焦点时生效（往输入框打 ? 是打字不是命令）。
+  const isTypingTarget = (target: EventTarget | null): boolean => {
+    const el = target as HTMLElement | null;
+    return Boolean(
+      el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable),
+    );
+  };
+  // 可见浮层判定：FileBrowserDrawer 关闭态常驻 DOM（role=dialog + aria-hidden=true），
+  // 须排除隐藏 dialog，否则 / 与 ？ 快捷键及 Esc 停止生成永远不触发（e2e 实锤）
+  const anyOverlayOpen = (): boolean =>
+    Boolean(
+      document.querySelector(
+        '[role="menu"],[role="listbox"],[role="dialog"]:not([aria-hidden="true"])',
+      ),
+    );
   const handleGlobalKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
-      if (!props.isGenerating) return;
-      const blocking = document.querySelector('[role="menu"],[role="dialog"],[role="listbox"]');
-      if (blocking) return;
-      const target = e.target as HTMLElement | null;
-      const inInput =
-        target &&
-        (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
-      if (!inInput) return;
-      e.preventDefault();
-      void props.onCancel();
+      if (e.defaultPrevented) return;
+      if (e.key === "Escape") {
+        if (!props.isGenerating) return;
+        if (anyOverlayOpen()) return;
+        if (!isTypingTarget(e.target)) return;
+        e.preventDefault();
+        void props.onCancel();
+        return;
+      }
+      if (e.key === "?" && !isTypingTarget(e.target) && !anyOverlayOpen()) {
+        e.preventDefault();
+        setHelpOpen(true);
+        return;
+      }
+      if (e.key === "/" && !isTypingTarget(e.target) && !anyOverlayOpen()) {
+        // 触屏不抢焦点（弹软键盘打扰），细指针才聚焦输入框
+        if (window.matchMedia?.("(pointer: coarse)").matches) return;
+        e.preventDefault();
+        composerFocusRef.current?.();
+      }
     },
     [props.isGenerating, props.onCancel],
   );
@@ -230,6 +257,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   }, [props.activeConversationId]);
   // D2 编辑=fork 的 composer 预填桥：AssistantThread 注册 setText，fork 成功后回填原文
   const composerBridgeRef = useRef<((text: string) => void) | null>(null);
+  // `/` 快捷键聚焦桥（AssistantThread 注册 textarea.focus）
+  const composerFocusRef = useRef<(() => void) | null>(null);
   const handleEditFromMessage = useMemo(() => {
     if (!props.onForkConversation) return undefined;
     return (messageId: string, text: string) => {
@@ -463,6 +492,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           }}
           onCancel={() => setConfirmFullAccess(false)}
         />
+        {helpOpen ? <ShortcutHelp onClose={() => setHelpOpen(false)} /> : null}
         {props.errors.stream ? (
           <div
             role="status"
@@ -535,6 +565,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               queueDepth={props.queueDepth}
               isGenerating={props.isGenerating}
               composerBridge={composerBridgeRef}
+              focusBridge={composerFocusRef}
               composerLeading={
                 permissionModePicker || modelPicker ? (
                   /* min-w-0 允许整簇收缩，选择器逐级让宽；shrink-0 会溢出压到发送按钮底下 */

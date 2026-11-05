@@ -36,9 +36,10 @@ import {
 } from "react";
 import remarkGfm from "remark-gfm";
 import { type AttachmentKind, attachmentKindForName, uploadUrl } from "../../lib/attachments";
-import { fetchMe } from "../../lib/auth";
+import { fetchMe, getToken } from "../../lib/auth";
 import type { FileInfo } from "../../lib/chatReducer";
 import { extractChangedFilePaths, shortChangePath } from "../../lib/fileChanges";
+import { contentUrl } from "../../lib/files";
 import { lineRefBadge } from "../../lib/lineRefBadge";
 import type { Mention } from "../../lib/mentions";
 import { tokenizeMentionMarkers } from "../../lib/mentions";
@@ -65,7 +66,7 @@ import { MarkdownCodeHeader, MarkdownSyntaxHighlighter } from "./MarkdownCodeBlo
 import { PendingInteraction } from "./PendingInteraction";
 import { QuestionCard } from "./QuestionCard";
 import { ReasoningBlock } from "./ReasoningBlock";
-import { ToolCard } from "./ToolCard";
+import { ToolCard, ToolImageResolverContext } from "./ToolCard";
 import { TurnMetaBadge } from "./TurnMetaBadge";
 
 const THREAD_CONTENT_WIDTH = "mx-auto w-full max-w-3xl px-3 sm:px-5";
@@ -523,6 +524,7 @@ function AssistantMessage() {
   return (
     <MessagePrimitive.Root
       aria-label="助手消息"
+      aria-busy={isRunning || undefined}
       className={cn(THREAD_CONTENT_WIDTH, "group flex items-start gap-3 py-5")}
     >
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
@@ -646,6 +648,8 @@ export interface AssistantThreadProps {
   isGenerating?: boolean;
   /** composer 预填桥（D2 编辑=fork：fork 成功后父层经此回填原文） */
   composerBridge?: React.MutableRefObject<((text: string) => void) | null>;
+  /** composer 聚焦桥（E4-C `/` 快捷键）：ChatWorkspace 全局键 handler 经此聚焦输入框 */
+  focusBridge?: React.MutableRefObject<(() => void) | null>;
 }
 
 export function AssistantThread(props: AssistantThreadProps) {
@@ -741,129 +745,181 @@ export function AssistantThread(props: AssistantThreadProps) {
       bridge.current = null;
     };
   }, [props.composerBridge, setTextViaComposer]);
+  // composer 聚焦桥（E4-C `/` 快捷键）：ChatWorkspace 全局键 handler 经此聚焦输入框
+  const focusComposer = useCallback(() => {
+    const textarea = inputWrapRef.current?.querySelector("textarea");
+    if (textarea) textarea.focus();
+  }, []);
+  useEffect(() => {
+    const bridge = props.focusBridge;
+    if (!bridge) return;
+    bridge.current = focusComposer;
+    return () => {
+      bridge.current = null;
+    };
+  }, [props.focusBridge, focusComposer]);
+  // 工具结果图片 URL 解析器（E2-E 直出）：会话工作区文件走 files/content（令牌入查询参数），
+  // http(s) 直返；无会话/无令牌返回 null=跳过渲染
+  const resolveToolImage = useCallback(
+    (path: string): string | null => {
+      if (/^https?:\/\//i.test(path)) return path;
+      const conversationId = props.conversationId;
+      const token = getToken();
+      if (!conversationId || !token) return null;
+      return contentUrl({ scope: "runtime", path, conversationId, token });
+    },
+    [props.conversationId],
+  );
+  // a11y 完成播报（E6-C）：isGenerating 下降沿置一次，sr-only polite 区读出；
+  // 时间戳后缀强制同一回合多次完成也可区分
+  const prevGeneratingRef = useRef(props.isGenerating === true);
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    const was = prevGeneratingRef.current;
+    prevGeneratingRef.current = props.isGenerating === true;
+    if (was && !props.isGenerating) {
+      setAnnouncement(`回复已完成 ${new Date().toLocaleTimeString()}`);
+    }
+  }, [props.isGenerating]);
   const decisionsActive = props.pendingApproval || props.pendingCredential;
   return (
-    <OpenFileChangeContext.Provider value={openFileChange ?? (() => {})}>
-      <ForkMessageContext.Provider value={props.onForkFromMessage ?? null}>
-        <EditMessageContext.Provider value={props.onEditFromMessage ?? null}>
-          <QuoteContext.Provider value={quoteToComposer}>
-            <RetryContext.Provider value={props.onRetryMessage ?? null}>
-              <AssistantNameContext.Provider value={props.assistantName ?? "助手"}>
-                <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
-                  <ThreadPrimitive.Viewport className="donger-thread-viewport min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4">
-                    <ThreadWelcome hidden={hasPendingInteraction} />
-                    <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-                  </ThreadPrimitive.Viewport>
-                  <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
-                    {/* 决策 Dock（E3-A）：审批/凭证/问询三类「需用户决策」的卡统一锚定输入区上方，
-                        浏览历史时仍可见可操作（此前审批卡随流滚动不可达） */}
-                    <JumpToBottom />
-                    <ActivityStrip
-                      lines={props.activityLines ?? []}
-                      queueDepth={props.queueDepth ?? 0}
-                      running={props.isGenerating === true}
-                    />
-                    {decisionsActive ? (
-                      <div className="pointer-events-auto mb-2">
-                        <PendingInteraction
-                          approval={props.pendingApproval}
-                          credential={props.pendingCredential}
-                          approvalError={props.approvalError}
-                          credentialError={props.credentialError}
-                          onResolveApproval={props.onResolveApproval}
-                          onDecideCredentialMissing={props.onDecideCredentialMissing}
-                        />
+    <ToolImageResolverContext.Provider value={resolveToolImage}>
+      <OpenFileChangeContext.Provider value={openFileChange ?? (() => {})}>
+        <ForkMessageContext.Provider value={props.onForkFromMessage ?? null}>
+          <EditMessageContext.Provider value={props.onEditFromMessage ?? null}>
+            <QuoteContext.Provider value={quoteToComposer}>
+              <RetryContext.Provider value={props.onRetryMessage ?? null}>
+                <AssistantNameContext.Provider value={props.assistantName ?? "助手"}>
+                  <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-muted/20">
+                    {/* a11y（E6-C）：role=log 让读屏对新增消息礼貌播报；流式期间以 aria-busy 抑制逐字播报 */}
+                    <ThreadPrimitive.Viewport
+                      role="log"
+                      aria-live="polite"
+                      aria-atomic="false"
+                      className="donger-thread-viewport min-h-0 min-w-0 flex-1 overflow-y-auto pb-32 pt-4"
+                    >
+                      <ThreadWelcome hidden={hasPendingInteraction} />
+                      <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+                    </ThreadPrimitive.Viewport>
+                    {/* a11y（E6-C）：完成播报 sr-only polite 区，每回合收口读一次；
+                        有内容才挂载——空态常驻的 live region 会与告警横幅抢 role=status 唯一性 */}
+                    {announcement ? (
+                      <div className="sr-only" role="status" aria-live="polite">
+                        {announcement}
                       </div>
                     ) : null}
-                    {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
-                    {props.pendingQuestion ? (
-                      <QuestionCard
-                        key={props.pendingQuestion.reqId}
-                        question={props.pendingQuestion}
-                        error={props.questionError}
-                        onAnswer={props.onAnswerQuestion}
+                    <div className="pointer-events-none sticky bottom-0 z-10 -mt-24 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-3 pt-10 sm:px-5">
+                      {/* 决策 Dock（E3-A）：审批/凭证/问询三类「需用户决策」的卡统一锚定输入区上方，
+                        浏览历史时仍可见可操作（此前审批卡随流滚动不可达） */}
+                      <JumpToBottom />
+                      <ActivityStrip
+                        lines={props.activityLines ?? []}
+                        queueDepth={props.queueDepth ?? 0}
+                        running={props.isGenerating === true}
                       />
-                    ) : null}
-                    {props.aboveComposer}
-                    <ComposerPrimitive.Root
-                      aria-label="消息输入"
-                      className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
-                    >
-                      <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-                        <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
-                          <ComposerPrimitive.Attachments
-                            components={{ Attachment: ComposerAttachment }}
+                      {decisionsActive ? (
+                        <div className="pointer-events-auto mb-2">
+                          <PendingInteraction
+                            approval={props.pendingApproval}
+                            credential={props.pendingCredential}
+                            approvalError={props.approvalError}
+                            credentialError={props.credentialError}
+                            onResolveApproval={props.onResolveApproval}
+                            onDecideCredentialMissing={props.onDecideCredentialMissing}
                           />
                         </div>
-                        <div ref={inputWrapRef} className="relative">
-                          {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
-                          {hasAgent ? (
-                            <MentionBackdrop text={composerText} backdropRef={backdropRef} />
-                          ) : null}
-                          <ComposerPrimitive.Input
-                            className={cn(
-                              "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground",
-                              hasAgent && "text-transparent caret-primary selection:bg-primary/30",
-                            )}
-                            onScroll={syncBackdropScroll}
-                            placeholder={props.placeholder}
-                          />
-                          {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
-                          {hasAgent ? (
-                            <ComposerMentionTriggers
-                              candidates={candidates}
-                              loading={loading}
-                              error={error}
-                              onMentionInserted={props.onMentionInserted}
-                              getTextarea={getTextarea}
+                      ) : null}
+                      {/* 问题卡锚定输入框正上方（sticky 底栏，不随消息流滚动，浏览历史时仍可见可答） */}
+                      {props.pendingQuestion ? (
+                        <QuestionCard
+                          key={props.pendingQuestion.reqId}
+                          question={props.pendingQuestion}
+                          error={props.questionError}
+                          onAnswer={props.onAnswerQuestion}
+                        />
+                      ) : null}
+                      {props.aboveComposer}
+                      <ComposerPrimitive.Root
+                        aria-label="消息输入"
+                        className="pb-safe pointer-events-auto relative mx-auto w-full max-w-3xl rounded-2xl border bg-background p-2 shadow-sm"
+                      >
+                        <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+                          <div className="mb-2 flex max-w-full flex-wrap gap-2 px-1">
+                            <ComposerPrimitive.Attachments
+                              components={{ Attachment: ComposerAttachment }}
                             />
-                          ) : null}
-                        </div>
-                        {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex min-w-0 flex-1 items-center gap-1">
-                            <ComposerPlusMenu
-                              hasAgent={hasAgent}
-                              onInsertTrigger={insertTrigger}
-                              onOpen={refresh}
-                            />
-                            {props.composerLeading}
                           </div>
-                          <ThreadPrimitive.If running={false}>
-                            <ComposerPrimitive.Send asChild>
-                              <Button
-                                type="submit"
-                                size="icon"
-                                aria-label="发送消息"
-                                className="min-h-11 min-w-11 shrink-0 rounded-full"
-                              >
-                                <ArrowUp aria-hidden="true" size={18} />
-                              </Button>
-                            </ComposerPrimitive.Send>
-                          </ThreadPrimitive.If>
-                          <ThreadPrimitive.If running>
-                            <ComposerPrimitive.Cancel asChild>
-                              <Button
-                                type="button"
-                                size="icon"
-                                aria-label="停止输出"
-                                title="停止生成（Esc 亦可）"
-                                className="min-h-11 min-w-11 rounded-full"
-                              >
-                                <Square aria-hidden="true" size={16} fill="currentColor" />
-                              </Button>
-                            </ComposerPrimitive.Cancel>
-                          </ThreadPrimitive.If>
-                        </div>
-                      </ComposerPrimitive.Unstable_TriggerPopoverRoot>
-                    </ComposerPrimitive.Root>
-                  </div>
-                </ThreadPrimitive.Root>
-              </AssistantNameContext.Provider>
-            </RetryContext.Provider>
-          </QuoteContext.Provider>
-        </EditMessageContext.Provider>
-      </ForkMessageContext.Provider>
-    </OpenFileChangeContext.Provider>
+                          <div ref={inputWrapRef} className="relative">
+                            {/* 引用 chip 背衬层：textarea 文字透明、本层负责可见文本与 pill 渲染（react-mentions 模式） */}
+                            {hasAgent ? (
+                              <MentionBackdrop text={composerText} backdropRef={backdropRef} />
+                            ) : null}
+                            <ComposerPrimitive.Input
+                              className={cn(
+                                "max-h-48 min-h-16 w-full resize-none border-0 bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground max-sm:text-base",
+                                hasAgent &&
+                                  "text-transparent caret-primary selection:bg-primary/30",
+                              )}
+                              onScroll={syncBackdropScroll}
+                              placeholder={props.placeholder}
+                            />
+                            {/* 闲聊/协助会话无候选来源，不挂触发器（避免 @ 弹出恒空的浮层） */}
+                            {hasAgent ? (
+                              <ComposerMentionTriggers
+                                candidates={candidates}
+                                loading={loading}
+                                error={error}
+                                onMentionInserted={props.onMentionInserted}
+                                getTextarea={getTextarea}
+                              />
+                            ) : null}
+                          </div>
+                          {/* 移动端窄屏：左簇可压缩（min-w-0），发送按钮不得被挤出屏外；wrap 兜底 */}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex min-w-0 flex-1 items-center gap-1">
+                              <ComposerPlusMenu
+                                hasAgent={hasAgent}
+                                onInsertTrigger={insertTrigger}
+                                onOpen={refresh}
+                              />
+                              {props.composerLeading}
+                            </div>
+                            <ThreadPrimitive.If running={false}>
+                              <ComposerPrimitive.Send asChild>
+                                <Button
+                                  type="submit"
+                                  size="icon"
+                                  aria-label="发送消息"
+                                  className="min-h-11 min-w-11 shrink-0 rounded-full"
+                                >
+                                  <ArrowUp aria-hidden="true" size={18} />
+                                </Button>
+                              </ComposerPrimitive.Send>
+                            </ThreadPrimitive.If>
+                            <ThreadPrimitive.If running>
+                              <ComposerPrimitive.Cancel asChild>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  aria-label="停止输出"
+                                  title="停止生成（Esc 亦可）"
+                                  className="min-h-11 min-w-11 rounded-full"
+                                >
+                                  <Square aria-hidden="true" size={16} fill="currentColor" />
+                                </Button>
+                              </ComposerPrimitive.Cancel>
+                            </ThreadPrimitive.If>
+                          </div>
+                        </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+                      </ComposerPrimitive.Root>
+                    </div>
+                  </ThreadPrimitive.Root>
+                </AssistantNameContext.Provider>
+              </RetryContext.Provider>
+            </QuoteContext.Provider>
+          </EditMessageContext.Provider>
+        </ForkMessageContext.Provider>
+      </OpenFileChangeContext.Provider>
+    </ToolImageResolverContext.Provider>
   );
 }

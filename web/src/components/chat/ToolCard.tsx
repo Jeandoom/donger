@@ -17,10 +17,19 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
-import { useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
+import { extractImageRef, type ToolImageRef } from "../../lib/toolImage";
 import { cn } from "../../lib/utils";
 
 type IconComponent = typeof Bot;
+
+/**
+ * 工具结果图片 URL 解析器（chat UE 优化轮 E2-E 直出）：AssistantThread 按
+ * 会话工作区（files/content 端点）+登录令牌装配；null=无法解析（无令牌/无会话），跳过渲染。
+ */
+export const ToolImageResolverContext = createContext<((path: string) => string | null) | null>(
+  null,
+);
 
 const TOOL_ICONS: Record<string, IconComponent> = {
   Bash: Terminal,
@@ -75,6 +84,10 @@ export function ToolCard({ toolName, argsText, result, isError }: ToolCallMessag
   const running = result === undefined;
   const failed = isError === true;
   const Icon = toolIcon(toolName);
+  const imageRef = useMemo(
+    () => extractImageRef(typeof result === "string" ? result : undefined),
+    [result],
+  );
 
   return (
     <div
@@ -109,12 +122,39 @@ export function ToolCard({ toolName, argsText, result, isError }: ToolCallMessag
       </button>
       {open && (
         <div className="space-y-2 border-t px-2.5 py-2">
+          {imageRef ? <ToolImagePreview imageRef={imageRef} /> : null}
           <ToolIOSection label="输入" text={argsText} />
           {typeof result === "string" && result.length > 0 && (
             <ToolIOSection label={failed ? "错误" : "输出"} text={result} failed={failed} />
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 工具结果图片直出：data URI 直渲染；路径类经解析器换 files/content URL，加载失败整块隐藏 */
+function ToolImagePreview({ imageRef }: { imageRef: ToolImageRef }) {
+  const resolve = useContext(ToolImageResolverContext);
+  const [broken, setBroken] = useState(false);
+  const src = useMemo(() => {
+    if (broken) return null;
+    if (imageRef.kind === "dataUri") return `data:${imageRef.mediaType};base64,${imageRef.data}`;
+    if (/^https?:\/\//i.test(imageRef.path)) return imageRef.path;
+    return resolve?.(imageRef.path) ?? null;
+  }, [broken, imageRef, resolve]);
+  if (!src) return null;
+  return (
+    <div>
+      <div className="mb-0.5 text-[11px] font-medium text-muted-foreground/70">图片结果</div>
+      {/* eslint-disable-next-line @next/next/no-img-element -- 平台无 next，直接 img */}
+      <img
+        src={src}
+        alt="工具返回的图片结果"
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className="max-h-64 max-w-full cursor-zoom-in rounded-lg border border-border bg-muted/40 object-contain"
+      />
     </div>
   );
 }
