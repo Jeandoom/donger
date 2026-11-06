@@ -524,6 +524,7 @@ export function AgentEditorPage() {
           <ToolsPermsSection
             {...sectionProps}
             tools={meta.tools}
+            mcpTools={meta.mcpTools ?? []}
             connectors={connectors}
             issues={issues.filter((i) => i.section === "agent-sec-tools")}
             mcpJsonText={mcpJsonText}

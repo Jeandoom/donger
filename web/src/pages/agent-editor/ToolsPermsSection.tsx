@@ -8,6 +8,7 @@ import { RadioCard } from "../../components/ui/radio-card";
 import { Segmented } from "../../components/ui/segmented";
 import { Switch } from "../../components/ui/switch";
 import { Textarea } from "../../components/ui/textarea";
+import type { McpWhitelistOption } from "../../lib/agents";
 import type { ConnectorDTO } from "../../lib/connectors";
 import { cn } from "../../lib/utils";
 import type { AgentEditorForm, ScenarioIssue } from "./model";
@@ -39,6 +40,7 @@ export function ToolsPermsSection({
   form,
   patch,
   tools,
+  mcpTools,
   connectors,
   issues,
   mcpJsonText,
@@ -50,6 +52,8 @@ export function ToolsPermsSection({
   form: AgentEditorForm;
   patch: (p: Partial<AgentEditorForm>) => void;
   tools: string[];
+  /** MCP 服务器级白名单候选（后端目录下发；页面与 API 能力面对齐） */
+  mcpTools: McpWhitelistOption[];
   connectors: ConnectorDTO[];
   issues: ScenarioIssue[];
   /** 内联 MCP JSON 文本与解析错误提升到页面持有（保存前阻断校验依赖它） */
@@ -67,6 +71,12 @@ export function ToolsPermsSection({
     const q = toolQuery.trim().toLowerCase();
     return q ? tools.filter((t) => t.toLowerCase().includes(q)) : tools;
   }, [tools, toolQuery]);
+
+  const filteredMcpTools = useMemo(() => {
+    const q = toolQuery.trim().toLowerCase();
+    if (!q) return mcpTools;
+    return mcpTools.filter((m) => `${m.entry} ${m.label} ${m.hint}`.toLowerCase().includes(q));
+  }, [mcpTools, toolQuery]);
 
   // 外部加载/保存回显后同步 JSON 文本（仅当文本与 form 不一致时，避免打断编辑）；
   // mcpJsonText 在依赖内是安全的：合法编辑已同步进 form，非法中间态在 catch 中跳过
@@ -224,6 +234,51 @@ export function ToolsPermsSection({
                 </p>
               ) : null}
             </div>
+            {filteredMcpTools.length > 0 ? (
+              <div className="border-t border-border pt-2">
+                <p className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">
+                  MCP 工具 · 服务器级（勾选放行该服务器全部工具）
+                </p>
+                <div className="grid max-h-40 gap-0.5 overflow-y-auto sm:grid-cols-2">
+                  {filteredMcpTools.map((m) => (
+                    <label
+                      key={m.entry}
+                      htmlFor={`agent-tool-${m.entry}`}
+                      className={cn(
+                        "flex items-start gap-2.5 rounded-lg px-2 py-1.5",
+                        m.available ? "cursor-pointer hover:bg-muted/70" : "cursor-not-allowed",
+                      )}
+                    >
+                      <Checkbox
+                        id={`agent-tool-${m.entry}`}
+                        className="mt-0.5"
+                        disabled={!m.available}
+                        checked={form.tools.whitelist.includes(m.entry)}
+                        onChange={(e) => toggleWhitelistTool(m.entry, e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-xs">{m.entry}</span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {m.label} · {m.hint}
+                        </span>
+                      </span>
+                      {!m.available ? (
+                        <Lock
+                          size={12}
+                          className="mt-1 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </label>
+                  ))}
+                </div>
+                {mcpTools.some((m) => !m.available) && !toolQuery.trim() ? (
+                  <p className="px-2 pt-1 text-[11px] text-muted-foreground">
+                    置灰项当前视角不满足挂载条件（按提示补齐后可选）。
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </FormField>

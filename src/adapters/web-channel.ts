@@ -47,6 +47,7 @@ import {
 } from "../domain/connector.js";
 import { substituteCredentialRefs } from "../domain/connector-resolution.js";
 import type { Conversation } from "../domain/conversation.js";
+import { buildMcpWhitelistCatalogue } from "../domain/mcp-whitelist-catalogue.js";
 import { DEFAULT_CONVERSATION_TITLE } from "../domain/conversation-title.js";
 import {
   type ReleaseWebhookSecrets,
@@ -5603,6 +5604,8 @@ export class WebChannel implements Channel {
           }),
         skillGroups,
         tools: BUILTIN_TOOLS,
+        // MCP 服务器级白名单候选（编辑页白名单 MCP 分组；页面与 API 能力面对齐）
+        mcpTools: await buildMcpWhitelistCatalogue(this.deps, userId),
         // 审计页调试重放选模型在用（AuditPage）；agent 编辑器已不消费
         llmPresets: this.agentMeta?.presets ?? [],
       });

@@ -120,11 +120,24 @@ export interface SkillGroupDTO {
   skills: { id: string; name: string; description?: string }[];
 }
 
+/** MCP 服务器级白名单候选（后端目录下发；entry 与运行时挂载 server 名对应） */
+export interface McpWhitelistOption {
+  entry: string;
+  server: string;
+  label: string;
+  /** 挂载语义提示（何时可用） */
+  hint: string;
+  /** 当前访问者视角可挂载；false 时编辑页置灰不可勾 */
+  available: boolean;
+}
+
 export interface AgentMeta {
   /** 扁平候选（skillGroups 展开去重，兼容保留） */
   skills: { id: string; name: string; description?: string }[];
   skillGroups: SkillGroupDTO[];
   tools: string[];
+  /** MCP 服务器级白名单候选（含 donger-host 与连接器；旧后端缺省 undefined） */
+  mcpTools?: McpWhitelistOption[];
   llmPresets: { id: string; name: string; model: string; baseUrl: string }[];
 }
 
